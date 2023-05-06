@@ -6,7 +6,7 @@ from starlette.responses import JSONResponse
 
 from src.Util.Cypher import cypher_x_decode
 from src.Util.Models import UserLogin
-from src.Util.db import set_session, get_session
+from src.Util.db import set_session, get_session, db_validate_session
 
 x_token_user_name = 'X-token-user'
 x_token_collection_name = 'X-token-collection'
@@ -38,7 +38,11 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             )
 
             user_model = get_session(user[0])
-            if user_model:
+            if (user_model and  # Session exists
+                    # Session expected == session Actual
+                    request.headers[x_token_collection_name] == user_model.user_collection and
+                    # Session actual == User session
+                    db_validate_session(user_session=user_model.user_session, user_hash=user_model.user_hash)):
                 return user_model
             raise HTTPException(status_code=401, detail='User token invalid')
         except Exception as e:

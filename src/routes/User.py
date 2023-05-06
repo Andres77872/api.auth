@@ -51,6 +51,13 @@ async def register(user: str = Form(),
     The token consist in three parts _[**Public KEY**, **HASH integrity**, **Encrypted SessionID**]_.
 
     Each part has 256 bits with a total of 768 => Token with length of 128 encoded with base64.
+
+    The password will take without alteration and this will be hashed to be stored in the DB,
+    and it is recommended that the password come hashed to avoid sending the raw password to the API.
+    This hash must be on the client side.
+
+    By default, each token will be set with expiration of 72 hrs.
+
     """
     user_model = db_register(collection=collections,
                              password=password,
@@ -68,7 +75,10 @@ async def register(user: str = Form(),
             params_data=[session_id]
         )
         if make_session(user_model, session_id):
-            return token
+            return {
+                'token': token,
+                'user_hash': user_model.user_hash
+            }
         else:
             raise HTTPException(status_code=500, detail='Fail to start the user session')
     raise HTTPException(status_code=409, detail='User already exist')

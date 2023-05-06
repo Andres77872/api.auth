@@ -1,0 +1,9 @@
+#FROM andres77872/ubuntu_api:20.10-12.20
+FROM andres77872/ubuntu_base:23.04-80322
+
+WORKDIR /nn
+
+COPY src /nn/src
+COPY requirements.txt /nn
+
+RUN pip install -r requirements.txt
