@@ -38,6 +38,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             )
 
             user_model = get_session(user[0])
+            # print(user[0])
             if (user_model and  # Session exists
                     # Session expected == session Actual
                     request.headers[x_token_collection_name] == user_model.user_collection and

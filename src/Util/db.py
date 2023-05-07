@@ -124,3 +124,21 @@ def db_register(collection: str, user: str, password: str, email=None) -> UserLo
             return None
         x = UserLogin(user_session, user_session_length, user_hash, collection)
         return x
+
+
+def db_username_or_email_available(username_or_email: str, collection: str) -> bool:
+    """
+    will check the availability for the username or email
+    :param username_or_email:
+    :param collection:
+    :return: dictionary
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute(f'SELECT "" '
+                    f'FROM auth.tb_collection_user '
+                    f'INNER JOIN auth.tb_collection '
+                    f'WHERE (user_name = "{username_or_email}" OR user_email = "{username_or_email}") AND '
+                    f'collection_hash = "{collection}"')
+
+        return len(cur.fetchall()) == 0

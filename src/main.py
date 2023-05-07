@@ -31,10 +31,10 @@ app.include_router(User.router,
                    prefix='/user',
                    tags=['User login/register'])
 
-app.include_router(UserControl.router,
-                   prefix='/user',
-                   tags=['User control'],
-                   dependencies=[Security(x_token_user), Security(x_token_collection)])
+# app.include_router(UserControl.router,
+#                    prefix='/user',
+#                    tags=['User control'],
+#                    dependencies=[Security(x_token_user), Security(x_token_collection)])
 
 app.include_router(Access.router,
                    prefix='/access',

@@ -4,15 +4,17 @@ from fastapi import APIRouter, Form, HTTPException
 
 from src.Util.Cypher import cypher_x_encode
 from src.Util.Seccurity import make_session, x_random_key, x_check_sum, x_params_keys
-from src.Util.db import db_login, db_register
+from src.Util.db import db_login, db_register, db_username_or_email_available
 
 router = APIRouter()
+
+collection_test = '9C97B7C713C0DF4C4DD447382A4322BD99B01ED6F38551B9216ABB3A3BB04586'
 
 
 @router.post("/login")
 async def login(user: str = Form(),
                 password: str = Form(),
-                collection: str = Form('9C97B7C713C0DF4C4DD447382A4322BD99B01ED6F38551B9216ABB3A3BB04586'),
+                collection: str = Form(),
                 ):
     """
     ## Login method and create a new session token
@@ -43,7 +45,7 @@ async def login(user: str = Form(),
 @router.post("/register")
 async def register(user: str = Form(),
                    password: str = Form(),
-                   collections: str = Form('9C97B7C713C0DF4C4DD447382A4322BD99B01ED6F38551B9216ABB3A3BB04586'),
+                   collections: str = Form(),
                    email: str = Form(None),
                    ):
     """
@@ -84,8 +86,17 @@ async def register(user: str = Form(),
     raise HTTPException(status_code=409, detail='User already exist')
 
 
-@router.head("")
+@router.post("/check", status_code=204)
 async def username_or_email_exist(username_or_email: str = Form(),
-                                  collections: str = Form(),
+                                  collection: str = Form(),
                                   ):
-    raise HTTPException(status_code=501, detail='Not implemented yet')
+    """
+    Check the availability of the user or email.
+
+    204 -> user not exist
+    409 -> user exists
+
+    """
+    if not db_username_or_email_available(username_or_email=username_or_email,
+                                          collection=collection):
+        raise HTTPException(status_code=409, detail='exist')
