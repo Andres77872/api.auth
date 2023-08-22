@@ -8,19 +8,19 @@ import redis
 
 from src.Util.Models import UserLogin
 
-ip = "70.35.199.254"
-# ip = "127.0.0.1"
+# ip = "70.35.199.254"
+ip = "127.0.0.1"
 
 connectionDB = {
     "host": ip,
     "user": "root",
-    "password": "1248163264AsD!"
+    "password": "qkY3w4wJQbD367RD"
 }
 
 client = redis.StrictRedis(host=ip,
                            port=6379,
                            db=0,
-                           password='1248163264AsD!')
+                           password='evhCGAM1E6Vtdbfc')
 
 
 def get_connection():
