@@ -95,6 +95,11 @@ async def add_process_time_header(request: Request, call_next):
     return response
 
 
+@app.get('/ping', status_code=204)
+def ping():
+    pass
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     response = RedirectResponse(url='/docs')
