@@ -95,7 +95,7 @@ def db_login(user: str, password: str, collection: str) -> UserLogin | None:
 
         cur.execute(f'SELECT hist_session '
                     f'FROM findit.tb_history_session '
-                    f'WHERE id_user = {res[3]} AND ')
+                    f'WHERE id_user = {res[3]}')
         ht = cur.fetchone()
         ht = ht[0] if ht else ''
 
