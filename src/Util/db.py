@@ -85,16 +85,26 @@ def db_login(user: str, password: str, collection: str) -> UserLogin | None:
     password = hashlib.sha256(password.encode()).hexdigest().upper()
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute(f'SELECT user_session, user_session_length, user_hash '
+        cur.execute(f'SELECT user_session, user_session_length, user_hash, id_collection_user '
                     f'FROM auth.tb_collection_user '
                     f'INNER JOIN auth.tb_collection '
                     f'WHERE user_name = "{user}" AND '
                     f'user_password ="{password}" AND '
                     f'collection_hash = "{collection}"')
-        res = cur.fetchall()
+        res = cur.fetchone()
+
+        cur.execute(f'SELECT hist_session '
+                    f'FROM findit.tb_history_session '
+                    f'WHERE id_user = {res[3]} AND ')
+        ht = cur.fetchone()
+        ht = ht[0] if ht else ''
 
         if res:
-            return UserLogin(res[0][0], res[0][1], res[0][2], collection)
+            return UserLogin(user_session=res[0],
+                             user_session_length=res[1],
+                             user_hash=res[2],
+                             user_collection=collection,
+                             user_history_token=ht)
         return None
 
 

@@ -35,7 +35,10 @@ async def login(user: str = Form(),
 
     if user_model:
         if make_session(user_model, session_id):
-            return token
+            return {
+                'session-token': token,
+                'history_token': user_model.user_history_token
+            }
         else:
             raise HTTPException(status_code=500, detail='Fail to start the user session')
     else:
