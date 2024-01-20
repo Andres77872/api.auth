@@ -1,6 +1,5 @@
 import json
 import secrets
-import time
 
 import pymysql
 import hashlib
@@ -122,7 +121,7 @@ def db_register(collection: str, user: str, password: str, email=None) -> UserLo
         con.commit()
         if i == 0:
             return None
-        x = UserLogin(user_session, user_session_length, user_hash, collection)
+        x = UserLogin(user_session, user_session_length, user_hash, collection, i)
         return x
 
 

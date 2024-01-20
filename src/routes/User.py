@@ -79,7 +79,8 @@ async def register(user: str = Form(),
         if make_session(user_model, session_id):
             return {
                 'token': token,
-                'user_hash': user_model.user_hash
+                'user_hash': user_model.user_hash,
+                'user_id': user_model.user_id
             }
         else:
             raise HTTPException(status_code=500, detail='Fail to start the user session')
