@@ -1,14 +1,17 @@
+import threading
+
 from fastapi import FastAPI, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 
 from starlette.responses import RedirectResponse
 
-from src.routes import UserControl, Access, User
+from src.Util.logger_ws import logger
+from src.routes import Access, User
 
 import time
 import hashlib
 
-from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection_name, x_token_collection
+from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
 
 hashlib.sha256()
 
@@ -74,23 +77,23 @@ async def add_process_time_header(request: Request, call_next):
     process_time = time.time() - start_time
     response.headers["X-Process-Time"] = str(process_time)
 
-    # data = {
-    #     'path': request.url.path,
-    #     'host': request.url.hostname,
-    #     'query': str(request.query_params),
-    #     'method': request.method,
-    #     'cl': request.headers['content-length'] if 'content-length' in request.headers else None,
-    #     'ua': request.headers.get('user-agent'),
-    #     'status': response.status_code,
-    #     'time': process_time
-    # }
-    #
-    # try:
-    #     data['ip'] = request.headers.get('x-forwarded-for').split(',')[0]
-    # except Exception:
-    #     data['ip'] = 'localhost'
-    #
-    # threading.Thread(target=logger, args=[data, 'findit.moe', 'access']).start()
+    data = {
+        'path': request.url.path,
+        'host': request.url.hostname,
+        'query': str(request.query_params),
+        'method': request.method,
+        'cl': request.headers['content-length'] if 'content-length' in request.headers else None,
+        'ua': request.headers.get('user-agent'),
+        'status': response.status_code,
+        'time': process_time
+    }
+
+    try:
+        data['ip'] = request.headers.get('x-forwarded-for').split(',')[0]
+    except Exception:
+        data['ip'] = 'localhost'
+
+    threading.Thread(target=logger, args=[data, 'auth', 'access']).start()
 
     return response
 
