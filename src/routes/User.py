@@ -24,16 +24,15 @@ async def login(user: str = Form(),
     """
     user_model = db_login(user, password, collection)
 
-    session_id = secrets.randbits(256)
-    token, _ = cypher_x_encode(
-        random_key=x_random_key,
-        check_sum=x_check_sum,
-        padding=None,
-        params_keys=x_params_keys,
-        params_data=[session_id]
-    )
-
     if user_model:
+        session_id = secrets.randbits(256)
+        token, _ = cypher_x_encode(
+            random_key=x_random_key,
+            check_sum=x_check_sum,
+            padding=None,
+            params_keys=x_params_keys,
+            params_data=[session_id]
+        )
         if make_session(user_model, session_id):
             return {
                 'session-token': token,
