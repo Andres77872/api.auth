@@ -8,8 +8,6 @@ from src.Util.db import db_login, db_register, db_username_or_email_available
 
 router = APIRouter()
 
-collection_test = '9C97B7C713C0DF4C4DD447382A4322BD99B01ED6F38551B9216ABB3A3BB04586'
-
 
 @router.post("/login")
 async def login(user: str = Form(),
@@ -35,8 +33,7 @@ async def login(user: str = Form(),
         )
         if make_session(user_model, session_id):
             return {
-                'session-token': token,
-                'history_token': user_model.user_history_token
+                'session-token': token
             }
         else:
             raise HTTPException(status_code=500, detail='Fail to start the user session')

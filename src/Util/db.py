@@ -51,7 +51,7 @@ def set_session(key: int, value: str, ex: int, user_hash: str) -> bool:
 
 
 def get_session(key: int) -> UserLogin | None:
-    print(hex(key)[2:])
+    # print('====', hex(key)[2:])
     res = client.get(hex(key)[2:])
     if res:
         res = json.loads(res)
@@ -97,18 +97,11 @@ def db_login(user: str, password: str, collection: str) -> UserLogin | None:
         if not res:
             return None
 
-        cur.execute(f'SELECT hist_session '
-                    f'FROM findit.tb_history_session '
-                    f'WHERE id_user = {res[3]}')
-        ht = cur.fetchone()
-        ht = ht[0] if ht else ''
-
         if res:
             return UserLogin(user_session=res[0],
                              user_session_length=res[1],
                              user_hash=res[2],
-                             user_collection=collection,
-                             user_history_token=ht)
+                             user_collection=collection)
         return None
 
 
