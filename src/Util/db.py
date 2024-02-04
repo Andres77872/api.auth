@@ -7,8 +7,8 @@ import redis
 
 from src.Util.Models import UserLogin
 
-# ip = "70.35.199.254"
-ip = "127.0.0.1"
+ip = "192.168.1.90"
+# ip = "127.0.0.1"
 
 connectionDB = {
     "host": ip,
