@@ -4,9 +4,8 @@ from fastapi import HTTPException, Request
 from fastapi.security import APIKeyHeader
 from starlette.responses import JSONResponse
 
-from src.Util.JWT_Security import JWTTokenHandler, jwt_decode
 from src.Util.Models import UserLogin
-from src.Util.db import set_session, get_session, db_validate_session
+from src.Util.db_enhanced import validate_session, client
 
 x_token_user_name = 'X-token-user'
 x_token_collection_name = 'X-token-collection'
@@ -14,48 +13,37 @@ x_token_collection_name = 'X-token-collection'
 x_token_user = APIKeyHeader(name=x_token_user_name, auto_error=True, scheme_name=x_token_user_name)
 x_token_collection = APIKeyHeader(name=x_token_collection_name, auto_error=True, scheme_name=x_token_collection_name)
 
-# Legacy parameters - kept for compatibility but not used with JWT
-x_random_key = 256
-x_check_sum = 256
-x_params_keys = [256]
-
 
 def middleware_user_token_validation(request: Request) -> UserLogin:
     """
-    JWT-based token validation method that replaces the custom cipher validation.
-    This method will return the user session data, raising an exception if the token is invalid.
+    Enhanced token validation method for the multi-project authentication system.
+    Validates session tokens and returns user information with project context.
     
-    :param request: Request
+    :param request: Request containing authentication headers
     :return: UserLogin model with session data
     """
     if x_token_user_name in request.headers and x_token_collection_name in request.headers:
         try:
-            # Decode JWT token to get session ID
             user_token = request.headers[x_token_user_name]
             collection_token = request.headers[x_token_collection_name]
             
-            # Decode JWT token using our new JWT handler
-            payload = JWTTokenHandler.decode_access_token(user_token)
-            session_id = payload.get("session_id")
-            token_user_hash = payload.get("user_hash")
-            token_collection = payload.get("collection")
+            # Validate session token using enhanced system
+            enhanced_user = validate_session(user_token)
             
-            # Validate collection matches
-            if collection_token != token_collection:
-                raise HTTPException(status_code=401, detail='Collection token mismatch')
-            
-            # Get session data from storage
-            user_model = get_session(session_id)
-            
-            if (user_model and  # Session exists
-                    # Collection validation
-                    collection_token == user_model.user_collection and
-                    # User hash validation
-                    token_user_hash == user_model.user_hash and
-                    # Session validation in database
-                    db_validate_session(user_session=user_model.user_session, user_hash=user_model.user_hash)):
-                return user_model
-            raise HTTPException(status_code=401, detail='User token invalid')
+            if enhanced_user and enhanced_user.project_hash == collection_token:
+                # Convert to legacy UserLogin format for compatibility
+                return UserLogin(
+                    user_session=enhanced_user.session_token,
+                    user_session_length=enhanced_user.session_length,
+                    user_hash=enhanced_user.user_hash,
+                    user_collection=enhanced_user.project_hash,
+                    user_id=enhanced_user.user_id,
+                    project_id=enhanced_user.project_id,
+                    user_project_id=enhanced_user.user_project_id,
+                    groups=enhanced_user.groups
+                )
+            else:
+                raise HTTPException(status_code=401, detail='Invalid token or project access denied')
             
         except HTTPException:
             # Re-raise HTTP exceptions (they already have proper error messages)
@@ -64,13 +52,13 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             print(f"Token validation error: {e}")
             raise HTTPException(status_code=401, detail='User token invalid')
     else:
-        raise HTTPException(status_code=401, detail='User token invalid')
+        raise HTTPException(status_code=401, detail='Authentication headers missing')
 
 
 def make_session(user_model: UserLogin, session_id: int) -> bool:
     """
-    Create a session in both database and cache.
-    No changes needed here as it handles session storage, not token generation.
+    Create a session in Redis cache for compatibility.
+    Enhanced system uses its own session management, but this maintains compatibility.
     """
     try:
         session_state = {
@@ -80,52 +68,61 @@ def make_session(user_model: UserLogin, session_id: int) -> bool:
             'user_collection': user_model.user_collection
         }
 
-        return set_session(key=session_id,
-                           value=json.dumps(session_state),
-                           ex=user_model.user_session_length,
-                           user_hash=user_model.user_hash)
+        # Store in Redis using hex key format for compatibility
+        client.set(hex(session_id)[2:], 
+                   json.dumps(session_state), 
+                   ex=user_model.user_session_length)
+        return True
+        
     except Exception as e:
-        print(e)
+        print(f"Session creation error: {e}")
         return False
 
 
 def returnJson_401(data=None):
+    """Return 401 Unauthorized response"""
     if data is None:
         data = {'status': 'Error', 'action': 'Access forbidden, access token required or token invalid'}
     return JSONResponse(content=data, media_type="application/json", status_code=401)
 
 
 def returnJson_403(data=None):
+    """Return 403 Forbidden response"""
     if data is None:
-        data = {'status': 'Error', 'action': 'Access forbidden, access token required or token invalid'}
+        data = {'status': 'Error', 'action': 'Access forbidden, insufficient permissions'}
     return JSONResponse(content=data, media_type="application/json", status_code=403)
 
 
 def returnJson_404(data=None):
+    """Return 404 Not Found response"""
     if data is None:
         data = {'status': 'Error', 'action': 'Resource not found'}
-    return JSONResponse(content=data, media_type="application/json", status_code=403)
+    return JSONResponse(content=data, media_type="application/json", status_code=404)
 
 
 def returnJson_413(data=None):
+    """Return 413 Payload Too Large response"""
     if data is None:
-        data = {'status': 'Error', 'action': 'Max sie 8 mib'}
+        data = {'status': 'Error', 'action': 'Payload too large (max 8 MiB)'}
     return JSONResponse(content=data, media_type="application/json", status_code=413)
 
 
 def returnJson_422(data=None):
+    """Return 422 Unprocessable Entity response"""
     if data is None:
-        data = {'status': 'Error', 'action': 'header user-agent not found'}
+        data = {'status': 'Error', 'action': 'User-Agent header not found'}
     return JSONResponse(content=data, media_type="application/json", status_code=422)
 
 
 def returnJson_500(data=None):
+    """Return 500 Internal Server Error response"""
     if data is None:
-        data = {'status': 'Error', 'action': 'Internal error'}
+        data = {'status': 'Error', 'action': 'Internal server error'}
     return JSONResponse(content=data, media_type="application/json", status_code=500)
 
 
 def returnJson_200(data=None):
+    """Return 200 OK response"""
     if data is None:
-        data = {'status': 'OK', 'action': 'Action successfull'}
+        data = {'status': 'OK', 'action': 'Action successful'}
     return JSONResponse(content=data, media_type="application/json", status_code=200)

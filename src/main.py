@@ -4,36 +4,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
 
 from src.Util.logger_ws import logger
-from src.routes import Access, User
+from src.routes import Access, UserEnhanced
 
 import time
 
 from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
 
-description = open('./src/README.md').read()
+# Read description from README file
+with open('./src/README.md', 'r', encoding='utf-8') as f:
+    description = f.read()
 
-app = FastAPI(title='API for findit.moe',
+app = FastAPI(title='Enhanced Multi-Project Authentication API',
               description=description,
-              version='0.3.0',
+              version='1.0.0',
               contact={
                   "name": "Andrés",
                   "url": "https://arizmendi.io",
                   "email": "andres@arz.ai",
               })
 
-# app.include_router(Pic2Encoder_picsearch.router,
-#                    prefix='/pic2encoder',
-#                    tags=['encoders'])
-
-app.include_router(User.router,
+# ENHANCED AUTHENTICATION ROUTES
+app.include_router(UserEnhanced.router,
                    prefix='/user',
-                   tags=['User login/register'])
+                   tags=['Enhanced Multi-Project Authentication'])
 
-# app.include_router(UserControl.router,
-#                    prefix='/user',
-#                    tags=['User control'],
-#                    dependencies=[Security(x_token_user), Security(x_token_collection)])
-
+# ACCESS CONTROL
 app.include_router(Access.router,
                    prefix='/access',
                    tags=['Access control by token'],
@@ -45,7 +40,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
-
 )
 
 
@@ -98,6 +92,7 @@ async def add_process_time_header(request: Request, call_next):
 
 @app.get('/ping', status_code=204)
 def ping():
+    """Health check endpoint"""
     pass
 
 
@@ -105,3 +100,37 @@ def ping():
 async def root():
     response = RedirectResponse(url='/docs')
     return response
+
+
+@app.get("/system/info")
+async def system_info():
+    """System information and version details"""
+    return {
+        "name": "Enhanced Multi-Project Authentication API",
+        "version": "1.0.0",
+        "authentication_system": "Enhanced Multi-Project",
+        "features": [
+            "Project isolation",
+            "Cross-project user access",
+            "Group-based permissions", 
+            "Session management",
+            "Project switching",
+            "User access management",
+            "Audit trail"
+        ],
+        "endpoints": {
+            "authentication": "/user/*",
+            "access_control": "/access/*"
+        },
+        "documentation": {
+            "interactive": "/docs",
+            "schema": "/openapi.json",
+            "setup_guide": "README.md",
+            "database_schema": "DATABASE_SCHEMA.md"
+        },
+        "database": {
+            "schema": "magic_auth_enhanced",
+            "session_storage": "Redis + Database",
+            "features": ["Multi-project", "Groups", "Permissions", "Audit trail"]
+        }
+    }
