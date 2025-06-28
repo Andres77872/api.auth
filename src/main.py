@@ -20,7 +20,7 @@ with open('./src/README.md', 'r', encoding='utf-8') as f:
 app = FastAPI(
     title='Group-Based Multi-Project Authentication API',
     description=description,
-    version='2.0.0',
+    version='0.0.3',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",
