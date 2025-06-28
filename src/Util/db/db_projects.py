@@ -16,7 +16,7 @@ from datetime import datetime
 
 import pymysql
 
-from src.Util.Models import Project, UserGroup
+from src.Util.Models import Project, LegacyUserGroup as UserGroup
 
 # Database connection settings
 ip = "192.168.1.90"

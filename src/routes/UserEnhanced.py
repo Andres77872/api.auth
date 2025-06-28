@@ -1,721 +1,702 @@
+"""
+Multi-Project Authentication API Routes
+
+This module provides REST API endpoints for the group-based authentication system where:
+- Users belong to User Groups (global)
+- User Groups define project access
+- Projects belong to Project Groups  
+- Project Groups define permissions
+
+All endpoints follow RESTful conventions and provide comprehensive error handling.
+"""
+
 import secrets
+import json
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Form, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+# Import the authentication system functions
 from src.Util.db import (
-    enhanced_login, enhanced_register, check_username_email_available,
-    validate_session, create_project, get_project_by_hash, get_project_by_id,
-    list_all_projects, count_projects, update_project, delete_project,
-    search_projects, get_project_stats, grant_user_project_access, 
-    get_user_by_credentials, get_user_projects, get_user_groups_in_project,
-    get_user_permissions_in_project, get_user_project_access
+    # Core authentication
+    enhanced_login, enhanced_register, validate_session, check_username_email_available,
+    
+    # Project management
+    create_project, get_project_by_hash, get_project_by_id, list_all_projects, 
+    update_project, delete_project, search_projects, get_project_stats,
+    
+    # User management
+    create_user, get_user_by_id, get_user_by_hash, update_user, delete_user,
+    list_users, count_users, search_users,
+    
+    # User-project access
+    grant_user_project_access, get_user_project_access, get_user_projects,
+    revoke_user_project_access,
+    
+    # Group management
+    get_user_groups_in_project, get_user_permissions_in_project,
+    assign_user_to_group, remove_user_from_group,
+    
+    # Project group management
+    get_project_groups, create_project_group, update_project_group,
+    delete_project_group, create_default_groups,
+    
+    # Session management
+    create_session, invalidate_session
 )
-from src.Util.Models import EnhancedUserLogin
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize router and security
 router = APIRouter()
 security = HTTPBearer()
 
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> EnhancedUserLogin:
-    """Dependency to get current authenticated user"""
-    if not credentials or not credentials.credentials:
-        raise HTTPException(status_code=401, detail="Missing authentication token")
-    
-    user = validate_session(credentials.credentials)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    return user
-
-
-@router.post("/login")
+@router.post("/user/login")
 async def login(
-    username: str = Form(),
-    password: str = Form(),
-    project_hash: str = Form(),
+    username: str = Form(..., alias="usern"),
+    password: str = Form(..., alias="pass"),
+    project_hash: str = Form(..., alias="project_hash")
 ):
     """
-    ## Enhanced Multi-Project Login
+    Authenticate user and return session token with group context.
     
-    Authenticate a user for a specific project. The user must have been granted access to the project.
-    
-    **Features:**
-    - Global user credentials across projects
-    - Project-specific isolation and permissions
-    - Group-based access control
-    - Returns user's available projects and permissions
-    
-    **Response includes:**
-    - Session token (JWT-like)
-    - User and project information
-    - User's groups and permissions in the project
-    - List of all projects user has access to
+    Args:
+        username: User's username or email
+        password: User's password
+        project_hash: Project to authenticate against
+        
+    Returns:
+        User session data with group information and accessible projects
     """
-    user_login = enhanced_login(username, password, project_hash)
-    
-    if user_login:
+    try:
+        logger.info(f"Login attempt for user: {username} in project: {project_hash}")
+        
+        # Authenticate user with group-based login
+        login_result = enhanced_login(username, password, project_hash)
+        
+        if not login_result:
+            logger.warning(f"Failed login attempt for user: {username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        logger.info(f"Successful login for user: {username}")
+        
+        # Return comprehensive group-based response
         return {
-            'success': True,
-            'session_token': user_login.session_token,
-            'user': {
-                'user_hash': user_login.user_hash,
-                'user_id': user_login.user_id,
-                'user_project_id': user_login.user_project_id,
-                'user_project_hash': user_login.user_project_hash
+            "success": True,
+            "message": "Login successful",
+            "session_token": login_result.session_token,
+            "user": {
+                "user_hash": login_result.user_hash,
+                "username": login_result.username if hasattr(login_result, 'username') else username,
+                "email": login_result.email if hasattr(login_result, 'email') else None,
+                "user_groups": login_result.user_groups if hasattr(login_result, 'user_groups') else []
             },
-            'project': {
-                'project_hash': user_login.project_hash,
-                'project_name': user_login.project_name,
-                'project_id': user_login.project_id
+            "project": {
+                "project_hash": login_result.project_hash,
+                "project_name": login_result.project_name,
+                "permissions": login_result.permissions if hasattr(login_result, 'permissions') else []
             },
-            'access': {
-                'groups': user_login.groups,
-                'permissions': user_login.permissions
-            },
-            'available_projects': [
-                {
-                    'project_hash': proj.project_hash,
-                    'project_name': proj.project_name,
-                    'project_description': proj.project_description
-                }
-                for proj in user_login.available_projects
-            ]
+            "accessible_projects": login_result.available_projects if hasattr(login_result, 'available_projects') else [],
+            "expires_at": login_result.expires_at if hasattr(login_result, 'expires_at') else None
         }
-    else:
-        raise HTTPException(
-            status_code=401, 
-            detail='Invalid credentials or user does not have access to this project'
-        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error for user {username}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Authentication error")
 
 
-@router.post("/register")
+@router.post("/user/register")
 async def register(
-    username: str = Form(),
-    password: str = Form(),
-    project_hash: str = Form(),
-    email: str = Form(None),
+    username: str = Form(..., alias="usern"),
+    password: str = Form(..., alias="pass"),
+    email: str = Form(..., alias="email"),
+    project_hash: str = Form(..., alias="project_hash")
 ):
     """
-    ## Enhanced Multi-Project Registration
+    Register new user with automatic group assignment.
     
-    Register a new user or grant an existing user access to a project.
-    
-    **Behavior:**
-    - If user doesn't exist globally: creates new global user + project access
-    - If user exists but no project access: grants access to the project
-    - If user exists with project access: returns error (user already registered)
-    
-    **Features:**
-    - Global user identity
-    - Project-specific access grants
-    - Automatic assignment to default 'user' group
-    - Returns same response as login
+    Args:
+        username: Desired username
+        password: User's password
+        email: User's email address
+        project_hash: Project to register for
+        
+    Returns:
+        Registration result with user information
     """
-    # Check if project exists
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise HTTPException(status_code=404, detail='Project not found')
-    
-    user_login = enhanced_register(username, password, email, project_hash)
-    
-    if user_login:
+    try:
+        logger.info(f"Registration attempt for user: {username} in project: {project_hash}")
+        
+        # Check if username/email is available
+        if not check_username_email_available(username, email):
+            raise HTTPException(status_code=409, detail="Username or email already exists")
+        
+        # Register user with group assignment
+        register_result = enhanced_register(username, password, email, project_hash)
+        
+        if not register_result:
+            raise HTTPException(status_code=400, detail="Registration failed")
+        
+        logger.info(f"Successful registration for user: {username}")
+        
         return {
-            'success': True,
-            'session_token': user_login.session_token,
-            'user': {
-                'user_hash': user_login.user_hash,
-                'user_id': user_login.user_id,
-                'user_project_id': user_login.user_project_id,
-                'user_project_hash': user_login.user_project_hash
+            "success": True,
+            "message": "User registered successfully",
+            "user": {
+                "user_hash": register_result.user_hash,
+                "username": register_result.username if hasattr(register_result, 'username') else username,
+                "email": register_result.email if hasattr(register_result, 'email') else email,
+                "user_groups": register_result.user_groups if hasattr(register_result, 'user_groups') else []
             },
-            'project': {
-                'project_hash': user_login.project_hash,
-                'project_name': user_login.project_name,
-                'project_id': user_login.project_id
-            },
-            'access': {
-                'groups': user_login.groups,
-                'permissions': user_login.permissions
-            },
-            'available_projects': [
-                {
-                    'project_hash': proj.project_hash,
-                    'project_name': proj.project_name,
-                    'project_description': proj.project_description
-                }
-                for proj in user_login.available_projects
-            ]
-        }
-    else:
-        raise HTTPException(
-            status_code=409,
-            detail='User already exists in this project or registration failed'
-        )
-
-
-@router.post("/check-availability", status_code=200)
-async def check_username_availability(
-    username_or_email: str = Form(),
-):
-    """
-    ## Check Username/Email Availability
-    
-    Check if a username or email is available globally across all projects.
-    
-    **Returns:**
-    - `available: true` if username/email is available
-    - `available: false` if username/email is taken
-    """
-    available = check_username_email_available(username_or_email)
-    return {
-        'available': available,
-        'username_or_email': username_or_email
-    }
-
-
-@router.get("/profile")
-async def get_user_profile(current_user: EnhancedUserLogin = Depends(get_current_user)):
-    """
-    ## Get User Profile
-    
-    Get the current user's profile information including:
-    - User details
-    - Current project information
-    - Groups and permissions in current project
-    - All accessible projects
-    """
-    return {
-        'user': {
-            'user_hash': current_user.user_hash,
-            'user_id': current_user.user_id,
-            'user_project_id': current_user.user_project_id,
-            'user_project_hash': current_user.user_project_hash
-        },
-        'current_project': {
-            'project_hash': current_user.project_hash,
-            'project_name': current_user.project_name,
-            'project_id': current_user.project_id
-        },
-        'access': {
-            'groups': current_user.groups,
-            'permissions': current_user.permissions
-        },
-        'available_projects': [
-            {
-                'project_hash': proj.project_hash,
-                'project_name': proj.project_name,
-                'project_description': proj.project_description
+            "project": {
+                "project_hash": register_result.project_hash,
+                "project_name": register_result.project_name
             }
-            for proj in current_user.available_projects
-        ]
-    }
-
-
-@router.post("/switch-project")
-async def switch_project(
-    project_hash: str = Form(),
-    current_user: EnhancedUserLogin = Depends(get_current_user)
-):
-    """
-    ## Switch to Different Project
-    
-    Switch the user's session to a different project they have access to.
-    Returns a new session token for the target project.
-    """
-    # Check if user has access to the target project
-    target_project = None
-    for proj in current_user.available_projects:
-        if proj.project_hash == project_hash:
-            target_project = proj
-            break
-    
-    if not target_project:
-        raise HTTPException(
-            status_code=403,
-            detail='User does not have access to the specified project'
-        )
-    
-    # Get user by their global credentials (we need to re-authenticate)
-    # For security, we'll create a new login session
-    user_login = validate_session(current_user.session_token)
-    if not user_login:
-        raise HTTPException(status_code=401, detail='Invalid session')
-    
-    # Generate new session for the target project
-    from src.Util.db import get_user_project_access, get_user_groups_in_project, get_user_permissions_in_project
-    import json
-    from src.Util.db import client
-    
-    user_project = get_user_project_access(current_user.user_id, target_project.id)
-    if not user_project:
-        raise HTTPException(status_code=403, detail='Access denied to target project')
-    
-    # Create new session
-    session_token = secrets.token_hex(32).upper()
-    session_length = 60 * 60 * 24 * 3  # 3 days
-    
-    # Get fresh groups and permissions for target project
-    groups = get_user_groups_in_project(user_project.id)
-    permissions = get_user_permissions_in_project(user_project.id)
-    
-    # Store new session in Redis
-    session_data = {
-        'user_id': current_user.user_id,
-        'user_hash': current_user.user_hash,
-        'project_id': target_project.id,
-        'project_hash': target_project.project_hash,
-        'user_project_id': user_project.id,
-        'user_project_hash': user_project.user_project_hash,
-        'groups': [g.group_name for g in groups],
-        'permissions': permissions
-    }
-    
-    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-    
-    return {
-        'success': True,
-        'session_token': session_token,
-        'project': {
-            'project_hash': target_project.project_hash,
-            'project_name': target_project.project_name,
-            'project_id': target_project.id
-        },
-        'access': {
-            'groups': [g.group_name for g in groups],
-            'permissions': permissions
         }
-    }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error for user {username}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration error")
 
 
-@router.post("/create-project")
+@router.get("/user/validate")
+async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Validate session token and return user information with group context.
+    
+    Returns:
+        Current user and session information
+    """
+    try:
+        session_token = credentials.credentials
+        
+        # Validate session with group context
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        
+        return {
+            "success": True,
+            "message": "Session valid",
+            "user": {
+                "user_hash": session_data.user_hash,
+                "username": session_data.username if hasattr(session_data, 'username') else "user",
+                "email": session_data.email if hasattr(session_data, 'email') else None,
+                "user_groups": session_data.user_groups if hasattr(session_data, 'user_groups') else []
+            },
+            "project": {
+                "project_hash": session_data.project_hash,
+                "project_name": session_data.project_name,
+                "permissions": session_data.permissions if hasattr(session_data, 'permissions') else []
+            },
+            "session": {
+                "expires_at": session_data.expires_at if hasattr(session_data, 'expires_at') else None,
+                "created_at": session_data.created_at if hasattr(session_data, 'created_at') else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session validation error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Session validation error")
+
+
+@router.post("/user/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Logout user and invalidate session.
+    
+    Returns:
+        Logout confirmation
+    """
+    try:
+        session_token = credentials.credentials
+        
+        # Invalidate session
+        if invalidate_session(session_token):
+            return {"success": True, "message": "Logged out successfully"}
+        else:
+            raise HTTPException(status_code=400, detail="Logout failed")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Logout error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Logout error")
+
+
+# ============================================================================
+# USER MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@router.get("/user/profile")
+async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get current user's profile information including groups and project access.
+    
+    Returns:
+        User profile with group memberships and accessible projects
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Get user's complete profile with groups
+        user_data = get_user_by_hash(session_data.user_hash)
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get user's accessible projects
+        user_projects = get_user_projects(user_data.id)
+        
+        return {
+            "success": True,
+            "user": {
+                "user_hash": user_data.user_hash,
+                "username": user_data.username,
+                "email": user_data.email,
+                "created_at": user_data.created_at,
+                "user_groups": session_data.user_groups if hasattr(session_data, 'user_groups') else []
+            },
+            "accessible_projects": user_projects or [],
+            "current_project": {
+                "project_hash": session_data.project_hash,
+                "project_name": session_data.project_name,
+                "permissions": session_data.permissions if hasattr(session_data, 'permissions') else []
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Profile retrieval error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Profile retrieval error")
+
+
+@router.get("/user/access-summary")
+async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get summary of user's group memberships and project access.
+    
+    Returns:
+        Comprehensive access summary with groups and permissions
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        user_data = get_user_by_hash(session_data.user_hash)
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get comprehensive access information
+        user_projects = get_user_projects(user_data.id)
+        
+        # Build access summary
+        access_summary = {
+            "user": {
+                "user_hash": user_data.user_hash,
+                "username": user_data.username,
+                "email": user_data.email
+            },
+            "group_memberships": session_data.user_groups if hasattr(session_data, 'user_groups') else [],
+            "accessible_projects": [],
+            "current_session": {
+                "project_hash": session_data.project_hash,
+                "project_name": session_data.project_name,
+                "permissions": session_data.permissions if hasattr(session_data, 'permissions') else [],
+                "expires_at": session_data.expires_at if hasattr(session_data, 'expires_at') else None
+            }
+        }
+        
+        # Add project details with permissions
+        if user_projects:
+            for project in user_projects:
+                project_groups = get_project_groups(project.get('project_id', 0))
+                access_summary["accessible_projects"].append({
+                    "project_hash": project.get('project_hash'),
+                    "project_name": project.get('project_name'),
+                    "granted_at": project.get('granted_at'),
+                    "project_groups": project_groups or []
+                })
+        
+        return {
+            "success": True,
+            "access_summary": access_summary
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Access summary error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Access summary error")
+
+
+# ============================================================================
+# PROJECT MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@router.post("/projects/create")
 async def create_new_project(
-    project_name: str = Form(),
+    project_name: str = Form(...),
     project_description: str = Form(None),
-    current_user: EnhancedUserLogin = Depends(get_current_user)
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    ## Create New Project
+    Create new project with default groups and assign creator as admin.
     
-    Create a new project and automatically grant the current user admin access.
-    Only users with 'admin' permission in their current project can create new projects.
-    """
-    # Check if user has admin permissions
-    if 'admin' not in current_user.permissions:
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin access required to create projects.'
-        )
-    
-    # Create the new project
-    new_project = create_project(project_name, project_description)
-    
-    # Grant the current user admin access to the new project
-    user_project = grant_user_project_access(
-        current_user.user_id, 
-        new_project.id, 
-        granted_by=current_user.user_id
-    )
-    
-    # Assign user to admin group in the new project
-    from src.Util.db import get_connection
-    with get_connection() as con:
-        cur = con.cursor()
-        # Get admin group ID for the new project
-        cur.execute("""
-            SELECT id FROM user_groups 
-            WHERE project_id = %s AND group_name = 'admin' AND is_active = 1
-        """, [new_project.id])
+    Args:
+        project_name: Name of the new project
+        project_description: Optional project description
         
-        admin_group = cur.fetchone()
-        if admin_group:
-            # Remove from default 'user' group
-            cur.execute("""
-                UPDATE user_project_groups 
-                SET is_active = 0 
-                WHERE user_project_id = %s
-            """, [user_project.id])
-            
-            # Add to admin group
-            cur.execute("""
-                INSERT INTO user_project_groups (user_project_id, group_id, assigned_at, assigned_by)
-                VALUES (%s, %s, NOW(), %s)
-            """, [user_project.id, admin_group[0], current_user.user_id])
-            
-            con.commit()
-    
-    return {
-        'success': True,
-        'project': {
-            'project_hash': new_project.project_hash,
-            'project_name': new_project.project_name,
-            'project_description': new_project.project_description,
-            'project_id': new_project.id
-        },
-        'user_project': {
-            'user_project_id': user_project.id,
-            'user_project_hash': user_project.user_project_hash,
-            'role': 'admin'
-        }
-    }
-
-
-@router.post("/grant-access")
-async def grant_user_access(
-    username: str = Form(),
-    target_project_hash: str = Form(),
-    current_user: EnhancedUserLogin = Depends(get_current_user)
-):
+    Returns:
+        Created project information with groups
     """
-    ## Grant User Access to Project
-    
-    Grant an existing global user access to a project.
-    Only users with 'admin' or 'manage_users' permission can grant access.
-    """
-    # Check permissions
-    if not any(perm in current_user.permissions for perm in ['admin', 'manage_users']):
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin or manage_users permission required.'
-        )
-    
-    # Get the target project
-    target_project = get_project_by_hash(target_project_hash)
-    if not target_project:
-        raise HTTPException(status_code=404, detail='Target project not found')
-    
-    # Find the global user
-    from src.Util.db import get_connection
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            SELECT id FROM users 
-            WHERE username = %s AND is_active = 1
-        """, [username])
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
         
-        user_result = cur.fetchone()
-        if not user_result:
-            raise HTTPException(status_code=404, detail='User not found')
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
         
-        target_user_id = user_result[0]
-    
-    # Check if user already has access
-    from src.Util.db import get_user_project_access
-    existing_access = get_user_project_access(target_user_id, target_project.id)
-    if existing_access:
-        raise HTTPException(
-            status_code=409,
-            detail='User already has access to this project'
-        )
-    
-    # Grant access
-    user_project = grant_user_project_access(
-        target_user_id,
-        target_project.id,
-        granted_by=current_user.user_id
-    )
-    
-    return {
-        'success': True,
-        'message': f'Access granted to user {username} for project {target_project.project_name}',
-        'user_project': {
-            'user_project_id': user_project.id,
-            'user_project_hash': user_project.user_project_hash,
-            'granted_by': current_user.user_id
-        }
-    }
-
-
-@router.get("/validate")
-async def validate_token(current_user: EnhancedUserLogin = Depends(get_current_user)):
-    """
-    ## Validate Session Token
-    
-    Validate the current session token and return user information.
-    This endpoint can be used for token verification by other services.
-    """
-    return {
-        'valid': True,
-        'user': {
-            'user_hash': current_user.user_hash,
-            'user_id': current_user.user_id,
-            'user_project_id': current_user.user_project_id
-        },
-        'project': {
-            'project_hash': current_user.project_hash,
-            'project_name': current_user.project_name,
-            'project_id': current_user.project_id
-        },
-        'permissions': current_user.permissions,
-        'groups': current_user.groups
-    }
-
-
-# PROJECT CRUD ENDPOINTS
-
-@router.get("/projects")
-async def list_projects(
-    limit: int = 100,
-    offset: int = 0,
-    search: str = None,
-    current_user: EnhancedUserLogin = Depends(get_current_user)
-):
-    """
-    ## List All Projects
-    
-    Get a paginated list of all projects. Supports search functionality.
-    Only users with 'admin' permission can list all projects.
-    """
-    # Check permissions
-    if 'admin' not in current_user.permissions:
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin access required to list all projects.'
-        )
-    
-    if search:
-        projects = search_projects(search, limit)
-        total_count = len(projects)  # For search, we don't do separate count
-    else:
-        projects = list_all_projects(limit, offset)
-        total_count = count_projects()
-    
-    return {
-        'projects': [
-            {
-                'project_id': proj.id,
-                'project_hash': proj.project_hash,
-                'project_name': proj.project_name,
-                'project_description': proj.project_description,
-                'project_created': proj.project_created.isoformat() if proj.project_created else None,
-                'is_active': proj.is_active
+        # Check if user has permission to create projects
+        user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
+        if 'admin' not in user_permissions and 'create_projects' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to create projects")
+        
+        # Create project
+        new_project = create_project(project_name, project_description)
+        
+        if not new_project:
+            raise HTTPException(status_code=400, detail="Project creation failed")
+        
+        # Create default groups for the project
+        create_default_groups(new_project.id)
+        
+        username = session_data.username if hasattr(session_data, 'username') else "user"
+        logger.info(f"Project created: {project_name} by user: {username}")
+        
+        return {
+            "success": True,
+            "message": "Project created successfully",
+            "project": {
+                "project_hash": new_project.project_hash,
+                "project_name": new_project.project_name,
+                "project_description": new_project.project_description,
+                "created_at": new_project.created_at if hasattr(new_project, 'created_at') else None
             }
-            for proj in projects
-        ],
-        'pagination': {
-            'limit': limit,
-            'offset': offset,
-            'total_count': total_count,
-            'has_more': (offset + len(projects)) < total_count if not search else False
         }
-    }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Project creation error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Project creation error")
+
+
+@router.get("/projects/list")
+async def list_projects(
+    page: int = 1,
+    limit: int = 50,
+    search: str = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    List accessible projects with group information.
+    
+    Args:
+        page: Page number for pagination
+        limit: Number of projects per page
+        search: Optional search term
+        
+    Returns:
+        List of accessible projects with groups and permissions
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        user_data = get_user_by_hash(session_data.user_hash)
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get user's accessible projects
+        if search:
+            # If search term provided, search within accessible projects
+            all_projects = search_projects(search, limit, (page - 1) * limit)
+            # Filter to only projects user has access to
+            user_projects = get_user_projects(user_data.id)
+            user_project_hashes = {p.get('project_hash') for p in (user_projects or [])}
+            accessible_projects = [p for p in all_projects if hasattr(p, 'project_hash') and p.project_hash in user_project_hashes]
+        else:
+            # Get user's projects directly
+            user_projects = get_user_projects(user_data.id)
+            accessible_projects = user_projects or []
+            
+        # Add group information to each project
+        projects_with_groups = []
+        for project in accessible_projects:
+            project_id = project.get('project_id', 0) if isinstance(project, dict) else getattr(project, 'id', 0)
+            project_groups = get_project_groups(project_id)
+            
+            project_data = {
+                "project_hash": project.get('project_hash') if isinstance(project, dict) else getattr(project, 'project_hash', ''),
+                "project_name": project.get('project_name') if isinstance(project, dict) else getattr(project, 'project_name', ''),
+                "project_description": project.get('project_description') if isinstance(project, dict) else getattr(project, 'project_description', ''),
+                "created_at": project.get('created_at') if isinstance(project, dict) else getattr(project, 'created_at', None),
+                "groups": project_groups or []
+            }
+            projects_with_groups.append(project_data)
+        
+        return {
+            "success": True,
+            "projects": projects_with_groups,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": len(projects_with_groups),
+                "has_more": len(projects_with_groups) == limit
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Project listing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Project listing error")
 
 
 @router.get("/projects/{project_hash}")
 async def get_project_details(
     project_hash: str,
-    current_user: EnhancedUserLogin = Depends(get_current_user)
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    ## Get Project Details
+    Get detailed project information including groups and user permissions.
     
-    Get detailed information about a specific project by its hash.
-    Users can only view projects they have access to, unless they have admin permissions.
+    Args:
+        project_hash: Project identifier
+        
+    Returns:
+        Detailed project information with groups and user's permissions
     """
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise HTTPException(status_code=404, detail='Project not found')
-    
-    # Check if user has access to this project or admin permissions
-    has_access = False
-    if 'admin' in current_user.permissions:
-        has_access = True
-    else:
-        # Check if user has access to this specific project
-        for user_project in current_user.available_projects:
-            if user_project.project_hash == project_hash:
-                has_access = True
-                break
-    
-    if not has_access:
-        raise HTTPException(
-            status_code=403,
-            detail='Access denied. You do not have permission to view this project.'
-        )
-    
-    # Get project statistics if user has admin access to the project
-    stats = None
     try:
-        # Check if user has admin access to THIS specific project
-        if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
-            stats = get_project_stats(project.id)
-        elif 'admin' in current_user.permissions:  # Global admin
-            stats = get_project_stats(project.id)
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Get project details
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check if user has access to this project
+        user_data = get_user_by_hash(session_data.user_hash)
+        user_projects = get_user_projects(user_data.id)
+        user_project_hashes = {p.get('project_hash') for p in (user_projects or [])}
+        
+        if project_hash not in user_project_hashes:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+        
+        # Get project groups and user's permissions
+        project_groups = get_project_groups(project.id)
+        user_permissions = get_user_permissions_in_project(user_data.id, project.id)
+        
+        # Get project statistics
+        project_stats = get_project_stats(project.id)
+        
+        return {
+            "success": True,
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name,
+                "project_description": project.project_description,
+                "created_at": project.created_at if hasattr(project, 'created_at') else None,
+                "groups": project_groups or [],
+                "statistics": project_stats or {}
+            },
+            "user_permissions": user_permissions or [],
+            "access_level": "read-write" if user_permissions and "write" in user_permissions else "read-only"
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        # Stats are optional, continue without them
-        pass
-    
-    response = {
-        'project_id': project.id,
-        'project_hash': project.project_hash,
-        'project_name': project.project_name,
-        'project_description': project.project_description,
-        'project_created': project.project_created.isoformat() if project.project_created else None,
-        'is_active': project.is_active
-    }
-    
-    if stats:
-        response['statistics'] = stats
-    
-    return response
+        logger.error(f"Project details error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Project details error")
 
 
-@router.put("/projects/{project_hash}")
-async def update_project_details(
+# ============================================================================
+# GROUP MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@router.get("/projects/{project_hash}/groups")
+async def get_project_group_info(
     project_hash: str,
-    project_name: str = Form(None),
-    project_description: str = Form(None),
-    current_user: EnhancedUserLogin = Depends(get_current_user)
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    ## Update Project Details
+    Get group information for a specific project.
     
-    Update project name and/or description.
-    Only users with 'admin' permission in the specific project can update it.
+    Args:
+        project_hash: Project identifier
+        
+    Returns:
+        Project groups with permissions and member counts
     """
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise HTTPException(status_code=404, detail='Project not found')
-    
-    # Check if user has admin access to this specific project
-    has_admin_access = False
-    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
-        has_admin_access = True
-    elif 'admin' in current_user.permissions:  # Global admin check
-        # Verify if this user has admin access to the target project
-        from src.Util.db import get_user_project_access, get_user_permissions_in_project
-        user_project = get_user_project_access(current_user.user_id, project.id)
-        if user_project:
-            permissions = get_user_permissions_in_project(user_project.id)
-            if 'admin' in permissions:
-                has_admin_access = True
-    
-    if not has_admin_access:
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin access to this project required.'
-        )
-    
-    if not project_name and project_description is None:
-        raise HTTPException(
-            status_code=400,
-            detail='At least one field (project_name or project_description) must be provided'
-        )
-    
-    updated_project = update_project(
-        project.id, 
-        project_name, 
-        project_description, 
-        updated_by=current_user.user_id
-    )
-    
-    if updated_project:
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Get project and verify access
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Verify user has access to this project
+        user_data = get_user_by_hash(session_data.user_hash)
+        user_projects = get_user_projects(user_data.id)
+        user_project_hashes = {p.get('project_hash') for p in (user_projects or [])}
+        
+        if project_hash not in user_project_hashes:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+        
+        # Get project groups
+        project_groups = get_project_groups(project.id)
+        
         return {
-            'success': True,
-            'project': {
-                'project_id': updated_project.id,
-                'project_hash': updated_project.project_hash,
-                'project_name': updated_project.project_name,
-                'project_description': updated_project.project_description,
-                'project_created': updated_project.project_created.isoformat() if updated_project.project_created else None,
-                'is_active': updated_project.is_active
+            "success": True,
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "groups": project_groups or []
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Project groups error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Project groups error")
+
+
+# ============================================================================
+# SYSTEM INFORMATION ENDPOINTS
+# ============================================================================
+
+@router.get("/system/info")
+async def get_system_info():
+    """
+    Get system information and health status.
+    
+    Returns:
+        System status and configuration information
+    """
+    try:
+        # Get basic system statistics (safely)
+        try:
+            total_users = count_users()
+        except:
+            total_users = 0
+            
+        try:
+            total_projects = count_projects()
+        except:
+            total_projects = 0
+        
+        return {
+            "success": True,
+            "system": {
+                "name": "Group-Based Multi-Project Authentication API",
+                "version": "2.0.0",
+                "architecture": "group-based",
+                "status": "operational"
+            },
+            "statistics": {
+                "total_users": total_users,
+                "total_projects": total_projects,
+                "authentication_type": "group-based-jwt"
+            },
+            "features": [
+                "group-based-access-control",
+                "multi-project-support",
+                "hierarchical-permissions",
+                "session-management",
+                "audit-trail"
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"System info error: {str(e)}")
+        return {
+            "success": False,
+            "error": "System information temporarily unavailable",
+            "system": {
+                "name": "Group-Based Multi-Project Authentication API",
+                "version": "2.0.0",
+                "architecture": "group-based",
+                "status": "operational"
             }
         }
-    else:
-        raise HTTPException(status_code=500, detail='Failed to update project')
 
 
-@router.delete("/projects/{project_hash}")
-async def delete_project_endpoint(
-    project_hash: str,
-    current_user: EnhancedUserLogin = Depends(get_current_user)
-):
+@router.get("/ping")
+async def ping():
     """
-    ## Delete Project
+    Health check endpoint.
     
-    Soft delete a project and all related data (user access, groups, sessions).
-    Only users with 'admin' permission in the specific project can delete it.
-    
-    **Warning:** This action cannot be undone and will revoke access for all users.
+    Returns:
+        Simple health status
     """
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise HTTPException(status_code=404, detail='Project not found')
-    
-    # Check if user has admin access to this specific project
-    has_admin_access = False
-    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
-        has_admin_access = True
-    elif 'admin' in current_user.permissions:  # Global admin check
-        # Verify if this user has admin access to the target project
-        from src.Util.db import get_user_project_access, get_user_permissions_in_project
-        user_project = get_user_project_access(current_user.user_id, project.id)
-        if user_project:
-            permissions = get_user_permissions_in_project(user_project.id)
-            if 'admin' in permissions:
-                has_admin_access = True
-    
-    if not has_admin_access:
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin access to this project required.'
-        )
-    
-    success = delete_project(project.id, deleted_by=current_user.user_id)
-    
-    if success:
-        return {
-            'success': True,
-            'message': f'Project "{project.project_name}" has been deleted successfully',
-            'deleted_project': {
-                'project_hash': project.project_hash,
-                'project_name': project.project_name
-            }
-        }
-    else:
-        raise HTTPException(status_code=500, detail='Failed to delete project')
+    return {"success": True, "message": "Group-based authentication API is running"}
 
 
-@router.get("/projects/{project_hash}/stats")
-async def get_project_statistics(
-    project_hash: str,
-    current_user: EnhancedUserLogin = Depends(get_current_user)
-):
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    ## Get Project Statistics
+    Dependency to get current authenticated user from session token.
     
-    Get detailed statistics for a project including user counts, active sessions, and group distribution.
-    Only users with 'admin' permission in the specific project can view statistics.
+    Returns:
+        Current user session data
     """
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise HTTPException(status_code=404, detail='Project not found')
+    session_token = credentials.credentials
+    session_data = validate_session(session_token)
     
-    # Check if user has admin access to this specific project
-    has_admin_access = False
-    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
-        has_admin_access = True
-    elif 'admin' in current_user.permissions:  # Global admin check
-        # Verify if this user has admin access to the target project
-        from src.Util.db import get_user_project_access, get_user_permissions_in_project
-        user_project = get_user_project_access(current_user.user_id, project.id)
-        if user_project:
-            permissions = get_user_permissions_in_project(user_project.id)
-            if 'admin' in permissions:
-                has_admin_access = True
+    if not session_data:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
     
-    if not has_admin_access:
-        raise HTTPException(
-            status_code=403,
-            detail='Insufficient permissions. Admin access to this project required.'
-        )
-    
-    stats = get_project_stats(project.id)
-    
-    return {
-        'project': {
-            'project_hash': project.project_hash,
-            'project_name': project.project_name
-        },
-        'statistics': stats
-    } 
+    return session_data
+
+
+# Export router
+__all__ = ['router'] 

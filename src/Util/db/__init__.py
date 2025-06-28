@@ -1,22 +1,25 @@
 """
-Enhanced Multi-Project Authentication Database Module
+Group-Based Multi-Project Authentication Database Module
 
-This module provides database operations for the enhanced authentication system.
-The database operations are now organized into specialized modules:
+This module provides database operations for the group-based authentication system.
+The database operations are organized into specialized modules:
 
 - db_users.py: User management, authentication, and session operations
-- db_projects.py: Project management and group operations
-- db_enhanced.py: Main authentication functions that combine user and project operations
+- db_projects.py: Project management and statistics
+- db_user_groups.py: User group management and membership operations
+- db_project_groups.py: Project group management and permission operations
+- db_enhanced.py: Main authentication functions that combine all operations
 
-All operations use the multi-project architecture with user isolation and group-based permissions.
+All operations use the group-based architecture with hierarchical access control:
+Users → User Groups → Project Access → Project Groups → Permissions
 """
 
-# Import core database functions from main enhanced module
+# Import core database functions from main module
 from src.Util.db.db_enhanced import (
     # Core database connection
     client,
 
-    # Enhanced authentication functions
+    # Group-based authentication functions
     enhanced_login,
     enhanced_register,
     validate_session,
@@ -88,7 +91,7 @@ import json
 def set_session(key: int, value: str, ex: int, user_hash: str) -> bool:
     """
     Set session data in Redis cache.
-    Enhanced system uses different session management, but this provides compatibility.
+    Group-based system uses different session management, but this provides compatibility.
     """
     try:
         client.set(hex(key)[2:], value, ex=ex)
@@ -101,7 +104,7 @@ def set_session(key: int, value: str, ex: int, user_hash: str) -> bool:
 def get_session(key: int) -> UserLogin | None:
     """
     Get session data from Redis cache.
-    Enhanced system uses validate_session() instead, but this provides compatibility.
+    Group-based system uses validate_session() instead, but this provides compatibility.
     """
     try:
         res = client.get(hex(key)[2:])
@@ -122,7 +125,7 @@ def get_session(key: int) -> UserLogin | None:
 def db_validate_session(user_hash: str, user_session: str) -> bool:
     """
     Validate a session token and user hash.
-    Enhanced system uses validate_session() instead, but this provides compatibility.
+    Group-based system uses validate_session() instead, but this provides compatibility.
     """
     try:
         result = validate_session(user_session)
@@ -137,7 +140,7 @@ __all__ = [
     # Core database
     'client',
 
-    # Enhanced authentication
+    # Group-based authentication
     'enhanced_login',
     'enhanced_register',
     'validate_session',

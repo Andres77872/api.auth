@@ -1,6 +1,6 @@
 # Setup Guide
 
-This guide walks you through setting up the Enhanced Multi-Project Authentication API from scratch to production-ready deployment.
+This guide walks you through setting up the Group-Based Multi-Project Authentication API from scratch to production-ready deployment.
 
 ## 📋 Prerequisites
 
@@ -44,7 +44,7 @@ Create a `.env` file in the root directory:
 DB_HOST=192.168.1.90
 DB_USER=root
 DB_MYSQL_PASSWORD=your_mysql_password
-DB_DATABASE=magic_auth_enhanced
+DB_DATABASE=magic_auth_groups
 
 # Redis Configuration
 DB_REDIS_PASSWORD=your_redis_password
@@ -53,6 +53,9 @@ DB_REDIS_PASSWORD=your_redis_password
 REDIS_HOST=192.168.1.90
 REDIS_PORT=6379
 REDIS_DB=0
+
+# Group System Configuration
+GROUP_SYSTEM_ENABLED=true
 
 # Optional: Application settings
 APP_HOST=0.0.0.0
@@ -69,7 +72,7 @@ connectionDB = {
     "host": os.environ.get("DB_HOST", "192.168.1.90"),
     "user": os.environ.get("DB_USER", "root"),
     "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": os.environ.get("DB_DATABASE", "magic_auth_enhanced"),
+    "database": os.environ.get("DB_DATABASE", "magic_auth_groups"),
     "charset": "utf8mb4",
     "autocommit": True
 }
@@ -77,7 +80,7 @@ connectionDB = {
 
 ### 3. Redis Configuration
 
-Redis is used for session caching. Configuration is in `src/Util/db/db_enhanced.py`:
+Redis is used for session caching with group context. Configuration is in `src/Util/db/db_enhanced.py`:
 
 ```python
 client = redis.StrictRedis(
@@ -97,28 +100,38 @@ client = redis.StrictRedis(
 -- Connect to MySQL as root
 mysql -u root -p
 
--- Create database
-CREATE DATABASE magic_auth_enhanced CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- Create database for group-based system
+CREATE DATABASE magic_auth_groups CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- Create user (optional, for security)
 CREATE USER 'auth_user'@'localhost' IDENTIFIED BY 'secure_password';
-GRANT ALL PRIVILEGES ON magic_auth_enhanced.* TO 'auth_user'@'localhost';
+GRANT ALL PRIVILEGES ON magic_auth_groups.* TO 'auth_user'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-### 2. Initialize Schema
+### 2. Initialize Group-Based Schema
 
-#### Option 1: Using the Setup Script (Recommended)
+#### Option 1: Using the New Schema Script (Recommended)
 
 ```bash
-# Create schema with sample data
-python setup_enhanced_auth.py --with-sample-data
+# Create group-based schema with default groups
+mysql -u root -p magic_auth_groups < new_database_schema.sql
 
-# Or create schema only
-python setup_enhanced_auth.py
+# Verify the tables were created
+mysql -u root -p magic_auth_groups -e "SHOW TABLES;"
 ```
 
-#### Option 2: Manual Schema Creation
+#### Option 2: Using Python Initialization Script
+
+```bash
+# Initialize with default user and project groups
+python group_based_crud_operations.py --init-defaults
+
+# Or create custom initial setup
+python group_based_crud_operations.py --create-admin-user admin admin123
+```
+
+#### Option 3: Manual Schema Creation
 
 If you prefer to create the schema manually, use the SQL from `docs/database-schema.md`.
 
@@ -145,6 +158,16 @@ try:
 except Exception as e:
     print(f'✗ Redis connection failed: {e}')
 "
+
+# Test group-based CRUD operations
+python -c "
+from group_based_crud_operations import UserGroupCRUD
+try:
+    groups = UserGroupCRUD.read_all()
+    print(f'✓ Group system operational - {len(groups)} user groups found')
+except Exception as e:
+    print(f'✗ Group system failed: {e}')
+"
 ```
 
 ## 🚀 Running the Application
@@ -152,7 +175,7 @@ except Exception as e:
 ### 1. Development Mode
 
 ```bash
-# Start with auto-reload
+# Start with auto-reload and group system enabled
 python -m uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 
 # With debug logging
@@ -174,13 +197,14 @@ gunicorn src.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 
 ```bash
 # Build image
-docker build -t auth-api .
+docker build -t group-auth-api .
 
-# Run container
-docker run -d -p 8000:8000 --name auth-api \
+# Run container with group system enabled
+docker run -d -p 8000:8000 --name group-auth-api \
   -e DB_MYSQL_PASSWORD=your_password \
   -e DB_REDIS_PASSWORD=your_redis_password \
-  auth-api
+  -e GROUP_SYSTEM_ENABLED=true \
+  group-auth-api
 ```
 
 ### 4. Docker Compose (Full Stack)
@@ -191,7 +215,7 @@ Create `docker-compose.yml`:
 version: '3.8'
 
 services:
-  auth-api:
+  group-auth-api:
     build: .
     ports:
       - "8000:8000"
@@ -199,6 +223,8 @@ services:
       - DB_HOST=mysql
       - DB_MYSQL_PASSWORD=rootpassword
       - DB_REDIS_PASSWORD=redispassword
+      - DB_DATABASE=magic_auth_groups
+      - GROUP_SYSTEM_ENABLED=true
     depends_on:
       - mysql
       - redis
@@ -207,11 +233,12 @@ services:
     image: mysql:8.0
     environment:
       - MYSQL_ROOT_PASSWORD=rootpassword
-      - MYSQL_DATABASE=magic_auth_enhanced
+      - MYSQL_DATABASE=magic_auth_groups
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./new_database_schema.sql:/docker-entrypoint-initdb.d/init.sql
 
   redis:
     image: redis:7-alpine
@@ -233,56 +260,75 @@ curl http://localhost:8000/ping
 
 # Get system information
 curl http://localhost:8000/system/info
+
+# Check group system health
+curl http://localhost:8000/system/groups/health
 ```
 
-### 2. Sample Data Testing
+### 2. Group System Testing
 
-If you used `--with-sample-data`:
+If you initialized with default data:
 
 ```bash
-# Test admin login
+# Test admin login (if default admin was created)
 curl -X POST "http://localhost:8000/user/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=admin&password=admin123&project_hash=YOUR_PROJECT_HASH"
 
-# Test user login
-curl -X POST "http://localhost:8000/user/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=password123&project_hash=YOUR_PROJECT_HASH"
+# Test user group functionality
+curl -X GET "http://localhost:8000/user/access-summary" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
-### 3. Module Structure Test
+### 3. Group-Based Operations Test
 
 ```bash
-# Verify modular database structure
+# Run the test script
 python test_modular_structure.py
 
-# Run API tests
-python -m pytest tests/ -v  # if you have tests
+# Test group-based CRUD operations
+python -c "
+from group_based_crud_operations import *
+
+# Test user group creation
+admin_group = UserGroupCRUD.create('test_admins', 'Test administrators')
+print(f'Created user group: {admin_group.group_name}')
+
+# Test project group creation
+full_access = ProjectGroupCRUD.create('test_full_access', ['admin', 'read', 'write'])
+print(f'Created project group: {full_access.group_name}')
+
+print('✓ Group-based CRUD operations working correctly')
+"
 ```
 
 ## 🔒 Security Configuration
 
-### 1. Password Security
+### 1. Group-Based Security
 
-The system uses SHA256 hashing for password storage. For production, consider:
+The system implements hierarchical group-based security:
 
 ```python
-# In db_users.py, you can customize password hashing
-import hashlib
-import secrets
-
-def hash_password(password: str, salt: str = None) -> tuple[str, str]:
-    if not salt:
-        salt = secrets.token_hex(16)
-    
-    password_hash = hashlib.sha256((password + salt).encode()).hexdigest()
-    return password_hash, salt
+# Configure default user groups in group_based_crud_operations.py
+DEFAULT_USER_GROUPS = {
+    "administrators": {
+        "description": "System administrators with full access",
+        "default_permissions": ["admin", "create_projects", "manage_groups"]
+    },
+    "users": {
+        "description": "Standard users with project access",
+        "default_permissions": ["read", "write"]
+    },
+    "guests": {
+        "description": "Limited read-only access",
+        "default_permissions": ["read"]
+    }
+}
 ```
 
 ### 2. Session Security
 
-Configure session settings:
+Configure group-aware session settings:
 
 ```python
 # Session expiration (default: 3 days)
@@ -290,6 +336,9 @@ SESSION_EXPIRE_SECONDS = 3 * 24 * 60 * 60
 
 # Token length (default: 32 bytes)
 TOKEN_LENGTH = 32
+
+# Group context in sessions
+INCLUDE_GROUP_CONTEXT = True
 ```
 
 ### 3. CORS Configuration
@@ -308,9 +357,9 @@ app.add_middleware(
 
 ## 📊 Monitoring & Logging
 
-### 1. Application Logs
+### 1. Group-Aware Application Logs
 
-Logs are handled by `src/Util/logger_ws.py`. Configure log levels:
+Logs are handled by `src/Util/logger_ws.py` with group context. Configure log levels:
 
 ```python
 import logging
@@ -318,40 +367,49 @@ import logging
 # Set log level
 logging.basicConfig(level=logging.INFO)
 
-# For debug mode
+# For debug mode with group information
 logging.basicConfig(level=logging.DEBUG)
 ```
 
 ### 2. Database Monitoring
 
-Monitor database performance:
+Monitor group-based database performance:
 
 ```sql
--- Check connection count
-SHOW STATUS LIKE 'Threads_connected';
-
--- Check query performance
-SHOW PROCESSLIST;
-
--- Check table sizes
+-- Check group relationships
 SELECT 
-    table_name,
-    round(((data_length + index_length) / 1024 / 1024), 2) as 'Size (MB)'
-FROM information_schema.tables 
-WHERE table_schema = 'magic_auth_enhanced';
+    'User Groups' as entity,
+    COUNT(*) as total,
+    SUM(is_active) as active
+FROM user_groups
+UNION ALL
+SELECT 
+    'Project Groups' as entity,
+    COUNT(*) as total,
+    SUM(is_active) as active
+FROM project_groups;
+
+-- Check group membership counts
+SELECT 
+    ug.group_name,
+    COUNT(ugm.user_id) as member_count
+FROM user_groups ug
+LEFT JOIN user_group_members ugm ON ug.id = ugm.user_group_id AND ugm.is_active = 1
+WHERE ug.is_active = 1
+GROUP BY ug.id, ug.group_name;
 ```
 
 ### 3. Redis Monitoring
 
 ```bash
-# Redis CLI monitoring
-redis-cli monitor
+# Redis CLI monitoring with group context
+redis-cli monitor | grep session
+
+# Check group-related session data
+redis-cli --scan --pattern "session:*" | head -10
 
 # Check memory usage
 redis-cli info memory
-
-# Check connected clients
-redis-cli info clients
 ```
 
 ## 🔄 Backup & Maintenance
@@ -359,11 +417,18 @@ redis-cli info clients
 ### 1. Database Backup
 
 ```bash
-# Create backup
-mysqldump -u root -p magic_auth_enhanced > backup_$(date +%Y%m%d_%H%M%S).sql
+# Create backup of group-based system
+mysqldump -u root -p magic_auth_groups > backup_groups_$(date +%Y%m%d_%H%M%S).sql
+
+# Backup only group-related tables
+mysqldump -u root -p magic_auth_groups \
+  users user_groups user_group_members \
+  projects project_groups project_group_members \
+  user_group_projects user_sessions \
+  > group_backup.sql
 
 # Restore backup
-mysql -u root -p magic_auth_enhanced < backup_file.sql
+mysql -u root -p magic_auth_groups < backup_file.sql
 ```
 
 ### 2. Redis Backup
@@ -371,30 +436,42 @@ mysql -u root -p magic_auth_enhanced < backup_file.sql
 ```bash
 # Create Redis backup
 redis-cli save
-cp /var/lib/redis/dump.rdb backup_redis_$(date +%Y%m%d_%H%M%S).rdb
+cp /var/lib/redis/dump.rdb backup_redis_groups_$(date +%Y%m%d_%H%M%S).rdb
 ```
 
-### 3. Cleanup Tasks
+### 3. Group System Maintenance
 
 ```sql
 -- Clean expired sessions (run daily)
 DELETE FROM user_sessions 
 WHERE expires_at < NOW() OR is_active = 0;
 
--- Archive old audit logs (run monthly)
-DELETE FROM user_sessions 
-WHERE created_at < DATE_SUB(NOW(), INTERVAL 6 MONTH);
+-- Archive old group assignments (run monthly)
+UPDATE user_group_members 
+SET is_active = 0 
+WHERE removed_at < DATE_SUB(NOW(), INTERVAL 6 MONTH);
+
+-- Update group statistics
+UPDATE user_groups ug
+SET updated_at = NOW()
+WHERE EXISTS (
+    SELECT 1 FROM user_group_members ugm 
+    WHERE ugm.user_group_id = ug.id AND ugm.assigned_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
+);
 ```
 
 ## 🛠️ Troubleshooting
 
 ### Common Issues
 
-1. **Module Import Errors**
+1. **Group System Import Errors**
    ```bash
    # Ensure you're in the correct directory and virtual environment
    pwd  # Should be in the api.auth directory
    which python  # Should point to .venv/bin/python
+   
+   # Test group module imports
+   python -c "from group_based_crud_operations import UserGroupCRUD; print('✓ Group imports working')"
    ```
 
 2. **Database Connection Errors**
@@ -403,25 +480,32 @@ WHERE created_at < DATE_SUB(NOW(), INTERVAL 6 MONTH);
    sudo systemctl status mysql
    
    # Test connection manually
-   mysql -h 192.168.1.90 -u root -p
+   mysql -h 192.168.1.90 -u root -p -D magic_auth_groups
+   
+   # Verify tables exist
+   mysql -u root -p magic_auth_groups -e "SHOW TABLES LIKE '%group%';"
    ```
 
-3. **Redis Connection Errors**
+3. **Group System Not Working**
+   ```bash
+   # Check if group tables exist
+   mysql -u root -p magic_auth_groups -e "
+   SELECT TABLE_NAME FROM information_schema.TABLES 
+   WHERE TABLE_SCHEMA = 'magic_auth_groups' 
+   AND TABLE_NAME LIKE '%group%';
+   "
+   
+   # Initialize default groups if missing
+   python group_based_crud_operations.py --init-defaults
+   ```
+
+4. **Redis Connection Errors**
    ```bash
    # Check Redis service
    sudo systemctl status redis
    
-   # Test connection
+   # Test connection with group context
    redis-cli -h 192.168.1.90 -a your_password ping
-   ```
-
-4. **Permission Errors**
-   ```bash
-   # Check file permissions
-   ls -la src/
-   
-   # Fix permissions if needed
-   chmod +x setup_enhanced_auth.py
    ```
 
 ### Debug Mode
@@ -431,9 +515,35 @@ Enable debug mode for troubleshooting:
 ```bash
 # Set environment variable
 export DEBUG=true
+export GROUP_SYSTEM_ENABLED=true
 
 # Or run with debug logging
 python -m uvicorn src.main:app --reload --log-level debug
+```
+
+### Group System Diagnostics
+
+```bash
+# Run group system diagnostics
+python -c "
+from group_based_crud_operations import *
+
+print('=== Group System Diagnostics ===')
+
+# Check user groups
+user_groups = UserGroupCRUD.read_all()
+print(f'User Groups: {len(user_groups)}')
+for group in user_groups:
+    print(f'  - {group.group_name}: {group.description}')
+
+# Check project groups
+project_groups = ProjectGroupCRUD.read_all()
+print(f'Project Groups: {len(project_groups)}')
+for group in project_groups:
+    print(f'  - {group.group_name}: {group.permissions}')
+
+print('✓ Group system operational')
+"
 ```
 
 ## 📚 Next Steps
@@ -441,9 +551,11 @@ python -m uvicorn src.main:app --reload --log-level debug
 After successful installation:
 
 1. **Read the [API Reference](api-reference.md)** for detailed endpoint documentation
-2. **Review the [Database Schema](database-schema.md)** to understand the data structure
+2. **Review the [Database Schema](database-schema.md)** to understand the group structure
 3. **Check the [Architecture Guide](architecture.md)** for system design details
-4. **Set up your first project** and users through the API
+4. **Set up your first user groups** and assign users
+5. **Create project groups** and assign projects
+6. **Test the group-based access control** through the API
 
 ## 🆘 Getting Help
 
@@ -451,9 +563,31 @@ If you encounter issues:
 
 1. Check the troubleshooting section above
 2. Review the logs in debug mode
-3. Test individual components (database, Redis, modules)
-4. Refer to the detailed documentation in the `docs/` folder
+3. Test individual components (database, Redis, groups)
+4. Verify group system is properly initialized
+5. Refer to the detailed documentation in the `docs/` folder
+
+## 🎯 Group System Quick Start
+
+Once installed, quickly test the group system:
+
+```bash
+# 1. Create a user group
+curl -X POST "http://localhost:8000/admin/user-groups" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -d '{"group_name": "developers", "description": "Development team"}'
+
+# 2. Create a project group
+curl -X POST "http://localhost:8000/admin/project-groups" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -d '{"group_name": "api-access", "permissions": ["read", "write", "api"]}'
+
+# 3. Test user group assignment
+curl -X POST "http://localhost:8000/admin/assign-user-to-group" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -d '{"username": "john_doe", "group_name": "developers"}'
+```
 
 ---
 
-**🎉 You're ready to use the Enhanced Multi-Project Authentication API!** 
+**🎉 You're ready to use the Group-Based Multi-Project Authentication API!** 

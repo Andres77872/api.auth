@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API documentation for the Enhanced Multi-Project Authentication system.
+Complete API documentation for the Group-Based Multi-Project Authentication system.
 
 ## 🔐 Authentication
 
@@ -10,13 +10,25 @@ All authenticated endpoints require a session token in the Authorization header:
 Authorization: Bearer YOUR_SESSION_TOKEN
 ```
 
+## 🏗️ System Architecture
+
+The system implements hierarchical group-based access control:
+
+**User → User Group → Projects Access**  
+**Project → Project Group → Permissions**
+
+- **Users** belong to **User Groups** (global)
+- **User Groups** define which projects users can access  
+- **Projects** belong to **Project Groups**
+- **Project Groups** define permissions
+
 ## 📡 Endpoints
 
 ### Authentication & User Management
 
 #### POST `/user/login`
 
-Login to a specific project and get a session token.
+Group-based login to a specific project.
 
 **Request Body** (form-data):
 - `username` (required): User's username
@@ -38,20 +50,19 @@ curl -X POST "http://localhost:8000/user/login" \
   "user": {
     "user_hash": "ghi789...",
     "user_id": 1,
-    "user_project_id": 1,
-    "user_project_hash": "jkl012..."
+    "user_group": {
+      "name": "administrators",
+      "id": 1
+    }
   },
   "project": {
     "project_hash": "abc123...",
     "project_name": "My Project",
     "project_id": 1,
-    "project_description": "Project description"
+    "project_group": "full-access",
+    "permissions": ["admin", "read", "write", "delete", "manage_users"]
   },
-  "access": {
-    "groups": ["admin"],
-    "permissions": ["admin", "read", "write", "delete", "manage_users", "manage_groups"]
-  },
-  "available_projects": [
+  "accessible_projects": [
     {
       "project_hash": "abc123...",
       "project_name": "My Project",
@@ -65,7 +76,7 @@ curl -X POST "http://localhost:8000/user/login" \
 ```json
 {
   "success": false,
-  "error": "Invalid credentials or no access to project"
+  "error": "Invalid credentials or user group does not have access to this project"
 }
 ```
 
@@ -73,45 +84,47 @@ curl -X POST "http://localhost:8000/user/login" \
 
 #### POST `/user/register`
 
-Register a new user or grant existing user access to a project.
+Register a new user and assign them to a user group.
 
 **Request Body** (form-data):
 - `username` (required): Desired username
 - `password` (required): User's password
 - `project_hash` (required): Project hash to register for
 - `email` (optional): User's email address
+- `user_group` (optional, default: "users"): User group to assign to
+
+**User Groups:**
+- `administrators`: Full system access
+- `users`: Standard user access (default)
+- `guests`: Limited read-only access
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=password123&email=john@example.com&project_hash=abc123..."
+  -d "username=john_doe&password=password123&email=john@example.com&project_hash=abc123...&user_group=users"
 ```
 
 **Success Response (200):**
 ```json
 {
   "success": true,
-  "message": "User registered successfully",
+  "message": "User registered and assigned to user group successfully",
+  "session_token": "new_session_token...",
   "user": {
     "user_hash": "new_user_hash...",
     "user_id": 2,
-    "user_project_id": 2,
-    "user_project_hash": "user_project_hash..."
+    "user_group": {
+      "name": "users",
+      "assigned_at": "now"
+    }
   },
   "project": {
     "project_hash": "abc123...",
     "project_name": "My Project",
-    "project_id": 1
+    "project_id": 1,
+    "access_granted_through": "users group"
   }
-}
-```
-
-**Error Response (400):**
-```json
-{
-  "success": false,
-  "error": "Username already exists or invalid project"
 }
 ```
 
@@ -119,7 +132,7 @@ curl -X POST "http://localhost:8000/user/register" \
 
 #### POST `/user/check-availability`
 
-Check if username or email is available.
+Check if username or email is available globally.
 
 **Request Body** (form-data):
 - `username` (optional): Username to check
@@ -145,7 +158,7 @@ curl -X POST "http://localhost:8000/user/check-availability" \
 
 #### GET `/user/profile`
 
-Get current user profile and project information.
+Get comprehensive user profile with group information.
 
 **Authentication:** Required
 
@@ -160,21 +173,17 @@ curl -X GET "http://localhost:8000/user/profile" \
 {
   "user": {
     "user_hash": "ghi789...",
-    "username": "john_doe",
-    "email": "john@example.com",
-    "created_at": "2024-01-01T00:00:00Z"
+    "user_id": 1,
+    "user_groups": ["administrators"]
   },
   "current_project": {
     "project_hash": "abc123...",
     "project_name": "My Project",
-    "project_description": "Project description",
-    "user_project_hash": "jkl012..."
+    "project_id": 1,
+    "permissions": ["admin", "read", "write", "delete"],
+    "access_level": "admin"
   },
-  "access": {
-    "groups": ["user"],
-    "permissions": ["read", "write"]
-  },
-  "available_projects": [
+  "accessible_projects": [
     {
       "project_hash": "abc123...",
       "project_name": "My Project",
@@ -188,7 +197,7 @@ curl -X GET "http://localhost:8000/user/profile" \
 
 #### POST `/user/switch-project`
 
-Switch to a different project the user has access to.
+Switch to a different project the user's group has access to.
 
 **Authentication:** Required
 
@@ -207,17 +216,15 @@ curl -X POST "http://localhost:8000/user/switch-project" \
 ```json
 {
   "success": true,
-  "message": "Switched to project successfully",
   "session_token": "new_session_token...",
   "project": {
     "project_hash": "xyz789...",
     "project_name": "New Project",
-    "project_id": 2
+    "project_id": 2,
+    "permissions": ["read", "write"]
   },
-  "access": {
-    "groups": ["admin"],
-    "permissions": ["admin", "read", "write", "delete", "manage_users"]
-  }
+  "user_groups": ["users"],
+  "message": "Successfully switched to project: New Project"
 }
 ```
 
@@ -225,7 +232,7 @@ curl -X POST "http://localhost:8000/user/switch-project" \
 
 #### GET `/user/validate`
 
-Validate current session token.
+Validate current session token and return context.
 
 **Authentication:** Required
 
@@ -242,14 +249,18 @@ curl -X GET "http://localhost:8000/user/validate" \
   "user": {
     "user_hash": "ghi789...",
     "user_id": 1,
-    "user_project_id": 1
+    "user_groups": ["administrators"]
   },
   "project": {
     "project_hash": "abc123...",
     "project_name": "My Project",
     "project_id": 1
   },
-  "permissions": ["read", "write", "admin"]
+  "permissions": ["admin", "read", "write", "delete"],
+  "session_info": {
+    "token_valid": true,
+    "access_level": "admin"
+  }
 }
 ```
 
@@ -259,39 +270,36 @@ curl -X GET "http://localhost:8000/user/validate" \
 
 #### POST `/user/create-project`
 
-Create a new project (requires admin permission).
+Create a new project and assign it to a project group.
 
 **Authentication:** Required (admin permission)
 
 **Request Body** (form-data):
 - `project_name` (required): Name of the new project
 - `project_description` (optional): Description of the project
+- `project_group` (optional, default: "full-access"): Project group for permissions
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user/create-project" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_name=New Project&project_description=A new project for testing"
+  -d "project_name=New Project&project_description=A new project&project_group=full-access"
 ```
 
 **Response (200):**
 ```json
 {
   "success": true,
-  "message": "Project created successfully",
+  "message": "Project \"New Project\" created successfully",
   "project": {
     "project_hash": "new_project_hash...",
     "project_name": "New Project",
-    "project_description": "A new project for testing",
+    "project_description": "A new project",
     "project_id": 3,
-    "created_at": "2024-01-01T00:00:00Z"
-  },
-  "default_groups": [
-    {"group_name": "admin", "permissions": ["admin", "read", "write", "delete", "manage_users", "manage_groups"]},
-    {"group_name": "user", "permissions": ["read", "write"]},
-    {"group_name": "readonly", "permissions": ["read"]}
-  ]
+    "project_group": "full-access",
+    "creator_permissions": ["admin", "read", "write", "delete"]
+  }
 }
 ```
 
@@ -299,18 +307,22 @@ curl -X POST "http://localhost:8000/user/create-project" \
 
 #### GET `/user/projects`
 
-List all projects with pagination and search (requires admin permission).
+List projects based on user's access level.
 
-**Authentication:** Required (admin permission)
+**Authentication:** Required
 
 **Query Parameters:**
 - `limit` (optional, default: 10): Number of projects to return
 - `offset` (optional, default: 0): Number of projects to skip
 - `search` (optional): Search term for project name or description
 
+**Access Levels:**
+- **Admin users**: See all projects in the system
+- **Regular users**: See only projects their user group has access to
+
 **Example Requests:**
 ```bash
-# List first 10 projects
+# List projects (admin sees all, users see accessible only)
 curl -X GET "http://localhost:8000/user/projects?limit=10&offset=0" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 
@@ -327,18 +339,17 @@ curl -X GET "http://localhost:8000/user/projects?search=api&limit=5" \
       "project_hash": "abc123...",
       "project_name": "Main Project",
       "project_description": "Main application project",
-      "project_id": 1,
-      "created_at": "2024-01-01T00:00:00Z",
-      "user_count": 15,
-      "group_count": 3
+      "access_level": "admin",
+      "access_through": "user_group"
     }
   ],
   "pagination": {
-    "total": 25,
     "limit": 10,
     "offset": 0,
+    "total_count": 25,
     "has_more": true
-  }
+  },
+  "user_access_level": "admin"
 }
 ```
 
@@ -346,7 +357,7 @@ curl -X GET "http://localhost:8000/user/projects?search=api&limit=5" \
 
 #### GET `/user/projects/{project_hash}`
 
-Get detailed information about a specific project.
+Get detailed project information with user's access context.
 
 **Authentication:** Required (must have access to the project)
 
@@ -363,31 +374,23 @@ curl -X GET "http://localhost:8000/user/projects/abc123..." \
 ```json
 {
   "project": {
+    "project_id": 1,
     "project_hash": "abc123...",
     "project_name": "Main Project",
     "project_description": "Main application project",
-    "project_id": 1,
     "created_at": "2024-01-01T00:00:00Z",
-    "updated_at": "2024-01-01T00:00:00Z",
     "is_active": true
   },
-  "groups": [
-    {
-      "group_name": "admin",
-      "group_description": "Project administrators",
-      "permissions": ["admin", "read", "write", "delete", "manage_users", "manage_groups"],
-      "user_count": 2
-    },
-    {
-      "group_name": "user",
-      "group_description": "Regular users",
-      "permissions": ["read", "write"],
-      "user_count": 10
-    }
-  ],
   "user_access": {
-    "groups": ["admin"],
-    "permissions": ["admin", "read", "write", "delete", "manage_users", "manage_groups"]
+    "permissions": ["admin", "read", "write", "delete"],
+    "access_level": "admin",
+    "user_groups": ["administrators"]
+  },
+  "statistics": {
+    "total_users": 15,
+    "active_sessions": 8,
+    "total_groups": 3,
+    "description": "Project usage and access statistics"
   }
 }
 ```
@@ -396,9 +399,9 @@ curl -X GET "http://localhost:8000/user/projects/abc123..." \
 
 #### PUT `/user/projects/{project_hash}`
 
-Update project name and/or description (requires admin permission for the specific project).
+Update project information (admin only).
 
-**Authentication:** Required (project admin permission)
+**Authentication:** Required (admin permission)
 
 **Path Parameters:**
 - `project_hash`: Hash of the project to update
@@ -421,11 +424,11 @@ curl -X PUT "http://localhost:8000/user/projects/abc123..." \
   "success": true,
   "message": "Project updated successfully",
   "project": {
+    "project_id": 1,
     "project_hash": "abc123...",
     "project_name": "Updated Project Name",
     "project_description": "Updated description",
-    "project_id": 1,
-    "updated_at": "2024-01-01T12:00:00Z"
+    "updated_by": 1
   }
 }
 ```
@@ -434,9 +437,9 @@ curl -X PUT "http://localhost:8000/user/projects/abc123..." \
 
 #### DELETE `/user/projects/{project_hash}`
 
-Delete a project and revoke all user access (requires admin permission for the specific project).
+Delete a project and revoke all user group access (admin only).
 
-**Authentication:** Required (project admin permission)
+**Authentication:** Required (admin permission)
 
 **Path Parameters:**
 - `project_hash`: Hash of the project to delete
@@ -451,93 +454,92 @@ curl -X DELETE "http://localhost:8000/user/projects/abc123..." \
 ```json
 {
   "success": true,
-  "message": "Project deleted successfully",
-  "affected_users": 15,
-  "deleted_sessions": 8
-}
-```
-
----
-
-#### GET `/user/projects/{project_hash}/stats`
-
-Get project statistics and analytics (requires admin permission for the specific project).
-
-**Authentication:** Required (project admin permission)
-
-**Path Parameters:**
-- `project_hash`: Hash of the project to get stats for
-
-**Example Request:**
-```bash
-curl -X GET "http://localhost:8000/user/projects/abc123.../stats" \
-  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
-```
-
-**Response (200):**
-```json
-{
-  "project": {
+  "message": "Project \"My Project\" deleted successfully",
+  "deleted_project": {
     "project_hash": "abc123...",
-    "project_name": "Main Project",
-    "project_id": 1
+    "project_name": "My Project",
+    "deleted_by": 1
   },
-  "statistics": {
-    "total_users": 15,
-    "active_users": 12,
-    "total_groups": 3,
-    "active_sessions": 8,
-    "user_distribution": {
-      "admin": 2,
-      "user": 10,
-      "readonly": 3
-    },
-    "recent_activity": {
-      "logins_last_24h": 25,
-      "registrations_last_7d": 3,
-      "last_login": "2024-01-01T11:30:00Z"
-    }
-  }
+  "warning": "All user group access to this project has been revoked"
 }
 ```
 
 ---
+
+### Access Management
 
 #### POST `/user/grant-access`
 
-Grant user access to a project (requires admin permission).
+Grant a user group access to a project (admin only).
 
 **Authentication:** Required (admin permission)
 
 **Request Body** (form-data):
-- `username` (required): Username to grant access to
-- `target_project_hash` (required): Project hash to grant access to
-- `group_name` (optional, default: "user"): Group to assign user to
+- `user_group_name` (required): Name of user group to grant access
+- `project_hash` (required): Project hash to grant access to
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user/grant-access" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&target_project_hash=xyz789...&group_name=user"
+  -d "user_group_name=developers&project_hash=xyz789..."
 ```
 
 **Response (200):**
 ```json
 {
   "success": true,
-  "message": "Access granted successfully",
-  "user": {
-    "username": "john_doe",
-    "user_hash": "user_hash..."
+  "message": "User group \"developers\" granted access to project \"Target Project\"",
+  "access_details": {
+    "user_group": "developers",
+    "project": {
+      "project_hash": "xyz789...",
+      "project_name": "Target Project"
+    },
+    "granted_by": 1
+  }
+}
+```
+
+---
+
+#### GET `/user/access-summary`
+
+Get comprehensive access summary for the current user.
+
+**Authentication:** Required
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/user/access-summary" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "user_info": {
+    "user_hash": "ghi789...",
+    "user_id": 1,
+    "user_groups": ["administrators"]
   },
-  "project": {
-    "project_name": "Target Project",
-    "project_hash": "xyz789..."
+  "current_session": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "permissions": ["admin", "read", "write", "delete"]
   },
-  "access": {
-    "groups": ["user"],
-    "permissions": ["read", "write"]
+  "accessible_projects": [
+    {
+      "project_hash": "abc123...",
+      "project_name": "My Project",
+      "project_description": "Project description"
+    }
+  ],
+  "access_summary": {
+    "total_projects": 5,
+    "admin_access": true,
+    "primary_user_group": "administrators"
   }
 }
 ```
@@ -548,7 +550,7 @@ curl -X POST "http://localhost:8000/user/grant-access" \
 
 #### HEAD `/access`
 
-Validate session token and check permissions (used for access control middleware).
+Validate session token and check permissions (middleware endpoint).
 
 **Authentication:** Required
 
@@ -559,7 +561,7 @@ curl -X HEAD "http://localhost:8000/access" \
 ```
 
 **Response:**
-- **200**: Token is valid
+- **200**: Token is valid and has required permissions
 - **401**: Token is invalid or expired
 - **403**: Token valid but insufficient permissions
 
@@ -594,13 +596,32 @@ All responses include:
 - `Access-Control-Allow-Origin`: CORS header
 - `Content-Type`: Response content type
 
+## 🏗️ Group-Based System Benefits
+
+### User Groups (Global)
+- **administrators**: Full system access across all projects
+- **users**: Standard access to assigned projects
+- **guests**: Limited read-only access
+
+### Project Groups (Permission Sets)
+- **full-access**: Complete project control (admin, read, write, delete)
+- **read-write**: Standard user permissions (read, write, create)
+- **read-only**: View-only access (read, view)
+
+### Access Flow
+1. **User** logs in with global credentials
+2. **User Group** determines which projects they can access
+3. **Project Group** determines what permissions they have
+4. **Session** maintains context for both user and project groups
+
 ## 🔒 Security Notes
 
 1. **Session Tokens**: Expire after 3 days by default
-2. **Password Hashing**: Uses SHA256 for compatibility
-3. **Rate Limiting**: Implement rate limiting in production
-4. **HTTPS**: Always use HTTPS in production
-5. **CORS**: Configure CORS settings for your domain
+2. **Group-Based Access**: Centralized permission management
+3. **Project Isolation**: Users only see projects their groups access
+4. **Audit Trail**: Complete tracking of group assignments and access
+5. **HTTPS**: Always use HTTPS in production
+6. **CORS**: Configure CORS settings for your domain
 
 ## 📚 SDKs and Integration
 
@@ -609,7 +630,7 @@ All responses include:
 ```python
 import requests
 
-class AuthAPI:
+class GroupAuthAPI:
     def __init__(self, base_url):
         self.base_url = base_url
         self.session_token = None
@@ -638,17 +659,35 @@ class AuthAPI:
         )
         
         return response.json()
+    
+    def switch_project(self, project_hash):
+        if not self.session_token:
+            raise Exception("Not authenticated")
+        
+        response = requests.post(
+            f"{self.base_url}/user/switch-project",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+            data={"project_hash": project_hash}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            self.session_token = data["session_token"]
+            return data
+        else:
+            raise Exception(f"Project switch failed: {response.text}")
 
 # Usage
-api = AuthAPI("http://localhost:8000")
+api = GroupAuthAPI("http://localhost:8000")
 login_result = api.login("admin", "admin123", "project_hash")
 profile = api.get_profile()
+api.switch_project("another_project_hash")
 ```
 
 ### JavaScript SDK Example
 
 ```javascript
-class AuthAPI {
+class GroupAuthAPI {
     constructor(baseUrl) {
         this.baseUrl = baseUrl;
         this.sessionToken = null;
@@ -689,14 +728,29 @@ class AuthAPI {
         
         return await response.json();
     }
+    
+    async getAccessSummary() {
+        if (!this.sessionToken) {
+            throw new Error('Not authenticated');
+        }
+        
+        const response = await fetch(`${this.baseUrl}/user/access-summary`, {
+            headers: {
+                'Authorization': `Bearer ${this.sessionToken}`
+            }
+        });
+        
+        return await response.json();
+    }
 }
 
 // Usage
-const api = new AuthAPI('http://localhost:8000');
+const api = new GroupAuthAPI('http://localhost:8000');
 const loginResult = await api.login('admin', 'admin123', 'project_hash');
 const profile = await api.getProfile();
+const accessSummary = await api.getAccessSummary();
 ```
 
 ---
 
-**📖 For more detailed examples and use cases, see the other documentation files in the `docs/` folder.** 
+**📖 For implementation examples and system setup, see the other documentation files in the `docs/` folder.** 

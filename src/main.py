@@ -14,21 +14,21 @@ from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_t
 with open('./src/README.md', 'r', encoding='utf-8') as f:
     description = f.read()
 
-app = FastAPI(title='Enhanced Multi-Project Authentication API',
+app = FastAPI(title='Group-Based Multi-Project Authentication API',
               description=description,
-              version='1.0.0',
+              version='2.0.0',
               contact={
                   "name": "Andrés",
                   "url": "https://arizmendi.io",
                   "email": "andres@arz.ai",
               })
 
-# ENHANCED AUTHENTICATION ROUTES
+# GROUP-BASED AUTHENTICATION ROUTES
 app.include_router(UserEnhanced.router,
                    prefix='/user',
-                   tags=['Enhanced Multi-Project Authentication'])
+                   tags=['Group-Based Multi-Project Authentication'])
 
-# ACCESS CONTROL
+# ACCESS CONTROL (Legacy compatibility)
 app.include_router(Access.router,
                    prefix='/access',
                    tags=['Access control by token'],
@@ -106,17 +106,18 @@ async def root():
 async def system_info():
     """System information and version details"""
     return {
-        "name": "Enhanced Multi-Project Authentication API",
-        "version": "1.0.0",
-        "authentication_system": "Enhanced Multi-Project",
+        "name": "Group-Based Multi-Project Authentication API",
+        "version": "2.0.0",
+        "authentication_system": "Group-Based Hierarchical",
+        "architecture": "Users → User Groups → Project Access → Project Groups → Permissions",
         "features": [
-            "Project isolation",
-            "Cross-project user access",
-            "Group-based permissions", 
-            "Session management",
-            "Project switching",
-            "User access management",
-            "Audit trail"
+            "Hierarchical group-based access control",
+            "Global user groups (administrators, users, guests)",
+            "Project-specific permission groups",
+            "Centralized access management",
+            "Clean audit trail",
+            "Session management with group context",
+            "Scalable multi-project support"
         ],
         "endpoints": {
             "authentication": "/user/*",
@@ -125,12 +126,19 @@ async def system_info():
         "documentation": {
             "interactive": "/docs",
             "schema": "/openapi.json",
-            "setup_guide": "README.md",
-            "database_schema": "DATABASE_SCHEMA.md"
+            "setup_guide": "docs/setup-guide.md",
+            "database_schema": "docs/database-schema.md",
+            "architecture": "docs/architecture.md",
+            "api_reference": "docs/api-reference.md"
         },
         "database": {
-            "schema": "magic_auth_enhanced",
+            "schema": "magic_auth_groups",
             "session_storage": "Redis + Database",
-            "features": ["Multi-project", "Groups", "Permissions", "Audit trail"]
+            "features": ["Group-based access", "Hierarchical permissions", "Audit trail", "Multi-project isolation"]
+        },
+        "groups": {
+            "user_groups": ["administrators", "users", "guests"],
+            "project_groups": ["full-access", "read-write", "read-only"],
+            "management": "Centralized through group membership"
         }
     }

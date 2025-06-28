@@ -1,56 +1,66 @@
 # Database Schema
 
-Complete database documentation for the Enhanced Multi-Project Authentication system.
+Complete database documentation for the Group-Based Multi-Project Authentication system.
 
 ## 🏗️ Overview
 
-The enhanced authentication system provides multi-project user isolation with the ability to share users across projects and manage group-based permissions. The system supports:
+The group-based authentication system provides a clean hierarchical access control model where:
 
-1. **Project Isolation**: Users registered to one project are isolated by default
-2. **Cross-Project Access**: Same user can be granted access to multiple projects
-3. **Project Fusion**: When projects are linked, users can access both with their existing accounts
-4. **Group-Based Permissions**: Apps/projects are defined by groups with specific permissions
-5. **Global User Identity**: Users have a global identity that can be mapped to multiple projects
+1. **Users** belong to **User Groups** (global)
+2. **User Groups** define which **Projects** users can access
+3. **Projects** belong to **Project Groups** that define permissions
+4. **Sessions** maintain context for both user and project groups
+
+This design enables:
+- **Centralized user management** through global user groups
+- **Flexible project permissions** through project groups
+- **Scalable access control** for thousands of users and projects
+- **Clean audit trail** of all group assignments and access changes
 
 ## 📊 Database Structure
 
-The system uses **6 main tables** in the `magic_auth_enhanced` database:
+The system uses **6 main tables** in the `magic_auth_groups` database:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│     users       │    │  user_projects  │    │    projects     │
+│     users       │    │  user_groups    │    │    projects     │
 │                 │    │                 │    │                 │
 ├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ • id (PK)       │◄──┐│ • user_id (FK)  │┌──►│ • id (PK)       │
-│ • user_hash     │   ││ • project_id(FK)││   │ • project_hash  │
-│ • username      │   │└─────────────────┘│   │ • project_name  │
-│ • email         │   │                   │   │ • description   │
-│ • password_hash │   │                   │   └─────────────────┘
-└─────────────────┘   │                   │
-                      │                   │
-┌─────────────────┐   │ ┌─────────────────┐   │
-│  user_groups    │◄──┼─┤user_project_grps│◄──┘
-│                 │   │ │                 │
-├─────────────────┤   │ ├─────────────────┤
-│ • id (PK)       │   │ │ • user_proj_id  │
-│ • project_id    │   │ │ • group_id (FK) │
-│ • group_name    │   │ └─────────────────┘
-│ • permissions   │   │
-└─────────────────┘   │ ┌─────────────────┐
-                      └─┤ user_sessions   │
-                        │                 │
-                        ├─────────────────┤
-                        │ • user_proj_id  │
-                        │ • session_token │
-                        │ • expires_at    │
-                        └─────────────────┘
+│ • id (PK)       │    │ • id (PK)       │    │ • id (PK)       │
+│ • user_hash     │    │ • group_name    │    │ • project_hash  │
+│ • username      │    │ • description   │    │ • project_name  │
+│ • email         │    │ • permissions   │    │ • created_at    │
+│ • password_hash │    │ • created_at    │    │ • created_at    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+          │                       │                       │
+          ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│user_group_members│   │user_group_projects│   │project_groups   │
+│                 │    │                 │    │                 │
+├─────────────────┤    ├─────────────────┤    ├─────────────────┤
+│ • user_id (FK)  │    │ • user_group_id │    │ • id (PK)       │
+│ • user_group_id │    │ • project_id    │    │ • group_name    │
+│ • assigned_at   │    │ • granted_at    │    │ • permissions   │
+│ • assigned_by   │    │ • granted_by    │    │ • description   │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                        │
+                                                        ▼
+                                           ┌─────────────────┐
+                                           │project_group_   │
+                                           │    members      │
+                                           ├─────────────────┤
+                                           │ • project_id    │
+                                           │ • proj_group_id │
+                                           │ • assigned_at   │
+                                           │ • assigned_by   │
+                                           └─────────────────┘
 ```
 
 ## 🗄️ Table Definitions
 
-### 1. `users` - Global User Identity
+### 1. `users` - Global User Registry
 
-Stores global user accounts that can access multiple projects.
+Stores global user accounts that can be assigned to multiple user groups.
 
 ```sql
 CREATE TABLE users (
@@ -67,20 +77,83 @@ CREATE TABLE users (
     INDEX idx_username (username),
     INDEX idx_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='Global user accounts';
+COMMENT='Global user registry';
 ```
 
 **Key Features:**
-- **Global Identity**: Each user has a unique `user_hash` for cross-project identification
+- **Global Identity**: Each user has a unique `user_hash` for system-wide identification
 - **Unique Constraints**: Username and email are globally unique
-- **Password Security**: SHA256 hashed passwords
-- **Soft Deletes**: Uses `is_active` flag for data integrity
+- **Clean Design**: Users exist independently of groups and projects
 
 ---
 
-### 2. `projects` - Project/Application Registry
+### 2. `user_groups` - Global User Groups
 
-Stores project/application definitions.
+Defines global user groups that determine project access for their members.
+
+```sql
+CREATE TABLE user_groups (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    group_hash VARCHAR(64) UNIQUE NOT NULL COMMENT 'Global group identifier',
+    group_name VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT COMMENT 'User ID who created this group',
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    
+    INDEX idx_group_hash (group_hash),
+    INDEX idx_group_name (group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+COMMENT='Global user groups for access control';
+```
+
+**Default User Groups:**
+- `administrators`: Full system access across all projects
+- `users`: Standard access to assigned projects  
+- `guests`: Limited read-only access
+
+---
+
+### 3. `user_group_members` - User Group Membership
+
+Links users to their user groups with assignment tracking.
+
+```sql
+CREATE TABLE user_group_members (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    user_group_id INT NOT NULL,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    assigned_by INT COMMENT 'User ID who made the assignment',
+    removed_at TIMESTAMP NULL,
+    removed_by INT COMMENT 'User ID who removed the assignment',
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL,
+    
+    UNIQUE KEY unique_user_group (user_id, user_group_id),
+    INDEX idx_user_id (user_id),
+    INDEX idx_user_group_id (user_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+COMMENT='User membership in user groups';
+```
+
+**Key Features:**
+- **Multi-Group Support**: Users can belong to multiple groups
+- **Assignment Tracking**: Records who assigned/removed group membership
+- **Audit Trail**: Complete history of group assignments
+
+---
+
+### 4. `projects` - Project Registry
+
+Stores project/application definitions that can be assigned to project groups.
 
 ```sql
 CREATE TABLE projects (
@@ -88,9 +161,12 @@ CREATE TABLE projects (
     project_hash VARCHAR(64) UNIQUE NOT NULL COMMENT 'Project identifier',
     project_name VARCHAR(255) NOT NULL,
     project_description TEXT,
-    project_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT COMMENT 'User ID who created this project',
     is_active BOOLEAN DEFAULT TRUE,
+    
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     
     INDEX idx_project_hash (project_hash),
     INDEX idx_project_name (project_name)
@@ -100,124 +176,123 @@ COMMENT='Project/Application registry';
 
 **Key Features:**
 - **Unique Project Hash**: Each project has a unique identifier
-- **Flexible Metadata**: Name and description for project management
-- **Soft Deletes**: Maintains project history even when deactivated
+- **Creator Tracking**: Records who created the project
+- **Clean Design**: Projects exist independently of groups
 
 ---
 
-### 3. `user_projects` - User-Project Access Mapping
+### 5. `user_group_projects` - Group Project Access
 
-Links users to projects they have access to.
+Defines which projects each user group can access.
 
 ```sql
-CREATE TABLE user_projects (
+CREATE TABLE user_group_projects (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    user_id INT NOT NULL,
+    user_group_id INT NOT NULL,
     project_id INT NOT NULL,
-    user_project_hash VARCHAR(64) UNIQUE NOT NULL COMMENT 'Unique identifier for this relationship',
     granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     granted_by INT COMMENT 'User ID who granted access',
     revoked_at TIMESTAMP NULL,
     revoked_by INT COMMENT 'User ID who revoked access',
     is_active BOOLEAN DEFAULT TRUE,
     
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (revoked_by) REFERENCES users(id) ON DELETE SET NULL,
     
-    UNIQUE KEY unique_user_project (user_id, project_id),
-    INDEX idx_user_id (user_id),
-    INDEX idx_project_id (project_id),
-    INDEX idx_user_project_hash (user_project_hash)
+    UNIQUE KEY unique_group_project (user_group_id, project_id),
+    INDEX idx_user_group_id (user_group_id),
+    INDEX idx_project_id (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='User access to projects';
+COMMENT='User group access to projects';
 ```
 
 **Key Features:**
-- **Cross-Project Access**: One user can have multiple project relationships
-- **Audit Trail**: Tracks who granted/revoked access and when
-- **Unique Relationship Hash**: Each user-project relationship has unique identifier
-- **Referential Integrity**: Proper foreign key constraints
+- **Group-Based Access**: All users in a group get project access
+- **Grant/Revoke Tracking**: Records who granted/revoked access and when
+- **Centralized Management**: Manage project access through groups
 
 ---
 
-### 4. `user_groups` - Project-Specific Groups
+### 6. `project_groups` - Permission Groups for Projects
 
-Defines groups within each project with associated permissions.
+Defines permission groups that projects can be assigned to.
 
 ```sql
-CREATE TABLE user_groups (
+CREATE TABLE project_groups (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    project_id INT NOT NULL,
-    group_name VARCHAR(255) NOT NULL,
-    group_description TEXT,
+    group_hash VARCHAR(64) UNIQUE NOT NULL COMMENT 'Project group identifier',
+    group_name VARCHAR(255) UNIQUE NOT NULL,
     permissions JSON COMMENT 'Array of permission strings',
+    description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT COMMENT 'User ID who created this group',
     is_active BOOLEAN DEFAULT TRUE,
     
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
     
-    UNIQUE KEY unique_group_per_project (project_id, group_name),
-    INDEX idx_project_id (project_id),
+    INDEX idx_group_hash (group_hash),
     INDEX idx_group_name (group_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='Groups within projects';
+COMMENT='Permission groups for projects';
 ```
 
-**Key Features:**
-- **Project-Specific**: Each project defines its own groups
-- **Flexible Permissions**: JSON array stores customizable permissions
-- **Default Groups**: System creates admin, user, readonly groups automatically
+**Default Project Groups:**
+- `full-access`: Complete project control (admin, read, write, delete)
+- `read-write`: Standard user permissions (read, write, create)
+- `read-only`: View-only access (read, view)
 
 ---
 
-### 5. `user_project_groups` - User Group Membership
+### 7. `project_group_members` - Project Group Assignments
 
-Links users to groups within projects.
+Links projects to their permission groups.
 
 ```sql
-CREATE TABLE user_project_groups (
+CREATE TABLE project_group_members (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    user_project_id INT NOT NULL,
-    group_id INT NOT NULL,
+    project_id INT NOT NULL,
+    project_group_id INT NOT NULL,
     assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     assigned_by INT COMMENT 'User ID who made the assignment',
     removed_at TIMESTAMP NULL,
     removed_by INT COMMENT 'User ID who removed the assignment',
     is_active BOOLEAN DEFAULT TRUE,
     
-    FOREIGN KEY (user_project_id) REFERENCES user_projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_group_id) REFERENCES project_groups(id) ON DELETE CASCADE,
     FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL,
     
-    UNIQUE KEY unique_user_group (user_project_id, group_id),
-    INDEX idx_user_project_id (user_project_id),
-    INDEX idx_group_id (group_id)
+    UNIQUE KEY unique_project_group (project_id, project_group_id),
+    INDEX idx_project_id (project_id),
+    INDEX idx_project_group_id (project_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='User membership in project groups';
+COMMENT='Project assignments to permission groups';
 ```
 
 **Key Features:**
-- **Multi-Group Support**: Users can belong to multiple groups per project
-- **Assignment Tracking**: Records who assigned/removed group membership
-- **Cascade Deletes**: Automatically cleans up when users or groups are removed
+- **Flexible Permissions**: Projects inherit permissions from their groups
+- **Assignment Tracking**: Records who assigned projects to groups
+- **Multiple Assignments**: Projects can belong to multiple permission groups
 
 ---
 
-### 6. `user_sessions` - Session Management
+### 8. `user_sessions` - Group-Aware Session Management
 
-Tracks active user sessions (complemented by Redis for performance).
+Tracks active user sessions with group context.
 
 ```sql
 CREATE TABLE user_sessions (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    user_project_id INT NOT NULL,
     session_token VARCHAR(64) UNIQUE NOT NULL,
-    session_key VARCHAR(255) COMMENT 'Legacy compatibility',
-    session_value TEXT COMMENT 'Legacy compatibility',
+    user_id INT NOT NULL,
+    user_group_id INT COMMENT 'Primary user group for this session',
+    project_id INT COMMENT 'Current project context',
+    project_group_id INT COMMENT 'Project group providing permissions',
+    session_data JSON COMMENT 'Additional session context',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP NOT NULL,
     last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -225,229 +300,273 @@ CREATE TABLE user_sessions (
     user_agent TEXT,
     is_active BOOLEAN DEFAULT TRUE,
     
-    FOREIGN KEY (user_project_id) REFERENCES user_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+    FOREIGN KEY (project_group_id) REFERENCES project_groups(id) ON DELETE SET NULL,
     
     INDEX idx_session_token (session_token),
-    INDEX idx_user_project_id (user_project_id),
+    INDEX idx_user_id (user_id),
+    INDEX idx_user_group_id (user_group_id),
+    INDEX idx_project_id (project_id),
     INDEX idx_expires_at (expires_at),
     INDEX idx_last_activity (last_activity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='User session tracking';
+COMMENT='Group-aware user session tracking';
 ```
 
 **Key Features:**
-- **Session Security**: Secure token-based session management
-- **Project Context**: Each session is tied to a specific user-project relationship
+- **Group Context**: Sessions include both user group and project group information
+- **Project Context**: Each session is tied to a specific project
+- **Permission Resolution**: Fast access to user's permissions through groups
 - **Activity Tracking**: Records IP address, user agent, and last activity
-- **Expiration Management**: Automatic session expiration handling
 
-## 🔑 Default Groups and Permissions
+---
 
-When a new project is created, the following default groups are automatically created:
+## 🔑 Group-Based Permissions
 
-### Admin Group
+### User Groups and Their Default Permissions
+
+#### Administrators Group
 ```json
 {
-  "group_name": "admin",
-  "group_description": "Project administrators",
+  "group_name": "administrators",
+  "description": "System administrators with full access",
+  "default_project_access": "all_projects",
+  "management_permissions": [
+    "create_projects",
+    "manage_user_groups", 
+    "manage_project_groups",
+    "grant_project_access",
+    "view_system_stats"
+  ]
+}
+```
+
+#### Users Group
+```json
+{
+  "group_name": "users",
+  "description": "Standard users with assigned project access",
+  "default_project_access": "assigned_projects_only",
+  "management_permissions": [
+    "view_assigned_projects",
+    "switch_between_projects"
+  ]
+}
+```
+
+#### Guests Group
+```json
+{
+  "group_name": "guests",
+  "description": "Limited access users",
+  "default_project_access": "read_only_projects",
+  "management_permissions": [
+    "view_public_projects"
+  ]
+}
+```
+
+### Project Groups and Their Permissions
+
+#### Full-Access Group
+```json
+{
+  "group_name": "full-access",
+  "description": "Complete project control",
   "permissions": [
     "admin",
     "read", 
     "write", 
-    "delete", 
-    "manage_users", 
-    "manage_groups"
+    "delete",
+    "manage_users",
+    "manage_settings",
+    "view_statistics"
   ]
 }
 ```
 
-### User Group
+#### Read-Write Group
 ```json
 {
-  "group_name": "user",
-  "group_description": "Regular users",
+  "group_name": "read-write",
+  "description": "Standard user permissions",
   "permissions": [
     "read",
-    "write"
+    "write",
+    "create"
   ]
 }
 ```
 
-### Readonly Group
+#### Read-Only Group
 ```json
 {
-  "group_name": "readonly",
-  "group_description": "Read-only users",
-  "permissions": [
-    "read"
-  ]
-}
-```
-
-## 🔐 Permission System
-
-The permission system uses JSON arrays to store permissions for each group. Common permissions include:
-
-| Permission | Description |
-|------------|-------------|
-| `read` | Can read/view content |
-| `write` | Can create/edit content |
-| `delete` | Can delete content |
-| `admin` | Full administrative access |
-| `manage_users` | Can grant/revoke user access |
-| `manage_groups` | Can manage group memberships |
-| `create_projects` | Can create new projects |
-
-### Custom Permissions
-
-Projects can define custom permissions based on their specific needs:
-
-```json
-{
+  "group_name": "read-only",
+  "description": "View-only access",
   "permissions": [
     "read",
-    "write", 
-    "export_data",
-    "manage_billing",
-    "api_access"
+    "view"
   ]
 }
 ```
 
 ## 📈 Key Features Implementation
 
-### 1. User Isolation by Project
+### 1. Hierarchical Group-Based Access Control
 
-Users are isolated by default through the `user_projects` table. A user can only access a project if they have an active record linking them to that project.
-
-```sql
--- Check if user has access to project
-SELECT up.* FROM user_projects up
-JOIN users u ON u.id = up.user_id
-JOIN projects p ON p.id = up.project_id
-WHERE u.user_hash = ? AND p.project_hash = ? AND up.is_active = 1;
-```
-
-### 2. Cross-Project User Access
-
-The same global user can have multiple entries in `user_projects`, giving them access to multiple projects with potentially different permissions in each.
+The system implements a clean hierarchy:
 
 ```sql
--- Get all projects user has access to
-SELECT p.project_hash, p.project_name, up.user_project_hash
-FROM user_projects up
-JOIN projects p ON p.id = up.project_id
-WHERE up.user_id = ? AND up.is_active = 1 AND p.is_active = 1;
+-- Get user's project access through their groups
+SELECT DISTINCT p.project_hash, p.project_name, pg.permissions
+FROM users u
+JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
+JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
+JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
+JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1
+JOIN project_group_members pgm ON p.id = pgm.project_id AND pgm.is_active = 1
+JOIN project_groups pg ON pgm.project_group_id = pg.id AND pg.is_active = 1
+WHERE u.user_hash = ? AND u.is_active = 1;
 ```
 
-### 3. Permission Resolution
+### 2. Permission Resolution
 
-User permissions are resolved by combining all permissions from their groups within a project:
+User permissions are resolved by combining their user group access with project group permissions:
 
 ```sql
--- Get all permissions for user in project
-SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(ug.permissions, '$[*]')) as permission
-FROM user_projects up
-JOIN user_project_groups upg ON up.id = upg.user_project_id
-JOIN user_groups ug ON upg.group_id = ug.id
-WHERE up.user_id = ? AND up.project_id = ?
-AND up.is_active = 1 AND upg.is_active = 1 AND ug.is_active = 1;
+-- Get user's effective permissions for a specific project
+SELECT JSON_UNQUOTE(JSON_EXTRACT(pg.permissions, '$[*]')) as permission
+FROM users u
+JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
+JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
+JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
+JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1
+JOIN project_group_members pgm ON p.id = pgm.project_id AND pgm.is_active = 1
+JOIN project_groups pg ON pgm.project_group_id = pg.id AND pg.is_active = 1
+WHERE u.user_hash = ? AND p.project_hash = ?
+AND u.is_active = 1;
 ```
 
-## 🔧 Modular Database Structure
+### 3. Group Management Operations
 
-The database operations are organized into specialized modules:
+The system provides comprehensive CRUD operations for group management:
 
-### **Module Organization**
+```python
+# Example group operations using the CRUD modules
+from group_based_crud_operations import (
+    UserGroupCRUD, ProjectGroupCRUD, UserGroupMembershipCRUD,
+    ProjectAccessCRUD, ProjectGroupMembershipCRUD, PermissionUtils
+)
 
+# Create user group
+admin_group = UserGroupCRUD.create(
+    "developers", 
+    "Software development team",
+    created_by=admin_user_id
+)
+
+# Create project group with permissions
+api_permissions = ProjectGroupCRUD.create(
+    "api-access",
+    ["read", "write", "api_access"],
+    "API access permissions",
+    created_by=admin_user_id
+)
+
+# Assign user to group
+UserGroupMembershipCRUD.assign_user_to_group(
+    user_id, admin_group.id, assigned_by=admin_user_id
+)
+
+# Grant group access to project
+ProjectAccessCRUD.grant_group_project_access(
+    admin_group.id, project_id, granted_by=admin_user_id
+)
+
+# Assign project to permission group
+ProjectGroupMembershipCRUD.assign_project_to_group(
+    project_id, api_permissions.id, assigned_by=admin_user_id
+)
 ```
-src/Util/db/
-├── __init__.py         # Main interface - imports and re-exports all functions
-├── db_enhanced.py      # Core authentication functions
-├── db_users.py         # User management operations  
-└── db_projects.py      # Project management operations
-```
-
-### **Function Distribution**
-
-#### User Operations (`db_users.py`)
-- **User CRUD**: `create_user()`, `get_user_by_*()`, `update_user()`, `delete_user()`
-- **Authentication**: `get_user_by_credentials()`, `check_username_email_available()`
-- **User-Project Access**: `grant_user_project_access()`, `get_user_projects()`
-- **Group Management**: `get_user_groups_in_project()`, `assign_user_to_group()`
-- **Session Management**: `create_session()`, `invalidate_session()`
-
-#### Project Operations (`db_projects.py`)
-- **Project CRUD**: `create_project()`, `get_project_by_*()`, `update_project()`, `delete_project()`
-- **Statistics**: `get_project_stats()`, `count_projects()`, `search_projects()`
-- **Group Management**: `get_project_groups()`, `create_project_group()`, `create_default_groups()`
-
-#### Authentication (`db_enhanced.py`)
-- **Enhanced Functions**: `enhanced_login()`, `enhanced_register()`, `validate_session()`
-- **Legacy Compatibility**: `db_login()`, `db_register()`, `db_username_or_email_available()`
 
 ## 📊 Usage Examples
 
-### 1. User Registration Flow
+### 1. User Registration and Group Assignment Flow
 
 ```sql
 -- 1. Create global user
 INSERT INTO users (user_hash, username, email, password_hash)
-VALUES ('ABC123...', 'john_doe', 'john@example.com', 'HASH...');
+VALUES ('USER_HASH_123', 'john_doe', 'john@example.com', 'HASHED_PASSWORD');
 
--- 2. Grant access to project
-INSERT INTO user_projects (user_id, project_id, user_project_hash)
-VALUES (1, 1, 'DEF456...');
+-- 2. Assign user to 'users' group
+INSERT INTO user_group_members (user_id, user_group_id, assigned_by)
+SELECT u.id, ug.id, 1
+FROM users u, user_groups ug
+WHERE u.user_hash = 'USER_HASH_123' AND ug.group_name = 'users';
 
--- 3. Assign to default 'user' group
-INSERT INTO user_project_groups (user_project_id, group_id)
-VALUES (1, 2); -- Assuming group_id 2 is the 'user' group
+-- 3. Grant 'users' group access to a project (done by admin)
+INSERT INTO user_group_projects (user_group_id, project_id, granted_by)
+SELECT ug.id, p.id, 1
+FROM user_groups ug, projects p
+WHERE ug.group_name = 'users' AND p.project_hash = 'PROJECT_HASH_456';
 ```
 
-### 2. Grant Cross-Project Access
+### 2. Project Creation and Group Assignment
 
 ```sql
--- User with ID 1 already exists, grant access to project 2
-INSERT INTO user_projects (user_id, project_id, user_project_hash, granted_by)
-VALUES (1, 2, 'GHI789...', 3); -- Granted by user 3
+-- 1. Create project
+INSERT INTO projects (project_hash, project_name, project_description, created_by)
+VALUES ('PROJECT_HASH_789', 'New API Project', 'RESTful API service', 1);
 
--- Assign to appropriate group in the new project
-INSERT INTO user_project_groups (user_project_id, group_id, assigned_by)
-VALUES (2, 5, 3); -- Assign to group 5, assigned by user 3
+-- 2. Assign project to 'full-access' permission group
+INSERT INTO project_group_members (project_id, project_group_id, assigned_by)
+SELECT p.id, pg.id, 1
+FROM projects p, project_groups pg
+WHERE p.project_hash = 'PROJECT_HASH_789' AND pg.group_name = 'full-access';
+
+-- 3. Grant user group access to the new project
+INSERT INTO user_group_projects (user_group_id, project_id, granted_by)
+SELECT ug.id, p.id, 1
+FROM user_groups ug, projects p
+WHERE ug.group_name = 'administrators' AND p.project_hash = 'PROJECT_HASH_789';
 ```
 
-### 3. Project Fusion Example
+### 3. Permission Check Example
 
 ```sql
--- Scenario: Merge two projects and give existing users access to both
-
--- Get all users from source project
-SELECT DISTINCT user_id FROM user_projects 
-WHERE project_id = 1 AND is_active = 1;
-
--- Grant access to target project for each user
-INSERT INTO user_projects (user_id, project_id, user_project_hash, granted_by)
-SELECT user_id, 2, CONCAT('fusion_', UUID()), NULL
-FROM user_projects 
-WHERE project_id = 1 AND is_active = 1;
+-- Check if user has 'admin' permission for a project
+SELECT COUNT(*) > 0 as has_permission
+FROM users u
+JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
+JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
+JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
+JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1
+JOIN project_group_members pgm ON p.id = pgm.project_id AND pgm.is_active = 1
+JOIN project_groups pg ON pgm.project_group_id = pg.id AND pg.is_active = 1
+WHERE u.user_hash = 'USER_HASH_123' 
+AND p.project_hash = 'PROJECT_HASH_456'
+AND JSON_CONTAINS(pg.permissions, '"admin"')
+AND u.is_active = 1;
 ```
 
 ## 🔒 Security Considerations
 
-1. **Password Hashing**: Uses SHA256 for consistency with legacy system
-2. **Session Management**: Combines database tracking with Redis for performance
-3. **Access Control**: Multi-layered through user-project-group relationships
-4. **Audit Trail**: Tracks who granted/revoked access and when
-5. **Soft Deletes**: Uses `is_active` flags to maintain audit history
-6. **Foreign Keys**: Proper referential integrity constraints
+1. **Group-Based Access Control**: All access is managed through group membership
+2. **Audit Trail**: Complete tracking of all group assignments and changes
+3. **Session Security**: Group context included in session tokens
+4. **Permission Isolation**: Users only see projects their groups can access
+5. **Hierarchical Permissions**: Clear permission inheritance through groups
+6. **Soft Deletes**: Uses `is_active` flags to maintain audit history
 
 ## ⚡ Performance Optimizations
 
-1. **Strategic Indexing**: Indexes on frequently queried columns (`user_hash`, `project_hash`, `session_token`)
-2. **Redis Caching**: Session data cached in Redis for fast access
+1. **Strategic Indexing**: Indexes on all group relationship foreign keys
+2. **Redis Caching**: Group context and permissions cached for fast access
 3. **Composite Keys**: Unique constraints prevent duplicate relationships
-4. **Cascading Operations**: Automatic cleanup of related records
-5. **Query Optimization**: Efficient joins and filtering
+4. **Optimized Queries**: Efficient joins for group-based permission resolution
+5. **Cascading Operations**: Automatic cleanup of related records
 
 ## 🔄 Backup and Maintenance
 
@@ -458,48 +577,73 @@ WHERE project_id = 1 AND is_active = 1;
 DELETE FROM user_sessions 
 WHERE expires_at < NOW() AND is_active = 0;
 
--- Update session activity
+-- Update session activity tracking
 UPDATE user_sessions 
 SET is_active = 0 
 WHERE last_activity < DATE_SUB(NOW(), INTERVAL 30 DAY);
 ```
 
-### Weekly Reports
+### Weekly Group Reports
 
 ```sql
--- Project activity summary
+-- Group membership summary
 SELECT 
-    p.project_name,
-    COUNT(DISTINCT up.user_id) as active_users,
-    COUNT(us.id) as active_sessions,
-    MAX(us.last_activity) as last_activity
-FROM projects p
-LEFT JOIN user_projects up ON p.id = up.project_id AND up.is_active = 1
-LEFT JOIN user_sessions us ON up.id = us.user_project_id AND us.is_active = 1
-WHERE p.is_active = 1
-GROUP BY p.id, p.project_name
-ORDER BY active_users DESC;
+    ug.group_name,
+    COUNT(DISTINCT ugm.user_id) as member_count,
+    COUNT(DISTINCT ugp.project_id) as project_access_count,
+    MAX(ugm.assigned_at) as last_member_added
+FROM user_groups ug
+LEFT JOIN user_group_members ugm ON ug.id = ugm.user_group_id AND ugm.is_active = 1
+LEFT JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
+WHERE ug.is_active = 1
+GROUP BY ug.id, ug.group_name
+ORDER BY member_count DESC;
 ```
 
 ### Database Backup
 
 ```bash
 # Create full backup
-mysqldump -u root -p magic_auth_enhanced > backup_$(date +%Y%m%d_%H%M%S).sql
+mysqldump -u root -p magic_auth_groups > backup_groups_$(date +%Y%m%d_%H%M%S).sql
 
-# Backup specific tables
-mysqldump -u root -p magic_auth_enhanced users projects user_projects > critical_backup.sql
+# Backup group-related tables
+mysqldump -u root -p magic_auth_groups \
+  users user_groups user_group_members \
+  projects project_groups project_group_members \
+  user_group_projects user_sessions \
+  > group_backup.sql
 ```
 
 ## 📚 Integration with Application
 
-The database schema integrates seamlessly with the modular application structure:
+The database schema integrates seamlessly with the group-based application structure:
 
-1. **Database Layer**: Modular functions in `src/Util/db/`
-2. **API Layer**: RESTful endpoints in `src/routes/`
-3. **Security Layer**: Token validation in `src/Util/Seccurity.py`
-4. **Session Layer**: Redis caching for performance
+1. **Database Layer**: Group-based CRUD operations in `group_based_crud_operations.py`
+2. **API Layer**: RESTful endpoints in `src/routes/UserEnhanced.py`
+3. **Security Layer**: Group-aware token validation
+4. **Session Layer**: Redis caching with group context
+
+### Example Integration
+
+```python
+# Application integration example
+from group_based_crud_operations import PermissionUtils
+
+# Check user permission for action
+def check_user_permission(user_id, project_id, required_permission):
+    return PermissionUtils.check_user_permission(
+        user_id, project_id, required_permission
+    )
+
+# Get user's accessible projects
+def get_user_projects(user_id):
+    return PermissionUtils.get_user_accessible_projects(user_id)
+
+# Get user's effective permissions for project
+def get_user_permissions(user_id, project_id):
+    return PermissionUtils.get_user_project_permissions(user_id, project_id)
+```
 
 ---
 
-**This database schema provides a robust foundation for multi-project authentication while maintaining backward compatibility and supporting all the requested features for user isolation, cross-project access, and group-based permissions.** 
+**This group-based database schema provides a robust foundation for hierarchical access control while maintaining clean separation between user groups (who can access what) and project groups (what permissions they have). The design supports thousands of users and projects while keeping management simple and audit trails complete.** 

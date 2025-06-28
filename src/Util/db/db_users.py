@@ -20,7 +20,7 @@ import hashlib
 import redis
 
 from src.Util.Models import (
-    User, Project, UserProject, UserGroup, EnhancedUserLogin
+    User, Project, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
 )
 
 # Database connection settings
