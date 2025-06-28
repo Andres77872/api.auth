@@ -12,5 +12,5 @@ async def logger(payload: dict, realm: str, collection: str):
         async with session.put(url + f'/log/{realm}/{collection}', 
                               headers=headers, 
                               json={'data': payload}) as res:
-            if res.status != 200:
+            if res.status != 202:
                 print(res)

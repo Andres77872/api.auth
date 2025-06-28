@@ -4,7 +4,7 @@ from fastapi import HTTPException, Request
 from fastapi.security import APIKeyHeader
 from starlette.responses import JSONResponse
 
-from src.Util.Cypher import cypher_x_decode
+from src.Util.JWT_Security import JWTTokenHandler, jwt_decode
 from src.Util.Models import UserLogin
 from src.Util.db import set_session, get_session, db_validate_session
 
@@ -14,46 +14,64 @@ x_token_collection_name = 'X-token-collection'
 x_token_user = APIKeyHeader(name=x_token_user_name, auto_error=True, scheme_name=x_token_user_name)
 x_token_collection = APIKeyHeader(name=x_token_collection_name, auto_error=True, scheme_name=x_token_collection_name)
 
+# Legacy parameters - kept for compatibility but not used with JWT
 x_random_key = 256
 x_check_sum = 256
-# [SessionKEY]
 x_params_keys = [256]
 
 
 def middleware_user_token_validation(request: Request) -> UserLogin:
     """
-    This method will return the user id, this will raise an exception if the token is invalid
-    or not exist
+    JWT-based token validation method that replaces the custom cipher validation.
+    This method will return the user session data, raising an exception if the token is invalid.
+    
     :param request: Request
-    :return: Int with the user id
+    :return: UserLogin model with session data
     """
     if x_token_user_name in request.headers and x_token_collection_name in request.headers:
         try:
-            user, _ = cypher_x_decode(
-                random_key=x_random_key,
-                check_sum=x_check_sum,
-                params_keys=x_params_keys,
-                encoded=request.headers[x_token_user_name],
-                padding=None
-            )
-
-            user_model = get_session(user[0])
-            # print(user[0])
+            # Decode JWT token to get session ID
+            user_token = request.headers[x_token_user_name]
+            collection_token = request.headers[x_token_collection_name]
+            
+            # Decode JWT token using our new JWT handler
+            payload = JWTTokenHandler.decode_access_token(user_token)
+            session_id = payload.get("session_id")
+            token_user_hash = payload.get("user_hash")
+            token_collection = payload.get("collection")
+            
+            # Validate collection matches
+            if collection_token != token_collection:
+                raise HTTPException(status_code=401, detail='Collection token mismatch')
+            
+            # Get session data from storage
+            user_model = get_session(session_id)
+            
             if (user_model and  # Session exists
-                    # Session expected == session Actual
-                    request.headers[x_token_collection_name] == user_model.user_collection and
-                    # Session actual == User session
+                    # Collection validation
+                    collection_token == user_model.user_collection and
+                    # User hash validation
+                    token_user_hash == user_model.user_hash and
+                    # Session validation in database
                     db_validate_session(user_session=user_model.user_session, user_hash=user_model.user_hash)):
                 return user_model
             raise HTTPException(status_code=401, detail='User token invalid')
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions (they already have proper error messages)
+            raise
         except Exception as e:
-            print(e)
+            print(f"Token validation error: {e}")
             raise HTTPException(status_code=401, detail='User token invalid')
     else:
         raise HTTPException(status_code=401, detail='User token invalid')
 
 
 def make_session(user_model: UserLogin, session_id: int) -> bool:
+    """
+    Create a session in both database and cache.
+    No changes needed here as it handles session storage, not token generation.
+    """
     try:
         session_state = {
             'user_session_length': user_model.user_session_length,

@@ -7,17 +7,14 @@ from src.Util.logger_ws import logger
 from src.routes import Access, User
 
 import time
-import hashlib
 
 from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
-
-hashlib.sha256()
 
 description = open('./src/README.md').read()
 
 app = FastAPI(title='API for findit.moe',
               description=description,
-              version='0.2.1',
+              version='0.3.0',
               contact={
                   "name": "Andrés",
                   "url": "https://arizmendi.io",
