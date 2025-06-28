@@ -3,12 +3,13 @@ from typing import List, Optional
 from fastapi import APIRouter, Form, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from src.Util.db_enhanced import (
+from src.Util.db import (
     enhanced_login, enhanced_register, check_username_email_available,
-    validate_session, create_project, get_project_by_hash,
-    grant_user_project_access, get_user_by_credentials,
-    get_user_projects, get_user_groups_in_project,
-    get_user_permissions_in_project
+    validate_session, create_project, get_project_by_hash, get_project_by_id,
+    list_all_projects, count_projects, update_project, delete_project,
+    search_projects, get_project_stats, grant_user_project_access, 
+    get_user_by_credentials, get_user_projects, get_user_groups_in_project,
+    get_user_permissions_in_project, get_user_project_access
 )
 from src.Util.Models import EnhancedUserLogin
 
@@ -242,9 +243,9 @@ async def switch_project(
         raise HTTPException(status_code=401, detail='Invalid session')
     
     # Generate new session for the target project
-    from src.Util.db_enhanced import get_user_project_access, get_user_groups_in_project, get_user_permissions_in_project
+    from src.Util.db import get_user_project_access, get_user_groups_in_project, get_user_permissions_in_project
     import json
-    from src.Util.db_enhanced import client
+    from src.Util.db import client
     
     user_project = get_user_project_access(current_user.user_id, target_project.id)
     if not user_project:
@@ -317,7 +318,7 @@ async def create_new_project(
     )
     
     # Assign user to admin group in the new project
-    from src.Util.db_enhanced import get_connection
+    from src.Util.db import get_connection
     with get_connection() as con:
         cur = con.cursor()
         # Get admin group ID for the new project
@@ -384,7 +385,7 @@ async def grant_user_access(
         raise HTTPException(status_code=404, detail='Target project not found')
     
     # Find the global user
-    from src.Util.db_enhanced import get_connection
+    from src.Util.db import get_connection
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -399,7 +400,7 @@ async def grant_user_access(
         target_user_id = user_result[0]
     
     # Check if user already has access
-    from src.Util.db_enhanced import get_user_project_access
+    from src.Util.db import get_user_project_access
     existing_access = get_user_project_access(target_user_id, target_project.id)
     if existing_access:
         raise HTTPException(
@@ -447,4 +448,274 @@ async def validate_token(current_user: EnhancedUserLogin = Depends(get_current_u
         },
         'permissions': current_user.permissions,
         'groups': current_user.groups
+    }
+
+
+# PROJECT CRUD ENDPOINTS
+
+@router.get("/projects")
+async def list_projects(
+    limit: int = 100,
+    offset: int = 0,
+    search: str = None,
+    current_user: EnhancedUserLogin = Depends(get_current_user)
+):
+    """
+    ## List All Projects
+    
+    Get a paginated list of all projects. Supports search functionality.
+    Only users with 'admin' permission can list all projects.
+    """
+    # Check permissions
+    if 'admin' not in current_user.permissions:
+        raise HTTPException(
+            status_code=403,
+            detail='Insufficient permissions. Admin access required to list all projects.'
+        )
+    
+    if search:
+        projects = search_projects(search, limit)
+        total_count = len(projects)  # For search, we don't do separate count
+    else:
+        projects = list_all_projects(limit, offset)
+        total_count = count_projects()
+    
+    return {
+        'projects': [
+            {
+                'project_id': proj.id,
+                'project_hash': proj.project_hash,
+                'project_name': proj.project_name,
+                'project_description': proj.project_description,
+                'project_created': proj.project_created.isoformat() if proj.project_created else None,
+                'is_active': proj.is_active
+            }
+            for proj in projects
+        ],
+        'pagination': {
+            'limit': limit,
+            'offset': offset,
+            'total_count': total_count,
+            'has_more': (offset + len(projects)) < total_count if not search else False
+        }
+    }
+
+
+@router.get("/projects/{project_hash}")
+async def get_project_details(
+    project_hash: str,
+    current_user: EnhancedUserLogin = Depends(get_current_user)
+):
+    """
+    ## Get Project Details
+    
+    Get detailed information about a specific project by its hash.
+    Users can only view projects they have access to, unless they have admin permissions.
+    """
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise HTTPException(status_code=404, detail='Project not found')
+    
+    # Check if user has access to this project or admin permissions
+    has_access = False
+    if 'admin' in current_user.permissions:
+        has_access = True
+    else:
+        # Check if user has access to this specific project
+        for user_project in current_user.available_projects:
+            if user_project.project_hash == project_hash:
+                has_access = True
+                break
+    
+    if not has_access:
+        raise HTTPException(
+            status_code=403,
+            detail='Access denied. You do not have permission to view this project.'
+        )
+    
+    # Get project statistics if user has admin access to the project
+    stats = None
+    try:
+        # Check if user has admin access to THIS specific project
+        if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
+            stats = get_project_stats(project.id)
+        elif 'admin' in current_user.permissions:  # Global admin
+            stats = get_project_stats(project.id)
+    except Exception as e:
+        # Stats are optional, continue without them
+        pass
+    
+    response = {
+        'project_id': project.id,
+        'project_hash': project.project_hash,
+        'project_name': project.project_name,
+        'project_description': project.project_description,
+        'project_created': project.project_created.isoformat() if project.project_created else None,
+        'is_active': project.is_active
+    }
+    
+    if stats:
+        response['statistics'] = stats
+    
+    return response
+
+
+@router.put("/projects/{project_hash}")
+async def update_project_details(
+    project_hash: str,
+    project_name: str = Form(None),
+    project_description: str = Form(None),
+    current_user: EnhancedUserLogin = Depends(get_current_user)
+):
+    """
+    ## Update Project Details
+    
+    Update project name and/or description.
+    Only users with 'admin' permission in the specific project can update it.
+    """
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise HTTPException(status_code=404, detail='Project not found')
+    
+    # Check if user has admin access to this specific project
+    has_admin_access = False
+    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
+        has_admin_access = True
+    elif 'admin' in current_user.permissions:  # Global admin check
+        # Verify if this user has admin access to the target project
+        from src.Util.db import get_user_project_access, get_user_permissions_in_project
+        user_project = get_user_project_access(current_user.user_id, project.id)
+        if user_project:
+            permissions = get_user_permissions_in_project(user_project.id)
+            if 'admin' in permissions:
+                has_admin_access = True
+    
+    if not has_admin_access:
+        raise HTTPException(
+            status_code=403,
+            detail='Insufficient permissions. Admin access to this project required.'
+        )
+    
+    if not project_name and project_description is None:
+        raise HTTPException(
+            status_code=400,
+            detail='At least one field (project_name or project_description) must be provided'
+        )
+    
+    updated_project = update_project(
+        project.id, 
+        project_name, 
+        project_description, 
+        updated_by=current_user.user_id
+    )
+    
+    if updated_project:
+        return {
+            'success': True,
+            'project': {
+                'project_id': updated_project.id,
+                'project_hash': updated_project.project_hash,
+                'project_name': updated_project.project_name,
+                'project_description': updated_project.project_description,
+                'project_created': updated_project.project_created.isoformat() if updated_project.project_created else None,
+                'is_active': updated_project.is_active
+            }
+        }
+    else:
+        raise HTTPException(status_code=500, detail='Failed to update project')
+
+
+@router.delete("/projects/{project_hash}")
+async def delete_project_endpoint(
+    project_hash: str,
+    current_user: EnhancedUserLogin = Depends(get_current_user)
+):
+    """
+    ## Delete Project
+    
+    Soft delete a project and all related data (user access, groups, sessions).
+    Only users with 'admin' permission in the specific project can delete it.
+    
+    **Warning:** This action cannot be undone and will revoke access for all users.
+    """
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise HTTPException(status_code=404, detail='Project not found')
+    
+    # Check if user has admin access to this specific project
+    has_admin_access = False
+    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
+        has_admin_access = True
+    elif 'admin' in current_user.permissions:  # Global admin check
+        # Verify if this user has admin access to the target project
+        from src.Util.db import get_user_project_access, get_user_permissions_in_project
+        user_project = get_user_project_access(current_user.user_id, project.id)
+        if user_project:
+            permissions = get_user_permissions_in_project(user_project.id)
+            if 'admin' in permissions:
+                has_admin_access = True
+    
+    if not has_admin_access:
+        raise HTTPException(
+            status_code=403,
+            detail='Insufficient permissions. Admin access to this project required.'
+        )
+    
+    success = delete_project(project.id, deleted_by=current_user.user_id)
+    
+    if success:
+        return {
+            'success': True,
+            'message': f'Project "{project.project_name}" has been deleted successfully',
+            'deleted_project': {
+                'project_hash': project.project_hash,
+                'project_name': project.project_name
+            }
+        }
+    else:
+        raise HTTPException(status_code=500, detail='Failed to delete project')
+
+
+@router.get("/projects/{project_hash}/stats")
+async def get_project_statistics(
+    project_hash: str,
+    current_user: EnhancedUserLogin = Depends(get_current_user)
+):
+    """
+    ## Get Project Statistics
+    
+    Get detailed statistics for a project including user counts, active sessions, and group distribution.
+    Only users with 'admin' permission in the specific project can view statistics.
+    """
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise HTTPException(status_code=404, detail='Project not found')
+    
+    # Check if user has admin access to this specific project
+    has_admin_access = False
+    if project_hash == current_user.project_hash and 'admin' in current_user.permissions:
+        has_admin_access = True
+    elif 'admin' in current_user.permissions:  # Global admin check
+        # Verify if this user has admin access to the target project
+        from src.Util.db import get_user_project_access, get_user_permissions_in_project
+        user_project = get_user_project_access(current_user.user_id, project.id)
+        if user_project:
+            permissions = get_user_permissions_in_project(user_project.id)
+            if 'admin' in permissions:
+                has_admin_access = True
+    
+    if not has_admin_access:
+        raise HTTPException(
+            status_code=403,
+            detail='Insufficient permissions. Admin access to this project required.'
+        )
+    
+    stats = get_project_stats(project.id)
+    
+    return {
+        'project': {
+            'project_hash': project.project_hash,
+            'project_name': project.project_name
+        },
+        'statistics': stats
     } 

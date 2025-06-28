@@ -2,43 +2,82 @@
 Enhanced Multi-Project Authentication Database Module
 
 This module provides database operations for the enhanced authentication system.
+The database operations are now organized into specialized modules:
+
+- db_users.py: User management, authentication, and session operations
+- db_projects.py: Project management and group operations
+- db_enhanced.py: Main authentication functions that combine user and project operations
+
 All operations use the multi-project architecture with user isolation and group-based permissions.
 """
 
-# Import all enhanced database functions
-from src.Util.db_enhanced import (
-    # Core database functions
-    get_connection,
+# Import core database functions from main enhanced module
+from src.Util.db.db_enhanced import (
+    # Core database connection
     client,
-    
-    # Project management
-    create_project,
-    get_project_by_hash,
-    
-    # User management  
+
+    # Enhanced authentication functions
+    enhanced_login,
+    enhanced_register,
+    validate_session,
+    get_session_data,
+
+    # Legacy compatibility functions
+    db_login,
+    db_register,
+    db_username_or_email_available
+)
+
+# Import user management functions
+from src.Util.db.db_users import (
+    # User CRUD operations
     create_user,
     get_user_by_credentials,
+    get_user_by_id,
+    get_user_by_hash,
+    update_user,
+    delete_user,
+    list_users,
+    count_users,
+    search_users,
     check_username_email_available,
-    
-    # User-project access
+
+    # User-project access management
     grant_user_project_access,
     get_user_project_access,
     get_user_projects,
-    
-    # Group management
+    revoke_user_project_access,
+
+    # User group management
     get_user_groups_in_project,
     get_user_permissions_in_project,
-    
-    # Authentication
-    enhanced_login,
-    enhanced_register,
-    get_session_data,
-    validate_session,
-    
-    # Legacy compatibility - these map to enhanced functions
-    enhanced_login as db_login,
-    enhanced_register as db_register,
-    check_username_email_available as db_username_or_email_available
+    assign_user_to_group,
+    remove_user_from_group,
+
+    # Session management
+    create_session,
+    invalidate_session
+)
+
+# Import project management functions
+from src.Util.db.db_projects import (
+    # Project CRUD operations
+    create_project,
+    get_project_by_hash,
+    get_project_by_id,
+    list_all_projects,
+    count_projects,
+    update_project,
+    delete_project,
+    search_projects,
+    get_project_stats,
+
+    # Project group management
+    get_project_groups,
+    create_project_group,
+    update_project_group,
+    delete_project_group,
+    create_default_groups
 )
 
 from src.Util.Models import UserLogin
@@ -76,7 +115,7 @@ def get_session(key: int) -> UserLogin | None:
             )
     except Exception as e:
         print(f"Session retrieval error: {e}")
-    
+
     return None
 
 
@@ -93,36 +132,63 @@ def db_validate_session(user_hash: str, user_session: str) -> bool:
         return False
 
 
-# Export all available functions
+# Export all available functions for easy importing
 __all__ = [
     # Core database
-    'get_connection',
     'client',
-    
-    # Project management
-    'create_project',
-    'get_project_by_hash',
-    
+
+    # Enhanced authentication
+    'enhanced_login',
+    'enhanced_register',
+    'validate_session',
+    'get_session_data',
+
     # User management
     'create_user',
-    'get_user_by_credentials', 
+    'get_user_by_credentials',
+    'get_user_by_id',
+    'get_user_by_hash',
+    'update_user',
+    'delete_user',
+    'list_users',
+    'count_users',
+    'search_users',
     'check_username_email_available',
-    
+
     # User-project access
     'grant_user_project_access',
     'get_user_project_access',
     'get_user_projects',
-    
+    'revoke_user_project_access',
+
     # Group management
     'get_user_groups_in_project',
     'get_user_permissions_in_project',
-    
-    # Authentication
-    'enhanced_login',
-    'enhanced_register',
-    'get_session_data',
-    'validate_session',
-    
+    'assign_user_to_group',
+    'remove_user_from_group',
+
+    # Project management
+    'create_project',
+    'get_project_by_hash',
+    'get_project_by_id',
+    'list_all_projects',
+    'count_projects',
+    'update_project',
+    'delete_project',
+    'search_projects',
+    'get_project_stats',
+
+    # Project group management
+    'get_project_groups',
+    'create_project_group',
+    'update_project_group',
+    'delete_project_group',
+    'create_default_groups',
+
+    # Session management
+    'create_session',
+    'invalidate_session',
+
     # Legacy compatibility
     'db_login',
     'db_register',

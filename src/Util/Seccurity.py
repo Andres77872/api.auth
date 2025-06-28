@@ -5,7 +5,7 @@ from fastapi.security import APIKeyHeader
 from starlette.responses import JSONResponse
 
 from src.Util.Models import UserLogin
-from src.Util.db_enhanced import validate_session, client
+from src.Util.db.db_enhanced import validate_session, client
 
 x_token_user_name = 'X-token-user'
 x_token_collection_name = 'X-token-collection'

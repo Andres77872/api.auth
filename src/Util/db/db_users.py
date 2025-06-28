@@ -1,18 +1,29 @@
+"""
+Enhanced Multi-Project Authentication - User Database Operations
+
+This module handles all user-related database operations including:
+- User management (create, read, update, delete)
+- User authentication and credentials
+- User-project access management
+- User session management
+- User group memberships
+"""
+
 import json
 import secrets
 import os
 from typing import List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pymysql
 import hashlib
 import redis
 
 from src.Util.Models import (
-    User, Project, UserProject, UserGroup, UserProjectGroup, 
-    UserSession, UserLogin, EnhancedUserLogin
+    User, Project, UserProject, UserGroup, EnhancedUserLogin
 )
 
+# Database connection settings
 ip = "192.168.1.90"
 # ip = "127.0.0.1"
 
@@ -30,77 +41,8 @@ client = redis.StrictRedis(host=ip,
 
 
 def get_connection():
+    """Get database connection"""
     return pymysql.connect(**connectionDB)
-
-
-# =================== PROJECT MANAGEMENT ===================
-
-def create_project(project_name: str, project_description: str = None) -> Project:
-    """Create a new project/application"""
-    project_hash = secrets.token_hex(32).upper()
-    
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            INSERT INTO projects (project_hash, project_name, project_description, project_created)
-            VALUES (%s, %s, %s, NOW())
-        """, [project_hash, project_name, project_description])
-        
-        project_id = con.insert_id()
-        con.commit()
-        
-        # Create default user group for this project
-        create_default_groups(project_id)
-        
-        return Project(
-            id=project_id,
-            project_hash=project_hash,
-            project_name=project_name,
-            project_description=project_description,
-            project_created=datetime.now(),
-            is_active=True
-        )
-
-
-def get_project_by_hash(project_hash: str) -> Optional[Project]:
-    """Get project by project hash"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            SELECT id, project_hash, project_name, project_description, project_created, is_active
-            FROM projects 
-            WHERE project_hash = %s AND is_active = 1
-        """, [project_hash])
-        
-        result = cur.fetchone()
-        if result:
-            return Project(
-                id=result[0],
-                project_hash=result[1],
-                project_name=result[2],
-                project_description=result[3],
-                project_created=result[4],
-                is_active=bool(result[5])
-            )
-    return None
-
-
-def create_default_groups(project_id: int):
-    """Create default groups for a new project"""
-    default_groups = [
-        ("admin", "Project administrators", '["admin", "read", "write", "delete", "manage_users"]'),
-        ("user", "Regular users", '["read", "write"]'),
-        ("readonly", "Read-only users", '["read"]')
-    ]
-    
-    with get_connection() as con:
-        cur = con.cursor()
-        for group_name, description, permissions in default_groups:
-            cur.execute("""
-                INSERT INTO user_groups (project_id, group_name, group_description, permissions, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, [project_id, group_name, description, permissions])
-        con.commit()
 
 
 # =================== USER MANAGEMENT ===================
@@ -157,6 +99,54 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
     return None
 
 
+def get_user_by_id(user_id: int) -> Optional[User]:
+    """Get user by user ID"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            FROM users 
+            WHERE id = %s AND is_active = 1
+        """, [user_id])
+        
+        result = cur.fetchone()
+        if result:
+            return User(
+                id=result[0],
+                user_hash=result[1],
+                username=result[2],
+                email=result[3],
+                password_hash=result[4],
+                created_at=result[5],
+                is_active=bool(result[6])
+            )
+    return None
+
+
+def get_user_by_hash(user_hash: str) -> Optional[User]:
+    """Get user by user hash"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            FROM users 
+            WHERE user_hash = %s AND is_active = 1
+        """, [user_hash])
+        
+        result = cur.fetchone()
+        if result:
+            return User(
+                id=result[0],
+                user_hash=result[1],
+                username=result[2],
+                email=result[3],
+                password_hash=result[4],
+                created_at=result[5],
+                is_active=bool(result[6])
+            )
+    return None
+
+
 def check_username_email_available(username_or_email: str) -> bool:
     """Check if username or email is available globally"""
     with get_connection() as con:
@@ -169,7 +159,131 @@ def check_username_email_available(username_or_email: str) -> bool:
         return cur.fetchone()[0] == 0
 
 
-# =================== USER-PROJECT MANAGEMENT ===================
+def update_user(user_id: int, username: str = None, email: str = None, password: str = None) -> Optional[User]:
+    """Update user information"""
+    if not username and not email and not password:
+        return None
+    
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        # Build dynamic update query
+        update_fields = []
+        update_values = []
+        
+        if username:
+            update_fields.append("username = %s")
+            update_values.append(username)
+        
+        if email is not None:
+            update_fields.append("email = %s")
+            update_values.append(email)
+        
+        if password:
+            password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+            update_fields.append("password_hash = %s")
+            update_values.append(password_hash)
+        
+        update_fields.append("updated_at = NOW()")
+        update_values.append(user_id)
+        
+        query = f"""
+            UPDATE users 
+            SET {', '.join(update_fields)}
+            WHERE id = %s AND is_active = 1
+        """
+        
+        cur.execute(query, update_values)
+        
+        if cur.rowcount > 0:
+            con.commit()
+            return get_user_by_id(user_id)
+        else:
+            return None
+
+
+def delete_user(user_id: int) -> bool:
+    """Soft delete a user"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE users 
+            SET is_active = 0, updated_at = NOW()
+            WHERE id = %s AND is_active = 1
+        """, [user_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
+def list_users(limit: int = 100, offset: int = 0) -> List[User]:
+    """List all active users with pagination"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            FROM users 
+            WHERE is_active = 1
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """, [limit, offset])
+        
+        results = []
+        for row in cur.fetchall():
+            results.append(User(
+                id=row[0],
+                user_hash=row[1],
+                username=row[2],
+                email=row[3],
+                password_hash=row[4],
+                created_at=row[5],
+                is_active=bool(row[6])
+            ))
+        
+        return results
+
+
+def count_users() -> int:
+    """Count total number of active users"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        return cur.fetchone()[0]
+
+
+def search_users(search_term: str, limit: int = 50) -> List[User]:
+    """Search users by username or email"""
+    with get_connection() as con:
+        cur = con.cursor()
+        search_pattern = f"%{search_term}%"
+        
+        cur.execute("""
+            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            FROM users 
+            WHERE is_active = 1 
+            AND (username LIKE %s OR email LIKE %s)
+            ORDER BY username ASC
+            LIMIT %s
+        """, [search_pattern, search_pattern, limit])
+        
+        results = []
+        for row in cur.fetchall():
+            results.append(User(
+                id=row[0],
+                user_hash=row[1],
+                username=row[2],
+                email=row[3],
+                password_hash=row[4],
+                created_at=row[5],
+                is_active=bool(row[6])
+            ))
+        
+        return results
+
+
+# =================== USER-PROJECT ACCESS MANAGEMENT ===================
 
 def grant_user_project_access(user_id: int, project_id: int, granted_by: int = None) -> UserProject:
     """Grant a user access to a project"""
@@ -250,6 +364,22 @@ def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
         return results
 
 
+def revoke_user_project_access(user_id: int, project_id: int, revoked_by: int = None) -> bool:
+    """Revoke user's access to a project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE user_projects 
+            SET is_active = 0, revoked_at = NOW(), revoked_by = %s
+            WHERE user_id = %s AND project_id = %s AND is_active = 1
+        """, [revoked_by, user_id, project_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
 def assign_user_to_default_group(user_project_id: int, project_id: int):
     """Assign user to default 'user' group in a project"""
     with get_connection() as con:
@@ -270,7 +400,7 @@ def assign_user_to_default_group(user_project_id: int, project_id: int):
             con.commit()
 
 
-# =================== GROUP MANAGEMENT ===================
+# =================== USER GROUP MANAGEMENT ===================
 
 def get_user_groups_in_project(user_project_id: int) -> List[UserGroup]:
     """Get all groups a user belongs to in a project"""
@@ -306,37 +436,71 @@ def get_user_permissions_in_project(user_project_id: int) -> List[str]:
     return list(permissions)
 
 
-# =================== AUTHENTICATION ===================
+def assign_user_to_group(user_project_id: int, group_id: int, assigned_by: int = None) -> bool:
+    """Assign user to a group in a project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO user_project_groups (user_project_id, group_id, assigned_at, assigned_by)
+            VALUES (%s, %s, NOW(), %s)
+        """, [user_project_id, group_id, assigned_by])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
 
-def enhanced_login(username: str, password: str, project_hash: str) -> Optional[EnhancedUserLogin]:
-    """Enhanced login with multi-project support"""
-    # Get user by credentials
-    user = get_user_by_credentials(username, password)
+
+def remove_user_from_group(user_project_id: int, group_id: int, removed_by: int = None) -> bool:
+    """Remove user from a group in a project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE user_project_groups 
+            SET is_active = 0, removed_at = NOW(), removed_by = %s
+            WHERE user_project_id = %s AND group_id = %s AND is_active = 1
+        """, [removed_by, user_project_id, group_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
+# =================== USER SESSION MANAGEMENT ===================
+
+def get_session_data(session_token: str) -> Optional[dict]:
+    """Get session data from Redis"""
+    session_data = client.get(f"session:{session_token}")
+    if session_data:
+        return json.loads(session_data)
+    return None
+
+
+def create_session(user_id: int, project_id: int, user_project_id: int, session_length: int = 259200) -> str:
+    """Create a new session and store in Redis"""
+    session_token = secrets.token_hex(32).upper()
+    
+    # Get user and project data
+    user = get_user_by_id(user_id)
     if not user:
         return None
     
-    # Get project
-    project = get_project_by_hash(project_hash)
+    # Import here to avoid circular imports
+    from src.Util.db.db_projects import get_project_by_id
+    project = get_project_by_id(project_id)
     if not project:
         return None
     
-    # Check if user has access to this project
-    user_project = get_user_project_access(user.id, project.id)
+    user_project = get_user_project_access(user_id, project_id)
     if not user_project:
         return None
     
-    # Get user's groups and permissions in this project
-    groups = get_user_groups_in_project(user_project.id)
-    permissions = get_user_permissions_in_project(user_project.id)
+    # Get user's groups and permissions
+    groups = get_user_groups_in_project(user_project_id)
+    permissions = get_user_permissions_in_project(user_project_id)
     
-    # Get all projects user has access to
-    available_projects = [proj for proj, _ in get_user_projects(user.id)]
-    
-    # Create session
-    session_token = secrets.token_hex(32).upper()
-    session_length = 60 * 60 * 24 * 3  # 3 days
-    
-    # Store session in Redis
+    # Store session data in Redis
     session_data = {
         'user_id': user.id,
         'user_hash': user.user_hash,
@@ -350,49 +514,16 @@ def enhanced_login(username: str, password: str, project_hash: str) -> Optional[
     
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
     
-    return EnhancedUserLogin(
-        user_hash=user.user_hash,
-        project_hash=project.project_hash,
-        project_name=project.project_name,
-        user_project_hash=user_project.user_project_hash,
-        session_token=session_token,
-        session_length=session_length,
-        user_id=user.id,
-        project_id=project.id,
-        user_project_id=user_project.id,
-        groups=[g.group_name for g in groups],
-        permissions=permissions,
-        available_projects=available_projects
-    )
+    return session_token
 
 
-def enhanced_register(username: str, password: str, email: str, project_hash: str) -> Optional[EnhancedUserLogin]:
-    """Enhanced registration with multi-project support"""
-    # Check if username/email is available
-    if not check_username_email_available(username) or (email and not check_username_email_available(email)):
-        return None
-    
-    # Get or create project
-    project = get_project_by_hash(project_hash)
-    if not project:
-        return None
-    
-    # Create user
-    user = create_user(username, password, email)
-    
-    # Grant user access to the project
-    user_project = grant_user_project_access(user.id, project.id)
-    
-    # Continue with login flow
-    return enhanced_login(username, password, project_hash)
-
-
-def get_session_data(session_token: str) -> Optional[dict]:
-    """Get session data from Redis"""
-    session_data = client.get(f"session:{session_token}")
-    if session_data:
-        return json.loads(session_data)
-    return None
+def invalidate_session(session_token: str) -> bool:
+    """Invalidate a session by removing it from Redis"""
+    try:
+        result = client.delete(f"session:{session_token}")
+        return result > 0
+    except Exception:
+        return False
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
@@ -402,6 +533,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         return None
     
     # Get fresh project data
+    from src.Util.db.db_projects import get_project_by_hash
     project = get_project_by_hash(session_data['project_hash'])
     if not project:
         return None
@@ -426,45 +558,4 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         groups=[g.group_name for g in groups],
         permissions=permissions,
         available_projects=available_projects
-    )
-
-
-# =================== LEGACY COMPATIBILITY ===================
-
-def db_login(user: str, password: str, collection: str) -> Optional[UserLogin]:
-    """Legacy login function for backward compatibility"""
-    enhanced_result = enhanced_login(user, password, collection)
-    if enhanced_result:
-        return UserLogin(
-            user_session=enhanced_result.session_token,
-            user_session_length=enhanced_result.session_length,
-            user_hash=enhanced_result.user_hash,
-            user_collection=enhanced_result.project_hash,
-            user_id=enhanced_result.user_id,
-            project_id=enhanced_result.project_id,
-            user_project_id=enhanced_result.user_project_id,
-            groups=enhanced_result.groups
-        )
-    return None
-
-
-def db_register(collection: str, user: str, password: str, email: str = None) -> Optional[UserLogin]:
-    """Legacy register function for backward compatibility"""
-    enhanced_result = enhanced_register(user, password, email, collection)
-    if enhanced_result:
-        return UserLogin(
-            user_session=enhanced_result.session_token,
-            user_session_length=enhanced_result.session_length,
-            user_hash=enhanced_result.user_hash,
-            user_collection=enhanced_result.project_hash,
-            user_id=enhanced_result.user_id,
-            project_id=enhanced_result.project_id,
-            user_project_id=enhanced_result.user_project_id,
-            groups=enhanced_result.groups
-        )
-    return None
-
-
-def db_username_or_email_available(username_or_email: str, collection: str) -> bool:
-    """Legacy function for checking username/email availability"""
-    return check_username_email_available(username_or_email) 
+    ) 
