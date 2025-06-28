@@ -37,22 +37,30 @@ def get_connection():
 
 # =================== PROJECT MANAGEMENT ===================
 
-def create_project(project_name: str, project_description: str = None) -> Project:
-    """Create a new project/application"""
+def create_project(project_name: str, project_description: str = None, created_by: int = None) -> Project:
+    """Create a new project/application with RBAC initialization"""
     project_hash = secrets.token_hex(32).upper()
     
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            INSERT INTO projects (project_hash, project_name, project_description, project_created)
-            VALUES (%s, %s, %s, NOW())
-        """, [project_hash, project_name, project_description])
+            INSERT INTO projects (project_hash, project_name, project_description, project_created, created_by)
+            VALUES (%s, %s, %s, NOW(), %s)
+        """, [project_hash, project_name, project_description, created_by])
         
         project_id = con.insert_id()
         con.commit()
         
-        # Create default user group for this project
+        # Create default user group for this project (legacy)
         create_default_groups(project_id)
+        
+        # NEW: Initialize RBAC for this project
+        try:
+            from src.Util.db.db_rbac_permissions import initialize_project_rbac
+            rbac_result = initialize_project_rbac(project_id, created_by)
+            print(f"RBAC initialized for project {project_name}: {rbac_result}")
+        except Exception as e:
+            print(f"Warning: Could not initialize RBAC for project {project_name}: {e}")
         
         return Project(
             id=project_id,

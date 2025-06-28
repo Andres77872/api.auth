@@ -138,6 +138,22 @@ from src.Util.db.db_projects import (
     create_default_groups
 )
 
+# Import RBAC permissions module
+from src.Util.db.db_rbac_permissions import (
+    # Permission management
+    create_permission,
+    get_project_permissions,
+    check_user_permission,
+    create_default_project_permissions,
+    
+    # Permission group (role) management
+    create_permission_group,
+    assign_user_to_permission_group,
+    
+    # RBAC initialization
+    initialize_project_rbac
+)
+
 from src.Util.Models import UserLogin
 import json
 
@@ -236,7 +252,7 @@ __all__ = [
     'search_projects',
     'get_project_stats',
 
-    # Project group management
+    # Project group management (legacy)
     'get_project_groups',
     'create_project_group',
     'update_project_group',
@@ -276,7 +292,7 @@ __all__ = [
     'get_user_groups_for_project',
     'get_user_accessible_projects',
 
-    # Project group management
+    # Project group management (legacy)
     'create_project_permission_group',
     'get_project_permission_group_by_id',
     'get_project_permission_group_by_hash',
@@ -294,5 +310,14 @@ __all__ = [
     'get_project_permissions',
     'get_user_project_permissions',
     'check_user_project_permission',
-    'create_default_permission_groups'
+    'create_default_permission_groups',
+    
+    # NEW: RBAC Permission Management
+    'create_permission',
+    'get_project_permissions',
+    'check_user_permission',
+    'create_default_project_permissions',
+    'create_permission_group',
+    'assign_user_to_permission_group',
+    'initialize_project_rbac'
 ]

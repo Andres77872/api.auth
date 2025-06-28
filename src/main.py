@@ -6,7 +6,7 @@ from starlette.responses import RedirectResponse
 from src.Util.logger_ws import logger
 from src.routes import (
     Access, auth, users, projects, 
-    admin_user_groups, admin_project_groups, system
+    admin_user_groups, admin_project_groups, system, rbac
 )
 
 import time
@@ -34,6 +34,7 @@ app.include_router(users.router, tags=['User Management'])
 app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
+app.include_router(rbac.router, tags=['RBAC Management'])
 app.include_router(system.router, tags=['System'])
 
 # ACCESS CONTROL (Legacy compatibility)
