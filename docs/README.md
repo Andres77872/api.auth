@@ -1,152 +1,180 @@
-# Documentation Index
+# Group-Based Multi-Project Authentication API - Documentation
 
-Welcome to the Group-Based Multi-Project Authentication API documentation. This folder contains comprehensive guides for setup, usage, and maintenance.
+Welcome to the comprehensive documentation for the Group-Based Multi-Project Authentication API. This system provides hierarchical access control through user groups and project groups.
+
+## 🚀 Quick Start
+
+**New to the system?** Start here:
+
+1. **[Quick Start Guide](quick-start.md)** - Get running in 15 minutes
+2. **[Setup Guide](setup-guide.md)** - Complete installation and configuration
+3. **[API Authentication](api/authentication.md)** - Your first API calls
 
 ## 📚 Documentation Structure
 
-### 🚀 Getting Started
+### 🏁 Getting Started
+| Document | Purpose | Time to Read |
+|----------|---------|--------------|
+| **[Quick Start](quick-start.md)** | Get the system running quickly | 15 min |
+| **[Setup Guide](setup-guide.md)** | Complete installation guide | 45 min |
+| **[Integration Guide](integration/guide.md)** | Integrate with existing systems | 30 min |
 
-1. **[Setup Guide](setup-guide.md)** - Complete installation and configuration
-   - Prerequisites and installation
-   - Environment configuration  
-   - Database setup and initialization with group-based schema
-   - Running the application with group system enabled
-   - Security configuration for group-based access
-   - Troubleshooting group system issues
+### 📡 API Documentation
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[Authentication API](api/authentication.md)** | Login, logout, sessions | Frontend developers |
+| **[User Management API](api/user-management.md)** | User profiles, access | User management |
+| **[Project Management API](api/project-management.md)** | Project CRUD operations | Project managers |
+| **[Admin API](api/admin.md)** | Group management, assignments | System administrators |
+| **[System API](api/system.md)** | Health, monitoring endpoints | DevOps engineers |
+| **[Errors & Responses](api/errors-and-responses.md)** | Error handling reference | All developers |
 
-### 📡 API Usage
+### 🏗️ System Architecture
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[Architecture Overview](architecture/overview.md)** | High-level system design | Technical leads |
+| **[Group-Based Design](architecture/groups.md)** | Group system specifics | System designers |
+| **[Security Architecture](architecture/security.md)** | Security model details | Security engineers |
+| **[Performance & Scaling](architecture/performance.md)** | Scalability considerations | DevOps engineers |
 
-2. **[API Reference](api-reference.md)** - Complete endpoint documentation
-   - Group-based authentication endpoints
-   - Project management with group access control
-   - User group and project group management
-   - Request/response examples with group context
-   - Error handling for group-based operations
-   - SDK examples (Python/JavaScript) for group operations
+### 🗄️ Database Documentation
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[Database Overview](database/overview.md)** | Database design concepts | Database administrators |
+| **[Complete Schema](database/schema.md)** | Full table reference | Developers |
+| **[Group System Design](database/groups.md)** | Group-based relationships | System architects |
 
-### 🏗️ System Design
+### 🚀 Operations & Deployment
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[Deployment Guide](operations/deployment.md)** | Production deployment | DevOps engineers |
+| **[Migration Guide](operations/migration.md)** | System upgrades | Operations teams |
+| **[Monitoring Guide](operations/monitoring.md)** | System monitoring | Site reliability |
 
-3. **[Architecture Guide](architecture.md)** - System design and structure
-   - Group-based architecture overview
-   - Hierarchical access control design
-   - Clean code structure without confusing naming
-   - Performance considerations for group operations
-   - Deployment strategies for group-based system
-
-### 🗄️ Database
-
-4. **[Database Schema](database-schema.md)** - Complete database documentation
-   - Group-based table structure and relationships
-   - User groups and project groups design
-   - Group membership and access patterns
-   - Performance optimization for group queries
-   - Backup and maintenance of group data
-
-### 🔄 Migration
-
-5. **[Migration Guide](migration-guide.md)** - Upgrading from legacy systems
-   - Migration from old systems to group-based architecture
-   - Data migration scripts for group conversion
-   - System migration steps with group implementation
-   - Testing and validation of group functionality
-   - Rollback procedures for group migration
-
-## 🎯 Quick Navigation
-
-### For New Users
-- Start with [Setup Guide](setup-guide.md) to get the group-based system running
-- Review [API Reference](api-reference.md) for group-based endpoint examples
-- Check [Database Schema](database-schema.md) to understand the group structure
-
-### For Existing Users
-- Refer to [Migration Guide](migration-guide.md) for upgrading to group-based system
-- Review [Architecture Guide](architecture.md) for group system understanding
-- Use [API Reference](api-reference.md) for group-based endpoint details
-
-### For Developers
-- Study [Architecture Guide](architecture.md) for clean group-based code structure
-- Review [Database Schema](database-schema.md) for group data relationships
-- Check [Setup Guide](setup-guide.md) for development environment with groups
-
-### For Operations
-- Follow [Setup Guide](setup-guide.md) for group-based deployment
-- Use [Migration Guide](migration-guide.md) for system upgrades to groups
-- Reference [Database Schema](database-schema.md) for group maintenance
-
-## 📖 Reading Guide
-
-### Complete Setup (New Installation)
-1. [Setup Guide](setup-guide.md) - Install group-based system
-2. [API Reference](api-reference.md) - Test the group-based API endpoints
-3. [Architecture Guide](architecture.md) - Understand the group system design
-
-### Migration from Legacy
-1. [Migration Guide](migration-guide.md) - Plan and execute group-based migration
-2. [Database Schema](database-schema.md) - Understand the new group structure
-3. [API Reference](api-reference.md) - Update API integrations for groups
-
-### Development and Customization
-1. [Architecture Guide](architecture.md) - Understand the group-based codebase
-2. [Database Schema](database-schema.md) - Work with the group data layer
-3. [Setup Guide](setup-guide.md) - Development environment for groups
-
-## 🔍 Quick Reference
-
-### Common Tasks
-
-| Task | Document | Section |
-|------|----------|---------|
-| Install the group system | [Setup Guide](setup-guide.md) | Installation |
-| Configure group database | [Setup Guide](setup-guide.md) | Database Setup |
-| Understand group API endpoints | [API Reference](api-reference.md) | Endpoints |
-| Learn about group permissions | [Database Schema](database-schema.md) | Group Permissions |
-| Migrate to group system | [Migration Guide](migration-guide.md) | Migration Process |
-| Understand group architecture | [Architecture Guide](architecture.md) | System Overview |
-| Troubleshoot group issues | [Setup Guide](setup-guide.md) | Troubleshooting |
-| Configure group security | [Setup Guide](setup-guide.md) | Security Configuration |
-
-### Key Features Explained
-
-| Feature | Primary Document | Supporting Documents |
-|---------|------------------|---------------------|
-| User group management | [Database Schema](database-schema.md) | [API Reference](api-reference.md) |
-| Project group permissions | [Database Schema](database-schema.md) | [Architecture Guide](architecture.md) |
-| Group-based access control | [Architecture Guide](architecture.md) | [API Reference](api-reference.md) |
-| Group-aware session management | [Architecture Guide](architecture.md) | [Database Schema](database-schema.md) |
-| Project CRUD with group context | [API Reference](api-reference.md) | [Database Schema](database-schema.md) |
-| Group membership management | [API Reference](api-reference.md) | [Migration Guide](migration-guide.md) |
-
-## 🆘 Support
-
-### Troubleshooting Order
-1. Check [Setup Guide](setup-guide.md) group troubleshooting section
-2. Review [API Reference](api-reference.md) group error responses
-3. Verify [Database Schema](database-schema.md) for group data issues
-4. Consult [Architecture Guide](architecture.md) for group system understanding
-
-### Common Issues
-- **Group system installation problems**: [Setup Guide](setup-guide.md) → Troubleshooting
-- **Group API errors**: [API Reference](api-reference.md) → Error Responses  
-- **Group database issues**: [Database Schema](database-schema.md) → Maintenance
-- **Group migration problems**: [Migration Guide](migration-guide.md) → Troubleshooting
-- **Group performance issues**: [Architecture Guide](architecture.md) → Performance
-
-## 🎯 Group System Benefits
-
-### What Makes This System Different
-- **Clean Architecture**: No confusing naming - just users, groups, and projects
-- **Hierarchical Control**: Users → User Groups → Project Access → Project Groups → Permissions
-- **Centralized Management**: Manage access through groups, not individual assignments
-- **Scalable Design**: Supports thousands of users and projects through group organization
-- **Audit Trail**: Complete tracking of all group assignments and changes
-
-### Core Concepts
-- **User Groups** (global): administrators, users, guests
-- **Project Groups** (permission sets): full-access, read-write, read-only
-- **Group Membership**: Users belong to user groups
-- **Project Access**: User groups define project access
-- **Permissions**: Project groups define what users can do
+### 👨‍💻 Development
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[Development Guide](development/guide.md)** | Contributing to the system | Contributors |
+| **[Testing Guide](development/testing.md)** | Running tests | Developers |
 
 ---
 
-**💡 Start with the [Setup Guide](setup-guide.md) if you're new to the group-based system, or jump directly to the document that matches your specific needs.** 
+## 🎯 Quick Navigation by Role
+
+### 👤 I'm a **Frontend Developer**
+1. Start with [Quick Start](quick-start.md)
+2. Read [Authentication API](api/authentication.md)
+3. Review [Error Handling](api/errors-and-responses.md)
+4. Use [Integration Guide](integration/guide.md)
+
+### 🔧 I'm a **Backend Developer**
+1. Review [Architecture Overview](architecture/overview.md)
+2. Study [Database Schema](database/schema.md)
+3. Follow [Development Guide](development/guide.md)
+4. Test with [Testing Guide](development/testing.md)
+
+### 👑 I'm a **System Administrator**
+1. Follow [Setup Guide](setup-guide.md)
+2. Learn [Admin API](api/admin.md)
+3. Configure [Deployment](operations/deployment.md)
+4. Setup [Monitoring](operations/monitoring.md)
+
+### 🏢 I'm **Operations/DevOps**
+1. Review [Deployment Guide](operations/deployment.md)
+2. Study [Performance Architecture](architecture/performance.md)
+3. Setup [Monitoring](operations/monitoring.md)
+4. Plan [Migration Strategy](operations/migration.md)
+
+### 🔒 I'm a **Security Engineer**
+1. Study [Security Architecture](architecture/security.md)
+2. Review [Group-Based Design](architecture/groups.md)
+3. Analyze [Database Security](database/overview.md)
+4. Test [Authentication Flow](api/authentication.md)
+
+---
+
+## 🏗️ System Overview
+
+### Core Architecture
+```
+Users → User Groups → Project Access → Project Groups → Permissions
+```
+
+### Key Features
+- **Hierarchical Groups**: Clean user → group → project → permissions flow
+- **Project Isolation**: Each project has independent access control
+- **Scalable Design**: Supports thousands of users and projects
+- **Security First**: Multi-layer security with comprehensive audit trails
+- **Developer Friendly**: Clean APIs with comprehensive documentation
+
+### Technologies
+- **FastAPI** - Modern, fast web framework
+- **MySQL** - Persistent data storage
+- **Redis** - Session caching and performance
+- **Docker** - Containerized deployment
+
+---
+
+## 📖 Documentation Quality
+
+### Documentation Standards
+- **Complete**: Every feature is documented
+- **Tested**: All examples are verified to work
+- **Current**: Documentation matches the latest code
+- **Accessible**: Multiple learning paths for different roles
+
+### How to Use This Documentation
+1. **Linear Reading**: Follow the structure top-to-bottom
+2. **Role-Based**: Use the "Quick Navigation by Role" section
+3. **Reference**: Jump to specific API or architecture sections
+4. **Problem-Solving**: Start with troubleshooting sections
+
+---
+
+## 🆘 Getting Help
+
+### Documentation Issues
+- **Missing Information**: Check if it's in another related document
+- **Outdated Content**: Verify against the latest API responses
+- **Unclear Instructions**: Try the troubleshooting sections
+
+### Common Questions
+| Question | Answer Location |
+|----------|----------------|
+| How do I install the system? | [Setup Guide](setup-guide.md) |
+| How do I create user groups? | [Admin API](api/admin.md) |
+| How do I integrate with my app? | [Integration Guide](integration/guide.md) |
+| How do permissions work? | [Group-Based Design](architecture/groups.md) |
+| How do I deploy to production? | [Deployment Guide](operations/deployment.md) |
+| How do I monitor the system? | [Monitoring Guide](operations/monitoring.md) |
+
+### Troubleshooting Priority
+1. Check relevant troubleshooting section in each guide
+2. Verify your configuration against setup examples
+3. Review error messages in [Error Reference](api/errors-and-responses.md)
+4. Test individual components using provided examples
+
+---
+
+## 🎯 What Makes This System Special
+
+### Clean Architecture
+- **No Confusing Naming**: Just users, groups, projects, and permissions
+- **Hierarchical Control**: Clear flow from users to permissions
+- **Modular Design**: Each component is independent and testable
+
+### Group-Based Benefits
+- **Centralized Management**: Manage thousands of users through groups
+- **Flexible Permissions**: Different permission sets per project type
+- **Audit Trail**: Complete tracking of all access changes
+- **Scalable**: Add users and projects through group assignments
+
+### Developer Experience
+- **Comprehensive Documentation**: Every endpoint documented with examples
+- **Multiple SDKs**: Python and JavaScript examples included
+- **Testing Tools**: Built-in health checks and validation
+- **Migration Support**: Tools to upgrade from legacy systems
+
+---
+
+**💡 New to the system? Start with the [Quick Start Guide](quick-start.md) to get running in 15 minutes.** 
