@@ -62,6 +62,61 @@ from src.Util.db.db_users import (
     invalidate_session
 )
 
+# Import user group management functions
+from src.Util.db.db_user_groups import (
+    # User group CRUD operations
+    create_user_group,
+    get_user_group_by_id,
+    get_user_group_by_hash,
+    get_user_group_by_name,
+    list_all_user_groups,
+    update_user_group,
+    delete_user_group,
+    count_user_groups,
+
+    # User group membership management
+    assign_user_to_group as assign_user_to_user_group,
+    remove_user_from_group as remove_user_from_user_group,
+    get_user_group_membership,
+    get_user_groups_for_user,
+    get_users_in_group,
+
+    # User group project access
+    grant_group_project_access,
+    revoke_group_project_access,
+    get_group_project_access,
+    get_projects_for_user_group,
+    get_user_groups_for_project,
+    get_user_accessible_projects
+)
+
+# Import project group management functions
+from src.Util.db.db_project_groups import (
+    # Project group CRUD operations
+    create_project_group as create_project_permission_group,
+    get_project_group_by_id as get_project_permission_group_by_id,
+    get_project_group_by_hash as get_project_permission_group_by_hash,
+    get_project_group_by_name as get_project_permission_group_by_name,
+    list_all_project_groups as list_all_project_permission_groups,
+    update_project_group as update_project_permission_group,
+    delete_project_group as delete_project_permission_group,
+    count_project_groups as count_project_permission_groups,
+    search_project_groups as search_project_permission_groups,
+
+    # Project group membership management
+    assign_project_to_group as assign_project_to_permission_group,
+    remove_project_from_group as remove_project_from_permission_group,
+    get_project_group_membership as get_project_permission_group_membership,
+    get_project_groups_for_project as get_permission_groups_for_project,
+    get_projects_in_group as get_projects_in_permission_group,
+
+    # Permission utilities
+    get_project_permissions,
+    get_user_project_permissions,
+    check_user_project_permission,
+    create_default_project_groups as create_default_permission_groups
+)
+
 # Import project management functions
 from src.Util.db.db_projects import (
     # Project CRUD operations
@@ -75,7 +130,7 @@ from src.Util.db.db_projects import (
     search_projects,
     get_project_stats,
 
-    # Project group management
+    # Project group management (legacy naming)
     get_project_groups,
     create_project_group,
     update_project_group,
@@ -198,5 +253,46 @@ __all__ = [
     'db_username_or_email_available',
     'set_session',
     'get_session',
-    'db_validate_session'
+    'db_validate_session',
+
+    # User group management
+    'create_user_group',
+    'get_user_group_by_id',
+    'get_user_group_by_hash',
+    'get_user_group_by_name',
+    'list_all_user_groups',
+    'update_user_group',
+    'delete_user_group',
+    'count_user_groups',
+    'assign_user_to_user_group',
+    'remove_user_from_user_group',
+    'get_user_group_membership',
+    'get_user_groups_for_user',
+    'get_users_in_group',
+    'grant_group_project_access',
+    'revoke_group_project_access',
+    'get_group_project_access',
+    'get_projects_for_user_group',
+    'get_user_groups_for_project',
+    'get_user_accessible_projects',
+
+    # Project group management
+    'create_project_permission_group',
+    'get_project_permission_group_by_id',
+    'get_project_permission_group_by_hash',
+    'get_project_permission_group_by_name',
+    'list_all_project_permission_groups',
+    'update_project_permission_group',
+    'delete_project_permission_group',
+    'count_project_permission_groups',
+    'search_project_permission_groups',
+    'assign_project_to_permission_group',
+    'remove_project_from_permission_group',
+    'get_project_permission_group_membership',
+    'get_permission_groups_for_project',
+    'get_projects_in_permission_group',
+    'get_project_permissions',
+    'get_user_project_permissions',
+    'check_user_project_permission',
+    'create_default_permission_groups'
 ]
