@@ -619,7 +619,13 @@ mysqldump -u root -p magic_auth_groups \
 The database schema integrates seamlessly with the group-based application structure:
 
 1. **Database Layer**: Group-based CRUD operations in `group_based_crud_operations.py`
-2. **API Layer**: RESTful endpoints in `src/routes/UserEnhanced.py`
+2. **API Layer**: RESTful endpoints organized by function:
+   - `src/routes/auth.py` - Authentication endpoints
+   - `src/routes/users.py` - User management  
+   - `src/routes/projects.py` - Project management
+   - `src/routes/admin_user_groups.py` - User group administration
+   - `src/routes/admin_project_groups.py` - Project group administration
+   - `src/routes/system.py` - System information
 3. **Security Layer**: Group-aware token validation
 4. **Session Layer**: Redis caching with group context
 

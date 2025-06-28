@@ -4,7 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
 
 from src.Util.logger_ws import logger
-from src.routes import Access, UserEnhanced
+from src.routes import (
+    Access, auth, users, projects, 
+    admin_user_groups, admin_project_groups, system
+)
 
 import time
 
@@ -14,25 +17,32 @@ from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_t
 with open('./src/README.md', 'r', encoding='utf-8') as f:
     description = f.read()
 
-app = FastAPI(title='Group-Based Multi-Project Authentication API',
-              description=description,
-              version='2.0.0',
-              contact={
-                  "name": "Andrés",
-                  "url": "https://arizmendi.io",
-                  "email": "andres@arz.ai",
-              })
+app = FastAPI(
+    title='Group-Based Multi-Project Authentication API',
+    description=description,
+    version='2.0.0',
+    contact={
+        "name": "Andrés",
+        "url": "https://arizmendi.io",
+        "email": "andres@arz.ai",
+    }
+)
 
 # GROUP-BASED AUTHENTICATION ROUTES
-app.include_router(UserEnhanced.router,
-                   prefix='/user',
-                   tags=['Group-Based Multi-Project Authentication'])
+app.include_router(auth.router, tags=['Authentication'])
+app.include_router(users.router, tags=['User Management'])
+app.include_router(projects.router, tags=['Project Management'])
+app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
+app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
+app.include_router(system.router, tags=['System'])
 
 # ACCESS CONTROL (Legacy compatibility)
-app.include_router(Access.router,
-                   prefix='/access',
-                   tags=['Access control by token'],
-                   dependencies=[Security(x_token_user), Security(x_token_collection)])
+app.include_router(
+    Access.router,
+    prefix='/access',
+    tags=['Access Control'],
+    dependencies=[Security(x_token_user), Security(x_token_collection)]
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -100,45 +110,3 @@ def ping():
 async def root():
     response = RedirectResponse(url='/docs')
     return response
-
-
-@app.get("/system/info")
-async def system_info():
-    """System information and version details"""
-    return {
-        "name": "Group-Based Multi-Project Authentication API",
-        "version": "2.0.0",
-        "authentication_system": "Group-Based Hierarchical",
-        "architecture": "Users → User Groups → Project Access → Project Groups → Permissions",
-        "features": [
-            "Hierarchical group-based access control",
-            "Global user groups (administrators, users, guests)",
-            "Project-specific permission groups",
-            "Centralized access management",
-            "Clean audit trail",
-            "Session management with group context",
-            "Scalable multi-project support"
-        ],
-        "endpoints": {
-            "authentication": "/user/*",
-            "access_control": "/access/*"
-        },
-        "documentation": {
-            "interactive": "/docs",
-            "schema": "/openapi.json",
-            "setup_guide": "docs/setup-guide.md",
-            "database_schema": "docs/database-schema.md",
-            "architecture": "docs/architecture.md",
-            "api_reference": "docs/api-reference.md"
-        },
-        "database": {
-            "schema": "magic_auth_groups",
-            "session_storage": "Redis + Database",
-            "features": ["Group-based access", "Hierarchical permissions", "Audit trail", "Multi-project isolation"]
-        },
-        "groups": {
-            "user_groups": ["administrators", "users", "guests"],
-            "project_groups": ["full-access", "read-write", "read-only"],
-            "management": "Centralized through group membership"
-        }
-    }

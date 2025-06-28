@@ -89,8 +89,13 @@ api.auth/
 │   │
 │   ├── routes/                 # API endpoint definitions
 │   │   ├── __init__.py
-│   │   ├── UserEnhanced.py     # Group-based authentication routes
-│   │   └── Access.py           # Access control validation
+│   │   ├── auth.py             # Authentication endpoints (login, register, logout)
+│   │   ├── users.py            # User management endpoints
+│   │   ├── projects.py         # Project management endpoints
+│   │   ├── admin_user_groups.py   # Admin user group management
+│   │   ├── admin_project_groups.py # Admin project group management
+│   │   ├── system.py           # System information endpoints
+│   │   └── Access.py           # Legacy access control validation
 │   │
 │   └── Util/                   # Utility modules
 │       ├── __init__.py
@@ -162,26 +167,65 @@ Users ──┐
 
 ### 1. API Layer (`src/routes/`)
 
-#### UserEnhanced.py - Group-Based Authentication
-- **Purpose**: Main authentication and group management endpoints
-- **Responsibilities**:
-  - Group-based login/logout/registration
-  - Project switching through user groups
-  - User group management
-  - Access control
-- **Key Features**:
-  - Hierarchical group authentication
-  - Session token management with group context
-  - Project CRUD operations
-  - User group access management
+The API layer is now organized into focused, modular route files:
 
-#### Access.py - Group-Based Access Control
-- **Purpose**: Access control validation with group context
+#### auth.py - Authentication Endpoints
+- **Purpose**: Handles all authentication-related operations
+- **Endpoints**: `/auth/*`
 - **Responsibilities**:
-  - Token validation with group information
-  - Permission checking through project groups
-  - Access control middleware
-- **Integration**: Used by other services for group-based authentication
+  - Login/logout with group context
+  - User registration
+  - Session validation
+  - Project switching through user groups
+  - Availability checking
+
+#### users.py - User Management
+- **Purpose**: User profile and access management
+- **Endpoints**: `/users/*`
+- **Responsibilities**:
+  - User profile management
+  - Profile updates
+  - Access summary with group memberships
+
+#### projects.py - Project Management
+- **Purpose**: Project CRUD operations
+- **Endpoints**: `/projects/*`
+- **Responsibilities**:
+  - List projects based on user access
+  - Create, read, update, delete projects
+  - Project statistics and access control
+
+#### admin_user_groups.py - User Group Administration
+- **Purpose**: Global user group management (admin only)
+- **Endpoints**: `/admin/user-groups/*`
+- **Responsibilities**:
+  - User group CRUD operations
+  - User-to-group assignments
+  - Group project access management
+
+#### admin_project_groups.py - Project Group Administration
+- **Purpose**: Project permission group management (admin only)
+- **Endpoints**: `/admin/project-groups/*`
+- **Responsibilities**:
+  - Project group CRUD operations
+  - Project-to-group assignments
+  - Permission management
+
+#### system.py - System Information
+- **Purpose**: Health checks and system information
+- **Endpoints**: `/system/*`
+- **Responsibilities**:
+  - System information and statistics
+  - Health checks for all components
+  - Simple ping endpoint
+
+#### Access.py - Legacy Access Control
+- **Purpose**: Backward compatibility for access control
+- **Endpoints**: `/access`
+- **Responsibilities**:
+  - Token validation for middleware
+  - Legacy compatibility
+- **Integration**: Used by other services for authentication
 
 ### 2. Database Layer - Group-Based Operations
 
