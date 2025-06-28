@@ -1,6 +1,4 @@
-import threading
-
-from fastapi import FastAPI, Request, Security
+from fastapi import FastAPI, Request, Security, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from starlette.responses import RedirectResponse
@@ -63,6 +61,7 @@ async def add_process_time_header(request: Request, call_next):
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = str(process_time)
         response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
 
     if request.method == 'POST':
         if int(request.headers['content-length']) > 8388608:
@@ -93,7 +92,9 @@ async def add_process_time_header(request: Request, call_next):
     except Exception:
         data['ip'] = 'localhost'
 
-    threading.Thread(target=logger, args=[data, 'auth', 'access']).start()
+    background_task = BackgroundTasks()
+    background_task.add_task(logger, data, 'auth', 'access')
+    response.background = background_task
 
     return response
 
