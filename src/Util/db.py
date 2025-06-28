@@ -1,5 +1,6 @@
 import json
 import secrets
+import os
 
 import pymysql
 import hashlib
@@ -13,13 +14,13 @@ ip = "192.168.1.90"
 connectionDB = {
     "host": ip,
     "user": "root",
-    "password": "qkY3w4wJQbD367RD"
+    "password": os.environ.get("DB_MYSQL_PASSWORD")
 }
 
 client = redis.StrictRedis(host=ip,
                            port=6379,
                            db=0,
-                           password='evhCGAM1E6Vtdbfc')
+                           password=os.environ.get("DB_REDIS_PASSWORD"))
 
 
 def get_connection():
