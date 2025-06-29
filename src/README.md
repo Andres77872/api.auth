@@ -110,6 +110,7 @@ curl http://localhost:8000/system/info
 ### 📡 **API Documentation** (150+ pages)
 - [Authentication API](../docs/api/authentication.md) - Login, logout, session management
 - [User Type Management API](../docs/api/user-type-management.md) - 3-tier user system
+- [User Management API](../docs/api/user-management.md) - User profile and access
 - [RBAC Management API](../docs/api/rbac-management.md) - Complete permission system
 - [Project Management API](../docs/api/project-management.md) - Project operations
 - [Admin API](../docs/api/admin.md) - Group and system administration

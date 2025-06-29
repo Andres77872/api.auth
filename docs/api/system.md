@@ -26,9 +26,9 @@ curl -X GET "http://localhost:8000/system/info"
 {
   "success": true,
   "system": {
-    "name": "3-Tier User Type Multi-Project Authentication API",
-    "version": "2.1.0",
-    "architecture": "3-tier-user-type-with-group-based-permissions",
+    "name": "Group-Based Multi-Project Authentication API",
+    "version": "2.0.0",
+    "architecture": "hierarchical-group-based",
     "status": "operational"
   },
   "statistics": {
@@ -36,23 +36,14 @@ curl -X GET "http://localhost:8000/system/info"
     "total_projects": 25,
     "total_user_groups": 10,
     "total_project_groups": 5,
-    "user_types": {
-      "root_users": 3,
-      "admin_users": 12,
-      "consumer_users": 135
-    },
-    "authentication_type": "3-tier-user-type-jwt"
+    "authentication_type": "group-based-jwt"
   },
   "features": [
-    "3-tier-user-type-system",
-    "root-user-global-access",
-    "admin-user-project-scoped-access",
-    "consumer-user-rbac-permissions",
     "hierarchical-group-access-control",
     "global-user-groups",
     "project-permission-groups",
     "multi-project-support",
-    "session-management-with-user-type-context",
+    "session-management-with-group-context",
     "comprehensive-audit-trail",
     "restful-admin-api"
   ]
@@ -82,48 +73,17 @@ curl -X GET "http://localhost:8000/system/health"
   "components": {
     "database": {
       "status": "healthy",
-      "message": "Database accessible",
-      "response_time_ms": 15,
-      "connection_pool": {
-        "active": 2,
-        "idle": 8,
-        "max": 10
-      }
+      "message": "Database accessible"
     },
     "redis": {
       "status": "healthy",
-      "message": "Redis accessible",
-      "response_time_ms": 5,
-      "memory_usage": "15.2MB",
-      "connected_clients": 3
+      "message": "Redis accessible"
     },
-    "user_type_system": {
+    "group_system": {
       "status": "healthy",
-      "message": "3-tier user type system operational",
-      "user_types": {
-        "root_users": 3,
-        "admin_users": 12,
-        "consumer_users": 135
-      },
-      "user_groups": {
-        "total": 10,
-        "active": 10,
-        "with_members": 8
-      },
-      "project_groups": {
-        "total": 5,
-        "active": 5,
-        "with_projects": 4
-      }
-    },
-    "sessions": {
-      "status": "healthy",
-      "message": "Session management operational",
-      "active_sessions": 25,
-      "expired_sessions_cleaned": 3
+      "message": "Group system operational: 10 user groups, 5 project groups"
     }
-  },
-  "overall_health_score": 100
+  }
 }
 ```
 
@@ -135,15 +95,17 @@ curl -X GET "http://localhost:8000/system/health"
   "components": {
     "database": {
       "status": "unhealthy",
-      "message": "Connection timeout",
-      "error": "Failed to connect after 5 attempts"
+      "message": "Database error: Connection timeout"
     },
     "redis": {
       "status": "healthy",
       "message": "Redis accessible"
+    },
+    "group_system": {
+        "status": "healthy",
+        "message": "Group system operational: 10 user groups, 5 project groups"
     }
-  },
-  "overall_health_score": 50
+  }
 }
 ```
 
@@ -164,10 +126,8 @@ curl -X GET "http://localhost:8000/system/ping"
 ```json
 {
   "success": true,
-  "message": "3-Tier User Type authentication API is running",
-  "timestamp": "2024-01-01T12:00:00Z",
-  "uptime_seconds": 86400,
-  "version": "2.1.0"
+  "message": "Group-based authentication API is running",
+  "timestamp": "2024-01-01T12:00:00Z"
 }
 ```
 
@@ -703,7 +663,7 @@ The system includes comprehensive cache management for performance optimization 
 
 Get detailed cache statistics and performance metrics.
 
-**Authentication:** Required (recommended admin)
+**Authentication:** Required
 
 **Example Request:**
 ```bash
@@ -716,108 +676,34 @@ curl -X GET "http://localhost:8000/system/cache/stats" \
 {
   "success": true,
   "cache_statistics": {
-    "sessions": {
-      "total_cached": 145,
-      "hit_rate": 0.94,
-      "average_ttl_remaining": 2180,
-      "cache_size_mb": 2.3
-    },
-    "access_checks": {
-      "total_cached": 892,
-      "hit_rate": 0.87,
-      "average_ttl_remaining": 1245,
-      "cache_size_mb": 1.8
-    },
-    "rbac_checks": {
-      "total_cached": 567,
-      "hit_rate": 0.91,
-      "average_ttl_remaining": 1456,
-      "cache_size_mb": 1.2
-    },
-    "user_types": {
-      "total_cached": 234,
-      "hit_rate": 0.96,
-      "average_ttl_remaining": 2890,
-      "cache_size_mb": 0.8
-    },
-    "overall": {
-      "total_cache_size_mb": 6.1,
-      "total_hit_rate": 0.92,
-      "total_operations_24h": 15420,
-      "cache_saves_24h": 1230
-    }
+    "sessions": 145,
+    "access_checks": 892,
+    "permission_checks": 567,
+    "user_types": 234,
+    "rbac_checks": 123,
+    "total_keys": 1961
   },
-  "performance_impact": {
-    "average_response_time_cached_ms": 15,
-    "average_response_time_uncached_ms": 85,
-    "performance_improvement": "82% faster"
-  }
+  "cache_configuration": {
+    "session_ttl": "3600 seconds (1 hour)",
+    "access_check_ttl": "1800 seconds (30 minutes)",
+    "rbac_check_ttl": "1800 seconds (30 minutes)",
+    "user_info_ttl": "3600 seconds (1 hour)"
+  },
+  "timestamp": "2024-01-01T12:00:00Z"
 }
 ```
 
 ---
 
-### POST `/system/cache/invalidate`
+### POST `/system/cache/clear`
 
-Invalidate cache entries (emergency cache clearing).
-
-**Authentication:** Required (admin only)
-
-**Request Body** (JSON):
-```json
-{
-  "cache_type": "all",
-  "user_id": null,
-  "project_id": null
-}
-```
-
-**Cache Types:**
-- `"all"`: Clear entire cache
-- `"sessions"`: Clear all session cache
-- `"user"`: Clear cache for specific user (requires `user_id`)
-- `"project"`: Clear cache for specific project (requires `project_id`)
-- `"rbac"`: Clear RBAC cache for specific project (requires `project_id`)
-
-**Example Request:**
-```bash
-curl -X POST "http://localhost:8000/system/cache/invalidate" \
-  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_type": "all"}'
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "message": "Cache invalidated successfully",
-  "invalidation_details": {
-    "cache_type": "all",
-    "entries_cleared": 1838,
-    "cache_size_before_mb": 6.1,
-    "cache_size_after_mb": 0.0,
-    "invalidated_at": "2024-01-01T12:00:00Z"
-  }
-}
-```
-
----
-
-### POST `/system/cache/warm`
-
-Pre-warm cache with frequently accessed data.
+Clear the entire authentication cache.
 
 **Authentication:** Required (admin only)
 
-**Query Parameters:**
-- `sessions` (optional, default: true): Warm session cache
-- `access_checks` (optional, default: true): Warm access check cache
-- `rbac` (optional, default: true): Warm RBAC cache
-
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/system/cache/warm?sessions=true&access_checks=true&rbac=true" \
+curl -X POST "http://localhost:8000/system/cache/clear" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -825,48 +711,65 @@ curl -X POST "http://localhost:8000/system/cache/warm?sessions=true&access_check
 ```json
 {
   "success": true,
-  "message": "Cache warmed successfully",
-  "warming_details": {
-    "sessions_warmed": 45,
-    "access_checks_warmed": 150,
-    "rbac_entries_warmed": 89,
-    "total_entries_warmed": 284,
-    "warming_time_ms": 340,
-    "warmed_at": "2024-01-01T12:00:00Z"
-  }
+  "message": "Entire authentication cache has been cleared",
+  "cleared_by": "USER_HASH...",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "warning": "All users will need to re-authenticate or may experience slower response times"
 }
 ```
 
 ---
 
-## 🔧 Cache Configuration
+### POST `/system/cache/invalidate/user/{user_hash}`
 
-### Cache TTL Settings
+Invalidate the cache for a specific user.
 
-The system uses different TTL (Time To Live) settings for different cache types:
+**Authentication:** Required (admin only)
 
-| Cache Type | TTL | Purpose |
-|------------|-----|---------|
-| **Sessions** | 1 hour (3600s) | User authentication sessions |
-| **Access Checks** | 30 minutes (1800s) | Permission validation results |
-| **RBAC Checks** | 30 minutes (1800s) | Role-based access control |
-| **User Types** | 1 hour (3600s) | User type information |
+**Path Parameters:**
+- `user_hash`: The hash of the user to invalidate from the cache.
 
-### Cache Invalidation Triggers
-
-The cache automatically invalidates when:
-
-- **User data changes**: Clears all cache for that user
-- **RBAC changes**: Clears RBAC cache for affected project
-- **Permission updates**: Clears access check cache
-- **User type changes**: Clears user type cache
-- **Group assignments**: Clears user and access caches
-
-### Cache-First Flow
-
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/system/cache/invalidate/user/usr-1234..." \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
-1. Request → Check Cache → Cache Hit? → Return Cached Data
-2. Request → Check Cache → Cache Miss → Query Database → Cache Result → Return Data
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Cache invalidated for user: usr-1234...",
+  "invalidated_by": "ADMIN_USER_HASH...",
+  "timestamp": "2024-01-01T12:00:00Z"
+}
+```
+
+---
+
+### POST `/system/cache/invalidate/project/{project_id}`
+
+Invalidate the cache for a specific project.
+
+**Authentication:** Required (admin only)
+
+**Path Parameters:**
+- `project_id`: The ID of the project to invalidate from the cache.
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/system/cache/invalidate/project/5" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Cache invalidated for project: 5",
+  "invalidated_by": "ADMIN_USER_HASH...",
+  "timestamp": "2024-01-01T12:00:00Z"
+}
 ```
 
 ---

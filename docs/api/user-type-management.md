@@ -301,6 +301,49 @@ curl -X PUT "http://localhost:8000/user-types/USER123.../type" \
 
 ---
 
+### PUT `/user-types/admin/{user_hash}/project`
+
+Update an admin user's primary project assignment. This is a legacy endpoint for single-project assignment. For multi-project assignments, use the `/user-types/admin/{user_hash}/projects` endpoint.
+
+**Authentication:** Root users only
+
+**Path Parameters:**
+- `user_hash`: Hash of the admin user to update
+
+**Request Body** (JSON):
+```json
+{
+  "assigned_project_id": 10
+}
+```
+
+**Example Request:**
+```bash
+curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../project" \
+  -H "Authorization: Bearer ROOT_USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"assigned_project_id": 10}'
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Admin user 'project_admin' reassigned to project 'New Project Name'",
+  "assignment": {
+    "user_hash": "ADMIN123...",
+    "username": "project_admin",
+    "previous_project": "Old Project Name",
+    "new_project": "New Project Name",
+    "new_project_id": 10,
+    "new_project_hash": "PROJXYZ...",
+    "assigned_by": "root_admin"
+  }
+}
+```
+
+---
+
 ## 📂 Admin Multi-Project Management
 
 Manage project assignments for admin users.
@@ -473,6 +516,57 @@ curl -X DELETE "http://localhost:8000/user-types/admin/ADMIN123.../projects/8" \
 ```
 
 **Note:** An admin user must be assigned to at least one project. You cannot remove the last project assignment.
+
+---
+
+### GET `/user-types/stats`
+
+Get user type statistics and distribution.
+
+**Authentication:** Root or Admin access
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/user-types/stats" \
+  -H "Authorization: Bearer SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "statistics": {
+    "total_users": 150,
+    "user_types": {
+      "root": {
+        "count": 3,
+        "percentage": 2.0
+      },
+      "admin": {
+        "count": 12,
+        "percentage": 8.0
+      },
+      "consumer": {
+        "count": 135,
+        "percentage": 90.0
+      }
+    },
+    "system_info": {
+      "user_type_system": "3-tier (root, admin, consumer)",
+      "access_model": "hierarchical",
+      "features": [
+        "global-root-access",
+        "project-scoped-admin",
+        "rbac-consumer-users"
+      ]
+    },
+    "scope": {
+      "type": "global_root",
+      "access": "unrestricted"
+    }
+  }
+}
+```
 
 ---
 

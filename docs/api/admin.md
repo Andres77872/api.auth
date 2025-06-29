@@ -143,6 +143,58 @@ curl -X GET "http://localhost:8000/admin/user-groups/group123..." \
 
 ---
 
+### PUT `/admin/user-groups/{group_hash}`
+
+Update a user group's name or description.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+
+**Request Body** (JSON):
+```json
+{
+  "group_name": "updated_developers",
+  "description": "Updated software development team"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User group updated successfully",
+  "user_group": {
+    "group_hash": "group123...",
+    "group_name": "updated_developers",
+    "description": "Updated software development team"
+  }
+}
+```
+
+---
+
+### DELETE `/admin/user-groups/{group_hash}`
+
+Delete a user group. This will also remove all user memberships and project access grants for this group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User group \"developers\" deleted successfully",
+  "warning": "All user memberships and project access have been revoked"
+}
+```
+
+---
+
 ### POST `/admin/user-groups/{group_hash}/members`
 
 Assign a user to a user group.
@@ -184,6 +236,26 @@ curl -X POST "http://localhost:8000/admin/user-groups/group123.../members" \
 
 ---
 
+### DELETE `/admin/user-groups/{group_hash}/members/{user_hash}`
+
+Remove a user from a user group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+- `user_hash`: User hash to remove
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User \"john_doe\" removed from group \"developers\""
+}
+```
+
+---
+
 ### POST `/admin/user-groups/{group_hash}/projects`
 
 Grant a user group access to a project.
@@ -220,6 +292,26 @@ curl -X POST "http://localhost:8000/admin/user-groups/group123.../projects" \
     },
     "granted_by": "admin"
   }
+}
+```
+
+---
+
+### DELETE `/admin/user-groups/{group_hash}/projects/{project_hash}`
+
+Revoke a user group's access to a project.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+- `project_hash`: Project hash to revoke access from
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User group \"developers\" access to project \"API Project\" revoked"
 }
 ```
 
@@ -270,6 +362,43 @@ curl -X GET "http://localhost:8000/admin/project-groups?limit=50&offset=0" \
 
 ---
 
+### GET `/admin/project-groups/{group_hash}`
+
+Get detailed project group information.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: Project group identifier
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "project_group": {
+    "group_hash": "projgroup123...",
+    "group_name": "full-access",
+    "description": "Complete project control",
+    "permissions": ["admin", "read", "write", "delete", "manage_users"],
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_active": true
+  },
+  "assigned_projects": [
+      {
+          "project_hash": "proj123...",
+          "project_name": "Main Project",
+          "project_description": "Main project description"
+      }
+  ],
+  "statistics": {
+      "total_projects": 1,
+      "total_permissions": 5
+  }
+}
+```
+
+---
+
 ### POST `/admin/project-groups`
 
 Create a new project permission group with specific permissions.
@@ -305,6 +434,60 @@ curl -X POST "http://localhost:8000/admin/project-groups" \
     "permissions": ["read", "write", "api_access"],
     "created_at": "2024-01-01T12:00:00Z"
   }
+}
+```
+
+---
+
+### PUT `/admin/project-groups/{group_hash}`
+
+Update a project group's information.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: Project group identifier
+
+**Request Body** (JSON):
+```json
+{
+  "group_name": "api-access-updated",
+  "permissions": ["read", "write", "api_access", "export_data"],
+  "description": "Updated API access permissions"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Project group updated successfully",
+  "project_group": {
+    "group_hash": "newprojgroup123...",
+    "group_name": "api-access-updated",
+    "description": "Updated API access permissions",
+    "permissions": ["read", "write", "api_access", "export_data"]
+  }
+}
+```
+
+---
+
+### DELETE `/admin/project-groups/{group_hash}`
+
+Delete a project permission group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: Project group identifier
+
+**Response (200):**
+```json
+{
+    "success": true,
+    "message": "Project group \"api-access\" deleted successfully",
+    "warning": "All project assignments have been removed"
 }
 ```
 
@@ -347,6 +530,26 @@ curl -X POST "http://localhost:8000/admin/project-groups/projgroup123.../project
     },
     "assigned_by": "admin"
   }
+}
+```
+
+---
+
+### DELETE `/admin/project-groups/{group_hash}/projects/{project_hash}`
+
+Remove a project from a project group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: Project group identifier
+- `project_hash`: Project hash to remove assignment from
+
+**Response (200):**
+```json
+{
+    "success": true,
+    "message": "Project \"New API\" removed from group \"api-access\""
 }
 ```
 
