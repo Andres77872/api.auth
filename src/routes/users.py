@@ -289,23 +289,23 @@ async def list_all_users(
             limit = 100
 
         # Get users with filtering
-        if is_root:
-            # Root users see all users without any filtering
-            users = list_users(limit=limit, offset=offset)
-            total_count = count_users()
+        if search:
+            from src.Util.db import search_users
+            users = search_users(search_term=search, user_type=user_type, limit=limit)
         else:
-            # For non-root users, apply filters
-            if search:
-                from src.Util.db import search_users
-                users = search_users(search, user_type, limit)
-            else:
-                users = list_users(limit=limit, offset=offset, user_type=user_type)
-            
-            # Apply is_active filter if specified
-            if is_active is not None:
-                users = [u for u in users if u.is_active == is_active]
-                
-            total_count = count_users(user_type=user_type)
+            users = list_users(limit=limit, offset=offset, user_type=user_type)
+
+        # Apply is_active filter if specified
+        if is_active is not None:
+            users = [u for u in users if u.is_active == is_active]
+
+        # Get total count with same user_type filter
+        total_count = count_users(user_type=user_type)
+        
+        # If we filtered by is_active or search, adjust the count accordingly
+        # This is a simple approach - for production, consider adding proper counting functions
+        if is_active is not None or search:
+            total_count = len(users)  # Use the filtered count as total
 
         # Build response data
         user_list = []
