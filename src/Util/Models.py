@@ -775,7 +775,7 @@ class UserLogin(BaseModelConfig):
     user_hash: str
     user_collection: str
     user_id: int
-    project_id: int
+    project_id: Optional[int] = None  # Optional for global root sessions
     user_project_id: Optional[int] = None
     groups: List[str] = Field(default_factory=list)
     user_type: str = 'consumer'
@@ -791,7 +791,7 @@ class EnhancedUserLogin(BaseModelConfig):
     session_token: str
     session_length: int
     user_id: int
-    project_id: int
+    project_id: Optional[int] = None  # Optional for global root sessions
     user_project_id: Optional[int] = None
     groups: List[str] = Field(default_factory=list)
     permissions: List[str] = Field(default_factory=list)
