@@ -2,7 +2,7 @@
 -- Table Creation Script (without foreign keys)
 -- MySQL Database
 
-USE auth_system;
+USE magic_auth;
 
 -- =================== USERS TABLE ===================
 -- Supports 3-tier user types: root, admin, consumer

@@ -2,7 +2,7 @@
 -- Foreign Keys and Constraints Script
 -- MySQL Database
 
-USE auth_system;
+USE magic_auth;
 
 -- =================== USERS TABLE CONSTRAINTS ===================
 ALTER TABLE users

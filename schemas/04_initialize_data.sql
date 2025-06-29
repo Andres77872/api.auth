@@ -2,7 +2,7 @@
 -- Initial Data Script
 -- MySQL Database
 
-USE auth_system;
+USE magic_auth;
 
 -- =================== CREATE ROOT USER ===================
 -- Create the first root user (password: admin123)

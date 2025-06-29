@@ -2,7 +2,7 @@
 -- Performance Optimization Script
 -- MySQL Database
 
-USE auth_system;
+USE magic_auth;
 
 -- =================== ADDITIONAL PERFORMANCE INDEXES ===================
 
