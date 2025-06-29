@@ -6,17 +6,19 @@ for the group-based multi-project authentication system.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from datetime import datetime
 
 from src.Util.db import (
     validate_session, get_user_by_hash,
     create_project, get_project_by_hash, list_all_projects,
     update_project, delete_project, search_projects,
     get_project_stats, get_user_accessible_projects,
-    get_user_project_permissions, get_user_groups_for_user
+    get_user_project_permissions, get_user_groups_for_user,
+    get_admin_assigned_projects, grant_user_project_access, add_admin_to_project
 )
 from src.Util.Models import (
     ListProjectsResponse, CreateProjectResponse, ProjectDetailsResponse,
@@ -40,6 +42,24 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     project_name: str = None
     project_description: str = None
+
+
+class ProjectMembersResponse(BaseModel):
+    """Response model for project members"""
+    success: bool
+    message: Optional[str] = None
+    project: Optional[ProjectInfo] = None
+    members: List[Dict[str, Any]] = []
+    pagination: Optional[PaginationInfo] = None
+    statistics: Optional[Dict[str, Any]] = None
+
+
+class AddMemberToProjectResponse(BaseModel):
+    """Response model for adding member to project"""
+    success: bool
+    message: Optional[str] = None
+    member: Optional[Dict[str, Any]] = None
+    project: Optional[ProjectInfo] = None
 
 
 @router.get("", response_model=ListProjectsResponse)
@@ -386,4 +406,323 @@ async def delete_project_endpoint(
         raise
     except Exception as e:
         logger.error(f"Project deletion error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Project deletion error") 
+        raise HTTPException(status_code=500, detail="Project deletion error")
+
+
+@router.get("/{project_hash}/members", response_model=ProjectMembersResponse)
+async def list_project_members(
+    project_hash: str = Path(...),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user_type: Optional[str] = Query(None),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> ProjectMembersResponse:
+    """
+    List all members of a project with their access details.
+    
+    **Admin access required**: Only admin users can list project members.
+    
+    Args:
+        project_hash: Project identifier
+        limit: Number of members to return
+        offset: Number of members to skip
+        user_type: Filter by user type (admin, consumer)
+        
+    Returns:
+        List of project members with their roles and permissions
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Check admin permissions
+        user_permissions = getattr(session_data, 'permissions', [])
+        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Admin permission required to list project members")
+        
+        # Get project
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get project members
+        from src.Util.db_config import get_connection
+        
+        with get_connection() as con:
+            cur = con.cursor()
+            
+            # Query to get all users with access to this project
+            query = """
+                SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, 
+                       u.is_active, u.created_at, up.granted_at, up.granted_by
+                FROM users u
+                LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
+                LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                WHERE u.is_active = 1 AND (
+                    u.user_type = 'root' OR
+                    (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
+                    (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
+                )
+            """
+            
+            if user_type:
+                query += " AND u.user_type = %s"
+                params = [project.id, project.id, user_type]
+            else:
+                params = [project.id, project.id]
+            
+            query += " ORDER BY u.user_type, u.username LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+            
+            cur.execute(query, params)
+            results = cur.fetchall()
+            
+            # Get total count
+            count_query = """
+                SELECT COUNT(DISTINCT u.id)
+                FROM users u
+                LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
+                LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                WHERE u.is_active = 1 AND (
+                    u.user_type = 'root' OR
+                    (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
+                    (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
+                )
+            """
+            
+            if user_type:
+                count_query += " AND u.user_type = %s"
+                count_params = [project.id, project.id, user_type]
+            else:
+                count_params = [project.id, project.id]
+            
+            cur.execute(count_query, count_params)
+            total_count = cur.fetchone()[0]
+        
+        # Build members list
+        members = []
+        for row in results:
+            user_id, user_hash, username, email, user_type_val, is_active, created_at, granted_at, granted_by = row
+            
+            # Get user's permissions in this project
+            permissions = get_user_project_permissions(user_id, project.id)
+            
+            # Get user groups for consumer users
+            groups = []
+            if user_type_val == 'consumer':
+                user_groups = get_user_groups_for_user(user_id)
+                groups = [g.group_name for g in user_groups]
+            
+            member_info = {
+                "user_hash": user_hash,
+                "username": username,
+                "email": email,
+                "user_type": user_type_val,
+                "is_active": is_active,
+                "permissions": permissions,
+                "groups": groups,
+                "access_level": "admin" if "admin" in permissions else ("read-write" if "write" in permissions else "read-only"),
+                "joined_at": granted_at,
+                "granted_by": granted_by,
+                "created_at": created_at
+            }
+            
+            members.append(member_info)
+        
+        project_info = ProjectInfo(
+            project_hash=project.project_hash,
+            project_name=project.project_name,
+            project_description=project.project_description
+        )
+        
+        pagination = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=total_count,
+            has_more=offset + limit < total_count
+        )
+        
+        # Build statistics
+        stats = {
+            "total_members": total_count,
+            "root_users": len([m for m in members if m["user_type"] == "root"]),
+            "admin_users": len([m for m in members if m["user_type"] == "admin"]),
+            "consumer_users": len([m for m in members if m["user_type"] == "consumer"]),
+            "active_members": len([m for m in members if m["is_active"]])
+        }
+        
+        return ProjectMembersResponse(
+            success=True,
+            project=project_info,
+            members=members,
+            pagination=pagination,
+            statistics=stats
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List project members error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list project members")
+
+
+@router.post("/{project_hash}/members", response_model=AddMemberToProjectResponse)
+async def add_member_to_project(
+    project_hash: str = Path(...),
+    user_hash: str = Form(...),
+    role: Optional[str] = Form("consumer"),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> AddMemberToProjectResponse:
+    """
+    Add a member to a project with specified role.
+    
+    **Admin access required**: Only admin users can add members to projects.
+    
+    Args:
+        project_hash: Project identifier
+        user_hash: User to add to the project
+        role: Role to assign (consumer, admin)
+        
+    Returns:
+        Added member information
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Check admin permissions
+        user_permissions = getattr(session_data, 'permissions', [])
+        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Admin permission required to add project members")
+        
+        # Get project
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get current user for audit trail
+        current_user = get_user_by_hash(session_data.user_hash)
+        
+        # Validate role
+        if role not in ['consumer', 'admin']:
+            raise HTTPException(status_code=400, detail="Invalid role. Must be 'consumer' or 'admin'")
+        
+        # Handle different role assignments
+        if role == 'consumer':
+            # Add consumer user to project
+            if target_user.user_type != 'consumer':
+                raise HTTPException(status_code=400, detail="Only consumer users can be assigned consumer role")
+            
+            # Check if user already has access
+            existing_access = get_user_project_access(target_user.id, project.id)
+            if existing_access:
+                raise HTTPException(status_code=400, detail="User already has access to this project")
+            
+            # Grant project access
+            user_project = grant_user_project_access(target_user.id, project.id, granted_by=current_user.id)
+            
+            if not user_project:
+                raise HTTPException(status_code=500, detail="Failed to grant project access")
+            
+            # Assign to default group
+            assign_user_to_default_group(user_project.id, project.id)
+            
+            access_type = "consumer_access"
+            
+        elif role == 'admin':
+            # Add admin user to project
+            if target_user.user_type != 'admin':
+                raise HTTPException(status_code=400, detail="Only admin users can be assigned admin role")
+            
+            # Check if admin already has access to this project
+            admin_projects = get_admin_assigned_projects(target_user.id)
+            if project.id in admin_projects:
+                raise HTTPException(status_code=400, detail="Admin user already has access to this project")
+            
+            # Add admin to project
+            success = add_admin_to_project(target_user.id, project.id, assigned_by=current_user.id)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to add admin to project")
+            
+            access_type = "admin_access"
+        
+        # Get user's permissions in this project
+        permissions = get_user_project_permissions(target_user.id, project.id)
+        
+        # Get user groups for consumer users
+        groups = []
+        if target_user.user_type == 'consumer':
+            user_groups = get_user_groups_for_user(target_user.id)
+            groups = [g.group_name for g in user_groups]
+        
+        member_info = {
+            "user_hash": target_user.user_hash,
+            "username": target_user.username,
+            "email": target_user.email,
+            "user_type": target_user.user_type,
+            "role": role,
+            "permissions": permissions,
+            "groups": groups,
+            "access_type": access_type,
+            "added_by": current_user.username,
+            "added_at": datetime.now().isoformat()
+        }
+        
+        project_info = ProjectInfo(
+            project_hash=project.project_hash,
+            project_name=project.project_name,
+            project_description=project.project_description
+        )
+        
+        logger.info(f"Member added to project: {target_user.username} -> {project.project_name} as {role} by {current_user.username}")
+        
+        return AddMemberToProjectResponse(
+            success=True,
+            message=f"User '{target_user.username}' added to project '{project.project_name}' as {role}",
+            member=member_info,
+            project=project_info
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add member to project error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to add member to project")
+
+
+def assign_user_to_default_group(user_project_id: int, project_id: int):
+    """Helper function to assign consumer user to default 'user' group in a project"""
+    try:
+        from src.Util.db_config import get_connection
+        
+        with get_connection() as con:
+            cur = con.cursor()
+            # Get default 'user' group ID
+            cur.execute("""
+                SELECT id FROM user_groups 
+                WHERE project_id = %s AND group_name = 'user' AND is_active = 1
+            """, [project_id])
+            
+            group_result = cur.fetchone()
+            if group_result:
+                group_id = group_result[0]
+                cur.execute("""
+                    INSERT INTO user_project_groups (user_project_id, group_id, assigned_at)
+                    VALUES (%s, %s, NOW())
+                    ON DUPLICATE KEY UPDATE is_active = 1, assigned_at = NOW()
+                """, [user_project_id, group_id])
+                con.commit()
+    except Exception as e:
+        logger.warning(f"Failed to assign user to default group: {str(e)}") 

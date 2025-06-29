@@ -332,6 +332,28 @@ class AccessSummaryResponse(BaseResponse):
     access_summary: Optional[Dict[str, Any]] = None
 
 
+class ListUsersResponse(BaseResponse):
+    """List users response"""
+    users: List[Dict[str, Any]] = Field(default_factory=list)
+    pagination: Optional[PaginationInfo] = None
+    filters: Optional[Dict[str, Any]] = None
+
+
+class GetUserDetailsResponse(BaseResponse):
+    """Get user details response"""
+    user: Optional[Dict[str, Any]] = None
+    permissions: List[str] = Field(default_factory=list)
+    groups: List[str] = Field(default_factory=list)
+    accessible_projects: List[ProjectInfo] = Field(default_factory=list)
+    statistics: Optional[Dict[str, Any]] = None
+
+
+class UpdateUserStatusResponse(BaseResponse):
+    """Update user status response"""
+    user: Optional[UserInfo] = None
+    status_change: Optional[Dict[str, Any]] = None
+
+
 # =================== PROJECT MANAGEMENT RESPONSES ===================
 
 class ProjectAccessInfo(BaseModelConfig):

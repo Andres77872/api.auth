@@ -180,6 +180,32 @@ from src.Util.db.db_rbac_permissions import (
     initialize_project_rbac
 )
 
+# Import session analytics and activity management functions
+from src.Util.db.db_session_analytics import (
+    # Session analytics
+    count_active_sessions,
+    get_session_statistics,
+    
+    # User analytics
+    get_user_status,
+    set_user_status,
+    get_recent_users_count,
+    get_user_login_statistics,
+    
+    # Project analytics
+    get_recent_projects_count,
+    get_project_members,
+    add_user_to_project,
+    
+    # System health
+    check_database_health,
+    check_redis_health,
+    
+    # Activity logs
+    get_recent_activity_count,
+    initialize_activity_logs_table
+)
+
 from src.Util.Models import UserLogin
 import json
 
@@ -519,5 +545,20 @@ __all__ = [
     'create_default_project_permissions',
     'create_permission_group',
     'assign_user_to_permission_group',
-    'initialize_project_rbac'
+    'initialize_project_rbac',
+    
+    # Session Analytics and Activity Management
+    'count_active_sessions',
+    'get_session_statistics',
+    'get_user_status',
+    'set_user_status',
+    'get_recent_users_count',
+    'get_user_login_statistics',
+    'get_recent_projects_count',
+    'get_project_members',
+    'add_user_to_project',
+    'check_database_health',
+    'check_redis_health',
+    'get_recent_activity_count',
+    'initialize_activity_logs_table'
 ]

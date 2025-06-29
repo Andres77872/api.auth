@@ -362,6 +362,122 @@ async def logout(
         raise HTTPException(status_code=500, detail="Logout error")
 
 
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_token(
+    response: Response,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> LoginResponse:
+    """
+    Refresh JWT token and extend session.
+    Creates a new token with updated expiration while maintaining the same session context.
+    
+    Returns:
+        New session token with same user and project context
+    """
+    try:
+        session_token = credentials.credentials
+        
+        # Validate current session
+        session_data = validate_session(session_token)
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        
+        # Get user data
+        user_data = get_user_by_hash(session_data.user_hash)
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Create new session token with same context
+        from src.Util.db import create_session, get_project_by_hash
+        
+        # Handle global root sessions differently
+        if (session_data.user_type == 'root' and 
+            session_data.project_hash == "" and 
+            session_data.project_name == "Global Root Access"):
+            
+            # Create new global root session
+            from src.Util.db.db_enhanced import create_root_session
+            root_session = create_root_session(user_data.username, "")  # No password needed for refresh
+            
+            if not root_session:
+                raise HTTPException(status_code=500, detail="Failed to refresh root session")
+            
+            new_session_token = root_session['session_token']
+            
+            # Build response for global root session
+            user_info = UserInfo(
+                user_hash=user_data.user_hash,
+                username=user_data.username,
+                email=user_data.email,
+                user_type="root"
+            )
+            
+            project_info = ProjectInfo(
+                project_hash="",
+                project_name="Global Root Access",
+                project_description="Unrestricted global access for root user"
+            )
+            
+        else:
+            # Regular project-based session refresh
+            project = get_project_by_hash(session_data.project_hash)
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found")
+            
+            # Create new session with same project context
+            new_session_token = create_session(
+                user_data.id, 
+                project.id, 
+                getattr(session_data, 'user_project_id', None)
+            )
+            
+            if not new_session_token:
+                raise HTTPException(status_code=500, detail="Failed to create new session")
+            
+            user_info = UserInfo(
+                user_hash=user_data.user_hash,
+                username=user_data.username,
+                email=user_data.email,
+                user_type=getattr(session_data, 'user_type', 'consumer')
+            )
+            
+            project_info = ProjectInfo(
+                project_hash=project.project_hash,
+                project_name=project.project_name
+            )
+        
+        # Invalidate old session
+        invalidate_session(session_token)
+        
+        # Set new session cookie
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=new_session_token,
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            secure=True,
+            samesite="strict"
+        )
+        
+        logger.info(f"Token refreshed for user: {user_data.username}")
+        
+        return LoginResponse(
+            success=True,
+            message="Token refreshed successfully",
+            session_token=new_session_token,
+            user=user_info,
+            project=project_info,
+            accessible_projects=[],  # Can be populated if needed
+            expires_at=None
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Token refresh error")
+
+
 @router.post("/switch-project", response_model=SwitchProjectResponse)
 async def switch_project(
     response: Response,
