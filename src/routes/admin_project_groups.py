@@ -20,6 +20,12 @@ from src.Util.db import (
     assign_project_to_permission_group, remove_project_from_permission_group,
     get_permission_groups_for_project, get_projects_in_permission_group
 )
+from src.Util.Models import (
+    ListProjectGroupsResponse, CreateProjectGroupResponse, ProjectGroupDetailsResponse,
+    UpdateProjectGroupResponse, DeleteProjectGroupResponse, AssignProjectToGroupResponse,
+    RemoveProjectFromGroupResponse,
+    ProjectInfo, ProjectGroupInfo, PaginationInfo
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -58,12 +64,12 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     return session_data
 
 
-@router.get("")
+@router.get("", response_model=ListProjectGroupsResponse)
 async def list_project_groups(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_data = Depends(require_admin)
-):
+) -> ListProjectGroupsResponse:
     """
     List all project permission groups (admin only).
     
@@ -78,25 +84,27 @@ async def list_project_groups(
         groups_with_counts = []
         for group in project_groups:
             projects = get_projects_in_permission_group(group.id)
-            groups_with_counts.append({
-                "group_hash": group.group_hash,
-                "group_name": group.group_name,
-                "description": group.description,
-                "permissions": group.permissions,
-                "project_count": len(projects),
-                "created_at": group.created_at,
-                "is_active": group.is_active
-            })
+            group_info = ProjectGroupInfo(
+                group_hash=group.group_hash,
+                group_name=group.group_name,
+                description=group.description,
+                permissions=group.permissions,
+                project_count=len(projects),
+                created_at=group.created_at
+            )
+            groups_with_counts.append(group_info)
         
-        return {
-            "success": True,
-            "project_groups": groups_with_counts,
-            "pagination": {
-                "limit": limit,
-                "offset": offset,
-                "total": len(groups_with_counts)
-            }
-        }
+        pagination = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=len(groups_with_counts)
+        )
+        
+        return ListProjectGroupsResponse(
+            success=True,
+            project_groups=groups_with_counts,
+            pagination=pagination
+        )
         
     except HTTPException:
         raise
@@ -105,11 +113,11 @@ async def list_project_groups(
         raise HTTPException(status_code=500, detail="Project groups listing error")
 
 
-@router.post("")
+@router.post("", response_model=CreateProjectGroupResponse)
 async def create_project_group_endpoint(
     group_data: ProjectGroupCreate,
     session_data = Depends(require_admin)
-):
+) -> CreateProjectGroupResponse:
     """
     Create a new project permission group (admin only).
     
@@ -134,17 +142,19 @@ async def create_project_group_endpoint(
         if not new_group:
             raise HTTPException(status_code=400, detail="Project group creation failed")
         
-        return {
-            "success": True,
-            "message": f"Project group \"{group_data.group_name}\" created successfully",
-            "project_group": {
-                "group_hash": new_group.group_hash,
-                "group_name": new_group.group_name,
-                "description": new_group.description,
-                "permissions": new_group.permissions,
-                "created_at": new_group.created_at
-            }
-        }
+        group_info = ProjectGroupInfo(
+            group_hash=new_group.group_hash,
+            group_name=new_group.group_name,
+            description=new_group.description,
+            permissions=new_group.permissions,
+            created_at=new_group.created_at
+        )
+        
+        return CreateProjectGroupResponse(
+            success=True,
+            message=f"Project group \"{group_data.group_name}\" created successfully",
+            project_group=group_info
+        )
         
     except HTTPException:
         raise
@@ -153,11 +163,11 @@ async def create_project_group_endpoint(
         raise HTTPException(status_code=500, detail="Project group creation error")
 
 
-@router.get("/{group_hash}")
+@router.get("/{group_hash}", response_model=ProjectGroupDetailsResponse)
 async def get_project_group_details(
     group_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> ProjectGroupDetailsResponse:
     """
     Get detailed project group information (admin only).
     
@@ -176,28 +186,33 @@ async def get_project_group_details(
         # Get assigned projects
         assigned_projects = get_projects_in_permission_group(project_group.id)
         
-        return {
-            "success": True,
-            "project_group": {
-                "group_hash": project_group.group_hash,
-                "group_name": project_group.group_name,
-                "description": project_group.description,
-                "permissions": project_group.permissions,
-                "created_at": project_group.created_at,
-                "is_active": project_group.is_active
-            },
-            "assigned_projects": [
-                {
-                    "project_hash": project.project_hash,
-                    "project_name": project.project_name,
-                    "project_description": project.project_description
-                } for project in assigned_projects
-            ],
-            "statistics": {
-                "total_projects": len(assigned_projects),
-                "total_permissions": len(project_group.permissions)
-            }
+        group_info = ProjectGroupInfo(
+            group_hash=project_group.group_hash,
+            group_name=project_group.group_name,
+            description=project_group.description,
+            permissions=project_group.permissions,
+            created_at=project_group.created_at
+        )
+        
+        project_list = [
+            ProjectInfo(
+                project_hash=project.project_hash,
+                project_name=project.project_name,
+                project_description=project.project_description
+            ) for project in assigned_projects
+        ]
+        
+        statistics_info = {
+            "total_projects": len(assigned_projects),
+            "total_permissions": len(project_group.permissions)
         }
+        
+        return ProjectGroupDetailsResponse(
+            success=True,
+            project_group=group_info,
+            assigned_projects=project_list,
+            statistics=statistics_info
+        )
         
     except HTTPException:
         raise
@@ -206,12 +221,12 @@ async def get_project_group_details(
         raise HTTPException(status_code=500, detail="Project group details error")
 
 
-@router.put("/{group_hash}")
+@router.put("/{group_hash}", response_model=UpdateProjectGroupResponse)
 async def update_project_group_endpoint(
     group_hash: str = Path(...),
     group_data: ProjectGroupUpdate = None,
     session_data = Depends(require_admin)
-):
+) -> UpdateProjectGroupResponse:
     """
     Update project group information (admin only).
     
@@ -239,16 +254,18 @@ async def update_project_group_endpoint(
         if not updated_group:
             raise HTTPException(status_code=400, detail="Update failed")
         
-        return {
-            "success": True,
-            "message": "Project group updated successfully",
-            "project_group": {
-                "group_hash": updated_group.group_hash,
-                "group_name": updated_group.group_name,
-                "description": updated_group.description,
-                "permissions": updated_group.permissions
-            }
-        }
+        group_info = ProjectGroupInfo(
+            group_hash=updated_group.group_hash,
+            group_name=updated_group.group_name,
+            description=updated_group.description,
+            permissions=updated_group.permissions
+        )
+        
+        return UpdateProjectGroupResponse(
+            success=True,
+            message="Project group updated successfully",
+            project_group=group_info
+        )
         
     except HTTPException:
         raise
@@ -257,11 +274,11 @@ async def update_project_group_endpoint(
         raise HTTPException(status_code=500, detail="Project group update error")
 
 
-@router.delete("/{group_hash}")
+@router.delete("/{group_hash}", response_model=DeleteProjectGroupResponse)
 async def delete_project_group_endpoint(
     group_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> DeleteProjectGroupResponse:
     """
     Delete a project group (admin only).
     
@@ -282,11 +299,11 @@ async def delete_project_group_endpoint(
         
         # Delete group
         if delete_project_permission_group(project_group.id, deleted_by=user_data.id):
-            return {
-                "success": True,
-                "message": f"Project group \"{project_group.group_name}\" deleted successfully",
-                "warning": "All project assignments have been removed"
-            }
+            return DeleteProjectGroupResponse(
+                success=True,
+                message=f"Project group \"{project_group.group_name}\" deleted successfully",
+                warning="All project assignments have been removed"
+            )
         else:
             raise HTTPException(status_code=400, detail="Delete failed")
         
@@ -297,13 +314,13 @@ async def delete_project_group_endpoint(
         raise HTTPException(status_code=500, detail="Project group deletion error")
 
 
-@router.post("/{group_hash}/projects")
+@router.post("/{group_hash}/projects", response_model=AssignProjectToGroupResponse)
 async def assign_project_to_group_endpoint(
     group_hash: str = Path(...),
     assignment: ProjectAssignment = None,
     project_hash: str = Form(None),
     session_data = Depends(require_admin)
-):
+) -> AssignProjectToGroupResponse:
     """
     Assign a project to a project group (admin only).
     
@@ -344,22 +361,24 @@ async def assign_project_to_group_endpoint(
         if not assignment_result:
             raise HTTPException(status_code=400, detail="Assignment failed")
         
-        return {
-            "success": True,
-            "message": f"Project \"{target_project.project_name}\" assigned to group \"{project_group.group_name}\"",
-            "assignment": {
-                "project": {
-                    "project_hash": target_project.project_hash,
-                    "project_name": target_project.project_name
-                },
-                "group": {
-                    "group_hash": project_group.group_hash,
-                    "group_name": project_group.group_name,
-                    "permissions": project_group.permissions
-                },
-                "assigned_by": current_user.username
-            }
+        assignment_info = {
+            "project": {
+                "project_hash": target_project.project_hash,
+                "project_name": target_project.project_name
+            },
+            "group": {
+                "group_hash": project_group.group_hash,
+                "group_name": project_group.group_name,
+                "permissions": project_group.permissions
+            },
+            "assigned_by": current_user.username
         }
+        
+        return AssignProjectToGroupResponse(
+            success=True,
+            message=f"Project \"{target_project.project_name}\" assigned to group \"{project_group.group_name}\"",
+            assignment=assignment_info
+        )
         
     except HTTPException:
         raise
@@ -368,12 +387,12 @@ async def assign_project_to_group_endpoint(
         raise HTTPException(status_code=500, detail="Project group assignment error")
 
 
-@router.delete("/{group_hash}/projects/{project_hash}")
+@router.delete("/{group_hash}/projects/{project_hash}", response_model=RemoveProjectFromGroupResponse)
 async def remove_project_from_group_endpoint(
     group_hash: str = Path(...),
     project_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> RemoveProjectFromGroupResponse:
     """
     Remove a project from a project group (admin only).
     
@@ -400,10 +419,10 @@ async def remove_project_from_group_endpoint(
         
         # Remove project from group
         if remove_project_from_permission_group(project.id, project_group.id, removed_by=current_user.id):
-            return {
-                "success": True,
-                "message": f"Project \"{project.project_name}\" removed from group \"{project_group.group_name}\""
-            }
+            return RemoveProjectFromGroupResponse(
+                success=True,
+                message=f"Project \"{project.project_name}\" removed from group \"{project_group.group_name}\""
+            )
         else:
             raise HTTPException(status_code=400, detail="Removal failed")
         

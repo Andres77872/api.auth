@@ -31,6 +31,14 @@ from src.Util.db import (
     get_user_type_info, list_users, count_users,
     get_project_by_id
 )
+from src.Util.Models import (
+    CreateRootUserResponse, CreateAdminUserResponse, UserTypeInfoResponse,
+    UpdateUserTypeResponse, ListUsersByTypeResponse, UserTypeStatsResponse,
+    UpdateAdminProjectsResponse, AddAdminToProjectResponse, RemoveAdminFromProjectResponse,
+    AdminProjectAssignmentsResponse,
+    UserInfo, ProjectInfo, UserTypeInfo, PaginationInfo,
+    CreateRootUserRequest, CreateAdminUserRequest, UpdateUserTypeRequest
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -39,23 +47,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/user-types", tags=["User Type Management"])
 security = HTTPBearer()
 
-# Pydantic models
-class CreateRootUser(BaseModel):
-    username: str
-    password: str
-    email: str = None
-
-class CreateAdminUser(BaseModel):
-    username: str
-    password: str
-    email: str
-    assigned_project_id: Optional[int] = None  # For backwards compatibility
-    assigned_project_ids: Optional[List[int]] = None  # For multi-project support
-
-class UpdateUserType(BaseModel):
-    user_type: str  # 'root', 'admin', 'consumer'
-    assigned_project_id: Optional[int] = None
-
+# Pydantic models for requests that aren't in Models.py
 class UpdateAdminProject(BaseModel):
     assigned_project_id: int
 
@@ -103,11 +95,11 @@ def require_root_or_admin_user(credentials: HTTPAuthorizationCredentials = Depen
     return user
 
 
-@router.post("/root")
+@router.post("/root", response_model=CreateRootUserResponse)
 async def create_root_user_endpoint(
-    user_data: CreateRootUser,
+    user_data: CreateRootUserRequest,
     current_user = Depends(require_root_user)
-):
+) -> CreateRootUserResponse:
     """
     Create a new root (super admin) user.
     
@@ -132,18 +124,19 @@ async def create_root_user_endpoint(
         
         logger.info(f"Root user created: {new_root_user.username}")
         
-        return {
-            "success": True,
-            "message": f"Root user '{user_data.username}' created successfully",
-            "user": {
-                "user_hash": new_root_user.user_hash,
-                "username": new_root_user.username,
-                "email": new_root_user.email,
-                "user_type": "root",
-                "created_at": new_root_user.created_at,
-                "created_by": current_user.username
-            }
-        }
+        user_info = UserInfo(
+            user_hash=new_root_user.user_hash,
+            username=new_root_user.username,
+            email=new_root_user.email,
+            user_type="root",
+            created_at=new_root_user.created_at
+        )
+        
+        return CreateRootUserResponse(
+            success=True,
+            message=f"Root user '{user_data.username}' created successfully",
+            user=user_info
+        )
         
     except Exception as e:
         logger.error(f"Root user creation error: {str(e)}")
@@ -152,11 +145,11 @@ async def create_root_user_endpoint(
         raise HTTPException(status_code=500, detail="Root user creation failed")
 
 
-@router.post("/admin")
+@router.post("/admin", response_model=CreateAdminUserResponse)
 async def create_admin_user_endpoint(
-    user_data: CreateAdminUser,
+    user_data: CreateAdminUserRequest,
     current_user = Depends(require_root_user)
-):
+) -> CreateAdminUserResponse:
     """
     Create a new admin user assigned to one or multiple projects.
     
@@ -201,27 +194,29 @@ async def create_admin_user_endpoint(
         project_names = [p.project_name for p in projects]
         logger.info(f"Admin user created: {new_admin_user.username} for projects: {', '.join(project_names)}")
         
-        return {
-            "success": True,
-            "message": f"Admin user '{user_data.username}' created and assigned to {len(projects)} project(s)",
-            "user": {
-                "user_hash": new_admin_user.user_hash,
-                "username": new_admin_user.username,
-                "email": new_admin_user.email,
-                "user_type": "admin",
-                "assigned_project_ids": project_ids,
-                "assigned_projects": [
-                    {
-                        "project_id": p.id,
-                        "project_hash": p.project_hash,
-                        "project_name": p.project_name
-                    } for p in projects
-                ],
-                "primary_project_id": project_ids[0],  # For backwards compatibility
-                "created_at": new_admin_user.created_at,
-                "created_by": current_user.username
-            }
+        user_data_dict = {
+            "user_hash": new_admin_user.user_hash,
+            "username": new_admin_user.username,
+            "email": new_admin_user.email,
+            "user_type": "admin",
+            "assigned_project_ids": project_ids,
+            "assigned_projects": [
+                {
+                    "project_id": p.id,
+                    "project_hash": p.project_hash,
+                    "project_name": p.project_name
+                } for p in projects
+            ],
+            "primary_project_id": project_ids[0],  # For backwards compatibility
+            "created_at": new_admin_user.created_at,
+            "created_by": current_user.username
         }
+        
+        return CreateAdminUserResponse(
+            success=True,
+            message=f"Admin user '{user_data.username}' created and assigned to {len(projects)} project(s)",
+            user=user_data_dict
+        )
         
     except HTTPException:
         raise
@@ -232,11 +227,11 @@ async def create_admin_user_endpoint(
         raise HTTPException(status_code=500, detail="Admin user creation failed")
 
 
-@router.get("/{user_hash}/info")
+@router.get("/{user_hash}/info", response_model=UserTypeInfoResponse)
 async def get_user_type_information(
     user_hash: str,
     current_user = Depends(require_root_or_admin_user)
-):
+) -> UserTypeInfoResponse:
     """
     Get comprehensive user type information.
     
@@ -264,26 +259,37 @@ async def get_user_type_information(
                     raise HTTPException(status_code=403, detail="Access denied to user outside your project")
         
         # Get comprehensive user type info
-        user_type_info = get_user_type_info(target_user.id)
+        user_type_info_dict = get_user_type_info(target_user.id)
         
         # Add project information for admin users
-        if user_type_info.get("user_type") == "admin":
+        if user_type_info_dict.get("user_type") == "admin":
             # Get all assigned projects for multi-project admin support
             assigned_projects = get_admin_project_assignments_with_details(target_user.id)
-            user_type_info["assigned_projects"] = assigned_projects
-            user_type_info["total_assigned_projects"] = len(assigned_projects)
+            user_type_info_dict["assigned_projects"] = assigned_projects
+            user_type_info_dict["total_assigned_projects"] = len(assigned_projects)
             
             # Legacy compatibility - primary project
             if assigned_projects:
                 primary_project = assigned_projects[0]
-                user_type_info["assigned_project_id"] = primary_project["project_id"]
-                user_type_info["assigned_project_name"] = primary_project["project_name"]
-                user_type_info["assigned_project_hash"] = primary_project["project_hash"]
+                user_type_info_dict["assigned_project_id"] = primary_project["project_id"]
+                user_type_info_dict["assigned_project_name"] = primary_project["project_name"]
+                user_type_info_dict["assigned_project_hash"] = primary_project["project_hash"]
         
-        return {
-            "success": True,
-            "user_type_info": user_type_info
-        }
+        # Build UserTypeInfo model
+        user_type_info = UserTypeInfo(
+            user_id=user_type_info_dict.get("user_id", target_user.id),
+            user_hash=user_type_info_dict.get("user_hash", target_user.user_hash),
+            username=user_type_info_dict.get("username", target_user.username),
+            user_type=user_type_info_dict.get("user_type", "consumer"),
+            capabilities=user_type_info_dict.get("capabilities", []),
+            assigned_project_id=user_type_info_dict.get("assigned_project_id"),
+            assigned_projects=user_type_info_dict.get("assigned_projects")
+        )
+        
+        return UserTypeInfoResponse(
+            success=True,
+            user_type_info=user_type_info
+        )
         
     except HTTPException:
         raise
@@ -292,12 +298,12 @@ async def get_user_type_information(
         raise HTTPException(status_code=500, detail="Failed to get user type information")
 
 
-@router.put("/{user_hash}/type")
+@router.put("/{user_hash}/type", response_model=UpdateUserTypeResponse)
 async def update_user_type_endpoint(
     user_hash: str,
-    type_data: UpdateUserType,
+    type_data: UpdateUserTypeRequest,
     current_user = Depends(require_root_user)
-):
+) -> UpdateUserTypeResponse:
     """
     Update user type (promote/demote users).
     
@@ -340,15 +346,26 @@ async def update_user_type_endpoint(
             raise HTTPException(status_code=400, detail="Failed to update user type")
         
         # Get updated user info
-        updated_info = get_user_type_info(target_user.id)
+        updated_info_dict = get_user_type_info(target_user.id)
+        
+        # Build UserTypeInfo model
+        updated_info = UserTypeInfo(
+            user_id=updated_info_dict.get("user_id", target_user.id),
+            user_hash=updated_info_dict.get("user_hash", target_user.user_hash),
+            username=updated_info_dict.get("username", target_user.username),
+            user_type=updated_info_dict.get("user_type", type_data.user_type),
+            capabilities=updated_info_dict.get("capabilities", []),
+            assigned_project_id=updated_info_dict.get("assigned_project_id"),
+            assigned_projects=updated_info_dict.get("assigned_projects")
+        )
         
         logger.info(f"User type updated: {target_user.username} -> {type_data.user_type} by {current_user.username}")
         
-        return {
-            "success": True,
-            "message": f"User '{target_user.username}' type updated to '{type_data.user_type}'",
-            "user_type_info": updated_info
-        }
+        return UpdateUserTypeResponse(
+            success=True,
+            message=f"User '{target_user.username}' type updated to '{type_data.user_type}'",
+            user_type_info=updated_info
+        )
         
     except HTTPException:
         raise
@@ -357,84 +374,13 @@ async def update_user_type_endpoint(
         raise HTTPException(status_code=500, detail="Failed to update user type")
 
 
-@router.put("/admin/{user_hash}/project")
-async def update_admin_project_assignment(
-    user_hash: str,
-    project_data: UpdateAdminProject,
-    current_user = Depends(require_root_user)
-):
-    """
-    Update admin user's project assignment.
-    
-    **Root users only**: Only root users can reassign admin users to different projects.
-    
-    Args:
-        user_hash: Hash of the admin user to update
-        project_data: New project assignment
-        
-    Returns:
-        Updated project assignment information
-    """
-    try:
-        target_user = get_user_by_hash(user_hash)
-        if not target_user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Verify user is admin
-        if get_user_type(target_user.id) != 'admin':
-            raise HTTPException(status_code=400, detail="User is not an admin user")
-        
-        # Verify new project exists
-        new_project = get_project_by_id(project_data.assigned_project_id)
-        if not new_project:
-            raise HTTPException(status_code=404, detail="Target project not found")
-        
-        # Get old project for logging
-        old_project_id = get_admin_assigned_project(target_user.id)
-        old_project = get_project_by_id(old_project_id) if old_project_id else None
-        
-        # Update project assignment
-        success = assign_admin_to_project(
-            user_id=target_user.id,
-            project_id=project_data.assigned_project_id,
-            assigned_by=current_user.id
-        )
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to update project assignment")
-        
-        logger.info(f"Admin project assignment updated: {target_user.username} "
-                   f"from {old_project.project_name if old_project else 'None'} "
-                   f"to {new_project.project_name}")
-        
-        return {
-            "success": True,
-            "message": f"Admin user '{target_user.username}' reassigned to project '{new_project.project_name}'",
-            "assignment": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "previous_project": old_project.project_name if old_project else None,
-                "new_project": new_project.project_name,
-                "new_project_id": new_project.id,
-                "new_project_hash": new_project.project_hash,
-                "assigned_by": current_user.username
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Update admin project assignment error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update project assignment")
-
-
-@router.get("/users/{user_type}")
+@router.get("/users/{user_type}", response_model=ListUsersByTypeResponse)
 async def list_users_by_type(
     user_type: str,
     limit: int = 50,
     offset: int = 0,
     current_user = Depends(require_root_or_admin_user)
-):
+) -> ListUsersByTypeResponse:
     """
     List users by user type.
     
@@ -496,20 +442,24 @@ async def list_users_by_type(
             
             user_list.append(user_info)
         
-        return {
-            "success": True,
-            "users": user_list,
-            "pagination": {
-                "limit": limit,
-                "offset": offset,
-                "total": total_count,
-                "has_more": offset + limit < total_count
-            },
-            "filter": {
-                "user_type": user_type,
-                "project_filter": project_filter
-            }
+        pagination = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=total_count,
+            has_more=offset + limit < total_count
+        )
+        
+        filter_info = {
+            "user_type": user_type,
+            "project_filter": project_filter
         }
+        
+        return ListUsersByTypeResponse(
+            success=True,
+            users=user_list,
+            pagination=pagination,
+            filter=filter_info
+        )
         
     except HTTPException:
         raise
@@ -518,12 +468,12 @@ async def list_users_by_type(
         raise HTTPException(status_code=500, detail="Failed to list users by type")
 
 
-@router.put("/admin/{user_hash}/projects")
+@router.put("/admin/{user_hash}/projects", response_model=UpdateAdminProjectsResponse)
 async def update_admin_multiple_projects(
     user_hash: str,
     project_data: UpdateAdminProjects,
     current_user = Depends(require_root_user)
-):
+) -> UpdateAdminProjectsResponse:
     """
     Update admin user's multiple project assignments.
     
@@ -577,24 +527,26 @@ async def update_admin_multiple_projects(
                    f"from [{', '.join(old_project_names)}] "
                    f"to [{', '.join(new_project_names)}]")
         
-        return {
-            "success": True,
-            "message": f"Admin user '{target_user.username}' reassigned to {len(projects)} project(s)",
-            "assignment": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "previous_projects": old_project_names,
-                "new_projects": [
-                    {
-                        "project_id": p.id,
-                        "project_hash": p.project_hash,
-                        "project_name": p.project_name
-                    } for p in projects
-                ],
-                "total_projects": len(projects),
-                "assigned_by": current_user.username
-            }
+        assignment_info = {
+            "user_hash": target_user.user_hash,
+            "username": target_user.username,
+            "previous_projects": old_project_names,
+            "new_projects": [
+                {
+                    "project_id": p.id,
+                    "project_hash": p.project_hash,
+                    "project_name": p.project_name
+                } for p in projects
+            ],
+            "total_projects": len(projects),
+            "assigned_by": current_user.username
         }
+        
+        return UpdateAdminProjectsResponse(
+            success=True,
+            message=f"Admin user '{target_user.username}' reassigned to {len(projects)} project(s)",
+            assignment=assignment_info
+        )
         
     except HTTPException:
         raise
@@ -603,12 +555,12 @@ async def update_admin_multiple_projects(
         raise HTTPException(status_code=500, detail="Failed to update project assignments")
 
 
-@router.post("/admin/{user_hash}/projects/add")
+@router.post("/admin/{user_hash}/projects/add", response_model=AddAdminToProjectResponse)
 async def add_admin_to_project_endpoint(
     user_hash: str,
     project_data: AddAdminToProject,
     current_user = Depends(require_root_user)
-):
+) -> AddAdminToProjectResponse:
     """
     Add admin user to an additional project.
     
@@ -652,21 +604,23 @@ async def add_admin_to_project_endpoint(
         
         logger.info(f"Admin user added to project: {target_user.username} -> {project.project_name}")
         
-        return {
-            "success": True,
-            "message": f"Admin user '{target_user.username}' added to project '{project.project_name}'",
-            "assignment": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "added_project": {
-                    "project_id": project.id,
-                    "project_hash": project.project_hash,
-                    "project_name": project.project_name
-                },
-                "total_projects": len(get_admin_assigned_projects(target_user.id)),
-                "assigned_by": current_user.username
-            }
+        assignment_info = {
+            "user_hash": target_user.user_hash,
+            "username": target_user.username,
+            "added_project": {
+                "project_id": project.id,
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "total_projects": len(get_admin_assigned_projects(target_user.id)),
+            "assigned_by": current_user.username
         }
+        
+        return AddAdminToProjectResponse(
+            success=True,
+            message=f"Admin user '{target_user.username}' added to project '{project.project_name}'",
+            assignment=assignment_info
+        )
         
     except HTTPException:
         raise
@@ -675,12 +629,12 @@ async def add_admin_to_project_endpoint(
         raise HTTPException(status_code=500, detail="Failed to add admin to project")
 
 
-@router.delete("/admin/{user_hash}/projects/{project_id}")
+@router.delete("/admin/{user_hash}/projects/{project_id}", response_model=RemoveAdminFromProjectResponse)
 async def remove_admin_from_project_endpoint(
     user_hash: str,
     project_id: int,
     current_user = Depends(require_root_user)
-):
+) -> RemoveAdminFromProjectResponse:
     """
     Remove admin user from a specific project.
     
@@ -730,21 +684,23 @@ async def remove_admin_from_project_endpoint(
         
         logger.info(f"Admin user removed from project: {target_user.username} -> {project.project_name}")
         
-        return {
-            "success": True,
-            "message": f"Admin user '{target_user.username}' removed from project '{project.project_name}'",
-            "removal": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "removed_project": {
-                    "project_id": project.id,
-                    "project_hash": project.project_hash,
-                    "project_name": project.project_name
-                },
-                "remaining_projects": len(remaining_projects),
-                "removed_by": current_user.username
-            }
+        removal_info = {
+            "user_hash": target_user.user_hash,
+            "username": target_user.username,
+            "removed_project": {
+                "project_id": project.id,
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "remaining_projects": len(remaining_projects),
+            "removed_by": current_user.username
         }
+        
+        return RemoveAdminFromProjectResponse(
+            success=True,
+            message=f"Admin user '{target_user.username}' removed from project '{project.project_name}'",
+            removal=removal_info
+        )
         
     except HTTPException:
         raise
@@ -753,11 +709,11 @@ async def remove_admin_from_project_endpoint(
         raise HTTPException(status_code=500, detail="Failed to remove admin from project")
 
 
-@router.get("/admin/{user_hash}/projects")
+@router.get("/admin/{user_hash}/projects", response_model=AdminProjectAssignmentsResponse)
 async def get_admin_project_assignments(
     user_hash: str,
     current_user = Depends(require_root_or_admin_user)
-):
+) -> AdminProjectAssignmentsResponse:
     """
     Get all project assignments for an admin user.
     
@@ -786,19 +742,25 @@ async def get_admin_project_assignments(
         # Get project assignments
         assignments = get_admin_project_assignments_with_details(target_user.id)
         
-        return {
-            "success": True,
-            "user": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "user_type": "admin"
-            },
-            "project_assignments": assignments,
-            "summary": {
-                "total_projects": len(assignments),
-                "primary_project": assignments[0] if assignments else None
-            }
+        user_info = UserInfo(
+            user_hash=target_user.user_hash,
+            username=target_user.username,
+            email=target_user.email,
+            user_type="admin",
+            created_at=target_user.created_at
+        )
+        
+        summary_info = {
+            "total_projects": len(assignments),
+            "primary_project": assignments[0] if assignments else None
         }
+        
+        return AdminProjectAssignmentsResponse(
+            success=True,
+            user=user_info,
+            project_assignments=assignments,
+            summary=summary_info
+        )
         
     except HTTPException:
         raise
@@ -807,10 +769,10 @@ async def get_admin_project_assignments(
         raise HTTPException(status_code=500, detail="Failed to get project assignments")
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=UserTypeStatsResponse)
 async def get_user_type_statistics(
     current_user = Depends(require_root_or_admin_user)
-):
+) -> UserTypeStatsResponse:
     """
     Get user type statistics and distribution.
     
@@ -868,10 +830,10 @@ async def get_user_type_statistics(
                 "access": "unrestricted"
             }
         
-        return {
-            "success": True,
-            "statistics": stats
-        }
+        return UserTypeStatsResponse(
+            success=True,
+            statistics=stats
+        )
         
     except Exception as e:
         logger.error(f"Get user type statistics error: {str(e)}")

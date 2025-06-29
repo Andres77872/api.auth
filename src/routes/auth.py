@@ -16,6 +16,10 @@ from src.Util.db import (
     check_username_email_available, invalidate_session,
     get_user_by_hash, get_user_accessible_projects
 )
+from src.Util.Models import (
+    LoginResponse, RegisterResponse, ValidateSessionResponse, LogoutResponse,
+    SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -25,12 +29,12 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
 
 
-@router.post("/login")
+@router.post("/login", response_model=LoginResponse)
 async def login(
     username: str = Form(...),
     password: str = Form(...),
     project_hash: str = Form(...)
-):
+) -> LoginResponse:
     """
     Authenticate user and return session token with group context.
     
@@ -54,25 +58,39 @@ async def login(
         
         logger.info(f"Successful login for user: {username}")
         
-        # Return comprehensive group-based response
-        return {
-            "success": True,
-            "message": "Login successful",
-            "session_token": login_result.session_token,
-            "user": {
-                "user_hash": login_result.user_hash,
-                "username": login_result.username if hasattr(login_result, 'username') else username,
-                "email": login_result.email if hasattr(login_result, 'email') else None,
-                "user_groups": login_result.user_groups if hasattr(login_result, 'user_groups') else []
-            },
-            "project": {
-                "project_hash": login_result.project_hash,
-                "project_name": login_result.project_name,
-                "permissions": login_result.permissions if hasattr(login_result, 'permissions') else []
-            },
-            "accessible_projects": login_result.available_projects if hasattr(login_result, 'available_projects') else [],
-            "expires_at": login_result.expires_at if hasattr(login_result, 'expires_at') else None
-        }
+        # Build user info
+        user_info = UserInfo(
+            user_hash=login_result.user_hash,
+            username=getattr(login_result, 'username', username),
+            email=getattr(login_result, 'email', None),
+            user_type=getattr(login_result, 'user_type', 'consumer')
+        )
+        
+        # Build project info
+        project_info = ProjectInfo(
+            project_hash=login_result.project_hash,
+            project_name=login_result.project_name
+        )
+        
+        # Build accessible projects list
+        accessible_projects = []
+        if hasattr(login_result, 'available_projects') and login_result.available_projects:
+            for proj in login_result.available_projects:
+                accessible_projects.append(ProjectInfo(
+                    project_hash=getattr(proj, 'project_hash', ''),
+                    project_name=getattr(proj, 'project_name', ''),
+                    project_description=getattr(proj, 'project_description', None)
+                ))
+        
+        return LoginResponse(
+            success=True,
+            message="Login successful",
+            session_token=login_result.session_token,
+            user=user_info,
+            project=project_info,
+            accessible_projects=accessible_projects,
+            expires_at=getattr(login_result, 'expires_at', None)
+        )
         
     except HTTPException:
         raise
@@ -81,13 +99,13 @@ async def login(
         raise HTTPException(status_code=500, detail="Authentication error")
 
 
-@router.post("/register")
+@router.post("/register", response_model=RegisterResponse)
 async def register(
     username: str = Form(...),
     password: str = Form(...),
     email: str = Form(...),
     project_hash: str = Form(...)
-):
+) -> RegisterResponse:
     """
     Register new user with automatic group assignment.
     
@@ -117,20 +135,24 @@ async def register(
         
         logger.info(f"Successful registration for user: {username}")
         
-        return {
-            "success": True,
-            "message": "User registered successfully",
-            "user": {
-                "user_hash": register_result.user_hash,
-                "username": register_result.username if hasattr(register_result, 'username') else username,
-                "email": register_result.email if hasattr(register_result, 'email') else email,
-                "user_groups": register_result.user_groups if hasattr(register_result, 'user_groups') else []
-            },
-            "project": {
-                "project_hash": register_result.project_hash,
-                "project_name": register_result.project_name
-            }
-        }
+        user_info = UserInfo(
+            user_hash=register_result.user_hash,
+            username=getattr(register_result, 'username', username),
+            email=getattr(register_result, 'email', email),
+            user_type=getattr(register_result, 'user_type', 'consumer')
+        )
+        
+        project_info = ProjectInfo(
+            project_hash=register_result.project_hash,
+            project_name=register_result.project_name
+        )
+        
+        return RegisterResponse(
+            success=True,
+            message="User registered successfully",
+            user=user_info,
+            project=project_info
+        )
         
     except HTTPException:
         raise
@@ -139,8 +161,8 @@ async def register(
         raise HTTPException(status_code=500, detail="Registration error")
 
 
-@router.get("/validate")
-async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depends(security)):
+@router.get("/validate", response_model=ValidateSessionResponse)
+async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depends(security)) -> ValidateSessionResponse:
     """
     Validate session token and return user information with group context.
     
@@ -156,25 +178,30 @@ async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depe
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid or expired session")
         
-        return {
-            "success": True,
-            "valid": True,
-            "user": {
-                "user_hash": session_data.user_hash,
-                "username": session_data.username if hasattr(session_data, 'username') else "user",
-                "email": session_data.email if hasattr(session_data, 'email') else None,
-                "user_groups": session_data.user_groups if hasattr(session_data, 'user_groups') else []
-            },
-            "project": {
-                "project_hash": session_data.project_hash,
-                "project_name": session_data.project_name,
-                "permissions": session_data.permissions if hasattr(session_data, 'permissions') else []
-            },
-            "session": {
-                "expires_at": session_data.expires_at if hasattr(session_data, 'expires_at') else None,
-                "created_at": session_data.created_at if hasattr(session_data, 'created_at') else None
-            }
+        user_info = UserInfo(
+            user_hash=session_data.user_hash,
+            username=getattr(session_data, 'username', 'user'),
+            email=getattr(session_data, 'email', None),
+            user_type=getattr(session_data, 'user_type', 'consumer')
+        )
+        
+        project_info = ProjectInfo(
+            project_hash=session_data.project_hash,
+            project_name=session_data.project_name
+        )
+        
+        session_info = {
+            "expires_at": getattr(session_data, 'expires_at', None),
+            "created_at": getattr(session_data, 'created_at', None)
         }
+        
+        return ValidateSessionResponse(
+            success=True,
+            valid=True,
+            user=user_info,
+            project=project_info,
+            session=session_info
+        )
         
     except HTTPException:
         raise
@@ -183,8 +210,8 @@ async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depe
         raise HTTPException(status_code=500, detail="Session validation error")
 
 
-@router.post("/logout")
-async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)) -> LogoutResponse:
     """
     Logout user and invalidate session.
     
@@ -196,7 +223,7 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
         
         # Invalidate session
         if invalidate_session(session_token):
-            return {"success": True, "message": "Logged out successfully"}
+            return LogoutResponse(success=True, message="Logged out successfully")
         else:
             raise HTTPException(status_code=400, detail="Logout failed")
             
@@ -207,11 +234,11 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=500, detail="Logout error")
 
 
-@router.post("/switch-project")
+@router.post("/switch-project", response_model=SwitchProjectResponse)
 async def switch_project(
     project_hash: str = Form(...),
     credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+) -> SwitchProjectResponse:
     """
     Switch to a different project that the user's group has access to.
     
@@ -267,17 +294,22 @@ async def switch_project(
         # Get updated permissions for the new project
         permissions = get_user_permissions_in_project(user_data.id, new_project.id)
         
-        return {
-            "success": True,
-            "message": f"Successfully switched to project: {new_project.name}",
-            "session_token": new_session_token,
-            "project": {
-                "project_hash": new_project.project_hash,
-                "project_name": new_project.name,
-                "permissions": permissions
-            },
-            "user_groups": current_session.user_groups if hasattr(current_session, 'user_groups') else []
-        }
+        project_info = ProjectInfo(
+            project_hash=new_project.project_hash,
+            project_name=new_project.project_name
+        )
+        
+        user_groups = getattr(current_session, 'user_groups', [])
+        if hasattr(current_session, 'groups'):
+            user_groups = current_session.groups
+        
+        return SwitchProjectResponse(
+            success=True,
+            message=f"Successfully switched to project: {new_project.project_name}",
+            session_token=new_session_token,
+            project=project_info,
+            user_groups=user_groups
+        )
         
     except HTTPException:
         raise
@@ -286,11 +318,11 @@ async def switch_project(
         raise HTTPException(status_code=500, detail="Project switch error")
 
 
-@router.post("/check-availability")
+@router.post("/check-availability", response_model=CheckAvailabilityResponse)
 async def check_availability(
     username: str = Form(None),
     email: str = Form(None)
-):
+) -> CheckAvailabilityResponse:
     """
     Check if username or email is available globally.
     
@@ -305,17 +337,20 @@ async def check_availability(
         if not username and not email:
             raise HTTPException(status_code=400, detail="Username or email required")
         
-        result = {
-            "success": True
-        }
+        username_available = None
+        email_available = None
         
         if username:
-            result["username_available"] = check_username_email_available(username)
+            username_available = check_username_email_available(username)
         
         if email:
-            result["email_available"] = check_username_email_available(email)
+            email_available = check_username_email_available(email)
         
-        return result
+        return CheckAvailabilityResponse(
+            success=True,
+            username_available=username_available,
+            email_available=email_available
+        )
         
     except HTTPException:
         raise

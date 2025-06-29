@@ -15,6 +15,10 @@ from src.Util.db import (
     count_project_permission_groups, client, validate_session
 )
 from src.Util.cache_manager import cache_manager
+from src.Util.Models import (
+    SystemInfoResponse, HealthCheckResponse, PingResponse,
+    CacheStatsResponse, ClearCacheResponse, InvalidateCacheResponse
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -24,8 +28,8 @@ router = APIRouter(prefix="/system", tags=["System Information"])
 security = HTTPBearer()
 
 
-@router.get("/info")
-async def get_system_info():
+@router.get("/info", response_model=SystemInfoResponse)
+async def get_system_info() -> SystemInfoResponse:
     """
     Get system information and health status.
     
@@ -54,48 +58,54 @@ async def get_system_info():
         except:
             total_project_groups = 0
         
-        return {
-            "success": True,
-            "system": {
-                "name": "Group-Based Multi-Project Authentication API",
-                "version": "2.0.0",
-                "architecture": "hierarchical-group-based",
-                "status": "operational"
-            },
-            "statistics": {
-                "total_users": total_users,
-                "total_projects": total_projects,
-                "total_user_groups": total_user_groups,
-                "total_project_groups": total_project_groups,
-                "authentication_type": "group-based-jwt"
-            },
-            "features": [
-                "hierarchical-group-access-control",
-                "global-user-groups",
-                "project-permission-groups",
-                "multi-project-support",
-                "session-management-with-group-context",
-                "comprehensive-audit-trail",
-                "restful-admin-api"
-            ]
+        system_info = {
+            "name": "Group-Based Multi-Project Authentication API",
+            "version": "2.0.0",
+            "architecture": "hierarchical-group-based",
+            "status": "operational"
         }
+        
+        statistics = {
+            "total_users": total_users,
+            "total_projects": total_projects,
+            "total_user_groups": total_user_groups,
+            "total_project_groups": total_project_groups,
+            "authentication_type": "group-based-jwt"
+        }
+        
+        features = [
+            "hierarchical-group-access-control",
+            "global-user-groups",
+            "project-permission-groups",
+            "multi-project-support",
+            "session-management-with-group-context",
+            "comprehensive-audit-trail",
+            "restful-admin-api"
+        ]
+        
+        return SystemInfoResponse(
+            success=True,
+            system=system_info,
+            statistics=statistics,
+            features=features
+        )
         
     except Exception as e:
         logger.error(f"System info error: {str(e)}")
-        return {
-            "success": False,
-            "error": "System information temporarily unavailable",
-            "system": {
+        return SystemInfoResponse(
+            success=False,
+            message="System information temporarily unavailable",
+            system={
                 "name": "Group-Based Multi-Project Authentication API",
                 "version": "2.0.0",
                 "architecture": "hierarchical-group-based",
                 "status": "operational"
             }
-        }
+        )
 
 
-@router.get("/health")
-async def system_health():
+@router.get("/health", response_model=HealthCheckResponse)
+async def system_health() -> HealthCheckResponse:
     """
     Comprehensive system health check.
     
@@ -103,69 +113,73 @@ async def system_health():
         Detailed health status of all system components
     """
     try:
-        health_status = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "components": {}
-        }
+        status = "healthy"
+        timestamp = datetime.now().isoformat()
+        components = {}
         
         # Check database connectivity
         try:
             count_users()
-            health_status["components"]["database"] = {"status": "healthy", "message": "Database accessible"}
+            components["database"] = {"status": "healthy", "message": "Database accessible"}
         except Exception as e:
-            health_status["components"]["database"] = {"status": "unhealthy", "message": f"Database error: {str(e)}"}
-            health_status["status"] = "degraded"
+            components["database"] = {"status": "unhealthy", "message": f"Database error: {str(e)}"}
+            status = "degraded"
         
         # Check Redis connectivity
         try:
             from src.Util.db_config import redis_client
             redis_client.ping()
-            health_status["components"]["redis"] = {"status": "healthy", "message": "Redis accessible"}
+            components["redis"] = {"status": "healthy", "message": "Redis accessible"}
         except Exception as e:
-            health_status["components"]["redis"] = {"status": "unhealthy", "message": f"Redis error: {str(e)}"}
-            health_status["status"] = "degraded"
+            components["redis"] = {"status": "unhealthy", "message": f"Redis error: {str(e)}"}
+            status = "degraded"
         
         # Check group system
         try:
             user_groups_count = count_user_groups()
             project_groups_count = count_project_permission_groups()
-            health_status["components"]["group_system"] = {
+            components["group_system"] = {
                 "status": "healthy", 
                 "message": f"Group system operational: {user_groups_count} user groups, {project_groups_count} project groups"
             }
         except Exception as e:
-            health_status["components"]["group_system"] = {"status": "unhealthy", "message": f"Group system error: {str(e)}"}
-            health_status["status"] = "degraded"
+            components["group_system"] = {"status": "unhealthy", "message": f"Group system error: {str(e)}"}
+            status = "degraded"
         
-        return health_status
+        return HealthCheckResponse(
+            success=True,
+            status=status,
+            timestamp=timestamp,
+            components=components
+        )
         
     except Exception as e:
         logger.error(f"Health check error: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "timestamp": datetime.now().isoformat(),
-            "error": str(e)
-        }
+        return HealthCheckResponse(
+            success=False,
+            status="unhealthy",
+            timestamp=datetime.now().isoformat(),
+            components={"error": str(e)}
+        )
 
 
-@router.get("/ping")
-async def ping():
+@router.get("/ping", response_model=PingResponse)
+async def ping() -> PingResponse:
     """
     Simple health check endpoint.
     
     Returns:
         Basic health status
     """
-    return {
-        "success": True, 
-        "message": "Group-based authentication API is running", 
-        "timestamp": datetime.now().isoformat()
-    }
+    return PingResponse(
+        success=True,
+        message="Group-based authentication API is running",
+        timestamp=datetime.now().isoformat()
+    )
 
 
-@router.get("/cache/stats")
-async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depends(security)):
+@router.get("/cache/stats", response_model=CacheStatsResponse)
+async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depends(security)) -> CacheStatsResponse:
     """
     Get cache statistics and performance metrics.
     Requires valid session token.
@@ -182,17 +196,19 @@ async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depen
         # Get cache statistics
         cache_stats = cache_manager.get_cache_stats()
         
-        return {
-            "success": True,
-            "cache_statistics": cache_stats,
-            "cache_configuration": {
-                "session_ttl": "3600 seconds (1 hour)",
-                "access_check_ttl": "1800 seconds (30 minutes)",
-                "rbac_check_ttl": "1800 seconds (30 minutes)",
-                "user_info_ttl": "3600 seconds (1 hour)"
-            },
-            "timestamp": datetime.now().isoformat()
+        cache_config = {
+            "session_ttl": "3600 seconds (1 hour)",
+            "access_check_ttl": "1800 seconds (30 minutes)",
+            "rbac_check_ttl": "1800 seconds (30 minutes)",
+            "user_info_ttl": "3600 seconds (1 hour)"
         }
+        
+        return CacheStatsResponse(
+            success=True,
+            cache_statistics=cache_stats,
+            cache_configuration=cache_config,
+            timestamp=datetime.now().isoformat()
+        )
         
     except HTTPException:
         raise
@@ -201,8 +217,8 @@ async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depen
         raise HTTPException(status_code=500, detail="Failed to get cache statistics")
 
 
-@router.post("/cache/clear")
-async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(security)):
+@router.post("/cache/clear", response_model=ClearCacheResponse)
+async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(security)) -> ClearCacheResponse:
     """
     Clear entire authentication cache.
     Requires admin permissions.
@@ -217,7 +233,7 @@ async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(securi
             raise HTTPException(status_code=401, detail="Invalid session")
         
         # Check if user has admin permissions
-        user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
+        user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to clear cache")
         
@@ -226,13 +242,13 @@ async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(securi
         
         if success:
             logger.warning(f"Cache cleared by user: {session_data.user_hash}")
-            return {
-                "success": True,
-                "message": "Entire authentication cache has been cleared",
-                "cleared_by": session_data.user_hash,
-                "timestamp": datetime.now().isoformat(),
-                "warning": "All users will need to re-authenticate or may experience slower response times"
-            }
+            return ClearCacheResponse(
+                success=True,
+                message="Entire authentication cache has been cleared",
+                cleared_by=session_data.user_hash,
+                timestamp=datetime.now().isoformat(),
+                warning="All users will need to re-authenticate or may experience slower response times"
+            )
         else:
             raise HTTPException(status_code=500, detail="Failed to clear cache")
         
@@ -243,11 +259,11 @@ async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(securi
         raise HTTPException(status_code=500, detail="Failed to clear cache")
 
 
-@router.post("/cache/invalidate/user/{user_hash}")
+@router.post("/cache/invalidate/user/{user_hash}", response_model=InvalidateCacheResponse)
 async def invalidate_user_cache(
     user_hash: str,
     credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+) -> InvalidateCacheResponse:
     """
     Invalidate cache for a specific user.
     Requires admin permissions.
@@ -264,7 +280,7 @@ async def invalidate_user_cache(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
         
-        user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
+        user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required")
         
@@ -278,12 +294,12 @@ async def invalidate_user_cache(
         success = cache_manager.invalidate_user_cache(target_user.id)
         
         if success:
-            return {
-                "success": True,
-                "message": f"Cache invalidated for user: {user_hash}",
-                "invalidated_by": session_data.user_hash,
-                "timestamp": datetime.now().isoformat()
-            }
+            return InvalidateCacheResponse(
+                success=True,
+                message=f"Cache invalidated for user: {user_hash}",
+                invalidated_by=session_data.user_hash,
+                timestamp=datetime.now().isoformat()
+            )
         else:
             raise HTTPException(status_code=500, detail="Failed to invalidate user cache")
         
@@ -294,11 +310,11 @@ async def invalidate_user_cache(
         raise HTTPException(status_code=500, detail="Failed to invalidate user cache")
 
 
-@router.post("/cache/invalidate/project/{project_id}")
+@router.post("/cache/invalidate/project/{project_id}", response_model=InvalidateCacheResponse)
 async def invalidate_project_cache(
     project_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+) -> InvalidateCacheResponse:
     """
     Invalidate cache for a specific project.
     Requires admin permissions.
@@ -315,7 +331,7 @@ async def invalidate_project_cache(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
         
-        user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
+        user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required")
         
@@ -323,12 +339,12 @@ async def invalidate_project_cache(
         success = cache_manager.invalidate_project_cache(project_id)
         
         if success:
-            return {
-                "success": True,
-                "message": f"Cache invalidated for project: {project_id}",
-                "invalidated_by": session_data.user_hash,
-                "timestamp": datetime.now().isoformat()
-            }
+            return InvalidateCacheResponse(
+                success=True,
+                message=f"Cache invalidated for project: {project_id}",
+                invalidated_by=session_data.user_hash,
+                timestamp=datetime.now().isoformat()
+            )
         else:
             raise HTTPException(status_code=500, detail="Failed to invalidate project cache")
         

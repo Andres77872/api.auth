@@ -20,6 +20,12 @@ from src.Util.db import (
     grant_group_project_access, revoke_group_project_access,
     get_projects_for_user_group, get_project_by_hash
 )
+from src.Util.Models import (
+    ListUserGroupsResponse, CreateUserGroupResponse, UserGroupDetailsResponse,
+    UpdateUserGroupResponse, DeleteUserGroupResponse, AssignUserToGroupResponse,
+    RemoveUserFromGroupResponse, GrantGroupProjectAccessResponse, RevokeGroupProjectAccessResponse,
+    UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -60,12 +66,12 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     return session_data
 
 
-@router.get("")
+@router.get("", response_model=ListUserGroupsResponse)
 async def list_user_groups(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_data = Depends(require_admin)
-):
+) -> ListUserGroupsResponse:
     """
     List all global user groups (admin only).
     
@@ -80,24 +86,26 @@ async def list_user_groups(
         groups_with_counts = []
         for group in user_groups:
             members = get_users_in_group(group.id)
-            groups_with_counts.append({
-                "group_hash": group.group_hash,
-                "group_name": group.group_name,
-                "description": group.description,
-                "member_count": len(members),
-                "created_at": group.created_at,
-                "is_active": group.is_active
-            })
+            group_info = UserGroupInfo(
+                group_hash=group.group_hash,
+                group_name=group.group_name,
+                description=group.description,
+                member_count=len(members),
+                created_at=group.created_at
+            )
+            groups_with_counts.append(group_info)
         
-        return {
-            "success": True,
-            "user_groups": groups_with_counts,
-            "pagination": {
-                "limit": limit,
-                "offset": offset,
-                "total": len(groups_with_counts)
-            }
-        }
+        pagination = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=len(groups_with_counts)
+        )
+        
+        return ListUserGroupsResponse(
+            success=True,
+            user_groups=groups_with_counts,
+            pagination=pagination
+        )
         
     except HTTPException:
         raise
@@ -106,11 +114,11 @@ async def list_user_groups(
         raise HTTPException(status_code=500, detail="User groups listing error")
 
 
-@router.post("")
+@router.post("", response_model=CreateUserGroupResponse)
 async def create_user_group_endpoint(
     group_data: UserGroupCreate,
     session_data = Depends(require_admin)
-):
+) -> CreateUserGroupResponse:
     """
     Create a new global user group (admin only).
     
@@ -134,16 +142,18 @@ async def create_user_group_endpoint(
         if not new_group:
             raise HTTPException(status_code=400, detail="User group creation failed")
         
-        return {
-            "success": True,
-            "message": f"User group \"{group_data.group_name}\" created successfully",
-            "user_group": {
-                "group_hash": new_group.group_hash,
-                "group_name": new_group.group_name,
-                "description": new_group.description,
-                "created_at": new_group.created_at
-            }
-        }
+        group_info = UserGroupInfo(
+            group_hash=new_group.group_hash,
+            group_name=new_group.group_name,
+            description=new_group.description,
+            created_at=new_group.created_at
+        )
+        
+        return CreateUserGroupResponse(
+            success=True,
+            message=f"User group \"{group_data.group_name}\" created successfully",
+            user_group=group_info
+        )
         
     except HTTPException:
         raise
@@ -152,11 +162,11 @@ async def create_user_group_endpoint(
         raise HTTPException(status_code=500, detail="User group creation error")
 
 
-@router.get("/{group_hash}")
+@router.get("/{group_hash}", response_model=UserGroupDetailsResponse)
 async def get_user_group_details(
     group_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> UserGroupDetailsResponse:
     """
     Get detailed user group information (admin only).
     
@@ -178,34 +188,40 @@ async def get_user_group_details(
         # Get accessible projects
         accessible_projects = get_projects_for_user_group(user_group.id)
         
-        return {
-            "success": True,
-            "user_group": {
-                "group_hash": user_group.group_hash,
-                "group_name": user_group.group_name,
-                "description": user_group.description,
-                "created_at": user_group.created_at,
-                "is_active": user_group.is_active
-            },
-            "members": [
-                {
-                    "user_hash": member.user_hash,
-                    "username": member.username,
-                    "email": member.email
-                } for member in members
-            ],
-            "accessible_projects": [
-                {
-                    "project_id": project[0],
-                    "project_hash": project[1],
-                    "project_name": project[2]
-                } for project in accessible_projects
-            ],
-            "statistics": {
-                "total_members": len(members),
-                "total_projects": len(accessible_projects)
-            }
+        group_info = UserGroupInfo(
+            group_hash=user_group.group_hash,
+            group_name=user_group.group_name,
+            description=user_group.description,
+            created_at=user_group.created_at
+        )
+        
+        member_list = [
+            UserInfo(
+                user_hash=member.user_hash,
+                username=member.username,
+                email=member.email
+            ) for member in members
+        ]
+        
+        project_list = [
+            ProjectInfo(
+                project_hash=project[1],
+                project_name=project[2]
+            ) for project in accessible_projects
+        ]
+        
+        statistics_info = {
+            "total_members": len(members),
+            "total_projects": len(accessible_projects)
         }
+        
+        return UserGroupDetailsResponse(
+            success=True,
+            user_group=group_info,
+            members=member_list,
+            accessible_projects=project_list,
+            statistics=statistics_info
+        )
         
     except HTTPException:
         raise
@@ -214,12 +230,12 @@ async def get_user_group_details(
         raise HTTPException(status_code=500, detail="User group details error")
 
 
-@router.put("/{group_hash}")
+@router.put("/{group_hash}", response_model=UpdateUserGroupResponse)
 async def update_user_group_endpoint(
     group_hash: str = Path(...),
     group_data: UserGroupUpdate = None,
     session_data = Depends(require_admin)
-):
+) -> UpdateUserGroupResponse:
     """
     Update user group information (admin only).
     
@@ -246,15 +262,17 @@ async def update_user_group_endpoint(
         if not updated_group:
             raise HTTPException(status_code=400, detail="Update failed")
         
-        return {
-            "success": True,
-            "message": "User group updated successfully",
-            "user_group": {
-                "group_hash": updated_group.group_hash,
-                "group_name": updated_group.group_name,
-                "description": updated_group.description
-            }
-        }
+        group_info = UserGroupInfo(
+            group_hash=updated_group.group_hash,
+            group_name=updated_group.group_name,
+            description=updated_group.description
+        )
+        
+        return UpdateUserGroupResponse(
+            success=True,
+            message="User group updated successfully",
+            user_group=group_info
+        )
         
     except HTTPException:
         raise
@@ -263,11 +281,11 @@ async def update_user_group_endpoint(
         raise HTTPException(status_code=500, detail="User group update error")
 
 
-@router.delete("/{group_hash}")
+@router.delete("/{group_hash}", response_model=DeleteUserGroupResponse)
 async def delete_user_group_endpoint(
     group_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> DeleteUserGroupResponse:
     """
     Delete a user group (admin only).
     
@@ -288,11 +306,11 @@ async def delete_user_group_endpoint(
         
         # Delete group
         if delete_user_group(user_group.id, deleted_by=user_data.id):
-            return {
-                "success": True,
-                "message": f"User group \"{user_group.group_name}\" deleted successfully",
-                "warning": "All user memberships and project access have been revoked"
-            }
+            return DeleteUserGroupResponse(
+                success=True,
+                message=f"User group \"{user_group.group_name}\" deleted successfully",
+                warning="All user memberships and project access have been revoked"
+            )
         else:
             raise HTTPException(status_code=400, detail="Delete failed")
         
@@ -303,13 +321,13 @@ async def delete_user_group_endpoint(
         raise HTTPException(status_code=500, detail="User group deletion error")
 
 
-@router.post("/{group_hash}/members")
+@router.post("/{group_hash}/members", response_model=AssignUserToGroupResponse)
 async def assign_user_to_group_endpoint(
     group_hash: str = Path(...),
     assignment: GroupAssignment = None,
     user_hash: str = Form(None),
     session_data = Depends(require_admin)
-):
+) -> AssignUserToGroupResponse:
     """
     Assign a user to a user group (admin only).
     
@@ -350,21 +368,23 @@ async def assign_user_to_group_endpoint(
         if not assignment_result:
             raise HTTPException(status_code=400, detail="Assignment failed")
         
-        return {
-            "success": True,
-            "message": f"User \"{target_user.username}\" assigned to group \"{user_group.group_name}\"",
-            "assignment": {
-                "user": {
-                    "user_hash": target_user.user_hash,
-                    "username": target_user.username
-                },
-                "group": {
-                    "group_hash": user_group.group_hash,
-                    "group_name": user_group.group_name
-                },
-                "assigned_by": current_user.username
-            }
+        assignment_info = {
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username
+            },
+            "group": {
+                "group_hash": user_group.group_hash,
+                "group_name": user_group.group_name
+            },
+            "assigned_by": current_user.username
         }
+        
+        return AssignUserToGroupResponse(
+            success=True,
+            message=f"User \"{target_user.username}\" assigned to group \"{user_group.group_name}\"",
+            assignment=assignment_info
+        )
         
     except HTTPException:
         raise
@@ -373,12 +393,12 @@ async def assign_user_to_group_endpoint(
         raise HTTPException(status_code=500, detail="User group assignment error")
 
 
-@router.delete("/{group_hash}/members/{user_hash}")
+@router.delete("/{group_hash}/members/{user_hash}", response_model=RemoveUserFromGroupResponse)
 async def remove_user_from_group_endpoint(
     group_hash: str = Path(...),
     user_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> RemoveUserFromGroupResponse:
     """
     Remove a user from a user group (admin only).
     
@@ -405,10 +425,10 @@ async def remove_user_from_group_endpoint(
         
         # Remove user from group
         if remove_user_from_user_group(target_user.id, user_group.id, removed_by=current_user.id):
-            return {
-                "success": True,
-                "message": f"User \"{target_user.username}\" removed from group \"{user_group.group_name}\""
-            }
+            return RemoveUserFromGroupResponse(
+                success=True,
+                message=f"User \"{target_user.username}\" removed from group \"{user_group.group_name}\""
+            )
         else:
             raise HTTPException(status_code=400, detail="Removal failed")
         
@@ -419,13 +439,13 @@ async def remove_user_from_group_endpoint(
         raise HTTPException(status_code=500, detail="User group removal error")
 
 
-@router.post("/{group_hash}/projects")
+@router.post("/{group_hash}/projects", response_model=GrantGroupProjectAccessResponse)
 async def grant_group_project_access_endpoint(
     group_hash: str = Path(...),
     project_access: ProjectAccess = None,
     project_hash: str = Form(None),
     session_data = Depends(require_admin)
-):
+) -> GrantGroupProjectAccessResponse:
     """
     Grant a user group access to a project (admin only).
     
@@ -466,21 +486,23 @@ async def grant_group_project_access_endpoint(
         if not access_result:
             raise HTTPException(status_code=400, detail="Access grant failed")
         
-        return {
-            "success": True,
-            "message": f"User group \"{user_group.group_name}\" granted access to project \"{target_project.project_name}\"",
-            "access_details": {
-                "user_group": {
-                    "group_hash": user_group.group_hash,
-                    "group_name": user_group.group_name
-                },
-                "project": {
-                    "project_hash": target_project.project_hash,
-                    "project_name": target_project.project_name
-                },
-                "granted_by": current_user.username
-            }
+        access_details = {
+            "user_group": {
+                "group_hash": user_group.group_hash,
+                "group_name": user_group.group_name
+            },
+            "project": {
+                "project_hash": target_project.project_hash,
+                "project_name": target_project.project_name
+            },
+            "granted_by": current_user.username
         }
+        
+        return GrantGroupProjectAccessResponse(
+            success=True,
+            message=f"User group \"{user_group.group_name}\" granted access to project \"{target_project.project_name}\"",
+            access_details=access_details
+        )
         
     except HTTPException:
         raise
@@ -489,12 +511,12 @@ async def grant_group_project_access_endpoint(
         raise HTTPException(status_code=500, detail="Group project access error")
 
 
-@router.delete("/{group_hash}/projects/{project_hash}")
+@router.delete("/{group_hash}/projects/{project_hash}", response_model=RevokeGroupProjectAccessResponse)
 async def revoke_group_project_access_endpoint(
     group_hash: str = Path(...),
     project_hash: str = Path(...),
     session_data = Depends(require_admin)
-):
+) -> RevokeGroupProjectAccessResponse:
     """
     Revoke a user group's access to a project (admin only).
     
@@ -521,10 +543,10 @@ async def revoke_group_project_access_endpoint(
         
         # Revoke access
         if revoke_group_project_access(user_group.id, project.id, revoked_by=current_user.id):
-            return {
-                "success": True,
-                "message": f"User group \"{user_group.group_name}\" access to project \"{project.project_name}\" revoked"
-            }
+            return RevokeGroupProjectAccessResponse(
+                success=True,
+                message=f"User group \"{user_group.group_name}\" access to project \"{project.project_name}\" revoked"
+            )
         else:
             raise HTTPException(status_code=400, detail="Revocation failed")
         
