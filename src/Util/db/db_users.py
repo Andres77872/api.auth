@@ -110,20 +110,7 @@ def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int 
         return success
 
 
-def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
-    """Assign admin user to a specific project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            UPDATE users 
-            SET assigned_project_id = %s, updated_at = NOW()
-            WHERE id = %s AND user_type = 'admin' AND is_active = 1
-        """, [project_id, user_id])
-        
-        success = cur.rowcount > 0
-        if success:
-            con.commit()
-        return success
+# Note: assign_admin_to_project is now a wrapper function defined later for multi-project support
 
 
 # =================== USER TYPE-SPECIFIC CREATION ===================
@@ -156,32 +143,7 @@ def create_root_user(username: str, password: str, email: str = None, created_by
         )
 
 
-def create_admin_user(username: str, password: str, email: str, assigned_project_id: int, created_by: int = None) -> User:
-    """Create an admin user assigned to a specific project"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-    user_hash = generate_user_hash()
-    
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at)
-            VALUES (%s, %s, %s, %s, 'admin', %s, %s, NOW())
-        """, [user_hash, username, email, password_hash, assigned_project_id, created_by])
-        
-        user_id = con.insert_id()
-        con.commit()
-        
-        return User(
-            id=user_id,
-            user_hash=user_hash,
-            username=username,
-            email=email,
-            password_hash=password_hash,
-            user_type='admin',
-            assigned_project_id=assigned_project_id,
-            created_at=datetime.now(),
-            is_active=True
-        )
+# Note: create_admin_user has been moved to the bottom of the file to support multi-project assignments
 
 
 def create_consumer_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
@@ -900,7 +862,8 @@ def remove_admin_from_project(user_id: int, project_id: int, removed_by: int = N
 def check_admin_multi_project_access(user_id: int, project_id: int) -> bool:
     """Check if admin user has access to specific project (supports multiple projects)"""
     try:
-        if not is_admin_user(user_id):
+        user_type = get_user_type(user_id)
+        if user_type != 'admin':
             return False
         assigned_projects = get_admin_assigned_projects(user_id)
         return project_id in assigned_projects
