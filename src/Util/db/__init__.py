@@ -62,6 +62,12 @@ from src.Util.db.db_users import (
     # User type management
     get_user_type,
     get_admin_assigned_project,
+    get_admin_assigned_projects,
+    assign_admin_to_multiple_projects,
+    add_admin_to_project,
+    remove_admin_from_project,
+    check_admin_multi_project_access,
+    get_admin_project_assignments_with_details,
     update_user_type,
     assign_admin_to_project,
     
