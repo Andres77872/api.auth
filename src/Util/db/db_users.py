@@ -791,4 +791,211 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         available_projects=available_projects,
         user_type=user_type,
         assigned_project_id=session_data.get('assigned_project_id')
-    ) 
+    )
+
+
+# =================== ADMIN MULTI-PROJECT MANAGEMENT ===================
+
+def get_admin_assigned_projects(user_id: int) -> List[int]:
+    """Get all projects assigned to an admin user"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT project_id FROM admin_project_assignments 
+            WHERE user_id = %s AND is_active = 1
+        """, [user_id])
+        
+        return [row[0] for row in cur.fetchall()]
+
+
+def assign_admin_to_multiple_projects(user_id: int, project_ids: List[int], assigned_by: int = None) -> bool:
+    """Assign admin user to multiple projects"""
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        try:
+            con.begin()
+            
+            # Verify user is admin
+            user_type = get_user_type(user_id)
+            if user_type != 'admin':
+                raise ValueError("User is not an admin user")
+            
+            # Clear existing assignments
+            cur.execute("""
+                UPDATE admin_project_assignments 
+                SET is_active = 0, removed_at = NOW(), removed_by = %s
+                WHERE user_id = %s AND is_active = 1
+            """, [assigned_by, user_id])
+            
+            # Add new assignments
+            for project_id in project_ids:
+                cur.execute("""
+                    INSERT INTO admin_project_assignments (user_id, project_id, assigned_at, assigned_by)
+                    VALUES (%s, %s, NOW(), %s)
+                    ON DUPLICATE KEY UPDATE 
+                    is_active = 1, removed_at = NULL, removed_by = NULL, assigned_by = %s
+                """, [user_id, project_id, assigned_by, assigned_by])
+            
+            con.commit()
+            return True
+            
+        except Exception as e:
+            con.rollback()
+            print(f"Error assigning admin to multiple projects: {e}")
+            return False
+
+
+def add_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
+    """Add admin user to an additional project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        # Verify user is admin
+        user_type = get_user_type(user_id)
+        if user_type != 'admin':
+            raise ValueError("User is not an admin user")
+        
+        try:
+            cur.execute("""
+                INSERT INTO admin_project_assignments (user_id, project_id, assigned_at, assigned_by)
+                VALUES (%s, %s, NOW(), %s)
+                ON DUPLICATE KEY UPDATE 
+                is_active = 1, removed_at = NULL, removed_by = NULL, assigned_by = %s
+            """, [user_id, project_id, assigned_by, assigned_by])
+            
+            con.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Error adding admin to project: {e}")
+            return False
+
+
+def remove_admin_from_project(user_id: int, project_id: int, removed_by: int = None) -> bool:
+    """Remove admin user from a specific project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE admin_project_assignments 
+            SET is_active = 0, removed_at = NOW(), removed_by = %s
+            WHERE user_id = %s AND project_id = %s AND is_active = 1
+        """, [removed_by, user_id, project_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
+def check_admin_multi_project_access(user_id: int, project_id: int) -> bool:
+    """Check if admin user has access to specific project (supports multiple projects)"""
+    try:
+        if not is_admin_user(user_id):
+            return False
+        assigned_projects = get_admin_assigned_projects(user_id)
+        return project_id in assigned_projects
+    except:
+        return False
+
+
+def get_admin_project_assignments_with_details(user_id: int) -> List[dict]:
+    """Get admin's project assignments with project details"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT apa.project_id, p.project_hash, p.project_name, p.project_description,
+                   apa.assigned_at, apa.assigned_by
+            FROM admin_project_assignments apa
+            JOIN projects p ON apa.project_id = p.id
+            WHERE apa.user_id = %s AND apa.is_active = 1 AND p.is_active = 1
+            ORDER BY p.project_name
+        """, [user_id])
+        
+        assignments = []
+        for row in cur.fetchall():
+            assignments.append({
+                'project_id': row[0],
+                'project_hash': row[1],
+                'project_name': row[2],
+                'project_description': row[3],
+                'assigned_at': row[4],
+                'assigned_by': row[5]
+            })
+        
+        return assignments
+
+
+# =================== UPDATED LEGACY COMPATIBILITY FUNCTIONS ===================
+
+def get_admin_assigned_project(user_id: int) -> Optional[int]:
+    """
+    Get assigned project for admin user (backwards compatibility)
+    Returns the first assigned project for legacy compatibility
+    """
+    assigned_projects = get_admin_assigned_projects(user_id)
+    return assigned_projects[0] if assigned_projects else None
+
+
+def check_admin_project_access(user_id: int, project_id: int) -> bool:
+    """Check if admin user has access to specific project (updated for multi-project)"""
+    return check_admin_multi_project_access(user_id, project_id)
+
+
+def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
+    """Assign admin user to a project (updated to preserve existing assignments)"""
+    return add_admin_to_project(user_id, project_id, assigned_by)
+
+
+# =================== UPDATED USER TYPE-SPECIFIC CREATION ===================
+
+def create_admin_user(username: str, password: str, email: str, assigned_project_id: int = None, assigned_project_ids: List[int] = None, created_by: int = None) -> User:
+    """Create an admin user assigned to one or multiple projects"""
+    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    user_hash = generate_user_hash()
+    
+    # Handle backwards compatibility: if single project_id provided, convert to list
+    if assigned_project_id and not assigned_project_ids:
+        assigned_project_ids = [assigned_project_id]
+    elif assigned_project_ids and not assigned_project_id:
+        assigned_project_id = assigned_project_ids[0]  # For legacy compatibility
+    
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        try:
+            con.begin()
+            
+            # Create user with single project assignment for backwards compatibility
+            cur.execute("""
+                INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at)
+                VALUES (%s, %s, %s, %s, 'admin', %s, %s, NOW())
+            """, [user_hash, username, email, password_hash, assigned_project_id, created_by])
+            
+            user_id = con.insert_id()
+            
+            # Assign to all projects in the new table for multi-project support
+            if assigned_project_ids:
+                for project_id in assigned_project_ids:
+                    cur.execute("""
+                        INSERT INTO admin_project_assignments (user_id, project_id, assigned_at, assigned_by)
+                        VALUES (%s, %s, NOW(), %s)
+                    """, [user_id, project_id, created_by])
+            
+            con.commit()
+            
+            return User(
+                id=user_id,
+                user_hash=user_hash,
+                username=username,
+                email=email,
+                password_hash=password_hash,
+                user_type='admin',
+                assigned_project_id=assigned_project_id,
+                created_at=datetime.now(),
+                is_active=True
+            )
+            
+        except Exception as e:
+            con.rollback()
+            raise e 

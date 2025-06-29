@@ -7,7 +7,7 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 
 ```
 🔴 ROOT USERS     → Unrestricted Global Access (Super Admins)
-🟡 ADMIN USERS    → Project-Scoped Admin Access (Project Managers)  
+🟡 ADMIN USERS    → Multi-Project Admin Access (Project Managers - NEW: Multiple Projects)  
 🟢 CONSUMER USERS → RBAC-Based Access (End Users with Group Permissions)
 ```
 
@@ -19,10 +19,11 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 
 ### 👑 **3-Tier User Type Management**
 - ✅ **ROOT USERS**: Create/manage other root users, global system administration
-- ✅ **ADMIN USERS**: Project-specific administration with clear boundaries
+- ✅ **ADMIN USERS**: Multi-project administration with complete project isolation
 - ✅ **CONSUMER USERS**: RBAC-based access through user groups
 - ✅ User type promotion/demotion with full audit trail
 - ✅ Automatic privilege enforcement at database level
+- 🆕 **Multi-Project Admin Support**: Admins can manage multiple projects while maintaining isolation
 
 ### 🔐 **Advanced Authentication**
 - ✅ User registration and login with user type context
@@ -63,11 +64,12 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 - ✅ **Data Isolation**: Users only see what their type/groups allow
 
 ### 🔧 **Developer & Admin Features**
-- ✅ **Comprehensive REST API**: 50+ endpoints across 8 major areas
+- ✅ **Comprehensive REST API**: 55+ endpoints across 8 major areas
 - ✅ **System Monitoring**: Health checks, performance metrics, diagnostics
 - ✅ **Complete Documentation**: 150+ pages of detailed API documentation
 - ✅ **SDK Examples**: Python and JavaScript integration examples
 - ✅ **Testing Suite**: Comprehensive test scripts for all functionality
+- 🆕 **Multi-Project Admin APIs**: New endpoints for managing admin access to multiple projects
 
 ### 🏗️ **Production-Ready Architecture**
 - ✅ **Scalable Design**: Supports thousands of users across multiple projects
@@ -117,13 +119,17 @@ curl http://localhost:8000/system/info
 - [Database Schema](../docs/database-schema.md) - Complete data model
 - [Architecture Guide](../docs/architecture.md) - System design and patterns
 
+### 🆕 **Multi-Project Admin Features**
+- [Admin Multi-Project Guide](../ADMIN_MULTI_PROJECT_GUIDE.md) - Complete guide for multi-project admin management
+- [Migration Script](../admin_multi_project_migration.sql) - Database migration for multi-project support
+
 ## 🛠️ Complete API Overview
 
-### **Core APIs (50+ Endpoints)**
+### **Core APIs (55+ Endpoints)**
 | API Area | Endpoints | Purpose |
 |----------|-----------|---------|
 | **Authentication** | 6 endpoints | Login, registration, session management |
-| **User Type Management** | 7 endpoints | 3-tier user system administration |
+| **User Type Management** | 12 endpoints | 3-tier user system + multi-project admin management |
 | **RBAC Management** | 11 endpoints | Permissions, roles, assignments, auditing |
 | **Project Management** | 5 endpoints | Project CRUD with access control |
 | **User Groups Admin** | 8 endpoints | Global user group management |

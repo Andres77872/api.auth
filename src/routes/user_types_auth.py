@@ -23,7 +23,9 @@ from typing import Optional, List
 from src.Util.db import (
     validate_session, get_user_by_hash, get_user_by_id,
     create_root_user, create_admin_user, create_consumer_user,
-    get_user_type, get_admin_assigned_project,
+    get_user_type, get_admin_assigned_project, get_admin_assigned_projects,
+    assign_admin_to_multiple_projects, add_admin_to_project, remove_admin_from_project,
+    get_admin_project_assignments_with_details,
     update_user_type, assign_admin_to_project,
     is_root_user, is_admin_user, check_admin_project_access,
     get_user_type_info, list_users, count_users,
@@ -47,7 +49,8 @@ class CreateAdminUser(BaseModel):
     username: str
     password: str
     email: str
-    assigned_project_id: int
+    assigned_project_id: Optional[int] = None  # For backwards compatibility
+    assigned_project_ids: Optional[List[int]] = None  # For multi-project support
 
 class UpdateUserType(BaseModel):
     user_type: str  # 'root', 'admin', 'consumer'
@@ -55,6 +58,15 @@ class UpdateUserType(BaseModel):
 
 class UpdateAdminProject(BaseModel):
     assigned_project_id: int
+
+class UpdateAdminProjects(BaseModel):
+    assigned_project_ids: List[int]
+
+class AddAdminToProject(BaseModel):
+    project_id: int
+
+class RemoveAdminFromProject(BaseModel):
+    project_id: int
 
 
 def require_root_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -146,45 +158,66 @@ async def create_admin_user_endpoint(
     current_user = Depends(require_root_user)
 ):
     """
-    Create a new admin user assigned to a specific project.
+    Create a new admin user assigned to one or multiple projects.
     
     **Root users only**: Only root users can create admin users.
     
     Args:
-        user_data: Admin user creation data with project assignment
+        user_data: Admin user creation data with project assignment(s)
         
     Returns:
-        Created admin user information with project assignment
+        Created admin user information with project assignment(s)
     """
     try:
         logger.info(f"Admin user creation attempt by user: {current_user.username}")
         
-        # Verify project exists
-        project = get_project_by_id(user_data.assigned_project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Assigned project not found")
+        # Handle both single and multiple project assignments
+        project_ids = []
+        if user_data.assigned_project_ids:
+            project_ids = user_data.assigned_project_ids
+        elif user_data.assigned_project_id:
+            project_ids = [user_data.assigned_project_id]
+        else:
+            raise HTTPException(status_code=400, detail="At least one project assignment is required")
+        
+        # Verify all projects exist
+        projects = []
+        for project_id in project_ids:
+            project = get_project_by_id(project_id)
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project with ID {project_id} not found")
+            projects.append(project)
         
         # Create admin user
         new_admin_user = create_admin_user(
             username=user_data.username,
             password=user_data.password,
             email=user_data.email,
-            assigned_project_id=user_data.assigned_project_id,
+            assigned_project_id=project_ids[0],  # Primary project for backwards compatibility
+            assigned_project_ids=project_ids,    # All assigned projects
             created_by=current_user.id
         )
         
-        logger.info(f"Admin user created: {new_admin_user.username} for project: {project.project_name}")
+        project_names = [p.project_name for p in projects]
+        logger.info(f"Admin user created: {new_admin_user.username} for projects: {', '.join(project_names)}")
         
         return {
             "success": True,
-            "message": f"Admin user '{user_data.username}' created and assigned to project '{project.project_name}'",
+            "message": f"Admin user '{user_data.username}' created and assigned to {len(projects)} project(s)",
             "user": {
                 "user_hash": new_admin_user.user_hash,
                 "username": new_admin_user.username,
                 "email": new_admin_user.email,
                 "user_type": "admin",
-                "assigned_project_id": user_data.assigned_project_id,
-                "assigned_project_name": project.project_name,
+                "assigned_project_ids": project_ids,
+                "assigned_projects": [
+                    {
+                        "project_id": p.id,
+                        "project_hash": p.project_hash,
+                        "project_name": p.project_name
+                    } for p in projects
+                ],
+                "primary_project_id": project_ids[0],  # For backwards compatibility
                 "created_at": new_admin_user.created_at,
                 "created_by": current_user.username
             }
@@ -235,12 +268,17 @@ async def get_user_type_information(
         
         # Add project information for admin users
         if user_type_info.get("user_type") == "admin":
-            project_id = user_type_info.get("assigned_project_id")
-            if project_id:
-                project = get_project_by_id(project_id)
-                if project:
-                    user_type_info["assigned_project_name"] = project.project_name
-                    user_type_info["assigned_project_hash"] = project.project_hash
+            # Get all assigned projects for multi-project admin support
+            assigned_projects = get_admin_project_assignments_with_details(target_user.id)
+            user_type_info["assigned_projects"] = assigned_projects
+            user_type_info["total_assigned_projects"] = len(assigned_projects)
+            
+            # Legacy compatibility - primary project
+            if assigned_projects:
+                primary_project = assigned_projects[0]
+                user_type_info["assigned_project_id"] = primary_project["project_id"]
+                user_type_info["assigned_project_name"] = primary_project["project_name"]
+                user_type_info["assigned_project_hash"] = primary_project["project_hash"]
         
         return {
             "success": True,
@@ -478,6 +516,295 @@ async def list_users_by_type(
     except Exception as e:
         logger.error(f"List users by type error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list users by type")
+
+
+@router.put("/admin/{user_hash}/projects")
+async def update_admin_multiple_projects(
+    user_hash: str,
+    project_data: UpdateAdminProjects,
+    current_user = Depends(require_root_user)
+):
+    """
+    Update admin user's multiple project assignments.
+    
+    **Root users only**: Only root users can reassign admin users to multiple projects.
+    
+    Args:
+        user_hash: Hash of the admin user to update
+        project_data: New project assignments
+        
+    Returns:
+        Updated project assignments information
+    """
+    try:
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify user is admin
+        if get_user_type(target_user.id) != 'admin':
+            raise HTTPException(status_code=400, detail="User is not an admin user")
+        
+        # Verify all new projects exist
+        projects = []
+        for project_id in project_data.assigned_project_ids:
+            project = get_project_by_id(project_id)
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project with ID {project_id} not found")
+            projects.append(project)
+        
+        # Get old projects for logging
+        old_assignments = get_admin_project_assignments_with_details(target_user.id)
+        old_project_names = [a["project_name"] for a in old_assignments]
+        
+        # Update all project assignments
+        success = assign_admin_to_multiple_projects(
+            user_id=target_user.id,
+            project_ids=project_data.assigned_project_ids,
+            assigned_by=current_user.id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to update project assignments")
+        
+        # Update primary project in users table for backwards compatibility
+        if project_data.assigned_project_ids:
+            from src.Util.db.db_users import update_user
+            update_user(target_user.id, assigned_project_id=project_data.assigned_project_ids[0])
+        
+        new_project_names = [p.project_name for p in projects]
+        logger.info(f"Admin project assignments updated: {target_user.username} "
+                   f"from [{', '.join(old_project_names)}] "
+                   f"to [{', '.join(new_project_names)}]")
+        
+        return {
+            "success": True,
+            "message": f"Admin user '{target_user.username}' reassigned to {len(projects)} project(s)",
+            "assignment": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "previous_projects": old_project_names,
+                "new_projects": [
+                    {
+                        "project_id": p.id,
+                        "project_hash": p.project_hash,
+                        "project_name": p.project_name
+                    } for p in projects
+                ],
+                "total_projects": len(projects),
+                "assigned_by": current_user.username
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update admin multiple projects error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update project assignments")
+
+
+@router.post("/admin/{user_hash}/projects/add")
+async def add_admin_to_project_endpoint(
+    user_hash: str,
+    project_data: AddAdminToProject,
+    current_user = Depends(require_root_user)
+):
+    """
+    Add admin user to an additional project.
+    
+    **Root users only**: Only root users can add admin users to additional projects.
+    
+    Args:
+        user_hash: Hash of the admin user
+        project_data: Project to add
+        
+    Returns:
+        Addition confirmation
+    """
+    try:
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify user is admin
+        if get_user_type(target_user.id) != 'admin':
+            raise HTTPException(status_code=400, detail="User is not an admin user")
+        
+        # Verify project exists
+        project = get_project_by_id(project_data.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check if already assigned
+        current_assignments = get_admin_assigned_projects(target_user.id)
+        if project_data.project_id in current_assignments:
+            raise HTTPException(status_code=400, detail="Admin user is already assigned to this project")
+        
+        # Add to project
+        success = add_admin_to_project(
+            user_id=target_user.id,
+            project_id=project_data.project_id,
+            assigned_by=current_user.id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to add admin to project")
+        
+        logger.info(f"Admin user added to project: {target_user.username} -> {project.project_name}")
+        
+        return {
+            "success": True,
+            "message": f"Admin user '{target_user.username}' added to project '{project.project_name}'",
+            "assignment": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "added_project": {
+                    "project_id": project.id,
+                    "project_hash": project.project_hash,
+                    "project_name": project.project_name
+                },
+                "total_projects": len(get_admin_assigned_projects(target_user.id)),
+                "assigned_by": current_user.username
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add admin to project error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to add admin to project")
+
+
+@router.delete("/admin/{user_hash}/projects/{project_id}")
+async def remove_admin_from_project_endpoint(
+    user_hash: str,
+    project_id: int,
+    current_user = Depends(require_root_user)
+):
+    """
+    Remove admin user from a specific project.
+    
+    **Root users only**: Only root users can remove admin users from projects.
+    
+    Args:
+        user_hash: Hash of the admin user
+        project_id: Project ID to remove from
+        
+    Returns:
+        Removal confirmation
+    """
+    try:
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify user is admin
+        if get_user_type(target_user.id) != 'admin':
+            raise HTTPException(status_code=400, detail="User is not an admin user")
+        
+        # Verify project exists
+        project = get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check if admin has remaining projects after removal
+        current_assignments = get_admin_assigned_projects(target_user.id)
+        if len(current_assignments) <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove admin from last assigned project. Admin users must have at least one project assignment.")
+        
+        # Remove from project
+        success = remove_admin_from_project(
+            user_id=target_user.id,
+            project_id=project_id,
+            removed_by=current_user.id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to remove admin from project")
+        
+        # Update primary project if needed
+        remaining_projects = get_admin_assigned_projects(target_user.id)
+        if remaining_projects and target_user.assigned_project_id == project_id:
+            from src.Util.db.db_users import update_user
+            update_user(target_user.id, assigned_project_id=remaining_projects[0])
+        
+        logger.info(f"Admin user removed from project: {target_user.username} -> {project.project_name}")
+        
+        return {
+            "success": True,
+            "message": f"Admin user '{target_user.username}' removed from project '{project.project_name}'",
+            "removal": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "removed_project": {
+                    "project_id": project.id,
+                    "project_hash": project.project_hash,
+                    "project_name": project.project_name
+                },
+                "remaining_projects": len(remaining_projects),
+                "removed_by": current_user.username
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remove admin from project error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to remove admin from project")
+
+
+@router.get("/admin/{user_hash}/projects")
+async def get_admin_project_assignments(
+    user_hash: str,
+    current_user = Depends(require_root_or_admin_user)
+):
+    """
+    Get all project assignments for an admin user.
+    
+    **Root/Admin access**: Root users can access any admin, admin users can only access their own assignments.
+    
+    Args:
+        user_hash: Hash of the admin user
+        
+    Returns:
+        List of project assignments
+    """
+    try:
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Verify user is admin
+        if get_user_type(target_user.id) != 'admin':
+            raise HTTPException(status_code=400, detail="User is not an admin user")
+        
+        # Access control: Admin users can only see their own assignments
+        if not is_root_user(current_user.id):
+            if current_user.id != target_user.id:
+                raise HTTPException(status_code=403, detail="Admin users can only view their own project assignments")
+        
+        # Get project assignments
+        assignments = get_admin_project_assignments_with_details(target_user.id)
+        
+        return {
+            "success": True,
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "user_type": "admin"
+            },
+            "project_assignments": assignments,
+            "summary": {
+                "total_projects": len(assignments),
+                "primary_project": assignments[0] if assignments else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get admin project assignments error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get project assignments")
 
 
 @router.get("/stats")

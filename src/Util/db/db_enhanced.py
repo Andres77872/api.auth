@@ -70,12 +70,12 @@ def is_consumer_user(user_id: int) -> bool:
 
 
 def check_admin_project_access(user_id: int, project_id: int) -> bool:
-    """Check if admin user has access to specific project"""
+    """Check if admin user has access to specific project (supports multiple projects)"""
     try:
         if not is_admin_user(user_id):
             return False
-        assigned_project = get_admin_assigned_project(user_id)
-        return assigned_project == project_id
+        from src.Util.db.db_users import check_admin_multi_project_access
+        return check_admin_multi_project_access(user_id, project_id)
     except:
         return False
 
