@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_hash VARCHAR(255) NOT NULL,
     username VARCHAR(100) NOT NULL,
     email VARCHAR(255),
-    password_hash VARCHAR(64) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
     user_type ENUM('root', 'admin', 'consumer') NOT NULL DEFAULT 'consumer',
     assigned_project_id INT UNSIGNED, -- For single project assignment (legacy)
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

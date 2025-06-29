@@ -122,11 +122,11 @@ class PasswordManager:
         Returns:
             True if it's a legacy hash, False otherwise
         """
-        # Legacy SHA256 hashes are 64 characters of uppercase hex
+        # Legacy SHA256 hashes are 64 characters of hex (uppercase or lowercase)
         return (
             isinstance(hashed_password, str) and
             len(hashed_password) == 64 and
-            all(c in '0123456789ABCDEF' for c in hashed_password)
+            all(c in '0123456789ABCDEFabcdef' for c in hashed_password)
         )
     
     def _verify_legacy_hash(self, password: str, legacy_hash: str) -> bool:
@@ -135,14 +135,15 @@ class PasswordManager:
         
         Args:
             password: Plain text password
-            legacy_hash: Legacy SHA256 hash
+            legacy_hash: Legacy SHA256 hash (uppercase or lowercase)
             
         Returns:
             True if password matches legacy hash, False otherwise
         """
         try:
-            computed_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-            return secrets.compare_digest(computed_hash, legacy_hash)
+            computed_hash = hashlib.sha256(password.encode()).hexdigest()
+            # Compare case-insensitively by converting both to lowercase
+            return secrets.compare_digest(computed_hash.lower(), legacy_hash.lower())
         except Exception:
             return False
     
