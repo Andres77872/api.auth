@@ -695,4 +695,328 @@ async function monitorPerformance(monitor) {
 
 ---
 
+## 💾 Cache Management
+
+The system includes comprehensive cache management for performance optimization with automatic invalidation.
+
+### GET `/system/cache/stats`
+
+Get detailed cache statistics and performance metrics.
+
+**Authentication:** Required (recommended admin)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/system/cache/stats" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "cache_statistics": {
+    "sessions": {
+      "total_cached": 145,
+      "hit_rate": 0.94,
+      "average_ttl_remaining": 2180,
+      "cache_size_mb": 2.3
+    },
+    "access_checks": {
+      "total_cached": 892,
+      "hit_rate": 0.87,
+      "average_ttl_remaining": 1245,
+      "cache_size_mb": 1.8
+    },
+    "rbac_checks": {
+      "total_cached": 567,
+      "hit_rate": 0.91,
+      "average_ttl_remaining": 1456,
+      "cache_size_mb": 1.2
+    },
+    "user_types": {
+      "total_cached": 234,
+      "hit_rate": 0.96,
+      "average_ttl_remaining": 2890,
+      "cache_size_mb": 0.8
+    },
+    "overall": {
+      "total_cache_size_mb": 6.1,
+      "total_hit_rate": 0.92,
+      "total_operations_24h": 15420,
+      "cache_saves_24h": 1230
+    }
+  },
+  "performance_impact": {
+    "average_response_time_cached_ms": 15,
+    "average_response_time_uncached_ms": 85,
+    "performance_improvement": "82% faster"
+  }
+}
+```
+
+---
+
+### POST `/system/cache/invalidate`
+
+Invalidate cache entries (emergency cache clearing).
+
+**Authentication:** Required (admin only)
+
+**Request Body** (JSON):
+```json
+{
+  "cache_type": "all",
+  "user_id": null,
+  "project_id": null
+}
+```
+
+**Cache Types:**
+- `"all"`: Clear entire cache
+- `"sessions"`: Clear all session cache
+- `"user"`: Clear cache for specific user (requires `user_id`)
+- `"project"`: Clear cache for specific project (requires `project_id`)
+- `"rbac"`: Clear RBAC cache for specific project (requires `project_id`)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/system/cache/invalidate" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cache_type": "all"}'
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Cache invalidated successfully",
+  "invalidation_details": {
+    "cache_type": "all",
+    "entries_cleared": 1838,
+    "cache_size_before_mb": 6.1,
+    "cache_size_after_mb": 0.0,
+    "invalidated_at": "2024-01-01T12:00:00Z"
+  }
+}
+```
+
+---
+
+### POST `/system/cache/warm`
+
+Pre-warm cache with frequently accessed data.
+
+**Authentication:** Required (admin only)
+
+**Query Parameters:**
+- `sessions` (optional, default: true): Warm session cache
+- `access_checks` (optional, default: true): Warm access check cache
+- `rbac` (optional, default: true): Warm RBAC cache
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/system/cache/warm?sessions=true&access_checks=true&rbac=true" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Cache warmed successfully",
+  "warming_details": {
+    "sessions_warmed": 45,
+    "access_checks_warmed": 150,
+    "rbac_entries_warmed": 89,
+    "total_entries_warmed": 284,
+    "warming_time_ms": 340,
+    "warmed_at": "2024-01-01T12:00:00Z"
+  }
+}
+```
+
+---
+
+## 🔧 Cache Configuration
+
+### Cache TTL Settings
+
+The system uses different TTL (Time To Live) settings for different cache types:
+
+| Cache Type | TTL | Purpose |
+|------------|-----|---------|
+| **Sessions** | 1 hour (3600s) | User authentication sessions |
+| **Access Checks** | 30 minutes (1800s) | Permission validation results |
+| **RBAC Checks** | 30 minutes (1800s) | Role-based access control |
+| **User Types** | 1 hour (3600s) | User type information |
+
+### Cache Invalidation Triggers
+
+The cache automatically invalidates when:
+
+- **User data changes**: Clears all cache for that user
+- **RBAC changes**: Clears RBAC cache for affected project
+- **Permission updates**: Clears access check cache
+- **User type changes**: Clears user type cache
+- **Group assignments**: Clears user and access caches
+
+### Cache-First Flow
+
+```
+1. Request → Check Cache → Cache Hit? → Return Cached Data
+2. Request → Check Cache → Cache Miss → Query Database → Cache Result → Return Data
+```
+
+---
+
+## 🧪 Testing Cache Operations
+
+### Cache Performance Test
+
+```bash
+#!/bin/bash
+
+# Get admin token
+ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin&password=admin123&project_hash=PROJECT_HASH" | \
+  jq -r '.session_token')
+
+echo "1. Getting cache statistics..."
+curl -X GET "http://localhost:8000/system/cache/stats" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+echo -e "\n2. Testing cache warm-up..."
+curl -X POST "http://localhost:8000/system/cache/warm" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+echo -e "\n3. Testing selective cache invalidation..."
+curl -X POST "http://localhost:8000/system/cache/invalidate" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cache_type": "sessions"}'
+
+echo -e "\n4. Checking cache stats after invalidation..."
+curl -X GET "http://localhost:8000/system/cache/stats" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
+## 📊 Cache Monitoring
+
+### Cache Health Monitoring
+
+```python
+import requests
+
+def monitor_cache_health(base_url, admin_token):
+    """Monitor cache performance and health"""
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    
+    # Get cache statistics
+    response = requests.get(f"{base_url}/system/cache/stats", headers=headers)
+    stats = response.json()
+    
+    cache_stats = stats["cache_statistics"]
+    overall = cache_stats["overall"]
+    
+    # Check cache health
+    hit_rate = overall["total_hit_rate"]
+    cache_size = overall["total_cache_size_mb"]
+    
+    print(f"Cache Hit Rate: {hit_rate:.2%}")
+    print(f"Cache Size: {cache_size:.1f} MB")
+    
+    # Alert if hit rate is low
+    if hit_rate < 0.8:
+        print("⚠️  Warning: Cache hit rate below 80%")
+    
+    # Alert if cache size is too large
+    if cache_size > 50:
+        print("⚠️  Warning: Cache size above 50MB")
+    
+    return stats
+
+# Usage
+stats = monitor_cache_health("http://localhost:8000", "admin_token")
+```
+
+### Cache Performance Analysis
+
+```javascript
+class CacheMonitor {
+    constructor(baseUrl, adminToken) {
+        this.baseUrl = baseUrl;
+        this.headers = { 'Authorization': `Bearer ${adminToken}` };
+    }
+    
+    async getCacheStats() {
+        const response = await fetch(`${this.baseUrl}/system/cache/stats`, {
+            headers: this.headers
+        });
+        return await response.json();
+    }
+    
+    async analyzeCachePerformance() {
+        const stats = await this.getCacheStats();
+        const cache = stats.cache_statistics;
+        
+        const analysis = {
+            overall_health: this.calculateHealthScore(cache.overall),
+            bottlenecks: this.identifyBottlenecks(cache),
+            recommendations: this.generateRecommendations(cache)
+        };
+        
+        return analysis;
+    }
+    
+    calculateHealthScore(overall) {
+        const hitRate = overall.total_hit_rate;
+        const size = overall.total_cache_size_mb;
+        
+        let score = 100;
+        if (hitRate < 0.9) score -= (0.9 - hitRate) * 200;
+        if (size > 20) score -= (size - 20) * 2;
+        
+        return Math.max(0, Math.min(100, score));
+    }
+    
+    identifyBottlenecks(cache) {
+        const bottlenecks = [];
+        
+        Object.entries(cache).forEach(([type, stats]) => {
+            if (stats.hit_rate && stats.hit_rate < 0.8) {
+                bottlenecks.push(`${type}: Low hit rate (${stats.hit_rate:.2%})`);
+            }
+        });
+        
+        return bottlenecks;
+    }
+    
+    generateRecommendations(cache) {
+        const recommendations = [];
+        
+        if (cache.overall.total_hit_rate < 0.85) {
+            recommendations.push("Consider increasing cache TTL values");
+        }
+        
+        if (cache.overall.total_cache_size_mb > 30) {
+            recommendations.push("Consider implementing cache size limits");
+        }
+        
+        return recommendations;
+    }
+}
+
+// Usage
+const monitor = new CacheMonitor('http://localhost:8000', 'admin_token');
+const analysis = await monitor.analyzeCachePerformance();
+console.log('Cache Health Score:', analysis.overall_health);
+```
+
+---
+
 **Next:** Learn about [Error Handling](errors-and-responses.md) for comprehensive error reference. 

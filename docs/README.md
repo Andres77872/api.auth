@@ -86,7 +86,7 @@ CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Group
 ### Technologies
 - **FastAPI** - Modern, fast web framework
 - **MySQL** - Persistent data storage
-- **Redis** - Session caching and performance
+- **Redis** - Advanced multi-layer caching system (sessions, access checks, RBAC)
 - **Docker** - Containerized deployment
 
 ---

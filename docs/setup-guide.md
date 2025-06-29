@@ -80,16 +80,33 @@ connectionDB = {
 
 ### 3. Redis Configuration
 
-Redis is used for session caching with group context. Configuration is in `src/Util/db/db_enhanced.py`:
+Redis is used for advanced cache management including sessions, access checks, and RBAC. Configuration is in `src/Util/db_config.py`:
 
 ```python
-client = redis.StrictRedis(
+redis_client = redis.StrictRedis(
     host=os.environ.get("REDIS_HOST", "192.168.1.90"),
     port=int(os.environ.get("REDIS_PORT", "6379")),
     db=int(os.environ.get("REDIS_DB", "0")),
     password=os.environ.get("DB_REDIS_PASSWORD"),
     decode_responses=True
 )
+```
+
+### 4. Cache Configuration
+
+The comprehensive cache system can be configured with environment variables:
+
+```bash
+# Cache Configuration
+CACHE_ENABLED=true
+SESSION_TTL=3600          # 1 hour for sessions
+ACCESS_CHECK_TTL=1800     # 30 minutes for access checks
+RBAC_CHECK_TTL=1800       # 30 minutes for RBAC checks
+USER_TYPE_TTL=3600        # 1 hour for user type info
+
+# Cache Size Limits (optional)
+MAX_CACHE_SIZE_MB=50
+CACHE_CLEANUP_INTERVAL=3600  # 1 hour
 ```
 
 ## 🗄️ Database Setup
@@ -301,6 +318,32 @@ print(f'Created project group: {full_access.group_name}')
 print('✓ Group-based CRUD operations working correctly')
 "
 
+# Test cache system
+python -c "
+from src.Util.cache_manager import cache_manager
+
+# Test cache connectivity
+try:
+    cache_manager.redis_client.ping()
+    print('✓ Cache system operational')
+    
+    # Test cache operations
+    cache_manager.set_session('test_token', {'user_id': 1, 'test': True})
+    cached_session = cache_manager.get_session('test_token')
+    
+    if cached_session and cached_session.get('test'):
+        print('✓ Cache read/write operations working')
+    else:
+        print('✗ Cache operations failed')
+        
+    # Clean up test data
+    cache_manager.invalidate_user_cache(1)
+    print('✓ Cache invalidation working')
+    
+except Exception as e:
+    print(f'✗ Cache system failed: {e}')
+"
+
 # Test RBAC initialization (requires admin token and project hash)
 echo "NOTE: The following RBAC test requires a valid admin session token and project hash."
 # curl -X POST "http://localhost:8000/rbac/projects/YOUR_PROJECT_HASH/initialize" -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
@@ -403,17 +446,38 @@ WHERE ug.is_active = 1
 GROUP BY ug.id, ug.group_name;
 ```
 
-### 3. Redis Monitoring
+### 3. Redis & Cache Monitoring
 
 ```bash
-# Redis CLI monitoring with group context
-redis-cli monitor | grep session
+# Redis CLI monitoring with cache context
+redis-cli monitor | grep -E "(session|access|rbac|user_type)"
 
-# Check group-related session data
+# Check cache-related data
 redis-cli --scan --pattern "session:*" | head -10
+redis-cli --scan --pattern "access_check:*" | head -10
+redis-cli --scan --pattern "rbac:*" | head -10
+redis-cli --scan --pattern "user_type:*" | head -10
 
-# Check memory usage
+# Check memory usage and cache statistics
 redis-cli info memory
+redis-cli info stats
+
+# Monitor cache hit rates (if available)
+redis-cli --latency -i 1
+```
+
+### 4. Cache Performance Monitoring
+
+```bash
+# Test cache performance via API
+curl -X GET "http://localhost:8000/system/cache/stats" \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+
+# Monitor cache invalidation events
+tail -f logs/cache.log | grep -E "(invalidat|clear|flush)"
+
+# Check cache health in system monitoring
+curl -X GET "http://localhost:8000/system/health" | jq '.components.cache'
 ```
 
 ## 🔄 Backup & Maintenance
