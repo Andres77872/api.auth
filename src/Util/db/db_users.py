@@ -18,6 +18,7 @@ Key features:
 import json
 import secrets
 import os
+import uuid
 from typing import List, Optional, Tuple
 from datetime import datetime
 
@@ -49,6 +50,28 @@ client = redis.StrictRedis(host=ip,
 def get_connection():
     """Get database connection"""
     return pymysql.connect(**connectionDB)
+
+
+# =================== USER HASH UTILITY ===================
+
+def generate_user_hash() -> str:
+    """
+    Generate a unique user hash with UUID4 and 'usr-' prefix.
+    
+    Returns:
+        User hash in format: usr-{UUID4}
+    """
+    return f"usr-{uuid.uuid4()}"
+
+
+def generate_user_project_hash() -> str:
+    """
+    Generate a unique user-project hash with UUID4 and 'uprj-' prefix.
+    
+    Returns:
+        User-project hash in format: uprj-{UUID4}
+    """
+    return f"uprj-{uuid.uuid4()}"
 
 
 # =================== USER TYPE MANAGEMENT ===================
@@ -123,7 +146,7 @@ def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = No
 def create_root_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
     """Create a root (super admin) user"""
     password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-    user_hash = secrets.token_hex(32).upper()
+    user_hash = generate_user_hash()
     
     with get_connection() as con:
         cur = con.cursor()
@@ -151,7 +174,7 @@ def create_root_user(username: str, password: str, email: str = None, created_by
 def create_admin_user(username: str, password: str, email: str, assigned_project_id: int, created_by: int = None) -> User:
     """Create an admin user assigned to a specific project"""
     password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-    user_hash = secrets.token_hex(32).upper()
+    user_hash = generate_user_hash()
     
     with get_connection() as con:
         cur = con.cursor()
@@ -179,7 +202,7 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
 def create_consumer_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
     """Create a consumer (end user) user"""
     password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-    user_hash = secrets.token_hex(32).upper()
+    user_hash = generate_user_hash()
     
     with get_connection() as con:
         cur = con.cursor()
@@ -485,7 +508,7 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
 
 def grant_user_project_access(user_id: int, project_id: int, granted_by: int = None) -> UserProject:
     """Grant a consumer user access to a project"""
-    user_project_hash = secrets.token_hex(32).upper()
+    user_project_hash = generate_user_project_hash()
     
     with get_connection() as con:
         cur = con.cursor()

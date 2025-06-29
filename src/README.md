@@ -56,6 +56,7 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 
 ### 🛡️ **Enterprise Security Features**
 - ✅ **Multi-Layer Security**: Transport, authentication, authorization, data isolation
+- ✅ **UUID-Based User Identification**: Secure, unpredictable user hashes with `usr-{UUID4}` format
 - ✅ **Audit Trails**: Complete tracking of user type changes and permission modifications
 - ✅ **Session Security**: Cryptographically signed tokens with type context
 - ✅ **Access Control**: Hierarchical permission resolution
