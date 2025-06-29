@@ -1,17 +1,15 @@
-from fastapi import FastAPI, Request, Security, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-
-from starlette.responses import RedirectResponse
-
-from src.Util.logger_ws import logger
-from src.routes import (
-    Access, auth, users, user_types_auth, projects, 
-    admin_user_groups, admin_project_groups, system, rbac
-)
-
 import time
 
+from fastapi import FastAPI, Request, Security, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import RedirectResponse
+
 from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
+from src.Util.logger_ws import logger
+from src.routes import (
+    Access, auth, users, user_types_auth, projects,
+    admin_user_groups, admin_project_groups, system, rbac
+)
 
 # Read description from README file
 with open('./src/README.md', 'r', encoding='utf-8') as f:
@@ -36,7 +34,7 @@ app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(rbac.router, tags=['RBAC Management'])
-app.include_router(system.router, tags=['System'])
+app.include_router(system.router, tags=['System Information'])
 
 # ACCESS CONTROL (Legacy compatibility)
 app.include_router(
