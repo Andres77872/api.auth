@@ -4,54 +4,6 @@
 
 USE magic_auth;
 
--- =================== ADDITIONAL PERFORMANCE INDEXES ===================
-
--- User authentication queries
-CREATE INDEX idx_users_username_password ON users(username, password_hash, is_active);
-CREATE INDEX idx_users_email_password ON users(email, password_hash, is_active);
-CREATE INDEX idx_users_type_active ON users(user_type, is_active);
-
--- Admin user project access queries
-CREATE INDEX idx_admin_projects_user_active ON admin_project_assignments(user_id, is_active);
-CREATE INDEX idx_admin_projects_project_user ON admin_project_assignments(project_id, user_id, is_active);
-
--- Session lookup optimization
-CREATE INDEX idx_sessions_token_active ON user_sessions(session_token, is_active, expires_at);
-
--- Permission checks optimization
-CREATE INDEX idx_user_proj_perm_groups_lookup ON user_project_permission_groups(user_id, project_id, permission_group_id, is_active);
-CREATE INDEX idx_perm_group_permissions_active ON permission_group_permissions(permission_group_id, permission_id, is_active);
-
--- User group membership queries
-CREATE INDEX idx_user_group_members_user ON user_group_members(user_id, is_active);
-CREATE INDEX idx_user_group_members_group ON user_group_members(user_group_id, is_active);
-
--- Project access queries
-CREATE INDEX idx_user_projects_user_project ON user_projects(user_id, project_id, is_active);
-CREATE INDEX idx_user_group_projects_access ON user_group_projects(user_group_id, project_id, is_active);
-
--- Audit log queries
-CREATE INDEX idx_audit_log_project_time ON permission_audit_log(project_id, action_timestamp);
-CREATE INDEX idx_audit_log_user_time ON permission_audit_log(target_user_id, action_timestamp);
-CREATE INDEX idx_audit_log_action_type ON permission_audit_log(action_type, action_timestamp);
-
--- Activity log queries
-CREATE INDEX idx_activity_log_user_type_time ON activity_logs(user_id, activity_type, created_at);
-CREATE INDEX idx_activity_log_project_time ON activity_logs(project_id, created_at);
-CREATE INDEX idx_activity_log_target_user_time ON activity_logs(target_user_id, created_at);
-CREATE INDEX idx_activity_log_type_time ON activity_logs(activity_type, created_at);
-
--- =================== COMPOSITE INDEXES FOR COMPLEX QUERIES ===================
-
--- User permission check query optimization
-CREATE INDEX idx_user_permission_check ON permissions(project_id, permission_name, is_active);
-
--- Group permission lookup
-CREATE INDEX idx_permission_groups_lookup ON permission_groups(project_id, group_name, is_active);
-
--- User project group membership
-CREATE INDEX idx_user_project_groups_lookup ON user_project_groups(user_project_id, group_id, is_active);
-
 -- =================== QUERY OPTIMIZATION VIEWS ===================
 
 -- View for quick user permission checks
@@ -358,7 +310,7 @@ BEGIN
     WHERE u.user_type = 'admin'
       AND u.is_active = 1
       AND apa.id IS NULL
-      AND u.assigned_project_id IS NOT NULL;
+      AND u.assigned_project_id IS NULL;
       
     -- Check for expired sessions that are still marked active
     SELECT COUNT(*) as expired_active_sessions,

@@ -181,9 +181,7 @@ DELIMITER ;
 
 -- =================== DATA INTEGRITY CONSTRAINTS ===================
 
--- Ensure user_type enum values are valid
-ALTER TABLE users ADD CONSTRAINT chk_user_type 
-    CHECK (user_type IN ('root', 'admin', 'consumer'));
+-- Note: user_type ENUM constraint is already defined in table creation, no additional CHECK needed
 
 -- Ensure session tokens expire in the future when created
 DELIMITER $$
