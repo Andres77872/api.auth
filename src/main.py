@@ -5,7 +5,7 @@ from starlette.responses import RedirectResponse
 
 from src.Util.logger_ws import logger
 from src.routes import (
-    Access, auth, users, projects, 
+    Access, auth, users, user_management, projects, 
     admin_user_groups, admin_project_groups, system, rbac
 )
 
@@ -18,9 +18,9 @@ with open('./src/README.md', 'r', encoding='utf-8') as f:
     description = f.read()
 
 app = FastAPI(
-    title='Group-Based Multi-Project Authentication API',
+    title='3-Tier User Type Multi-Project Authentication API',
     description=description,
-    version='0.0.3',
+    version='2.1.0',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",
@@ -28,9 +28,10 @@ app = FastAPI(
     }
 )
 
-# GROUP-BASED AUTHENTICATION ROUTES
+# 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
 app.include_router(users.router, tags=['User Management'])
+app.include_router(user_management.router, tags=['User Type Management'])
 app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])

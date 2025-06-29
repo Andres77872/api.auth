@@ -1,6 +1,6 @@
-# Group-Based Multi-Project Authentication API - Documentation
+# 3-Tier User Type Multi-Project Authentication API - Documentation
 
-Welcome to the comprehensive documentation for the Group-Based Multi-Project Authentication API. This system provides hierarchical access control through user groups and project groups.
+Welcome to the comprehensive documentation for the **3-Tier User Type Multi-Project Authentication API**. This system provides hierarchical access control through **user types** (root, admin, consumer) combined with **user groups and project groups**.
 
 ## 🚀 Quick Start
 
@@ -22,6 +22,7 @@ Welcome to the comprehensive documentation for the Group-Based Multi-Project Aut
 | Document | Purpose | Best For |
 |----------|---------|----------|
 | **[Authentication API](api/authentication.md)** | Login, logout, sessions | Frontend developers |
+| **[User Type Management API](api/user-type-management.md)** | 3-tier user type system | System administrators |
 | **[Project Management API](api/project-management.md)** | Project CRUD operations | Project managers |
 | **[Admin API](api/admin.md)** | Group management, assignments | System administrators |
 | **[System API](api/system.md)** | Health, monitoring endpoints | DevOps engineers |
@@ -66,17 +67,20 @@ Welcome to the comprehensive documentation for the Group-Based Multi-Project Aut
 
 ## 🏗️ System Overview
 
-### Core Architecture
+### 3-Tier User Type Architecture
 ```
-Users → User Groups → Project Access → Project Groups → Permissions
+ROOT USERS     → Unrestricted Global Access
+ADMIN USERS    → Project-Scoped Admin Access (assigned_project_id)
+CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Groups → Permissions)
 ```
 
 ### Key Features
-- **Hierarchical Groups**: Clean user → group → project → permissions flow
-- **Project Isolation**: Each project has independent access control
-- **Scalable Design**: Supports thousands of users and projects
-- **Security First**: Multi-layer security with comprehensive audit trails
-- **Developer Friendly**: Clean APIs with comprehensive documentation
+- **3-Tier User Types**: Clear privilege separation (root, admin, consumer)
+- **Hierarchical Groups**: Clean user → group → project → permissions flow for consumer users
+- **Project Isolation**: Each project has independent access control with admin boundaries
+- **Scalable Design**: Supports thousands of users and projects with efficient user type management
+- **Security First**: Multi-layer security with user type enforcement and comprehensive audit trails
+- **Developer Friendly**: Clean APIs with comprehensive documentation for all user types
 
 ### Technologies
 - **FastAPI** - Modern, fast web framework
@@ -127,16 +131,18 @@ Users → User Groups → Project Access → Project Groups → Permissions
 
 ## 🎯 What Makes This System Special
 
-### Clean Architecture
-- **No Confusing Naming**: Just users, groups, projects, and permissions
-- **Hierarchical Control**: Clear flow from users to permissions
-- **Modular Design**: Each component is independent and testable
+### Clean 3-Tier Architecture
+- **Clear User Types**: Root (global), Admin (project-scoped), Consumer (RBAC-based)
+- **Hierarchical Control**: Clear privilege separation with appropriate access patterns
+- **Modular Design**: Each user type and component is independent and testable
 
-### Group-Based Benefits
-- **Centralized Management**: Manage thousands of users through groups
-- **Flexible Permissions**: Different permission sets per project type
-- **Audit Trail**: Complete tracking of all access changes
-- **Scalable**: Add users and projects through group assignments
+### 3-Tier User Type Benefits
+- **Root Users**: Unrestricted global administration for system management
+- **Admin Users**: Project-specific administration with clear boundaries
+- **Consumer Users**: Group-based access with flexible RBAC permissions
+- **Centralized Management**: Manage users through types and groups efficiently
+- **Audit Trail**: Complete tracking of user type changes and group assignments
+- **Scalable**: Add users with appropriate privilege levels
 
 ### Developer Experience
 - **Comprehensive Documentation**: Every endpoint documented with examples

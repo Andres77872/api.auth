@@ -1,10 +1,10 @@
 # System Architecture Guide
 
-Comprehensive guide to the Group-Based Multi-Project Authentication system architecture, design decisions, and implementation details.
+Comprehensive guide to the **3-Tier User Type Multi-Project Authentication** system architecture, design decisions, and implementation details.
 
 ## 🏗️ Overview
 
-The Group-Based Multi-Project Authentication API implements a clean hierarchical access control system that provides secure authentication with project isolation and cross-project access capabilities through group membership.
+The 3-Tier User Type Multi-Project Authentication API implements a clean hierarchical access control system that provides secure authentication with project isolation and cross-project access capabilities through both **user types** and **group membership**.
 
 ### Core Architectural Principles
 
@@ -17,12 +17,65 @@ The Group-Based Multi-Project Authentication API implements a clean hierarchical
 
 ## 🎯 System Goals
 
-- **User Group Management**: Centralized user organization through global groups
-- **Project Access Control**: Groups define which projects users can access
-- **Permission Management**: Project groups define what users can do
-- **Session Management**: Secure, performant session handling with group context
-- **Audit Trail**: Complete tracking of group assignments and access changes
-- **Clean Architecture**: No confusing naming - just users, groups, projects, and permissions
+- **3-Tier User Type Management**: Clear separation of privileges (root, admin, consumer)
+- **User Group Management**: Centralized user organization through global groups  
+- **Project Access Control**: User types and groups define project access patterns
+- **Permission Management**: Hierarchical permission system based on user types
+- **Session Management**: Secure, performant session handling with user type & group context
+- **Audit Trail**: Complete tracking of user type changes and group assignments
+- **Clean Architecture**: Clear user types with group-based permissions for consumer users
+
+## 🏗️ 3-Tier User Type Architecture
+
+The system implements a hierarchical 3-tier user type model:
+
+### 1. ROOT USERS (Global Super Administrators)
+```
+ROOT USER CAPABILITIES:
+├── Unrestricted access to all projects and resources
+├── Can create/modify/delete any user type (including other root users)
+├── Can manage all projects, groups, and permissions globally
+├── Bypasses all permission checks and group restrictions
+└── Complete system administration privileges
+```
+
+### 2. ADMIN USERS (Project-Scoped Administrators)
+```
+ADMIN USER CAPABILITIES:
+├── Limited to their specific assigned project (assigned_project_id)
+├── Full administrative rights within their project scope only
+├── Can manage users, groups, and permissions in their project
+├── Cannot access other projects or global system settings
+└── Project boundary enforcement at database level
+```
+
+### 3. CONSUMER USERS (End Users with RBAC)
+```
+CONSUMER USER CAPABILITIES:
+├── Subject to Role-Based Access Control (RBAC) through groups
+├── Access projects through user group memberships
+├── Permissions determined by project group assignments
+├── Standard authentication and permission flow
+└── Can only access what their groups explicitly allow
+```
+
+### User Type Access Flow
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│ ROOT USERS  │───►│ UNRESTRICTED │───►│ GLOBAL ACCESS   │
+│ (Global)    │    │ ACCESS       │    │ ALL PROJECTS    │
+└─────────────┘    └──────────────┘    └─────────────────┘
+
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│ ADMIN USERS │───►│ PROJECT      │───►│ ASSIGNED        │
+│ (Project)   │    │ SCOPED       │    │ PROJECT ONLY    │
+└─────────────┘    └──────────────┘    └─────────────────┘
+
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│ CONSUMER    │───►│ GROUP-BASED  │───►│ RBAC CONTROLLED │
+│ USERS       │    │ ACCESS       │    │ PROJECT ACCESS  │
+└─────────────┘    └──────────────┘    └─────────────────┘
+```
 
 ## 🏛️ High-Level Architecture
 
@@ -91,6 +144,7 @@ api.auth/
 │   │   ├── __init__.py
 │   │   ├── auth.py             # Authentication endpoints (login, register, logout)
 │   │   ├── users.py            # User management endpoints
+│   │   ├── user_management.py  # User type management (3-tier system)
 │   │   ├── projects.py         # Project management endpoints
 │   │   ├── admin_user_groups.py   # Admin user group management
 │   │   ├── admin_project_groups.py # Admin project group management
@@ -186,6 +240,16 @@ The API layer is now organized into focused, modular route files:
   - User profile management
   - Profile updates
   - Access summary with group memberships
+
+#### user_management.py - User Type Management (3-Tier System)
+- **Purpose**: Hierarchical user type administration
+- **Endpoints**: `/user-types/*`
+- **Responsibilities**:
+  - Create root users (root-only access)
+  - Create admin users with project assignments
+  - Update user types (promote/demote users)
+  - List users by type with access controls
+  - Get comprehensive user type information
 
 #### projects.py - Project Management
 - **Purpose**: Project CRUD operations

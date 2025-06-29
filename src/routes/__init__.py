@@ -4,6 +4,7 @@ Routes Package
 This package contains all API route definitions organized by functional area:
 - auth: Authentication endpoints (login, register, logout, validate)
 - users: User management endpoints (profile, update, access-summary)
+- user_management: User type management endpoints (3-tier system: root, admin, consumer)
 - projects: Project management endpoints (CRUD operations)
 - admin_user_groups: Admin endpoints for user group management
 - admin_project_groups: Admin endpoints for project group management
@@ -15,6 +16,7 @@ This package contains all API route definitions organized by functional area:
 from . import Access
 from . import auth
 from . import users
+from . import user_management
 from . import projects
 from . import admin_user_groups
 from . import admin_project_groups
@@ -24,7 +26,8 @@ from . import system
 __all__ = [
     'Access',
     'auth',
-    'users', 
+    'users',
+    'user_management',
     'projects',
     'admin_user_groups',
     'admin_project_groups',

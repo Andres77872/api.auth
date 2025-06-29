@@ -1,6 +1,6 @@
 # System API
 
-System monitoring, health checks, and information endpoints for the Group-Based Multi-Project Authentication system.
+System monitoring, health checks, and information endpoints for the **3-Tier User Type Multi-Project Authentication** system.
 
 ## 🔍 Overview
 
@@ -26,9 +26,9 @@ curl -X GET "http://localhost:8000/system/info"
 {
   "success": true,
   "system": {
-    "name": "Group-Based Multi-Project Authentication API",
-    "version": "2.0.0",
-    "architecture": "hierarchical-group-based",
+    "name": "3-Tier User Type Multi-Project Authentication API",
+    "version": "2.1.0",
+    "architecture": "3-tier-user-type-with-group-based-permissions",
     "status": "operational"
   },
   "statistics": {
@@ -36,14 +36,23 @@ curl -X GET "http://localhost:8000/system/info"
     "total_projects": 25,
     "total_user_groups": 10,
     "total_project_groups": 5,
-    "authentication_type": "group-based-jwt"
+    "user_types": {
+      "root_users": 3,
+      "admin_users": 12,
+      "consumer_users": 135
+    },
+    "authentication_type": "3-tier-user-type-jwt"
   },
   "features": [
+    "3-tier-user-type-system",
+    "root-user-global-access",
+    "admin-user-project-scoped-access",
+    "consumer-user-rbac-permissions",
     "hierarchical-group-access-control",
     "global-user-groups",
     "project-permission-groups",
     "multi-project-support",
-    "session-management-with-group-context",
+    "session-management-with-user-type-context",
     "comprehensive-audit-trail",
     "restful-admin-api"
   ]
@@ -88,9 +97,14 @@ curl -X GET "http://localhost:8000/system/health"
       "memory_usage": "15.2MB",
       "connected_clients": 3
     },
-    "group_system": {
+    "user_type_system": {
       "status": "healthy",
-      "message": "Group system operational: 10 user groups, 5 project groups",
+      "message": "3-tier user type system operational",
+      "user_types": {
+        "root_users": 3,
+        "admin_users": 12,
+        "consumer_users": 135
+      },
       "user_groups": {
         "total": 10,
         "active": 10,
@@ -150,10 +164,10 @@ curl -X GET "http://localhost:8000/system/ping"
 ```json
 {
   "success": true,
-  "message": "Group-based authentication API is running",
+  "message": "3-Tier User Type authentication API is running",
   "timestamp": "2024-01-01T12:00:00Z",
   "uptime_seconds": 86400,
-  "version": "2.0.0"
+  "version": "2.1.0"
 }
 ```
 

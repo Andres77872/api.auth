@@ -1,12 +1,18 @@
 """
-Enhanced Multi-Project Authentication - User Database Operations
+Enhanced 3-Tier User Type Database Operations
 
-This module handles all user-related database operations including:
-- User management (create, read, update, delete)
-- User authentication and credentials
-- User-project access management
-- User session management
-- User group memberships
+This module handles all user-related database operations with support for
+the 3-tier user type system:
+- ROOT USERS: Super administrators with unrestricted global access
+- ADMIN USERS: Project-specific administrators limited to assigned projects  
+- CONSUMER USERS: End users with RBAC-based permissions through groups
+
+Key features:
+- User type-specific creation functions
+- User type management and validation
+- Enhanced authentication with user type checking
+- Project assignment for admin users
+- Legacy compatibility maintained
 """
 
 import json
@@ -45,19 +51,86 @@ def get_connection():
     return pymysql.connect(**connectionDB)
 
 
-# =================== USER MANAGEMENT ===================
+# =================== USER TYPE MANAGEMENT ===================
 
-def create_user(username: str, password: str, email: str = None) -> User:
-    """Create a new global user account"""
+def get_user_type(user_id: int) -> Optional[str]:
+    """Get user type for a user"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT user_type FROM users 
+            WHERE id = %s AND is_active = 1
+        """, [user_id])
+        
+        result = cur.fetchone()
+        return result[0] if result else None
+
+
+def get_admin_assigned_project(user_id: int) -> Optional[int]:
+    """Get assigned project for admin user"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT assigned_project_id FROM users 
+            WHERE id = %s AND user_type = 'admin' AND is_active = 1
+        """, [user_id])
+        
+        result = cur.fetchone()
+        return result[0] if result else None
+
+
+def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int = None, updated_by: int = None) -> bool:
+    """Update user type and project assignment"""
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        # Validate user type and project assignment
+        if new_user_type == 'admin' and not assigned_project_id:
+            raise ValueError("Admin users must have an assigned project")
+        elif new_user_type in ['root', 'consumer'] and assigned_project_id:
+            assigned_project_id = None  # Clear project assignment for root/consumer users
+        
+        cur.execute("""
+            UPDATE users 
+            SET user_type = %s, assigned_project_id = %s, updated_at = NOW()
+            WHERE id = %s AND is_active = 1
+        """, [new_user_type, assigned_project_id, user_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
+def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
+    """Assign admin user to a specific project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE users 
+            SET assigned_project_id = %s, updated_at = NOW()
+            WHERE id = %s AND user_type = 'admin' AND is_active = 1
+        """, [project_id, user_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+        return success
+
+
+# =================== USER TYPE-SPECIFIC CREATION ===================
+
+def create_root_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
+    """Create a root (super admin) user"""
     password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
     user_hash = secrets.token_hex(32).upper()
     
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            INSERT INTO users (user_hash, username, email, password_hash, created_at)
-            VALUES (%s, %s, %s, %s, NOW())
-        """, [user_hash, username, email, password_hash])
+            INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at)
+            VALUES (%s, %s, %s, %s, 'root', NULL, %s, NOW())
+        """, [user_hash, username, email, password_hash, created_by])
         
         user_id = con.insert_id()
         con.commit()
@@ -68,19 +141,91 @@ def create_user(username: str, password: str, email: str = None) -> User:
             username=username,
             email=email,
             password_hash=password_hash,
+            user_type='root',
+            assigned_project_id=None,
             created_at=datetime.now(),
             is_active=True
         )
 
 
+def create_admin_user(username: str, password: str, email: str, assigned_project_id: int, created_by: int = None) -> User:
+    """Create an admin user assigned to a specific project"""
+    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    user_hash = secrets.token_hex(32).upper()
+    
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at)
+            VALUES (%s, %s, %s, %s, 'admin', %s, %s, NOW())
+        """, [user_hash, username, email, password_hash, assigned_project_id, created_by])
+        
+        user_id = con.insert_id()
+        con.commit()
+        
+        return User(
+            id=user_id,
+            user_hash=user_hash,
+            username=username,
+            email=email,
+            password_hash=password_hash,
+            user_type='admin',
+            assigned_project_id=assigned_project_id,
+            created_at=datetime.now(),
+            is_active=True
+        )
+
+
+def create_consumer_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
+    """Create a consumer (end user) user"""
+    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    user_hash = secrets.token_hex(32).upper()
+    
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at)
+            VALUES (%s, %s, %s, %s, 'consumer', NULL, %s, NOW())
+        """, [user_hash, username, email, password_hash, created_by])
+        
+        user_id = con.insert_id()
+        con.commit()
+        
+        return User(
+            id=user_id,
+            user_hash=user_hash,
+            username=username,
+            email=email,
+            password_hash=password_hash,
+            user_type='consumer',
+            assigned_project_id=None,
+            created_at=datetime.now(),
+            is_active=True
+        )
+
+
+# =================== ENHANCED USER MANAGEMENT ===================
+
+def create_user(username: str, password: str, email: str = None, user_type: str = "consumer", assigned_project_id: int = None) -> User:
+    """Create a user with specified type (enhanced to support all user types)"""
+    if user_type == "root":
+        return create_root_user(username, password, email)
+    elif user_type == "admin":
+        if not assigned_project_id:
+            raise ValueError("Admin users must have an assigned project")
+        return create_admin_user(username, password, email, assigned_project_id)
+    else:  # consumer (default)
+        return create_consumer_user(username, password, email)
+
+
 def get_user_by_credentials(username: str, password: str) -> Optional[User]:
-    """Get user by username/email and password"""
+    """Get user by username/email and password (enhanced with user type)"""
     password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
     
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
             WHERE (username = %s OR email = %s) AND password_hash = %s AND is_active = 1
         """, [username, username, password_hash])
@@ -93,18 +238,20 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 username=result[2],
                 email=result[3],
                 password_hash=result[4],
-                created_at=result[5],
-                is_active=bool(result[6])
+                user_type=result[5],
+                assigned_project_id=result[6],
+                created_at=result[7],
+                is_active=bool(result[8])
             )
     return None
 
 
 def get_user_by_id(user_id: int) -> Optional[User]:
-    """Get user by user ID"""
+    """Get user by user ID (enhanced with user type)"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
             WHERE id = %s AND is_active = 1
         """, [user_id])
@@ -117,18 +264,20 @@ def get_user_by_id(user_id: int) -> Optional[User]:
                 username=result[2],
                 email=result[3],
                 password_hash=result[4],
-                created_at=result[5],
-                is_active=bool(result[6])
+                user_type=result[5],
+                assigned_project_id=result[6],
+                created_at=result[7],
+                is_active=bool(result[8])
             )
     return None
 
 
 def get_user_by_hash(user_hash: str) -> Optional[User]:
-    """Get user by user hash"""
+    """Get user by user hash (enhanced with user type)"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+            SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
             WHERE user_hash = %s AND is_active = 1
         """, [user_hash])
@@ -141,8 +290,10 @@ def get_user_by_hash(user_hash: str) -> Optional[User]:
                 username=result[2],
                 email=result[3],
                 password_hash=result[4],
-                created_at=result[5],
-                is_active=bool(result[6])
+                user_type=result[5],
+                assigned_project_id=result[6],
+                created_at=result[7],
+                is_active=bool(result[8])
             )
     return None
 
@@ -159,13 +310,24 @@ def check_username_email_available(username_or_email: str) -> bool:
         return cur.fetchone()[0] == 0
 
 
-def update_user(user_id: int, username: str = None, email: str = None, password: str = None) -> Optional[User]:
-    """Update user information"""
-    if not username and not email and not password:
+def update_user(user_id: int, username: str = None, email: str = None, password: str = None, user_type: str = None, assigned_project_id: int = None) -> Optional[User]:
+    """Update user information (enhanced with user type support)"""
+    if not any([username, email, password, user_type]):
         return None
     
     with get_connection() as con:
         cur = con.cursor()
+        
+        # Validate user type and project assignment
+        if user_type == 'admin' and assigned_project_id is None:
+            # Keep existing assignment for admin users if not specified
+            existing_user = get_user_by_id(user_id)
+            if existing_user and existing_user.user_type == 'admin':
+                assigned_project_id = existing_user.assigned_project_id
+            else:
+                raise ValueError("Admin users must have an assigned project")
+        elif user_type in ['root', 'consumer']:
+            assigned_project_id = None  # Clear project assignment for root/consumer users
         
         # Build dynamic update query
         update_fields = []
@@ -183,6 +345,12 @@ def update_user(user_id: int, username: str = None, email: str = None, password:
             password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
             update_fields.append("password_hash = %s")
             update_values.append(password_hash)
+        
+        if user_type:
+            update_fields.append("user_type = %s")
+            update_values.append(user_type)
+            update_fields.append("assigned_project_id = %s")
+            update_values.append(assigned_project_id)
         
         update_fields.append("updated_at = NOW()")
         update_values.append(user_id)
@@ -202,7 +370,7 @@ def update_user(user_id: int, username: str = None, email: str = None, password:
             return None
 
 
-def delete_user(user_id: int) -> bool:
+def delete_user(user_id: int, deleted_by: int = None) -> bool:
     """Soft delete a user"""
     with get_connection() as con:
         cur = con.cursor()
@@ -218,17 +386,30 @@ def delete_user(user_id: int) -> bool:
         return success
 
 
-def list_users(limit: int = 100, offset: int = 0) -> List[User]:
-    """List all active users with pagination"""
+def list_users(limit: int = 100, offset: int = 0, user_type: str = None, project_id: int = None) -> List[User]:
+    """List all active users with filtering by user type and project"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+        
+        query = """
+            SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
             WHERE is_active = 1
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-        """, [limit, offset])
+        """
+        params = []
+        
+        if user_type:
+            query += " AND user_type = %s"
+            params.append(user_type)
+        
+        if project_id:
+            query += " AND (user_type = 'root' OR assigned_project_id = %s OR user_type = 'consumer')"
+            params.append(project_id)
+        
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        
+        cur.execute(query, params)
         
         results = []
         for row in cur.fetchall():
@@ -238,35 +419,50 @@ def list_users(limit: int = 100, offset: int = 0) -> List[User]:
                 username=row[2],
                 email=row[3],
                 password_hash=row[4],
-                created_at=row[5],
-                is_active=bool(row[6])
+                user_type=row[5],
+                assigned_project_id=row[6],
+                created_at=row[7],
+                is_active=bool(row[8])
             ))
         
         return results
 
 
-def count_users() -> int:
-    """Count total number of active users"""
+def count_users(user_type: str = None) -> int:
+    """Count total number of active users by type"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        
+        if user_type:
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1 AND user_type = %s", [user_type])
+        else:
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        
         return cur.fetchone()[0]
 
 
-def search_users(search_term: str, limit: int = 50) -> List[User]:
-    """Search users by username or email"""
+def search_users(search_term: str, user_type: str = None, limit: int = 50) -> List[User]:
+    """Search users by username or email with optional user type filter"""
     with get_connection() as con:
         cur = con.cursor()
         search_pattern = f"%{search_term}%"
         
-        cur.execute("""
-            SELECT id, user_hash, username, email, password_hash, created_at, is_active
+        query = """
+            SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
             WHERE is_active = 1 
             AND (username LIKE %s OR email LIKE %s)
-            ORDER BY username ASC
-            LIMIT %s
-        """, [search_pattern, search_pattern, limit])
+        """
+        params = [search_pattern, search_pattern]
+        
+        if user_type:
+            query += " AND user_type = %s"
+            params.append(user_type)
+        
+        query += " ORDER BY username ASC LIMIT %s"
+        params.append(limit)
+        
+        cur.execute(query, params)
         
         results = []
         for row in cur.fetchall():
@@ -276,17 +472,19 @@ def search_users(search_term: str, limit: int = 50) -> List[User]:
                 username=row[2],
                 email=row[3],
                 password_hash=row[4],
-                created_at=row[5],
-                is_active=bool(row[6])
+                user_type=row[5],
+                assigned_project_id=row[6],
+                created_at=row[7],
+                is_active=bool(row[8])
             ))
         
         return results
 
 
-# =================== USER-PROJECT ACCESS MANAGEMENT ===================
+# =================== USER-PROJECT ACCESS MANAGEMENT (Consumer Users) ===================
 
 def grant_user_project_access(user_id: int, project_id: int, granted_by: int = None) -> UserProject:
-    """Grant a user access to a project"""
+    """Grant a consumer user access to a project"""
     user_project_hash = secrets.token_hex(32).upper()
     
     with get_connection() as con:
@@ -299,7 +497,7 @@ def grant_user_project_access(user_id: int, project_id: int, granted_by: int = N
         user_project_id = con.insert_id()
         con.commit()
         
-        # Assign to default 'user' group
+        # Assign to default 'user' group for consumer users
         assign_user_to_default_group(user_project_id, project_id)
         
         return UserProject(
@@ -314,7 +512,7 @@ def grant_user_project_access(user_id: int, project_id: int, granted_by: int = N
 
 
 def get_user_project_access(user_id: int, project_id: int) -> Optional[UserProject]:
-    """Get user's access to a specific project"""
+    """Get consumer user's access to a specific project"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -338,7 +536,7 @@ def get_user_project_access(user_id: int, project_id: int) -> Optional[UserProje
 
 
 def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
-    """Get all projects a user has access to"""
+    """Get all projects a consumer user has access to"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -365,7 +563,7 @@ def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
 
 
 def revoke_user_project_access(user_id: int, project_id: int, revoked_by: int = None) -> bool:
-    """Revoke user's access to a project"""
+    """Revoke consumer user's access to a project"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -381,7 +579,7 @@ def revoke_user_project_access(user_id: int, project_id: int, revoked_by: int = 
 
 
 def assign_user_to_default_group(user_project_id: int, project_id: int):
-    """Assign user to default 'user' group in a project"""
+    """Assign consumer user to default 'user' group in a project"""
     with get_connection() as con:
         cur = con.cursor()
         # Get default 'user' group ID
@@ -400,10 +598,10 @@ def assign_user_to_default_group(user_project_id: int, project_id: int):
             con.commit()
 
 
-# =================== USER GROUP MANAGEMENT ===================
+# =================== USER GROUP MANAGEMENT (Consumer Users) ===================
 
 def get_user_groups_in_project(user_project_id: int) -> List[UserGroup]:
-    """Get all groups a user belongs to in a project"""
+    """Get all groups a consumer user belongs to in a project"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -423,9 +621,14 @@ def get_user_groups_in_project(user_project_id: int) -> List[UserGroup]:
         return groups
 
 
-def get_user_permissions_in_project(user_project_id: int) -> List[str]:
-    """Get all permissions a user has in a project"""
-    groups = get_user_groups_in_project(user_project_id)
+def get_user_permissions_in_project(user_id: int, project_id: int) -> List[str]:
+    """Get all permissions a consumer user has in a project"""
+    # For consumer users, use the existing RBAC system
+    user_project = get_user_project_access(user_id, project_id)
+    if not user_project:
+        return []
+    
+    groups = get_user_groups_in_project(user_project.id)
     permissions = set()
     
     for group in groups:
@@ -437,7 +640,7 @@ def get_user_permissions_in_project(user_project_id: int) -> List[str]:
 
 
 def assign_user_to_group(user_project_id: int, group_id: int, assigned_by: int = None) -> bool:
-    """Assign user to a group in a project"""
+    """Assign consumer user to a group in a project"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -452,7 +655,7 @@ def assign_user_to_group(user_project_id: int, group_id: int, assigned_by: int =
 
 
 def remove_user_from_group(user_project_id: int, group_id: int, removed_by: int = None) -> bool:
-    """Remove user from a group in a project"""
+    """Remove consumer user from a group in a project"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -467,7 +670,7 @@ def remove_user_from_group(user_project_id: int, group_id: int, removed_by: int 
         return success
 
 
-# =================== USER SESSION MANAGEMENT ===================
+# =================== USER SESSION MANAGEMENT WITH USER TYPES ===================
 
 def get_session_data(session_token: str) -> Optional[dict]:
     """Get session data from Redis"""
@@ -477,8 +680,8 @@ def get_session_data(session_token: str) -> Optional[dict]:
     return None
 
 
-def create_session(user_id: int, project_id: int, user_project_id: int, session_length: int = 259200) -> str:
-    """Create a new session and store in Redis"""
+def create_session(user_id: int, project_id: int, user_project_id: int = None, session_length: int = 259200) -> str:
+    """Create a new session and store in Redis with user type context"""
     session_token = secrets.token_hex(32).upper()
     
     # Get user and project data
@@ -492,25 +695,35 @@ def create_session(user_id: int, project_id: int, user_project_id: int, session_
     if not project:
         return None
     
-    user_project = get_user_project_access(user_id, project_id)
-    if not user_project:
-        return None
-    
-    # Get user's groups and permissions
-    groups = get_user_groups_in_project(user_project_id)
-    permissions = get_user_permissions_in_project(user_project_id)
-    
-    # Store session data in Redis
+    # Build session data based on user type
     session_data = {
         'user_id': user.id,
         'user_hash': user.user_hash,
         'project_id': project.id,
         'project_hash': project.project_hash,
-        'user_project_id': user_project.id,
-        'user_project_hash': user_project.user_project_hash,
-        'groups': [g.group_name for g in groups],
-        'permissions': permissions
+        'user_type': user.user_type
     }
+    
+    # Add user type specific data
+    if user.user_type == 'root':
+        session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
+        session_data['groups'] = ['root_users']
+    elif user.user_type == 'admin':
+        session_data['assigned_project_id'] = user.assigned_project_id
+        session_data['permissions'] = ['admin', 'project_admin', 'manage_users', 'manage_groups']
+        session_data['groups'] = ['project_admins']
+    elif user.user_type == 'consumer':
+        if user_project_id:
+            user_project = get_user_project_access(user_id, project_id)
+            if user_project:
+                session_data['user_project_id'] = user_project.id
+                session_data['user_project_hash'] = user_project.user_project_hash
+                
+                # Get user's groups and permissions
+                groups = get_user_groups_in_project(user_project.id)
+                permissions = get_user_permissions_in_project(user_id, project_id)
+                session_data['groups'] = [g.group_name for g in groups]
+                session_data['permissions'] = permissions
     
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
     
@@ -527,7 +740,7 @@ def invalidate_session(session_token: str) -> bool:
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
-    """Validate a session token and return user data"""
+    """Validate a session token and return user data with user type context"""
     session_data = get_session_data(session_token)
     if not session_data:
         return None
@@ -538,24 +751,41 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     if not project:
         return None
     
-    # Get fresh user groups and permissions
-    groups = get_user_groups_in_project(session_data['user_project_id'])
-    permissions = get_user_permissions_in_project(session_data['user_project_id'])
+    user_type = session_data.get('user_type', 'consumer')
     
-    # Get available projects
-    available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
+    # Build user login data based on user type
+    if user_type == 'root':
+        groups = ['root_users']
+        permissions = ['admin', 'global_admin', 'unrestricted_access']
+        available_projects = []  # Root users can access all projects
+    elif user_type == 'admin':
+        groups = ['project_admins']
+        permissions = ['admin', 'project_admin', 'manage_users', 'manage_groups']
+        available_projects = [project]  # Admin users see only their project
+    elif user_type == 'consumer':
+        # Get fresh user groups and permissions for consumer users
+        if 'user_project_id' not in session_data:
+            return None
+        groups = get_user_groups_in_project(session_data['user_project_id'])
+        permissions = get_user_permissions_in_project(session_data['user_id'], project.id)
+        available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
+        groups = [g.group_name for g in groups]
+    else:
+        return None
     
     return EnhancedUserLogin(
         user_hash=session_data['user_hash'],
         project_hash=session_data['project_hash'],
         project_name=project.project_name,
-        user_project_hash=session_data['user_project_hash'],
+        user_project_hash=session_data.get('user_project_hash', ''),
         session_token=session_token,
         session_length=0,  # We don't track remaining time
         user_id=session_data['user_id'],
         project_id=session_data['project_id'],
-        user_project_id=session_data['user_project_id'],
-        groups=[g.group_name for g in groups],
+        user_project_id=session_data.get('user_project_id'),
+        groups=groups,
         permissions=permissions,
-        available_projects=available_projects
+        available_projects=available_projects,
+        user_type=user_type,
+        assigned_project_id=session_data.get('assigned_project_id')
     ) 

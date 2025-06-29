@@ -1,6 +1,6 @@
 # Authentication API
 
-Complete authentication endpoint documentation for the Group-Based Multi-Project Authentication system.
+Complete authentication endpoint documentation for the **3-Tier User Type Multi-Project Authentication** system.
 
 ## 🔐 Overview
 
@@ -10,12 +10,20 @@ All authenticated endpoints require a session token in the Authorization header:
 Authorization: Bearer YOUR_SESSION_TOKEN
 ```
 
+## 🏗️ 3-Tier User Type System
+
+The authentication system supports three distinct user types:
+
+1. **ROOT USERS**: Super administrators with unrestricted global access
+2. **ADMIN USERS**: Project-specific administrators limited to their assigned project  
+3. **CONSUMER USERS**: End users with RBAC-based permissions through groups
+
 ## 🎯 Core Authentication Flow
 
 ```
-1. Login → Get session token with group context
-2. Use token → Access group-based resources  
-3. Switch projects → Get new token for different project
+1. Login → Get session token with user type & group context
+2. Use token → Access resources based on user type privileges
+3. Switch projects → Get new token for different project (if allowed by user type)
 4. Logout → Invalidate session
 ```
 
@@ -49,6 +57,7 @@ curl -X POST "http://localhost:8000/auth/login" \
     "user_hash": "ghi789...",
     "username": "admin",
     "email": "admin@example.com",
+    "user_type": "root",
     "user_groups": ["administrators"]
   },
   "project": {
@@ -103,6 +112,7 @@ curl -X POST "http://localhost:8000/auth/register" \
     "user_hash": "new_user_hash...",
     "username": "john_doe",
     "email": "john@example.com",
+    "user_type": "consumer",
     "user_groups": []
   },
   "project": {
@@ -135,6 +145,7 @@ curl -X GET "http://localhost:8000/auth/validate" \
     "user_hash": "ghi789...",
     "username": "admin",
     "email": "admin@example.com",
+    "user_type": "root",
     "user_groups": ["administrators"]
   },
   "project": {
