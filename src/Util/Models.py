@@ -650,7 +650,7 @@ class LoginRequest(BaseModelConfig):
     """Login request model"""
     username: str
     password: str
-    project_hash: str
+    project_hash: Optional[str] = None  # Optional for root users
 
 
 class RegisterRequest(BaseModelConfig):

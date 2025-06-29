@@ -232,7 +232,7 @@ async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(securi
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
         
-        # Check if user has admin permissions
+        # Check if user has admin permissions (support global root sessions)
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to clear cache")

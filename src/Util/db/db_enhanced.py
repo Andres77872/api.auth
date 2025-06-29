@@ -84,20 +84,65 @@ def check_admin_project_access(user_id: int, project_id: int) -> bool:
 
 # =================== ENHANCED AUTHENTICATION WITH USER TYPES ===================
 
-def enhanced_login(username: str, password: str, project_hash: str) -> Optional[EnhancedUserLogin]:
+def enhanced_login(username: str, password: str, project_hash: str = None) -> Optional[EnhancedUserLogin]:
     """Enhanced login with 3-tier user type support"""
     # Get user by credentials
     user = get_user_by_credentials(username, password)
     if not user:
         return None
     
+    # Get user type for permission checking
+    user_type = get_user_type(user.id)
+    
+    # Handle root users who may not have a project_hash
+    if user_type == "root":
+        if not project_hash:
+            # Root user global login - no specific project
+            session_token = secrets.token_hex(32).upper()
+            session_length = 60 * 60 * 24 * 7  # 7 days for root users
+            
+            # Build global session data for root user
+            session_data = {
+                'user_id': user.id,
+                'user_hash': user.user_hash,
+                'user_type': 'root',
+                'permissions': ['admin', 'global_admin', 'unrestricted_access'],
+                'groups': ['root_users'],
+                'is_global_session': True,
+                'project_id': None,
+                'project_hash': None
+            }
+            
+            # Store session in cache and Redis
+            cache_manager.set_session(session_token, session_data)
+            client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
+            
+            return EnhancedUserLogin(
+                user_hash=user.user_hash,
+                project_hash="",  # Empty for global root session
+                project_name="Global Root Access",
+                user_project_hash="",
+                session_token=session_token,
+                session_length=session_length,
+                user_id=user.id,
+                project_id=None,  # No specific project
+                user_project_id=None,
+                groups=['root_users'],
+                permissions=['admin', 'global_admin', 'unrestricted_access'],
+                available_projects=[],  # Root users can access all projects
+                user_type='root',
+                assigned_project_id=None
+            )
+        # If root user provided project_hash, continue with normal flow
+    
+    # For non-root users or root users with project context, project_hash is required
+    if not project_hash:
+        return None
+    
     # Get project
     project = get_project_by_hash(project_hash)
     if not project:
         return None
-    
-    # Get user type for permission checking
-    user_type = get_user_type(user.id)
     
     # Check access based on user type
     if user_type == "root":
@@ -132,7 +177,7 @@ def enhanced_login(username: str, password: str, project_hash: str) -> Optional[
     if user_type == "root":
         session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
         session_data['groups'] = ['root_users']
-        available_projects = [proj for proj, _ in get_user_projects(user.id)] if get_user_projects(user.id) else []
+        available_projects = []  # Root users can access all projects
     elif user_type == "admin":
         session_data['assigned_project_id'] = get_admin_assigned_project(user.id)
         session_data['permissions'] = ['admin', 'project_admin', 'manage_users', 'manage_groups', 'manage_permissions']
@@ -212,12 +257,35 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         # Cache the session data for future requests
         cache_manager.set_session(session_token, session_data)
     
-    # Get fresh project data
-    project = get_project_by_hash(session_data['project_hash'])
+    user_type = session_data.get('user_type', 'consumer')
+    
+    # Handle global root sessions (no project context)
+    if user_type == 'root' and session_data.get('is_global_session'):
+        return EnhancedUserLogin(
+            user_hash=session_data['user_hash'],
+            project_hash="",  # Empty for global session
+            project_name="Global Root Access",
+            user_project_hash="",
+            session_token=session_token,
+            session_length=0,  # We don't track remaining time
+            user_id=session_data['user_id'],
+            project_id=None,  # No specific project
+            user_project_id=None,
+            groups=['root_users'],
+            permissions=['admin', 'global_admin', 'unrestricted_access'],
+            available_projects=[],  # Root users can access all projects
+            user_type='root',
+            assigned_project_id=None
+        )
+    
+    # For sessions with project context, get fresh project data
+    project_hash = session_data.get('project_hash')
+    if not project_hash:
+        return None
+        
+    project = get_project_by_hash(project_hash)
     if not project:
         return None
-    
-    user_type = session_data.get('user_type', 'consumer')
     
     # Validate access based on user type
     if user_type == "root":
@@ -278,16 +346,23 @@ def create_root_session(username: str, password: str) -> Optional[dict]:
         'user_type': 'root',
         'permissions': ['admin', 'global_admin', 'unrestricted_access'],
         'groups': ['root_users'],
-        'is_global_session': True
+        'is_global_session': True,
+        'project_id': None,
+        'project_hash': None
     }
     
+    # Store in both cache and Redis
+    cache_manager.set_session(session_token, session_data)
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
     
     return {
         'session_token': session_token,
         'user_type': 'root',
         'permissions': session_data['permissions'],
-        'expires_in': session_length
+        'expires_in': session_length,
+        'user_hash': user.user_hash,
+        'username': user.username,
+        'email': user.email
     }
 
 

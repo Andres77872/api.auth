@@ -42,6 +42,9 @@ async def login(
     """
     Authenticate user and return session token with group context.
     
+    For root users: project_hash is optional (they have global access)
+    For other users: project_hash is required
+    
     Accepts both JSON and form data:
     - JSON: Send LoginRequest object directly
     - Form: Send individual fields as form data
@@ -50,7 +53,7 @@ async def login(
         login_data: Login request data (JSON)
         username: User's username or email (form)
         password: User's password (form)
-        project_hash: Project to authenticate against (form)
+        project_hash: Project to authenticate against (form) - optional for root users
         
     Returns:
         User session data with group information and accessible projects
@@ -66,17 +69,66 @@ async def login(
             auth_password = password
             auth_project_hash = project_hash
         
-        if not auth_username or not auth_password or not auth_project_hash:
-            raise HTTPException(status_code=400, detail="Username, password, and project_hash are required")
+        if not auth_username or not auth_password:
+            raise HTTPException(status_code=400, detail="Username and password are required")
         
-        logger.info(f"Login attempt for user: {auth_username} in project: {auth_project_hash}")
+        logger.info(f"Login attempt for user: {auth_username}")
         
-        # Authenticate user with group-based login
+        # First, check if user exists and get their type
+        from src.Util.db import get_user_by_credentials, get_user_type, is_root_user
+        
+        # Verify credentials without project context first
+        user_check = get_user_by_credentials(auth_username, auth_password)
+        if not user_check:
+            logger.warning(f"Failed login attempt for user: {auth_username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        user_type = get_user_type(user_check.id)
+        
+        # For root users, project_hash is optional
+        if user_type == "root":
+            if not auth_project_hash:
+                # Root user login without project - create a global session
+                logger.info(f"Root user global login: {auth_username}")
+                
+                # Create a special global session for root users
+                from src.Util.db.db_enhanced import create_root_session
+                root_session = create_root_session(auth_username, auth_password)
+                
+                if not root_session:
+                    raise HTTPException(status_code=401, detail="Root session creation failed")
+                
+                user_info = UserInfo(
+                    user_hash=user_check.user_hash,
+                    username=user_check.username,
+                    email=user_check.email,
+                    user_type="root"
+                )
+                
+                # Root users have global access - no specific project
+                return LoginResponse(
+                    success=True,
+                    message="Root user login successful - global access granted",
+                    session_token=root_session['session_token'],
+                    user=user_info,
+                    project=None,  # No specific project for global root access
+                    accessible_projects=[],  # Root users can access all projects
+                    expires_at=None
+                )
+            else:
+                # Root user wants to login to a specific project
+                logger.info(f"Root user project-specific login: {auth_username} in project: {auth_project_hash}")
+        else:
+            # Non-root users must provide project_hash
+            if not auth_project_hash:
+                raise HTTPException(status_code=400, detail="Project hash is required for non-root users")
+        
+        # Standard login flow for non-root users or root users with project context
         login_result = enhanced_login(auth_username, auth_password, auth_project_hash)
         
         if not login_result:
-            logger.warning(f"Failed login attempt for user: {auth_username}")
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+            logger.warning(f"Failed enhanced login for user: {auth_username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials or project access denied")
         
         logger.info(f"Successful login for user: {auth_username}")
         
@@ -208,6 +260,7 @@ async def register(
 async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depends(security)) -> ValidateSessionResponse:
     """
     Validate session token and return user information with group context.
+    Supports global root sessions without project context.
     
     Returns:
         Current user and session information
@@ -228,14 +281,26 @@ async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depe
             user_type=getattr(session_data, 'user_type', 'consumer')
         )
         
-        project_info = ProjectInfo(
-            project_hash=session_data.project_hash,
-            project_name=session_data.project_name
-        )
+        # Handle global root sessions (no specific project)
+        if (session_data.user_type == 'root' and 
+            session_data.project_hash == "" and 
+            session_data.project_name == "Global Root Access"):
+            project_info = ProjectInfo(
+                project_hash="",
+                project_name="Global Root Access",
+                project_description="Unrestricted global access for root user"
+            )
+        else:
+            # Regular project-based session
+            project_info = ProjectInfo(
+                project_hash=session_data.project_hash,
+                project_name=session_data.project_name
+            )
         
         session_info = {
             "expires_at": getattr(session_data, 'expires_at', None),
-            "created_at": getattr(session_data, 'created_at', None)
+            "created_at": getattr(session_data, 'created_at', None),
+            "is_global_session": session_data.user_type == 'root' and session_data.project_hash == ""
         }
         
         return ValidateSessionResponse(

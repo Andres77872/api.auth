@@ -20,6 +20,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
     """
     Enhanced token validation method with cache-first approach.
     Validates session tokens and returns user information with project context.
+    Supports global root sessions without project context.
     
     :param request: Request containing authentication headers
     :return: UserLogin model with session data
@@ -32,20 +33,44 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             # Validate session token using enhanced system (cache-first)
             enhanced_user = validate_session(user_token)
             
-            if enhanced_user and enhanced_user.project_hash == collection_token:
-                # Convert to legacy UserLogin format for compatibility
-                return UserLogin(
-                    user_session=enhanced_user.session_token,
-                    user_session_length=enhanced_user.session_length,
-                    user_hash=enhanced_user.user_hash,
-                    user_collection=enhanced_user.project_hash,
-                    user_id=enhanced_user.user_id,
-                    project_id=enhanced_user.project_id,
-                    user_project_id=enhanced_user.user_project_id,
-                    groups=enhanced_user.groups
-                )
+            if enhanced_user:
+                # Handle root users with global sessions (no project context required)
+                if (enhanced_user.user_type == 'root' and 
+                    enhanced_user.project_hash == "" and 
+                    enhanced_user.project_name == "Global Root Access"):
+                    # Root user with global session - collection token not required
+                    return UserLogin(
+                        user_session=enhanced_user.session_token,
+                        user_session_length=enhanced_user.session_length,
+                        user_hash=enhanced_user.user_hash,
+                        user_collection="",  # Empty for global root session
+                        user_id=enhanced_user.user_id,
+                        project_id=None,  # No specific project
+                        user_project_id=enhanced_user.user_project_id,
+                        groups=enhanced_user.groups,
+                        user_type=enhanced_user.user_type,
+                        assigned_project_id=enhanced_user.assigned_project_id
+                    )
+                
+                # For regular project-based sessions, validate project access
+                if enhanced_user.project_hash == collection_token:
+                    # Convert to legacy UserLogin format for compatibility
+                    return UserLogin(
+                        user_session=enhanced_user.session_token,
+                        user_session_length=enhanced_user.session_length,
+                        user_hash=enhanced_user.user_hash,
+                        user_collection=enhanced_user.project_hash,
+                        user_id=enhanced_user.user_id,
+                        project_id=enhanced_user.project_id,
+                        user_project_id=enhanced_user.user_project_id,
+                        groups=enhanced_user.groups,
+                        user_type=enhanced_user.user_type,
+                        assigned_project_id=enhanced_user.assigned_project_id
+                    )
+                else:
+                    raise HTTPException(status_code=401, detail='Invalid token or project access denied')
             else:
-                raise HTTPException(status_code=401, detail='Invalid token or project access denied')
+                raise HTTPException(status_code=401, detail='Invalid session token')
             
         except HTTPException:
             # Re-raise HTTP exceptions (they already have proper error messages)
