@@ -110,6 +110,25 @@ LEFT JOIN projects p ON u.user_type = 'root' AND p.is_active = 1
 WHERE u.is_active = 1
 GROUP BY u.id, u.username, u.user_type;
 
+-- View for active user sessions
+CREATE OR REPLACE VIEW v_active_user_sessions AS
+SELECT 
+    u.id as user_id,
+    u.username,
+    u.user_type,
+    us.session_token,
+    us.expires_at,
+    up.project_id,
+    p.project_name
+FROM users u
+JOIN user_projects up ON u.id = up.user_id
+JOIN user_sessions us ON us.user_project_id = up.id
+JOIN projects p ON up.project_id = p.id
+WHERE u.is_active = 1 
+  AND up.is_active = 1 
+  AND us.is_active = 1 
+  AND us.expires_at > NOW();
+
 -- =================== STORED PROCEDURES FOR COMMON OPERATIONS ===================
 
 DELIMITER $$
@@ -183,22 +202,67 @@ BEGIN
     END IF;
 END$$
 
-DELIMITER ;
+-- Procedure to validate user access efficiently
+CREATE PROCEDURE sp_validate_user_access(
+    IN p_user_id INT,
+    IN p_project_id INT,
+    OUT p_has_access BOOLEAN,
+    OUT p_access_type VARCHAR(20)
+)
+BEGIN
+    DECLARE v_user_type VARCHAR(20);
+    
+    -- Get user type
+    SELECT user_type INTO v_user_type
+    FROM users
+    WHERE id = p_user_id AND is_active = 1;
+    
+    IF v_user_type = 'root' THEN
+        SET p_has_access = TRUE;
+        SET p_access_type = 'root_access';
+    ELSEIF v_user_type = 'admin' THEN
+        SELECT COUNT(*) > 0 INTO p_has_access
+        FROM admin_project_assignments
+        WHERE user_id = p_user_id 
+          AND project_id = p_project_id 
+          AND is_active = 1;
+        SET p_access_type = IF(p_has_access, 'admin_access', 'no_access');
+    ELSE -- consumer
+        SELECT COUNT(*) > 0 INTO p_has_access
+        FROM user_projects
+        WHERE user_id = p_user_id 
+          AND project_id = p_project_id 
+          AND is_active = 1;
+        SET p_access_type = IF(p_has_access, 'consumer_access', 'no_access');
+    END IF;
+END$$
 
--- =================== TABLE PARTITIONING FOR LARGE TABLES ===================
-
--- Partition audit log by month (if supported by your MySQL version)
--- ALTER TABLE permission_audit_log
--- PARTITION BY RANGE (YEAR(action_timestamp) * 100 + MONTH(action_timestamp)) (
---     PARTITION p202401 VALUES LESS THAN (202402),
---     PARTITION p202402 VALUES LESS THAN (202403),
---     -- Add more partitions as needed
---     PARTITION p_future VALUES LESS THAN MAXVALUE
--- );
-
--- =================== MAINTENANCE PROCEDURES ===================
-
-DELIMITER $$
+-- Procedure to clean up orphaned records
+CREATE PROCEDURE sp_cleanup_orphaned_records()
+BEGIN
+    -- Remove user_project_groups entries for deleted user_projects
+    UPDATE user_project_groups upg
+    LEFT JOIN user_projects up ON upg.user_project_id = up.id
+    SET upg.is_active = 0, upg.removed_at = NOW()
+    WHERE up.id IS NULL OR up.is_active = 0;
+    
+    -- Remove user_group_members for deleted users
+    UPDATE user_group_members ugm
+    LEFT JOIN users u ON ugm.user_id = u.id
+    SET ugm.is_active = 0, ugm.removed_at = NOW()
+    WHERE u.id IS NULL OR u.is_active = 0;
+    
+    -- Remove permission assignments for deleted users
+    UPDATE user_project_permission_groups uppg
+    LEFT JOIN users u ON uppg.user_id = u.id
+    SET uppg.is_active = 0, uppg.removed_at = NOW()
+    WHERE u.id IS NULL OR u.is_active = 0;
+    
+    -- Report cleanup results
+    SELECT 
+        ROW_COUNT() as cleaned_records,
+        NOW() as cleanup_timestamp;
+END$$
 
 -- Clean up expired sessions
 CREATE PROCEDURE sp_cleanup_expired_sessions()
@@ -206,6 +270,8 @@ BEGIN
     UPDATE user_sessions 
     SET is_active = 0 
     WHERE expires_at < NOW() AND is_active = 1;
+    
+    SELECT ROW_COUNT() as cleaned_sessions;
 END$$
 
 -- Archive old audit logs
@@ -253,38 +319,104 @@ BEGIN
     ORDER BY count DESC;
 END$$
 
+-- Clean up expired permission cache entries
+CREATE PROCEDURE sp_cleanup_permission_cache()
+BEGIN
+    DELETE FROM permission_cache 
+    WHERE expires_at < NOW();
+    
+    SELECT ROW_COUNT() as cleaned_cache_entries;
+END$$
+
 DELIMITER ;
 
--- =================== ANALYSIS TABLES ===================
+-- =================== DATA CONSISTENCY CHECKS ===================
 
--- Table for caching expensive permission calculations
-CREATE TABLE IF NOT EXISTS permission_cache (
-    user_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
-    permission_name VARCHAR(100) NOT NULL,
-    has_permission BOOLEAN NOT NULL,
-    cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME NOT NULL,
-    PRIMARY KEY (user_id, project_id, permission_name),
-    INDEX idx_expires (expires_at),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Create procedure to check system health
+DELIMITER $$
+CREATE PROCEDURE sp_system_health_check()
+BEGIN
+    -- Check for users without proper type
+    SELECT COUNT(*) as users_without_valid_type,
+           'Users with invalid user_type' as issue_description
+    FROM users
+    WHERE user_type NOT IN ('root', 'admin', 'consumer')
+       OR user_type IS NULL;
+
+    -- Check for orphaned sessions
+    SELECT COUNT(*) as orphaned_sessions,
+           'User sessions without valid user_projects' as issue_description
+    FROM user_sessions us
+    LEFT JOIN user_projects up ON us.user_project_id = up.id
+    WHERE up.id IS NULL OR up.is_active = 0;
+
+    -- Check for admin users without project assignments
+    SELECT COUNT(*) as admins_without_assignments,
+           'Admin users without active project assignments' as issue_description
+    FROM users u
+    LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.is_active = 1
+    WHERE u.user_type = 'admin'
+      AND u.is_active = 1
+      AND apa.id IS NULL
+      AND u.assigned_project_id IS NOT NULL;
+      
+    -- Check for expired sessions that are still marked active
+    SELECT COUNT(*) as expired_active_sessions,
+           'Expired sessions still marked as active' as issue_description
+    FROM user_sessions
+    WHERE is_active = 1 AND expires_at < NOW();
+    
+    -- Check for permission cache entries that should be cleaned up
+    SELECT COUNT(*) as expired_cache_entries,
+           'Expired permission cache entries' as issue_description
+    FROM permission_cache
+    WHERE expires_at < NOW();
+END$$
+DELIMITER ;
 
 -- =================== PERFORMANCE MONITORING ===================
 
--- Enable slow query log (requires SUPER privilege)
--- SET GLOBAL slow_query_log = 'ON';
--- SET GLOBAL long_query_time = 2;
--- SET GLOBAL slow_query_log_file = '/var/log/mysql/slow-query.log';
+-- Create procedure for performance statistics
+DELIMITER $$
+CREATE PROCEDURE sp_performance_stats()
+BEGIN
+    -- Table sizes
+    SELECT 
+        'users' as table_name,
+        COUNT(*) as total_records,
+        COUNT(CASE WHEN is_active = 1 THEN 1 END) as active_records
+    FROM users
+    UNION ALL
+    SELECT 
+        'projects' as table_name,
+        COUNT(*) as total_records,
+        COUNT(CASE WHEN is_active = 1 THEN 1 END) as active_records
+    FROM projects
+    UNION ALL
+    SELECT 
+        'user_sessions' as table_name,
+        COUNT(*) as total_records,
+        COUNT(CASE WHEN is_active = 1 AND expires_at > NOW() THEN 1 END) as active_records
+    FROM user_sessions
+    UNION ALL
+    SELECT 
+        'activity_logs' as table_name,
+        COUNT(*) as total_records,
+        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 END) as recent_records
+    FROM activity_logs;
+    
+    -- Index usage statistics (MySQL 5.7+)
+    SELECT 
+        TABLE_NAME,
+        INDEX_NAME,
+        SEQ_IN_INDEX,
+        COLUMN_NAME,
+        CARDINALITY
+    FROM INFORMATION_SCHEMA.STATISTICS 
+    WHERE TABLE_SCHEMA = 'magic_auth'
+    ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;
+END$$
+DELIMITER ;
 
--- Example query to identify missing indexes
--- SELECT 
---     tables.table_schema,
---     tables.table_name,
---     tables.table_rows,
---     round(data_length / 1024 / 1024, 2) as data_mb,
---     round(index_length / 1024 / 1024, 2) as index_mb
--- FROM information_schema.tables
--- WHERE table_schema = 'magic_auth'
--- ORDER BY data_length DESC; 
+-- =================== SUMMARY ===================
+SELECT 'Performance optimization script completed successfully' as status; 

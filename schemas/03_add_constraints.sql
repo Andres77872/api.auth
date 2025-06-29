@@ -152,6 +152,13 @@ ALTER TABLE activity_logs
     ADD CONSTRAINT fk_activity_logs_target_user FOREIGN KEY (target_user_id) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- =================== PERFORMANCE OPTIMIZATION TABLE CONSTRAINTS ===================
+ALTER TABLE permission_cache
+    ADD CONSTRAINT fk_permission_cache_user FOREIGN KEY (user_id) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_permission_cache_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
+
 -- =================== ADDITIONAL CONSTRAINTS ===================
 -- Ensure admin users have at least one project assignment
 DELIMITER $$
@@ -168,6 +175,38 @@ BEGIN
             SIGNAL SQLSTATE '45000' 
             SET MESSAGE_TEXT = 'Admin users must have at least one project assignment';
         END IF;
+    END IF;
+END$$
+DELIMITER ;
+
+-- =================== DATA INTEGRITY CONSTRAINTS ===================
+
+-- Ensure user_type enum values are valid
+ALTER TABLE users ADD CONSTRAINT chk_user_type 
+    CHECK (user_type IN ('root', 'admin', 'consumer'));
+
+-- Ensure session tokens expire in the future when created
+DELIMITER $$
+CREATE TRIGGER tr_validate_session_expiry
+BEFORE INSERT ON user_sessions
+FOR EACH ROW
+BEGIN
+    IF NEW.expires_at <= NOW() THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Session expiry must be in the future';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure permission cache entries expire in the future
+DELIMITER $$
+CREATE TRIGGER tr_validate_permission_cache_expiry
+BEFORE INSERT ON permission_cache
+FOR EACH ROW
+BEGIN
+    IF NEW.expires_at <= NOW() THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Permission cache expiry must be in the future';
     END IF;
 END$$
 DELIMITER ; 

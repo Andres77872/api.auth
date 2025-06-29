@@ -435,23 +435,23 @@ def count_active_users() -> int:
     try:
         with get_connection() as con:
             cur = con.cursor()
+            # Since we don't have last_login field, count users with active sessions
             cur.execute("""
-                SELECT COUNT(DISTINCT u.user_id) 
+                SELECT COUNT(DISTINCT u.id) 
                 FROM users u
                 WHERE u.is_active = 1 
-                AND (
-                    u.last_login >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-                    OR EXISTS (
-                        SELECT 1 FROM user_sessions s 
-                        WHERE s.user_id = u.user_id 
-                        AND s.expires_at > NOW()
-                    )
+                AND EXISTS (
+                    SELECT 1 FROM user_sessions us
+                    JOIN user_projects up ON us.user_project_id = up.id 
+                    WHERE up.user_id = u.id 
+                    AND us.is_active = 1
+                    AND us.expires_at > NOW()
                 )
             """)
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception:
-        # Fallback: assume all users are active if we can't determine
+        # Fallback: assume all active users if we can't determine
         return count_users()
 
 
@@ -482,15 +482,9 @@ def count_active_sessions() -> int:
 def get_recent_logins_count(days: int) -> int:
     """Get count of recent logins in the last N days"""
     try:
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.execute("""
-                SELECT COUNT(*) FROM users 
-                WHERE last_login >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                AND is_active = 1
-            """, [days])
-            result = cur.fetchone()
-            return result[0] if result else 0
+        # Use activity logs for login tracking
+        from src.Util.activity_logger import count_activity_logs
+        return count_activity_logs(activity_type='user_login', days=days)
     except Exception:
         # Fallback: estimate based on active sessions
         return min(count_active_sessions(), count_users())
