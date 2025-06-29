@@ -26,7 +26,7 @@ connectionDB = {
     "host": ip,
     "user": "root",
     "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": "magic_auth_enhanced"
+    "database": "magic-auth"
 }
 
 

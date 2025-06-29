@@ -17,45 +17,21 @@ Welcome to the comprehensive documentation for the Group-Based Multi-Project Aut
 |----------|---------|--------------|
 | **[Quick Start](quick-start.md)** | Get the system running quickly | 15 min |
 | **[Setup Guide](setup-guide.md)** | Complete installation guide | 45 min |
-| **[Integration Guide](integration/guide.md)** | Integrate with existing systems | 30 min |
 
 ### 📡 API Documentation
 | Document | Purpose | Best For |
 |----------|---------|----------|
 | **[Authentication API](api/authentication.md)** | Login, logout, sessions | Frontend developers |
-| **[User Management API](api/user-management.md)** | User profiles, access | User management |
 | **[Project Management API](api/project-management.md)** | Project CRUD operations | Project managers |
 | **[Admin API](api/admin.md)** | Group management, assignments | System administrators |
 | **[System API](api/system.md)** | Health, monitoring endpoints | DevOps engineers |
 | **[Errors & Responses](api/errors-and-responses.md)** | Error handling reference | All developers |
 
-### 🏗️ System Architecture
+### 🏗️ System Architecture & Database
 | Document | Purpose | Best For |
 |----------|---------|----------|
-| **[Architecture Overview](architecture/overview.md)** | High-level system design | Technical leads |
-| **[Group-Based Design](architecture/groups.md)** | Group system specifics | System designers |
-| **[Security Architecture](architecture/security.md)** | Security model details | Security engineers |
-| **[Performance & Scaling](architecture/performance.md)** | Scalability considerations | DevOps engineers |
-
-### 🗄️ Database Documentation
-| Document | Purpose | Best For |
-|----------|---------|----------|
-| **[Database Overview](database/overview.md)** | Database design concepts | Database administrators |
-| **[Complete Schema](database/schema.md)** | Full table reference | Developers |
-| **[Group System Design](database/groups.md)** | Group-based relationships | System architects |
-
-### 🚀 Operations & Deployment
-| Document | Purpose | Best For |
-|----------|---------|----------|
-| **[Deployment Guide](operations/deployment.md)** | Production deployment | DevOps engineers |
-| **[Migration Guide](operations/migration.md)** | System upgrades | Operations teams |
-| **[Monitoring Guide](operations/monitoring.md)** | System monitoring | Site reliability |
-
-### 👨‍💻 Development
-| Document | Purpose | Best For |
-|----------|---------|----------|
-| **[Development Guide](development/guide.md)** | Contributing to the system | Contributors |
-| **[Testing Guide](development/testing.md)** | Running tests | Developers |
+| **[Architecture Guide](architecture.md)** | High-level system design | Technical leads |
+| **[Database Schema](database-schema.md)** | Complete database reference | Database administrators |
 
 ---
 
@@ -65,31 +41,26 @@ Welcome to the comprehensive documentation for the Group-Based Multi-Project Aut
 1. Start with [Quick Start](quick-start.md)
 2. Read [Authentication API](api/authentication.md)
 3. Review [Error Handling](api/errors-and-responses.md)
-4. Use [Integration Guide](integration/guide.md)
 
 ### 🔧 I'm a **Backend Developer**
-1. Review [Architecture Overview](architecture/overview.md)
-2. Study [Database Schema](database/schema.md)
-3. Follow [Development Guide](development/guide.md)
-4. Test with [Testing Guide](development/testing.md)
+1. Review [Architecture Guide](architecture.md)
+2. Study [Database Schema](database-schema.md)
+3. Follow [Setup Guide](setup-guide.md)
 
 ### 👑 I'm a **System Administrator**
 1. Follow [Setup Guide](setup-guide.md)
 2. Learn [Admin API](api/admin.md)
-3. Configure [Deployment](operations/deployment.md)
-4. Setup [Monitoring](operations/monitoring.md)
+3. Review [System API](api/system.md)
 
 ### 🏢 I'm **Operations/DevOps**
-1. Review [Deployment Guide](operations/deployment.md)
-2. Study [Performance Architecture](architecture/performance.md)
-3. Setup [Monitoring](operations/monitoring.md)
-4. Plan [Migration Strategy](operations/migration.md)
+1. Review [Setup Guide](setup-guide.md)
+2. Study [Architecture Guide](architecture.md)
+3. Monitor with [System API](api/system.md)
 
 ### 🔒 I'm a **Security Engineer**
-1. Study [Security Architecture](architecture/security.md)
-2. Review [Group-Based Design](architecture/groups.md)
-3. Analyze [Database Security](database/overview.md)
-4. Test [Authentication Flow](api/authentication.md)
+1. Study [Architecture Guide](architecture.md)
+2. Analyze [Database Schema](database-schema.md)
+3. Test [Authentication API](api/authentication.md)
 
 ---
 
@@ -143,10 +114,8 @@ Users → User Groups → Project Access → Project Groups → Permissions
 |----------|----------------|
 | How do I install the system? | [Setup Guide](setup-guide.md) |
 | How do I create user groups? | [Admin API](api/admin.md) |
-| How do I integrate with my app? | [Integration Guide](integration/guide.md) |
-| How do permissions work? | [Group-Based Design](architecture/groups.md) |
-| How do I deploy to production? | [Deployment Guide](operations/deployment.md) |
-| How do I monitor the system? | [Monitoring Guide](operations/monitoring.md) |
+| How do permissions work? | [Architecture Guide](architecture.md) |
+| How do I monitor the system? | [System API](api/system.md) |
 
 ### Troubleshooting Priority
 1. Check relevant troubleshooting section in each guide
@@ -173,7 +142,7 @@ Users → User Groups → Project Access → Project Groups → Permissions
 - **Comprehensive Documentation**: Every endpoint documented with examples
 - **Multiple SDKs**: Python and JavaScript examples included
 - **Testing Tools**: Built-in health checks and validation
-- **Migration Support**: Tools to upgrade from legacy systems
+- **Clean API Design**: Consistent, predictable endpoints
 
 ---
 
