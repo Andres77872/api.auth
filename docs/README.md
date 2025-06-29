@@ -25,6 +25,7 @@ Welcome to the comprehensive documentation for the **3-Tier User Type Multi-Proj
 | **[User Type Management API](api/user-type-management.md)** | 3-tier user type system | System administrators |
 | **[Project Management API](api/project-management.md)** | Project CRUD operations | Project managers |
 | **[Admin API](api/admin.md)** | Group management, assignments | System administrators |
+| **[RBAC Management API](api/rbac-management.md)** | Project-level RBAC management | System administrators |
 | **[System API](api/system.md)** | Health, monitoring endpoints | DevOps engineers |
 | **[Errors & Responses](api/errors-and-responses.md)** | Error handling reference | All developers |
 
@@ -118,6 +119,7 @@ CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Group
 |----------|----------------|
 | How do I install the system? | [Setup Guide](setup-guide.md) |
 | How do I create user groups? | [Admin API](api/admin.md) |
+| How does RBAC work? | [RBAC Management API](api/rbac-management.md) |
 | How do permissions work? | [Architecture Guide](architecture.md) |
 | How do I monitor the system? | [System API](api/system.md) |
 

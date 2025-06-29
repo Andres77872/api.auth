@@ -188,10 +188,19 @@ curl -X POST "http://localhost:8000/projects" \
   -d '{"project_name": "My First Project", "project_description": "A test project"}'
 ```
 
+### Initialize RBAC
+The system includes a project-specific RBAC module. After logging in, you can initialize it for your project.
+
+```bash
+# Initialize RBAC for your project (replace with your project hash and token)
+curl -X POST "http://localhost:8000/rbac/projects/YOUR_PROJECT_HASH/initialize" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
 ### Learn More
 - **[API Authentication](api/authentication.md)** - Authentication endpoints
 - **[Admin API](api/admin.md)** - Group management
-- **[Architecture Overview](architecture/overview.md)** - System design
+- **[Architecture Overview](architecture.md)** - System design
 
 ---
 

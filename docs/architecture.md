@@ -149,6 +149,7 @@ api.auth/
 │   │   ├── admin_user_groups.py   # Admin user group management
 │   │   ├── admin_project_groups.py # Admin project group management
 │   │   ├── system.py           # System information endpoints
+│   │   ├── rbac.py             # RBAC management for project-specific roles
 │   │   └── Access.py           # Legacy access control validation
 │   │
 │   └── Util/                   # Utility modules
@@ -217,6 +218,11 @@ Users ──┐
 - **Rationale**: Fast permission resolution and audit trail
 - **Implementation**: Redis sessions with group IDs and permissions
 
+#### 4. Project-Specific RBAC
+- **Decision**: Implement fine-grained RBAC within each project for consumer users
+- **Rationale**: Provides granular control over user actions inside a project, independent of the global group system
+- **Implementation**: `roles` and `permissions` tables scoped to each project, with user-role assignments
+
 ## 🔧 Component Architecture
 
 ### 1. API Layer (`src/routes/`)
@@ -274,6 +280,15 @@ The API layer is now organized into focused, modular route files:
   - Project group CRUD operations
   - Project-to-group assignments
   - Permission management
+
+#### rbac.py - Project-Specific RBAC Management
+- **Purpose**: Fine-grained, project-level role-based access control
+- **Endpoints**: `/rbac/*`
+- **Responsibilities**:
+  - Manage project-specific permissions and roles
+  - Assign users to roles within a project
+  - Check user permissions for specific actions
+  - Initialize RBAC with default roles and permissions
 
 #### system.py - System Information
 - **Purpose**: Health checks and system information

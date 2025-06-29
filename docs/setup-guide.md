@@ -300,6 +300,10 @@ print(f'Created project group: {full_access.group_name}')
 
 print('✓ Group-based CRUD operations working correctly')
 "
+
+# Test RBAC initialization (requires admin token and project hash)
+echo "NOTE: The following RBAC test requires a valid admin session token and project hash."
+# curl -X POST "http://localhost:8000/rbac/projects/YOUR_PROJECT_HASH/initialize" -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ## 🔒 Security Configuration

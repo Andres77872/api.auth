@@ -79,7 +79,7 @@ curl -X POST "http://localhost:8000/user-types/root" \
 
 ### POST `/user-types/admin`
 
-Create a new admin user assigned to a specific project.
+Create a new admin user assigned to one or multiple projects.
 
 **Authentication:** Root users only
 
@@ -89,7 +89,7 @@ Create a new admin user assigned to a specific project.
   "username": "project_admin",
   "password": "admin_password_123",
   "email": "admin@company.com",
-  "assigned_project_id": 5
+  "assigned_project_ids": [5, 8]
 }
 ```
 
@@ -102,7 +102,7 @@ curl -X POST "http://localhost:8000/user-types/admin" \
     "username": "project_admin",
     "password": "admin_password_123", 
     "email": "admin@company.com",
-    "assigned_project_id": 5
+    "assigned_project_ids": [5, 8]
   }'
 ```
 
@@ -110,14 +110,26 @@ curl -X POST "http://localhost:8000/user-types/admin" \
 ```json
 {
   "success": true,
-  "message": "Admin user 'project_admin' created and assigned to project 'API Project'",
+  "message": "Admin user 'project_admin' created and assigned to 2 project(s)",
   "user": {
     "user_hash": "ADMIN123...",
     "username": "project_admin",
     "email": "admin@company.com",
     "user_type": "admin",
-    "assigned_project_id": 5,
-    "assigned_project_name": "API Project",
+    "assigned_project_ids": [5, 8],
+    "assigned_projects": [
+      {
+        "project_id": 5,
+        "project_hash": "PROJ123...",
+        "project_name": "API Project"
+      },
+      {
+        "project_id": 8,
+        "project_hash": "PROJ456...",
+        "project_name": "Mobile App"
+      }
+    ],
+    "primary_project_id": 5,
     "created_at": "2024-01-01T12:00:00Z"
   }
 }
@@ -176,9 +188,21 @@ curl -X GET "http://localhost:8000/user-types/USER123.../info" \
     "user_hash": "ADMIN123...",
     "username": "project_admin",
     "user_type": "admin",
-    "assigned_project_id": 5,
-    "assigned_project_name": "API Project",
-    "assigned_project_hash": "PROJ123...",
+    "assigned_projects": [
+        {
+            "project_id": 5,
+            "project_hash": "PROJ123...",
+            "project_name": "API Project",
+            "assigned_at": "2024-01-01T12:00:00Z"
+        },
+        {
+            "project_id": 8,
+            "project_hash": "PROJ456...",
+            "project_name": "Mobile App",
+            "assigned_at": "2024-01-01T12:00:00Z"
+        }
+    ],
+    "total_assigned_projects": 2,
     "capabilities": [
       "project_admin",
       "manage_project_users",
@@ -277,6 +301,181 @@ curl -X PUT "http://localhost:8000/user-types/USER123.../type" \
 
 ---
 
+## 📂 Admin Multi-Project Management
+
+Manage project assignments for admin users.
+
+### GET `/user-types/admin/{user_hash}/projects`
+
+Get all project assignments for an admin user.
+
+**Authentication:** Root or Admin (admins can only view their own assignments)
+
+**Path Parameters:**
+- `user_hash`: Hash of the admin user
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
+  -H "Authorization: Bearer ROOT_USER_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "user": {
+    "user_hash": "ADMIN123...",
+    "username": "project_admin",
+    "user_type": "admin"
+  },
+  "project_assignments": [
+    {
+      "project_id": 5,
+      "project_hash": "PROJ123...",
+      "project_name": "API Project",
+      "assigned_at": "2024-01-01T12:00:00Z"
+    },
+    {
+      "project_id": 8,
+      "project_hash": "PROJ456...",
+      "project_name": "Mobile App",
+      "assigned_at": "2024-01-01T12:00:00Z"
+    }
+  ],
+  "summary": {
+    "total_projects": 2
+  }
+}
+```
+
+---
+
+### PUT `/user-types/admin/{user_hash}/projects`
+
+Set or replace all project assignments for an admin user.
+
+**Authentication:** Root users only
+
+**Path Parameters:**
+- `user_hash`: Hash of the admin user
+
+**Request Body** (JSON):
+```json
+{
+  "assigned_project_ids": [5, 10]
+}
+```
+
+**Example Request:**
+```bash
+curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
+  -H "Authorization: Bearer ROOT_USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"assigned_project_ids": [5, 10]}'
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Admin user 'project_admin' reassigned to 2 project(s)",
+  "assignment": {
+    "user_hash": "ADMIN123...",
+    "username": "project_admin",
+    "new_projects": [
+      {"project_id": 5, "project_hash": "PROJ123...", "project_name": "API Project"},
+      {"project_id": 10, "project_hash": "PROJ789...", "project_name": "Data Analytics"}
+    ],
+    "total_projects": 2
+  }
+}
+```
+
+---
+
+### POST `/user-types/admin/{user_hash}/projects/add`
+
+Add an admin user to an additional project.
+
+**Authentication:** Root users only
+
+**Path Parameters:**
+- `user_hash`: Hash of the admin user
+
+**Request Body** (JSON):
+```json
+{
+  "project_id": 12
+}
+```
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/user-types/admin/ADMIN123.../projects/add" \
+  -H "Authorization: Bearer ROOT_USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"project_id": 12}'
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Admin user 'project_admin' added to project 'New Website'",
+  "assignment": {
+    "user_hash": "ADMIN123...",
+    "username": "project_admin",
+    "added_project": {
+      "project_id": 12,
+      "project_hash": "PROJABC...",
+      "project_name": "New Website"
+    },
+    "total_projects": 3
+  }
+}
+```
+
+---
+
+### DELETE `/user-types/admin/{user_hash}/projects/{project_id}`
+
+Remove an admin user from a specific project.
+
+**Authentication:** Root users only
+
+**Path Parameters:**
+- `user_hash`: Hash of the admin user
+- `project_id`: ID of the project to remove assignment from
+
+**Example Request:**
+```bash
+curl -X DELETE "http://localhost:8000/user-types/admin/ADMIN123.../projects/8" \
+  -H "Authorization: Bearer ROOT_USER_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Admin user 'project_admin' removed from project 'Mobile App'",
+  "removal": {
+    "user_hash": "ADMIN123...",
+    "username": "project_admin",
+    "removed_project": {
+      "project_id": 8,
+      "project_hash": "PROJ456...",
+      "project_name": "Mobile App"
+    },
+    "remaining_projects": 2
+  }
+}
+```
+
+**Note:** An admin user must be assigned to at least one project. You cannot remove the last project assignment.
+
+---
+
 ## 👥 User Listing by Type
 
 ### GET `/user-types/users/{user_type}`
@@ -367,7 +566,7 @@ ADMIN_RESPONSE=$(curl -s -X POST "http://localhost:8000/user-types/admin" \
     "username": "test_admin",
     "password": "admin123",
     "email": "test_admin@company.com",
-    "assigned_project_id": 1
+    "assigned_project_ids": [1]
   }')
 
 echo "Admin Creation Response: $ADMIN_RESPONSE"
@@ -429,8 +628,8 @@ class UserTypeAPI:
         )
         return response.json()
     
-    def create_admin_user(self, username, password, email, assigned_project_id):
-        """Create a new admin user assigned to a project (root users only)"""
+    def create_admin_user(self, username, password, email, assigned_project_ids):
+        """Create a new admin user assigned to multiple projects (root users only)"""
         response = requests.post(
             f"{self.base_url}/user-types/admin",
             headers={**self.headers, "Content-Type": "application/json"},
@@ -438,7 +637,7 @@ class UserTypeAPI:
                 "username": username,
                 "password": password,
                 "email": email,
-                "assigned_project_id": assigned_project_id
+                "assigned_project_ids": assigned_project_ids
             }
         )
         return response.json()
@@ -481,7 +680,7 @@ admin_user = user_type_api.create_admin_user(
     "project_admin",
     "secure_password",
     "admin@company.com",
-    5  # project_id
+    [5, 8]  # project_ids
 )
 
 # Get user type info
@@ -524,7 +723,7 @@ class UserTypeAPI {
         return await response.json();
     }
     
-    async createAdminUser(username, password, email, assignedProjectId) {
+    async createAdminUser(username, password, email, assignedProjectIds) {
         const response = await fetch(`${this.baseUrl}/user-types/admin`, {
             method: 'POST',
             headers: this.headers,
@@ -532,7 +731,7 @@ class UserTypeAPI {
                 username,
                 password,
                 email,
-                assigned_project_id: assignedProjectId
+                assigned_project_ids: assignedProjectIds
             })
         });
         return await response.json();
@@ -576,7 +775,7 @@ const adminUser = await userTypeAPI.createAdminUser(
     'project_admin',
     'secure_password',
     'admin@company.com',
-    5  // project_id
+    [5, 8]  // project_ids
 );
 
 // Get user type info
