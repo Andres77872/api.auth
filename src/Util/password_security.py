@@ -12,9 +12,10 @@ Features:
 - Migration support for existing hashes
 """
 
-import secrets
 import hashlib
-from typing import Tuple, Optional
+import secrets
+from typing import Optional
+
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, HashingError
 
@@ -23,7 +24,7 @@ class PasswordManager:
     """
     Secure password management using Argon2id algorithm
     """
-    
+
     def __init__(self):
         """
         Initialize password hasher with secure parameters.
@@ -36,13 +37,13 @@ class PasswordManager:
         - salt_len: 16 (16 byte salt length)
         """
         self.hasher = PasswordHasher(
-            time_cost=3,          # Number of iterations
-            memory_cost=65536,    # Memory usage in KiB (64 MiB)
-            parallelism=1,        # Number of parallel threads
-            hash_len=32,          # Hash length in bytes
-            salt_len=16,          # Salt length in bytes
+            time_cost=3,  # Number of iterations
+            memory_cost=65536,  # Memory usage in KiB (64 MiB)
+            parallelism=1,  # Number of parallel threads
+            hash_len=32,  # Hash length in bytes
+            salt_len=16,  # Salt length in bytes
         )
-    
+
     def hash_password(self, password: str) -> str:
         """
         Hash a password using Argon2id with automatic salt generation.
@@ -60,7 +61,7 @@ class PasswordManager:
             return self.hasher.hash(password)
         except Exception as e:
             raise HashingError(f"Password hashing failed: {str(e)}")
-    
+
     def verify_password(self, password: str, hashed_password: str) -> bool:
         """
         Verify a password against its hash.
@@ -76,16 +77,16 @@ class PasswordManager:
             # Handle legacy SHA256 hashes during migration
             if self._is_legacy_hash(hashed_password):
                 return self._verify_legacy_hash(password, hashed_password)
-            
+
             # Verify Argon2 hash
             self.hasher.verify(hashed_password, password)
             return True
-            
+
         except (VerifyMismatchError, VerificationError):
             return False
         except Exception:
             return False
-    
+
     def needs_rehash(self, hashed_password: str) -> bool:
         """
         Check if a password hash needs to be updated.
@@ -104,14 +105,14 @@ class PasswordManager:
             # Legacy hashes always need rehashing
             if self._is_legacy_hash(hashed_password):
                 return True
-            
+
             # Check if Argon2 parameters need updating
             return self.hasher.check_needs_rehash(hashed_password)
-            
+
         except Exception:
             # If we can't parse the hash, it needs rehashing
             return True
-    
+
     def _is_legacy_hash(self, hashed_password: str) -> bool:
         """
         Check if a hash is a legacy SHA256 hash.
@@ -124,11 +125,11 @@ class PasswordManager:
         """
         # Legacy SHA256 hashes are 64 characters of hex (uppercase or lowercase)
         return (
-            isinstance(hashed_password, str) and
-            len(hashed_password) == 64 and
-            all(c in '0123456789ABCDEFabcdef' for c in hashed_password)
+                isinstance(hashed_password, str) and
+                len(hashed_password) == 64 and
+                all(c in '0123456789ABCDEFabcdef' for c in hashed_password)
         )
-    
+
     def _verify_legacy_hash(self, password: str, legacy_hash: str) -> bool:
         """
         Verify password against legacy SHA256 hash.
@@ -146,7 +147,7 @@ class PasswordManager:
             return secrets.compare_digest(computed_hash.lower(), legacy_hash.lower())
         except Exception:
             return False
-    
+
     def migrate_legacy_hash(self, password: str, legacy_hash: str) -> Optional[str]:
         """
         Migrate a legacy hash to Argon2 if password is correct.
@@ -219,4 +220,4 @@ def migrate_legacy_hash(password: str, legacy_hash: str) -> Optional[str]:
     Returns:
         New Argon2 hash if migration successful, None otherwise
     """
-    return password_manager.migrate_legacy_hash(password, legacy_hash) 
+    return password_manager.migrate_legacy_hash(password, legacy_hash)

@@ -19,28 +19,26 @@ import json
 import secrets
 from typing import Optional
 
+from src.Util.JWT_Security import JWTTokenHandler
+from src.Util.Models import EnhancedUserLogin, UserLogin
+from src.Util.cache_manager import cache_manager
+from src.Util.db.db_projects import (
+    # Project operations
+    get_project_by_hash,  # Re-export project functions
+)
 # Import specialized modules
 from src.Util.db.db_users import (
     # User operations with user type support
-    create_user, create_root_user, create_admin_user, create_consumer_user,
+    create_root_user, create_admin_user, create_consumer_user,
     get_user_by_credentials, check_username_email_available,
     get_user_type, get_admin_assigned_project,
     grant_user_project_access, get_user_projects, get_user_groups_in_project,
     get_user_permissions_in_project, get_session_data,
-    
+
     # Re-export user functions
     get_user_project_access
 )
 from src.Util.db_config import redis_client as client
-from src.Util.cache_manager import cache_manager
-from src.Util.JWT_Security import JWTTokenHandler
-
-from src.Util.db.db_projects import (
-    # Project operations  
-    get_project_by_hash,  # Re-export project functions
-)
-
-from src.Util.Models import EnhancedUserLogin, UserLogin
 
 
 # Re-export database connection for backward compatibility
@@ -91,24 +89,24 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
     user = get_user_by_credentials(username, password)
     if not user:
         return None
-    
+
     # Get user type for permission checking
     user_type = get_user_type(user.id)
-    
+
     # Handle root users who may not have a project_hash
     if user_type == "root":
         if not project_hash:
             # Root user global login - no specific project
             session_length = 60 * 60 * 24 * 7  # 7 days for root users
-            session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
-            
+            session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
+
             # Create JWT token for root user global session
             session_token = JWTTokenHandler.create_access_token(
                 session_id=session_id,
                 user_hash=user.user_hash,
                 collection="",  # Empty for global root session
             )
-            
+
             # Build global session data for root user
             session_data = {
                 'session_id': session_id,
@@ -121,11 +119,11 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
                 'project_id': None,
                 'project_hash': None
             }
-            
+
             # Store session in cache and Redis
             cache_manager.set_session(session_token, session_data)
             client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-            
+
             return EnhancedUserLogin(
                 user_hash=user.user_hash,
                 project_hash="",  # Empty for global root session
@@ -143,16 +141,16 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
                 assigned_project_id=None
             )
         # If root user provided project_hash, continue with normal flow
-    
+
     # For non-root users or root users with project context, project_hash is required
     if not project_hash:
         return None
-    
+
     # Get project
     project = get_project_by_hash(project_hash)
     if not project:
         return None
-    
+
     # Check access based on user type
     if user_type == "root":
         # Root users have access to all projects
@@ -168,18 +166,18 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
             return None
     else:
         return None
-    
+
     # Create session with user type context
     session_length = 60 * 60 * 24 * 3  # 3 days
-    session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
-    
+    session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
+
     # Create JWT token for project-based session
     session_token = JWTTokenHandler.create_access_token(
         session_id=session_id,
         user_hash=user.user_hash,
         collection=project.project_hash,
     )
-    
+
     # Build session data based on user type
     session_data = {
         'session_id': session_id,
@@ -189,7 +187,7 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         'project_hash': project.project_hash,
         'user_type': user_type
     }
-    
+
     # Add user type specific data
     if user_type == "root":
         session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
@@ -210,13 +208,13 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         session_data['groups'] = [g.group_name for g in groups]
         session_data['permissions'] = permissions
         available_projects = [proj for proj, _ in get_user_projects(user.id)]
-    
+
     # Store session in cache with 1-hour TTL
     cache_manager.set_session(session_token, session_data)
-    
+
     # Also store in legacy Redis format for backward compatibility
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-    
+
     return EnhancedUserLogin(
         user_hash=user.user_hash,
         project_hash=project.project_hash,
@@ -235,17 +233,18 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
     )
 
 
-def enhanced_register(username: str, password: str, email: str, project_hash: str, user_type: str = "consumer") -> Optional[EnhancedUserLogin]:
+def enhanced_register(username: str, password: str, email: str, project_hash: str, user_type: str = "consumer") -> \
+Optional[EnhancedUserLogin]:
     """Enhanced registration with 3-tier user type support"""
     # Check if username/email is available
     if not check_username_email_available(username) or (email and not check_username_email_available(email)):
         return None
-    
+
     # Get or validate project
     project = get_project_by_hash(project_hash)
     if not project:
         return None
-    
+
     # Create user based on type
     if user_type == "root":
         user = create_root_user(username, password, email)
@@ -255,7 +254,7 @@ def enhanced_register(username: str, password: str, email: str, project_hash: st
         user = create_consumer_user(username, password, email)
         # Grant user access to the project for consumer users
         grant_user_project_access(user.id, project.id)
-    
+
     # Continue with login flow
     return enhanced_login(username, password, project_hash)
 
@@ -264,18 +263,18 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     """Validate a session token and return user data with user type context (cache-first)"""
     # Try cache first
     session_data = cache_manager.get_session(session_token)
-    
+
     # If not in cache, check database/Redis
     if not session_data:
         session_data = get_session_data(session_token)
         if not session_data:
             return None
-        
+
         # Cache the session data for future requests
         cache_manager.set_session(session_token, session_data)
-    
+
     user_type = session_data.get('user_type', 'consumer')
-    
+
     # Handle global root sessions (no project context)
     if user_type == 'root' and session_data.get('is_global_session'):
         return EnhancedUserLogin(
@@ -294,16 +293,16 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
             user_type='root',
             assigned_project_id=None
         )
-    
+
     # For sessions with project context, get fresh project data
     project_hash = session_data.get('project_hash')
     if not project_hash:
         return None
-        
+
     project = get_project_by_hash(project_hash)
     if not project:
         return None
-    
+
     # Validate access based on user type
     if user_type == "root":
         # Root users always have access
@@ -327,7 +326,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         groups = [g.group_name for g in groups]
     else:
         return None
-    
+
     return EnhancedUserLogin(
         user_hash=session_data['user_hash'],
         project_hash=session_data['project_hash'],
@@ -353,17 +352,17 @@ def create_root_session(username: str, password: str) -> Optional[dict]:
     user = get_user_by_credentials(username, password)
     if not user or not is_root_user(user.id):
         return None
-    
+
     session_length = 60 * 60 * 24 * 7  # 7 days for root users
-    session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
-    
+    session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
+
     # Create JWT token for root user global session
     session_token = JWTTokenHandler.create_access_token(
         session_id=session_id,
         user_hash=user.user_hash,
         collection="",  # Empty for global root session
     )
-    
+
     session_data = {
         'session_id': session_id,
         'user_id': user.id,
@@ -375,11 +374,11 @@ def create_root_session(username: str, password: str) -> Optional[dict]:
         'project_id': None,
         'project_hash': None
     }
-    
+
     # Store in both cache and Redis
     cache_manager.set_session(session_token, session_data)
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-    
+
     return {
         'session_token': session_token,
         'user_type': 'root',
@@ -406,13 +405,13 @@ def validate_admin_session(session_token: str, project_id: int) -> bool:
         session_data = get_session_data(session_token)
         if not session_data:
             return False
-        
+
         user_type = session_data.get('user_type')
         if user_type == 'root':
             return True
         elif user_type == 'admin':
             return session_data.get('assigned_project_id') == project_id
-        
+
         return False
     except:
         return False
@@ -439,7 +438,8 @@ def db_login(user: str, password: str, collection: str) -> Optional[UserLogin]:
     return None
 
 
-def db_register(collection: str, user: str, password: str, email: str = None, user_type: str = "consumer") -> Optional[UserLogin]:
+def db_register(collection: str, user: str, password: str, email: str = None, user_type: str = "consumer") -> Optional[
+    UserLogin]:
     """Legacy register function for backward compatibility with user type support"""
     enhanced_result = enhanced_register(user, password, email, collection, user_type)
     if enhanced_result:
@@ -460,4 +460,4 @@ def db_register(collection: str, user: str, password: str, email: str = None, us
 
 def db_username_or_email_available(username_or_email: str, collection: str = None) -> bool:
     """Legacy function for checking username/email availability"""
-    return check_username_email_available(username_or_email) 
+    return check_username_email_available(username_or_email)

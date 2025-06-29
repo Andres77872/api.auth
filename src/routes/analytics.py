@@ -10,19 +10,20 @@ Provides endpoints for analytics data including:
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
+
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.db import (
-    validate_session, count_users, count_projects, count_user_groups,
-    count_active_sessions, get_recent_users_count, get_recent_projects_count,
-    get_recent_activity_count, get_user_login_statistics, get_session_statistics
-)
 from src.Util.Models import BaseResponse
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.db_config import get_connection, redis_client
 from src.Util.activity_logger import count_activity_logs, get_recent_activity
+from src.Util.db import (
+    validate_session, count_users, count_projects, count_active_sessions, get_recent_users_count,
+    get_recent_projects_count,
+    get_recent_activity_count, get_user_login_statistics, get_session_statistics
+)
+from src.Util.db_config import get_connection, redis_client
 from src.middleware.authentication import verify_admin_access
 
 # Configure logging
@@ -45,18 +46,18 @@ def require_admin_access(credentials: HTTPAuthorizationCredentials = Depends(sec
     session_data = validate_session(credentials.credentials)
     if not session_data:
         raise HTTPException(status_code=401, detail="Invalid session")
-    
+
     user_permissions = getattr(session_data, 'permissions', [])
     if 'admin' not in user_permissions:
         raise HTTPException(status_code=403, detail="Admin access required for analytics")
-    
+
     return session_data
 
 
 @router.get("/dashboard/stats", response_model=AnalyticsDashboardStatsResponse)
 async def get_analytics_dashboard_stats(
-    period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
-    current_user: dict = Depends(verify_admin_access)
+        period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
+        current_user: dict = Depends(verify_admin_access)
 ) -> AnalyticsDashboardStatsResponse:
     """
     Get basic analytics for dashboard
@@ -72,30 +73,30 @@ async def get_analytics_dashboard_stats(
         total_users = count_users()
         total_projects = count_projects()
         active_sessions = count_active_sessions()
-        
+
         # Get recent counts for the specified period
         recent_users = get_recent_users_count(days=period_days)
         recent_projects = get_recent_projects_count(days=period_days)
         recent_activities = get_recent_activity_count(days=period_days)
-        
+
         # Get user type breakdown
         root_users = count_users(user_type='root')
         admin_users = count_users(user_type='admin')
         consumer_users = count_users(user_type='consumer')
-        
+
         # Get session statistics
         session_stats = get_session_statistics()
-        
+
         # Get login statistics for the period
         login_stats = get_user_login_statistics(days=period_days)
-        
+
         # Calculate growth rates (simplified)
         user_growth_rate = (recent_users / max(total_users - recent_users, 1)) * 100
         project_growth_rate = (recent_projects / max(total_projects - recent_projects, 1)) * 100
-        
+
         # Get activity breakdown by type
         activity_breakdown = get_activity_type_breakdown(period_days)
-        
+
         # Build analytics data
         analytics = {
             "period": {
@@ -129,7 +130,7 @@ async def get_analytics_dashboard_stats(
             },
             "login_metrics": login_stats
         }
-        
+
         # Generate summary
         summary = {
             "total_entities": total_users + total_projects,
@@ -137,14 +138,14 @@ async def get_analytics_dashboard_stats(
             "growth_trend": calculate_growth_trend(recent_users),
             "health_status": "healthy" if active_sessions < 1000 and total_users > 0 else "monitoring"
         }
-        
+
         return AnalyticsDashboardStatsResponse(
             success=True,
             analytics=analytics,
             summary=summary,
             generated_at=datetime.utcnow().isoformat()
         )
-        
+
     except Exception as e:
         logger.error(f"Analytics dashboard stats error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to get analytics dashboard statistics")
@@ -152,9 +153,9 @@ async def get_analytics_dashboard_stats(
 
 @router.get("/users")
 async def get_user_analytics(
-    period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
-    user_type: Optional[str] = Query(None, description="Filter by user type"),
-    current_user: dict = Depends(verify_admin_access)
+        period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
+        user_type: Optional[str] = Query(None, description="Filter by user type"),
+        current_user: dict = Depends(verify_admin_access)
 ) -> Dict[str, Any]:
     """
     Get detailed user analytics
@@ -168,7 +169,7 @@ async def get_user_analytics(
         # Get user counts by type
         total_users = count_users(user_type=user_type)
         recent_users = get_recent_users_count(days=period_days)
-        
+
         # Get user type breakdown if no filter applied
         if not user_type:
             user_type_breakdown = {
@@ -178,13 +179,13 @@ async def get_user_analytics(
             }
         else:
             user_type_breakdown = {user_type: total_users}
-        
+
         # Calculate registration trend (simplified daily average)
         daily_registration_rate = recent_users / period_days
-        
+
         # Get user activity statistics
         login_stats = get_user_login_statistics(days=period_days)
-        
+
         return {
             "period": {
                 "days": period_days,
@@ -207,7 +208,7 @@ async def get_user_analytics(
             },
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -217,8 +218,8 @@ async def get_user_analytics(
 
 @router.get("/projects")
 async def get_project_analytics(
-    period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
-    current_user: dict = Depends(verify_admin_access)
+        period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
+        current_user: dict = Depends(verify_admin_access)
 ) -> Dict[str, Any]:
     """
     Get detailed project analytics
@@ -232,16 +233,16 @@ async def get_project_analytics(
         # Get project counts
         total_projects = count_projects()
         recent_projects = get_recent_projects_count(days=period_days)
-        
+
         # Calculate project creation trend
         daily_project_creation_rate = recent_projects / period_days
-        
+
         # Get project activity (activities related to projects)
         project_activities = count_activity_logs(days=period_days)
-        
+
         # Calculate project engagement metrics
         avg_activities_per_project = project_activities / max(total_projects, 1)
-        
+
         return {
             "period": {
                 "days": period_days,
@@ -264,7 +265,7 @@ async def get_project_analytics(
             },
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -274,9 +275,9 @@ async def get_project_analytics(
 
 @router.get("/activity")
 async def get_activity_analytics(
-    period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
-    activity_type: Optional[str] = Query(None, description="Filter by activity type"),
-    current_user: dict = Depends(verify_admin_access)
+        period_days: int = Query(30, ge=1, le=365, description="Days to analyze"),
+        activity_type: Optional[str] = Query(None, description="Filter by activity type"),
+        current_user: dict = Depends(verify_admin_access)
 ) -> Dict[str, Any]:
     """
     Get detailed activity analytics
@@ -292,31 +293,31 @@ async def get_activity_analytics(
             days=period_days,
             activity_type=activity_type
         )
-        
+
         # Get activity breakdown by type
         activity_breakdown = get_activity_type_breakdown(period_days)
-        
+
         # Calculate activity metrics
         daily_avg_activities = total_activities / period_days
-        
+
         # Get recent activity samples for pattern analysis
         recent_activities = get_recent_activity(
             limit=100,
             days=period_days,
             activity_type=activity_type
         )
-        
+
         # Analyze activity patterns (simplified)
         unique_users_active = len(set(
-            activity.get("user_id") for activity in recent_activities 
+            activity.get("user_id") for activity in recent_activities
             if activity.get("user_id")
         ))
-        
+
         unique_projects_active = len(set(
-            activity.get("project_id") for activity in recent_activities 
+            activity.get("project_id") for activity in recent_activities
             if activity.get("project_id")
         ))
-        
+
         return {
             "period": {
                 "days": period_days,
@@ -340,7 +341,7 @@ async def get_activity_analytics(
             },
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -350,7 +351,7 @@ async def get_activity_analytics(
 
 @router.get("/summary")
 async def get_analytics_summary(
-    current_user: dict = Depends(verify_admin_access)
+        current_user: dict = Depends(verify_admin_access)
 ) -> Dict[str, Any]:
     """
     Get high-level analytics summary
@@ -364,23 +365,23 @@ async def get_analytics_summary(
             "projects": get_recent_projects_count(days=7),
             "activities": get_recent_activity_count(days=7)
         }
-        
+
         stats_30d = {
             "users": get_recent_users_count(days=30),
             "projects": get_recent_projects_count(days=30),
             "activities": get_recent_activity_count(days=30)
         }
-        
+
         # Get current totals
         current_totals = {
             "users": count_users(),
             "projects": count_projects(),
             "active_sessions": count_active_sessions()
         }
-        
+
         # Get login statistics
         login_stats = get_user_login_statistics(days=7)
-        
+
         return {
             "current_totals": current_totals,
             "recent_activity": {
@@ -395,7 +396,7 @@ async def get_analytics_summary(
             },
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -410,7 +411,7 @@ def get_activity_type_breakdown(days: int) -> Dict[str, int]:
         # This is a simplified implementation
         # In a real implementation, you'd query the database for actual breakdown
         from src.Util.activity_logger import ActivityType
-        
+
         breakdown = {}
         for activity_type in ActivityType:
             count = count_activity_logs(
@@ -419,9 +420,9 @@ def get_activity_type_breakdown(days: int) -> Dict[str, int]:
             )
             if count > 0:
                 breakdown[activity_type.value] = count
-        
+
         return breakdown
-        
+
     except Exception:
         return {}
 
@@ -437,17 +438,16 @@ def count_active_users() -> int:
             cur = con.cursor()
             # Since we don't have last_login field, count users with active sessions
             cur.execute("""
-                SELECT COUNT(DISTINCT u.id) 
-                FROM users u
-                WHERE u.is_active = 1 
-                AND EXISTS (
-                    SELECT 1 FROM user_sessions us
-                    JOIN user_projects up ON us.user_project_id = up.id 
-                    WHERE up.user_id = u.id 
-                    AND us.is_active = 1
-                    AND us.expires_at > NOW()
-                )
-            """)
+                        SELECT COUNT(DISTINCT u.id)
+                        FROM users u
+                        WHERE u.is_active = 1
+                          AND EXISTS (SELECT 1
+                                      FROM user_sessions us
+                                               JOIN user_projects up ON us.user_project_id = up.id
+                                      WHERE up.user_id = u.id
+                                        AND us.is_active = 1
+                                        AND us.expires_at > NOW())
+                        """)
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception:
@@ -461,9 +461,10 @@ def count_active_projects() -> int:
         with get_connection() as con:
             cur = con.cursor()
             cur.execute("""
-                SELECT COUNT(*) FROM projects 
-                WHERE is_active = 1
-            """)
+                        SELECT COUNT(*)
+                        FROM projects
+                        WHERE is_active = 1
+                        """)
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception:
@@ -496,10 +497,11 @@ def get_recent_registrations_count(days: int) -> int:
         with get_connection() as con:
             cur = con.cursor()
             cur.execute("""
-                SELECT COUNT(*) FROM users 
-                WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                AND is_active = 1
-            """, [days])
+                        SELECT COUNT(*)
+                        FROM users
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                          AND is_active = 1
+                        """, [days])
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception:
@@ -510,7 +512,7 @@ def calculate_project_utilization(total_projects: int, active_users: int) -> flo
     """Calculate project utilization percentage"""
     if total_projects == 0:
         return 0.0
-    
+
     # Simple utilization: assume each active user uses at least one project
     utilization = min(active_users / total_projects, 1.0) * 100
     return round(utilization, 2)
@@ -520,8 +522,8 @@ def calculate_activity_score(active_sessions: int, recent_logins: int) -> int:
     """Calculate overall activity score (0-100)"""
     # Basic activity scoring
     session_score = min(active_sessions * 2, 50)  # Sessions worth up to 50 points
-    login_score = min(recent_logins * 5, 50)      # Recent logins worth up to 50 points
-    
+    login_score = min(recent_logins * 5, 50)  # Recent logins worth up to 50 points
+
     return min(session_score + login_score, 100)
 
 
@@ -545,11 +547,11 @@ def get_basic_system_health() -> str:
             cur = con.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
-        
+
         # Check Redis
         redis_client.ping()
-        
+
         return "healthy"
-        
+
     except Exception:
-        return "degraded" 
+        return "degraded"

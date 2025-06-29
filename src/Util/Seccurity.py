@@ -8,7 +8,6 @@ from starlette.responses import JSONResponse
 from src.Util.Models import UserLogin
 from src.Util.db.db_enhanced import validate_session
 from src.Util.db_config import redis_client as client
-from src.Util.cache_manager import cache_manager
 
 # Legacy header names for backwards compatibility
 x_token_user_name = 'X-token-user'
@@ -25,10 +24,12 @@ class HTTPBearerOrCookie(HTTPBearer):
     """
     Custom HTTPBearer that accepts tokens from both Authorization header and cookies.
     """
-    
-    def __init__(self, bearerFormat: str = None, scheme_name: str = None, description: str = None, auto_error: bool = True):
-        super().__init__(bearerFormat=bearerFormat, scheme_name=scheme_name, description=description, auto_error=auto_error)
-    
+
+    def __init__(self, bearerFormat: str = None, scheme_name: str = None, description: str = None,
+                 auto_error: bool = True):
+        super().__init__(bearerFormat=bearerFormat, scheme_name=scheme_name, description=description,
+                         auto_error=auto_error)
+
     async def __call__(self, request: Request) -> HTTPAuthorizationCredentials:
         # First, try the standard Authorization header
         try:
@@ -38,12 +39,12 @@ class HTTPBearerOrCookie(HTTPBearer):
                 return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         except:
             pass
-        
+
         # Then, try cookie
         cookie_token = request.cookies.get(JWT_COOKIE_NAME)
         if cookie_token:
             return HTTPAuthorizationCredentials(scheme="Bearer", credentials=cookie_token)
-        
+
         # If auto_error is True and no token found, raise exception
         if self.auto_error:
             raise HTTPException(
@@ -66,12 +67,12 @@ def extract_jwt_token_from_request(request: Request) -> str:
     authorization = request.headers.get("Authorization")
     if authorization and authorization.startswith("Bearer "):
         return authorization.split(" ")[1]
-    
+
     # Then, try cookie
     cookie_token = request.cookies.get(JWT_COOKIE_NAME)
     if cookie_token:
         return cookie_token
-    
+
     return None
 
 
@@ -86,17 +87,17 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
     """
     # Try to get JWT token from Authorization header or cookie
     jwt_token = extract_jwt_token_from_request(request)
-    
+
     if jwt_token:
         try:
             # Validate JWT session token using enhanced system (cache-first)
             enhanced_user = validate_session(jwt_token)
-            
+
             if enhanced_user:
                 # Handle root users with global sessions (no project context required)
-                if (enhanced_user.user_type == 'root' and 
-                    enhanced_user.project_hash == "" and 
-                    enhanced_user.project_name == "Global Root Access"):
+                if (enhanced_user.user_type == 'root' and
+                        enhanced_user.project_hash == "" and
+                        enhanced_user.project_name == "Global Root Access"):
                     # Root user with global session - collection token not required
                     return UserLogin(
                         user_session=enhanced_user.session_token,
@@ -110,7 +111,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
                         user_type=enhanced_user.user_type,
                         assigned_project_id=enhanced_user.assigned_project_id
                     )
-                
+
                 # For regular project-based sessions, validate project access
                 project_hash = enhanced_user.project_hash
                 if project_hash:
@@ -131,28 +132,28 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
                     raise HTTPException(status_code=401, detail='Invalid session or project access denied')
             else:
                 raise HTTPException(status_code=401, detail='Invalid session token')
-            
+
         except HTTPException:
             # Re-raise HTTP exceptions (they already have proper error messages)
             raise
         except Exception as e:
             print(f"JWT token validation error: {e}")
             raise HTTPException(status_code=401, detail='User token invalid')
-    
+
     # Legacy fallback: check for old header-based authentication
     if x_token_user_name in request.headers and x_token_collection_name in request.headers:
         try:
             user_token = request.headers[x_token_user_name]
             collection_token = request.headers[x_token_collection_name]
-            
+
             # Validate session token using enhanced system (cache-first)
             enhanced_user = validate_session(user_token)
-            
+
             if enhanced_user:
                 # Handle root users with global sessions (no project context required)
-                if (enhanced_user.user_type == 'root' and 
-                    enhanced_user.project_hash == "" and 
-                    enhanced_user.project_name == "Global Root Access"):
+                if (enhanced_user.user_type == 'root' and
+                        enhanced_user.project_hash == "" and
+                        enhanced_user.project_name == "Global Root Access"):
                     # Root user with global session - collection token not required
                     return UserLogin(
                         user_session=enhanced_user.session_token,
@@ -166,7 +167,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
                         user_type=enhanced_user.user_type,
                         assigned_project_id=enhanced_user.assigned_project_id
                     )
-                
+
                 # For regular project-based sessions, validate project access
                 if enhanced_user.project_hash == collection_token:
                     # Convert to legacy UserLogin format for compatibility
@@ -186,16 +187,17 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
                     raise HTTPException(status_code=401, detail='Invalid token or project access denied')
             else:
                 raise HTTPException(status_code=401, detail='Invalid session token')
-            
+
         except HTTPException:
             # Re-raise HTTP exceptions (they already have proper error messages)
             raise
         except Exception as e:
             print(f"Token validation error: {e}")
             raise HTTPException(status_code=401, detail='User token invalid')
-    
+
     # No authentication found
-    raise HTTPException(status_code=401, detail='Authentication required: provide JWT token via Authorization Bearer header or session_token cookie')
+    raise HTTPException(status_code=401,
+                        detail='Authentication required: provide JWT token via Authorization Bearer header or session_token cookie')
 
 
 def make_session(user_model: UserLogin, session_id: int) -> bool:
@@ -212,11 +214,11 @@ def make_session(user_model: UserLogin, session_id: int) -> bool:
         }
 
         # Store in Redis using hex key format for compatibility
-        client.set(hex(session_id)[2:], 
-                   json.dumps(session_state), 
+        client.set(hex(session_id)[2:],
+                   json.dumps(session_state),
                    ex=user_model.user_session_length)
         return True
-        
+
     except Exception as e:
         print(f"Session creation error: {e}")
         return False

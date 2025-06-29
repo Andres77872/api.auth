@@ -6,7 +6,7 @@ and analytics support for the multi-project authentication system.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from src.Util.db_config import get_connection, redis_client
@@ -43,13 +43,13 @@ def get_session_statistics() -> Dict[str, Any]:
     try:
         # Get active sessions count
         active_sessions = count_active_sessions()
-        
+
         # Get session distribution by user type (if possible)
         session_info = {
             "active_sessions": active_sessions,
             "redis_available": True
         }
-        
+
         # Try to get more detailed session info
         try:
             info = redis_client.info()
@@ -59,9 +59,9 @@ def get_session_statistics() -> Dict[str, Any]:
             })
         except:
             pass
-        
+
         return session_info
-        
+
     except Exception as e:
         logger.error(f"Failed to get session statistics: {str(e)}")
         return {"active_sessions": 0, "redis_available": False}
@@ -106,15 +106,16 @@ def set_user_status(user_id: int, is_active: bool, updated_by: Optional[int] = N
         with get_connection() as con:
             cur = con.cursor()
             cur.execute("""
-                UPDATE users 
-                SET is_active = %s, updated_at = NOW()
-                WHERE id = %s
-            """, [is_active, user_id])
-            
+                        UPDATE users
+                        SET is_active  = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """, [is_active, user_id])
+
             success = cur.rowcount > 0
             if success:
                 con.commit()
-                
+
                 # Log the status change
                 try:
                     from src.Util.activity_logger import ActivityType, log_activity
@@ -130,9 +131,9 @@ def set_user_status(user_id: int, is_active: bool, updated_by: Optional[int] = N
                     )
                 except:
                     pass  # Don't fail if activity logging fails
-            
+
             return success
-            
+
     except Exception as e:
         logger.error(f"Failed to set user status: {str(e)}")
         return False
@@ -152,10 +153,11 @@ def get_recent_users_count(days: int = 30) -> int:
         with get_connection() as con:
             cur = con.cursor()
             cur.execute("""
-                SELECT COUNT(*) FROM users 
-                WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                AND is_active = 1
-            """, [days])
+                        SELECT COUNT(*)
+                        FROM users
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                          AND is_active = 1
+                        """, [days])
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception as e:
@@ -176,45 +178,47 @@ def get_user_login_statistics(days: int = 30) -> Dict[str, Any]:
     try:
         with get_connection() as con:
             cur = con.cursor()
-            
+
             # Try to get login stats from activity logs (if table exists)
             try:
                 cur.execute("""
-                    SELECT COUNT(*) FROM activity_logs 
-                    WHERE activity_type = 'user_login' 
-                    AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                """, [days])
+                            SELECT COUNT(*)
+                            FROM activity_logs
+                            WHERE activity_type = 'user_login'
+                              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                            """, [days])
                 login_count = cur.fetchone()[0]
-                
+
                 cur.execute("""
-                    SELECT COUNT(DISTINCT user_id) FROM activity_logs 
-                    WHERE activity_type = 'user_login' 
-                    AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                """, [days])
+                            SELECT COUNT(DISTINCT user_id)
+                            FROM activity_logs
+                            WHERE activity_type = 'user_login'
+                              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                            """, [days])
                 unique_users = cur.fetchone()[0]
-                
+
                 return {
                     "total_logins": login_count,
                     "unique_users": unique_users,
                     "period_days": days,
                     "source": "activity_logs"
                 }
-                
+
             except Exception:
                 # Fallback: estimate based on user creation and session data
                 recent_users = get_recent_users_count(days)
                 active_sessions = count_active_sessions()
-                
+
                 # Rough estimation
                 estimated_logins = max(recent_users, active_sessions) * 2
-                
+
                 return {
                     "total_logins": estimated_logins,
                     "unique_users": recent_users,
                     "period_days": days,
                     "source": "estimated"
                 }
-                
+
     except Exception as e:
         logger.error(f"Failed to get login statistics: {str(e)}")
         return {"total_logins": 0, "unique_users": 0, "period_days": days, "source": "error"}
@@ -236,10 +240,11 @@ def get_recent_projects_count(days: int = 30) -> int:
         with get_connection() as con:
             cur = con.cursor()
             cur.execute("""
-                SELECT COUNT(*) FROM projects 
-                WHERE project_created >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                AND is_active = 1
-            """, [days])
+                        SELECT COUNT(*)
+                        FROM projects
+                        WHERE project_created >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                          AND is_active = 1
+                        """, [days])
             result = cur.fetchone()
             return result[0] if result else 0
     except Exception as e:
@@ -260,25 +265,35 @@ def get_project_members(project_id: int) -> List[Dict[str, Any]]:
     try:
         with get_connection() as con:
             cur = con.cursor()
-            
+
             # Query to get all users with access to this project
             cur.execute("""
-                SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, 
-                       u.is_active, u.created_at, up.granted_at, up.granted_by,
-                       apa.assigned_at as admin_assigned_at
-                FROM users u
-                LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
-                WHERE u.is_active = 1 AND (
-                    u.user_type = 'root' OR
-                    (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                    (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                )
-                ORDER BY u.user_type, u.username
-            """, [project_id, project_id])
-            
+                        SELECT DISTINCT u.id,
+                                        u.user_hash,
+                                        u.username,
+                                        u.email,
+                                        u.user_type,
+                                        u.is_active,
+                                        u.created_at,
+                                        up.granted_at,
+                                        up.granted_by,
+                                        apa.assigned_at as admin_assigned_at
+                        FROM users u
+                                 LEFT JOIN user_projects up
+                                           ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
+                                 LEFT JOIN admin_project_assignments apa
+                                           ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                        WHERE u.is_active = 1
+                          AND (
+                            u.user_type = 'root' OR
+                            (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
+                            (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
+                            )
+                        ORDER BY u.user_type, u.username
+                        """, [project_id, project_id])
+
             results = cur.fetchall()
-            
+
             members = []
             for row in results:
                 member = {
@@ -294,9 +309,9 @@ def get_project_members(project_id: int) -> List[Dict[str, Any]]:
                     "access_type": "admin" if row[4] == "admin" else ("root" if row[4] == "root" else "consumer")
                 }
                 members.append(member)
-            
+
             return members
-            
+
     except Exception as e:
         logger.error(f"Failed to get project members: {str(e)}")
         return []
@@ -317,16 +332,16 @@ def add_user_to_project(user_id: int, project_id: int, assigned_by: Optional[int
     try:
         # Import here to avoid circular imports
         from src.Util.db import grant_user_project_access, get_user_by_id
-        
+
         # Get user to check type
         user = get_user_by_id(user_id)
         if not user:
             return False
-        
+
         if user.user_type == 'consumer':
             # Grant project access for consumer users
             result = grant_user_project_access(user_id, project_id, granted_by=assigned_by)
-            
+
             if result:
                 # Log the action
                 try:
@@ -344,14 +359,14 @@ def add_user_to_project(user_id: int, project_id: int, assigned_by: Optional[int
                     )
                 except:
                     pass
-            
+
             return result is not None
-            
+
         elif user.user_type == 'admin':
             # Add admin to project
             from src.Util.db import add_admin_to_project
             success = add_admin_to_project(user_id, project_id, assigned_by=assigned_by)
-            
+
             if success:
                 # Log the action
                 try:
@@ -369,12 +384,12 @@ def add_user_to_project(user_id: int, project_id: int, assigned_by: Optional[int
                     )
                 except:
                     pass
-            
+
             return success
-        
+
         # Root users automatically have access to all projects
         return user.user_type == 'root'
-        
+
     except Exception as e:
         logger.error(f"Failed to add user to project: {str(e)}")
         return False
@@ -394,7 +409,7 @@ def check_database_health() -> Dict[str, Any]:
             cur = con.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
-        
+
         return {
             "status": "healthy",
             "message": "Database accessible",
@@ -452,7 +467,7 @@ def get_recent_activity_count(days: int = 7) -> int:
             recent_users = get_recent_users_count(days)
             recent_projects = get_recent_projects_count(days)
             active_sessions = count_active_sessions()
-            
+
             # Rough estimate of activity
             return recent_users + recent_projects + (active_sessions // 10)
         except Exception as e:
@@ -470,36 +485,84 @@ def initialize_activity_logs_table() -> bool:
     try:
         with get_connection() as con:
             cur = con.cursor()
-            
+
             # Create activity_logs table
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS activity_logs (
-                    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    user_id INT UNSIGNED,
-                    activity_type VARCHAR(50) NOT NULL,
-                    details TEXT,
-                    project_id INT UNSIGNED,
-                    target_user_id INT UNSIGNED,
-                    ip_address VARCHAR(45),
-                    user_agent TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    
-                    INDEX idx_user_id (user_id),
-                    INDEX idx_activity_type (activity_type),
-                    INDEX idx_project_id (project_id),
-                    INDEX idx_created_at (created_at),
-                    INDEX idx_target_user_id (target_user_id),
-                    
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
-                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
-                    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL
-                )
-            """)
-            
+                        CREATE TABLE IF NOT EXISTS activity_logs
+                        (
+                            id
+                            BIGINT
+                            UNSIGNED
+                            AUTO_INCREMENT
+                            PRIMARY
+                            KEY,
+                            user_id
+                            INT
+                            UNSIGNED,
+                            activity_type
+                            VARCHAR
+                        (
+                            50
+                        ) NOT NULL,
+                            details TEXT,
+                            project_id INT UNSIGNED,
+                            target_user_id INT UNSIGNED,
+                            ip_address VARCHAR
+                        (
+                            45
+                        ),
+                            user_agent TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_user_id
+                        (
+                            user_id
+                        ),
+                            INDEX idx_activity_type
+                        (
+                            activity_type
+                        ),
+                            INDEX idx_project_id
+                        (
+                            project_id
+                        ),
+                            INDEX idx_created_at
+                        (
+                            created_at
+                        ),
+                            INDEX idx_target_user_id
+                        (
+                            target_user_id
+                        ),
+                            FOREIGN KEY
+                        (
+                            user_id
+                        ) REFERENCES users
+                        (
+                            id
+                        ) ON DELETE SET NULL,
+                            FOREIGN KEY
+                        (
+                            project_id
+                        ) REFERENCES projects
+                        (
+                            id
+                        )
+                          ON DELETE SET NULL,
+                            FOREIGN KEY
+                        (
+                            target_user_id
+                        ) REFERENCES users
+                        (
+                            id
+                        )
+                          ON DELETE SET NULL
+                            )
+                        """)
+
             con.commit()
             logger.info("Activity logs table initialized successfully")
             return True
-            
+
     except Exception as e:
         logger.error(f"Failed to initialize activity logs table: {str(e)}")
-        return False 
+        return False

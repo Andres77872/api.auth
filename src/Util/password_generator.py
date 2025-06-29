@@ -7,15 +7,15 @@ like password resets and temporary password creation.
 
 import secrets
 import string
-from typing import Dict, Any
 from datetime import datetime, timedelta
+from typing import Dict, Any
 
 
 class PasswordGenerator:
     """
     Secure password generation utility
     """
-    
+
     @staticmethod
     def generate_temporary_password(length: int = 12) -> str:
         """
@@ -31,13 +31,13 @@ class PasswordGenerator:
             length = 8
         elif length > 32:
             length = 32
-            
+
         # Define character sets
         uppercase = string.ascii_uppercase
         lowercase = string.ascii_lowercase
         digits = string.digits
         special = "!@#$%^&*"
-        
+
         # Ensure at least one character from each set
         password = [
             secrets.choice(uppercase),
@@ -45,17 +45,17 @@ class PasswordGenerator:
             secrets.choice(digits),
             secrets.choice(special)
         ]
-        
+
         # Fill the rest with random characters from all sets
         all_chars = uppercase + lowercase + digits + special
         for _ in range(length - 4):
             password.append(secrets.choice(all_chars))
-        
+
         # Shuffle the password list
         secrets.SystemRandom().shuffle(password)
-        
+
         return ''.join(password)
-    
+
     @staticmethod
     def generate_reset_token() -> str:
         """
@@ -65,7 +65,7 @@ class PasswordGenerator:
             URL-safe reset token
         """
         return secrets.token_urlsafe(32)
-    
+
     @staticmethod
     def create_password_reset_data(user_id: int, expiry_hours: int = 24) -> Dict[str, Any]:
         """
@@ -80,9 +80,9 @@ class PasswordGenerator:
         """
         reset_token = PasswordGenerator.generate_reset_token()
         temp_password = PasswordGenerator.generate_temporary_password()
-        
+
         expiry_time = datetime.utcnow() + timedelta(hours=expiry_hours)
-        
+
         return {
             "reset_token": reset_token,
             "temporary_password": temp_password,
@@ -90,7 +90,7 @@ class PasswordGenerator:
             "expires_at": expiry_time,
             "created_at": datetime.utcnow()
         }
-    
+
     @staticmethod
     def validate_password_strength(password: str) -> Dict[str, Any]:
         """
@@ -110,7 +110,7 @@ class PasswordGenerator:
             "digits": any(c.isdigit() for c in password),
             "special": any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password)
         }
-        
+
         # Calculate score
         if requirements["length"]:
             score += 20
@@ -122,19 +122,19 @@ class PasswordGenerator:
             score += 20
         if requirements["special"]:
             score += 20
-        
+
         # Bonus for length
         if len(password) >= 12:
             score += 10
         if len(password) >= 16:
             score += 10
-        
+
         strength = "weak"
         if score >= 80:
             strength = "strong"
         elif score >= 60:
             strength = "medium"
-        
+
         return {
             "score": min(score, 100),
             "strength": strength,
@@ -170,4 +170,4 @@ def create_password_reset_data(user_id: int, expiry_hours: int = 24) -> Dict[str
 
 def validate_password_strength(password: str) -> Dict[str, Any]:
     """Validate password strength"""
-    return password_generator.validate_password_strength(password) 
+    return password_generator.validate_password_strength(password)

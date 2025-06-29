@@ -6,12 +6,20 @@ for the group-based multi-project authentication system.
 """
 
 import logging
+from datetime import datetime
 from typing import Optional, List, Dict, Any
+
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from datetime import datetime
 
+from src.Util.Models import (
+    ListProjectsResponse, CreateProjectResponse, ProjectDetailsResponse,
+    UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
+    ProjectInfo, PaginationInfo
+)
+from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.activity_logger import log_activity, ActivityType, get_recent_activity
 from src.Util.db import (
     validate_session, get_user_by_hash,
     create_project, get_project_by_hash, list_all_projects,
@@ -21,13 +29,6 @@ from src.Util.db import (
     get_admin_assigned_projects, grant_user_project_access, add_admin_to_project,
     revoke_user_project_access
 )
-from src.Util.Models import (
-    ListProjectsResponse, CreateProjectResponse, ProjectDetailsResponse,
-    UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
-    ProjectInfo, UserInfo, PaginationInfo, ProjectCreateRequest, ProjectUpdateRequest
-)
-from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType, get_recent_activity
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -36,10 +37,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["Project Management"])
 security = HTTPBearerOrCookie()
 
+
 # Pydantic models
 class ProjectCreate(BaseModel):
     project_name: str
     project_description: str = None
+
 
 class ProjectUpdate(BaseModel):
     project_name: str = None
@@ -66,10 +69,10 @@ class AddMemberToProjectResponse(BaseModel):
 
 @router.get("", response_model=ListProjectsResponse)
 async def list_projects(
-    limit: int = Query(10, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    search: str = Query(None),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        limit: int = Query(10, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        search: str = Query(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> ListProjectsResponse:
     """
     List projects based on user's access level.
@@ -85,18 +88,18 @@ async def list_projects(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         user_data = get_user_by_hash(session_data.user_hash)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Check if user is admin (can see all projects)
         user_permissions = getattr(session_data, 'permissions', [])
         is_admin = 'admin' in user_permissions
-        
+
         if is_admin:
             # Admin sees all projects
             if search:
@@ -106,18 +109,19 @@ async def list_projects(
         else:
             # Regular users see only accessible projects
             accessible_projects = get_user_accessible_projects(user_data.id)
-            projects = accessible_projects[offset:offset+limit] if accessible_projects else []
-        
+            projects = accessible_projects[offset:offset + limit] if accessible_projects else []
+
         # Add access level information
         projects_with_access = []
         for project in projects:
             project_hash = getattr(project, 'project_hash', '')
             project_id = getattr(project, 'id', 0)
             project_permissions = get_user_project_permissions(user_data.id, project_id)
-            
-            access_level = "admin" if "admin" in project_permissions else ("read-write" if "write" in project_permissions else "read-only")
+
+            access_level = "admin" if "admin" in project_permissions else (
+                "read-write" if "write" in project_permissions else "read-only")
             access_through = "admin_access" if is_admin else "user_group"
-            
+
             project_access = ProjectAccessInfo(
                 project_hash=project_hash,
                 project_name=getattr(project, 'project_name', ''),
@@ -126,21 +130,21 @@ async def list_projects(
                 access_through=access_through
             )
             projects_with_access.append(project_access)
-        
+
         pagination = PaginationInfo(
             limit=limit,
             offset=offset,
             total=len(projects_with_access),
             has_more=len(projects_with_access) == limit
         )
-        
+
         return ListProjectsResponse(
             success=True,
             projects=projects_with_access,
             pagination=pagination,
             user_access_level="admin" if is_admin else "user"
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -150,9 +154,9 @@ async def list_projects(
 
 @router.post("", response_model=CreateProjectResponse)
 async def create_new_project(
-    project_name: str = Form(...),
-    project_description: Optional[str] = Form(None),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_name: str = Form(...),
+        project_description: Optional[str] = Form(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> CreateProjectResponse:
     """
     Create new project and assign it to default project group.
@@ -167,45 +171,45 @@ async def create_new_project(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check if user has permission to create projects
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to create projects")
-        
+
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
-        
+
         create_name = project_name
         create_description = project_description
-        
+
         if not create_name:
             raise HTTPException(status_code=400, detail="Project name is required")
-        
+
         # Create project
         new_project = create_project(create_name, create_description)
-        
+
         if not new_project:
             raise HTTPException(status_code=400, detail="Project creation failed")
-        
+
         logger.info(f"Project created: {create_name} by user: {user_data.username}")
-        
+
         project_info = ProjectInfo(
             project_hash=new_project.project_hash,
             project_name=new_project.project_name,
             project_description=new_project.project_description,
             created_at=getattr(new_project, 'project_created', None)
         )
-        
+
         return CreateProjectResponse(
             success=True,
             message=f"Project \"{create_name}\" created successfully",
             project=project_info
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -215,8 +219,8 @@ async def create_new_project(
 
 @router.get("/{project_hash}", response_model=ProjectDetailsResponse)
 async def get_project_details(
-    project_hash: str = Path(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> ProjectDetailsResponse:
     """
     Get detailed project information with user's access context.
@@ -230,51 +234,52 @@ async def get_project_details(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get project details
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Get user data
         user_data = get_user_by_hash(session_data.user_hash)
-        
+
         # Check if user has access to this project
         user_permissions = get_user_project_permissions(user_data.id, project.id)
         session_permissions = getattr(session_data, 'permissions', [])
-        
+
         if not user_permissions and 'admin' not in session_permissions:
             raise HTTPException(status_code=403, detail="Access denied to this project")
-        
+
         # Get project statistics
         project_stats = get_project_stats(project.id)
-        
+
         # Get user groups that have access to this project
         user_groups = get_user_groups_for_user(user_data.id)
-        
+
         project_info = ProjectInfo(
             project_hash=project.project_hash,
             project_name=project.project_name,
             project_description=project.project_description,
             created_at=getattr(project, 'project_created', None)
         )
-        
+
         user_access = {
             "permissions": user_permissions,
-            "access_level": "admin" if "admin" in user_permissions else ("read-write" if "write" in user_permissions else "read-only"),
+            "access_level": "admin" if "admin" in user_permissions else (
+                "read-write" if "write" in user_permissions else "read-only"),
             "user_groups": [group.group_name for group in user_groups]
         }
-        
+
         return ProjectDetailsResponse(
             success=True,
             project=project_info,
             user_access=user_access,
             statistics=project_stats or {}
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -284,10 +289,10 @@ async def get_project_details(
 
 @router.put("/{project_hash}", response_model=UpdateProjectResponse)
 async def update_project_details(
-    project_hash: str = Path(...),
-    project_name: Optional[str] = Form(None),
-    project_description: Optional[str] = Form(None),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        project_name: Optional[str] = Form(None),
+        project_description: Optional[str] = Form(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateProjectResponse:
     """
     Update project information (admin only).
@@ -303,26 +308,26 @@ async def update_project_details(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permission
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
-        
+
         update_name = project_name
         update_description = project_description
-        
+
         # Update project
         updated_project = update_project(
             project.id,
@@ -330,22 +335,22 @@ async def update_project_details(
             project_description=update_description,
             updated_by=user_data.id
         )
-        
+
         if not updated_project:
             raise HTTPException(status_code=400, detail="Update failed")
-        
+
         project_info = ProjectInfo(
             project_hash=updated_project.project_hash,
             project_name=updated_project.project_name,
             project_description=updated_project.project_description
         )
-        
+
         return UpdateProjectResponse(
             success=True,
             message="Project updated successfully",
             project=project_info
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -355,8 +360,8 @@ async def update_project_details(
 
 @router.delete("/{project_hash}", response_model=DeleteProjectResponse)
 async def delete_project_endpoint(
-    project_hash: str = Path(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> DeleteProjectResponse:
     """
     Delete a project and revoke all access (admin only).
@@ -370,23 +375,23 @@ async def delete_project_endpoint(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permission
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
-        
+
         # Delete project
         if delete_project(project.id, deleted_by=user_data.id):
             deleted_project_info = ProjectInfo(
@@ -394,7 +399,7 @@ async def delete_project_endpoint(
                 project_name=project.project_name,
                 project_description=project.project_description
             )
-            
+
             return DeleteProjectResponse(
                 success=True,
                 message=f"Project \"{project.project_name}\" deleted successfully",
@@ -403,7 +408,7 @@ async def delete_project_endpoint(
             )
         else:
             raise HTTPException(status_code=400, detail="Delete failed")
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -413,11 +418,11 @@ async def delete_project_endpoint(
 
 @router.get("/{project_hash}/members", response_model=ProjectMembersResponse)
 async def list_project_members(
-    project_hash: str = Path(...),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    user_type: Optional[str] = Query(None),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        user_type: Optional[str] = Query(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> ProjectMembersResponse:
     """
     List all members of a project with their access details.
@@ -436,88 +441,100 @@ async def list_project_members(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to list project members")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Get project members
         from src.Util.db_config import get_connection
-        
+
         with get_connection() as con:
             cur = con.cursor()
-            
+
             # Query to get all users with access to this project
             query = """
-                SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, 
-                       u.is_active, u.created_at, up.granted_at, up.granted_by
-                FROM users u
-                LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
-                WHERE u.is_active = 1 AND (
-                    u.user_type = 'root' OR
-                    (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                    (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                )
-            """
-            
+                    SELECT DISTINCT u.id,
+                                    u.user_hash,
+                                    u.username,
+                                    u.email,
+                                    u.user_type,
+                                    u.is_active,
+                                    u.created_at,
+                                    up.granted_at,
+                                    up.granted_by
+                    FROM users u
+                             LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
+                             LEFT JOIN admin_project_assignments apa
+                                       ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                    WHERE u.is_active = 1
+                      AND (
+                        u.user_type = 'root' OR
+                        (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
+                        (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
+                        ) \
+                    """
+
             if user_type:
                 query += " AND u.user_type = %s"
                 params = [project.id, project.id, user_type]
             else:
                 params = [project.id, project.id]
-            
+
             query += " ORDER BY u.user_type, u.username LIMIT %s OFFSET %s"
             params.extend([limit, offset])
-            
+
             cur.execute(query, params)
             results = cur.fetchall()
-            
+
             # Get total count
             count_query = """
-                SELECT COUNT(DISTINCT u.id)
-                FROM users u
-                LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                LEFT JOIN admin_project_assignments apa ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
-                WHERE u.is_active = 1 AND (
-                    u.user_type = 'root' OR
-                    (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                    (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                )
-            """
-            
+                          SELECT COUNT(DISTINCT u.id)
+                          FROM users u
+                                   LEFT JOIN user_projects up
+                                             ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
+                                   LEFT JOIN admin_project_assignments apa
+                                             ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                          WHERE u.is_active = 1
+                            AND (
+                              u.user_type = 'root' OR
+                              (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
+                              (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
+                              ) \
+                          """
+
             if user_type:
                 count_query += " AND u.user_type = %s"
                 count_params = [project.id, project.id, user_type]
             else:
                 count_params = [project.id, project.id]
-            
+
             cur.execute(count_query, count_params)
             total_count = cur.fetchone()[0]
-        
+
         # Build members list
         members = []
         for row in results:
             user_id, user_hash, username, email, user_type_val, is_active, created_at, granted_at, granted_by = row
-            
+
             # Get user's permissions in this project
             permissions = get_user_project_permissions(user_id, project.id)
-            
+
             # Get user groups for consumer users
             groups = []
             if user_type_val == 'consumer':
                 user_groups = get_user_groups_for_user(user_id)
                 groups = [g.group_name for g in user_groups]
-            
+
             member_info = {
                 "user_hash": user_hash,
                 "username": username,
@@ -526,27 +543,28 @@ async def list_project_members(
                 "is_active": is_active,
                 "permissions": permissions,
                 "groups": groups,
-                "access_level": "admin" if "admin" in permissions else ("read-write" if "write" in permissions else "read-only"),
+                "access_level": "admin" if "admin" in permissions else (
+                    "read-write" if "write" in permissions else "read-only"),
                 "joined_at": granted_at,
                 "granted_by": granted_by,
                 "created_at": created_at
             }
-            
+
             members.append(member_info)
-        
+
         project_info = ProjectInfo(
             project_hash=project.project_hash,
             project_name=project.project_name,
             project_description=project.project_description
         )
-        
+
         pagination = PaginationInfo(
             limit=limit,
             offset=offset,
             total=total_count,
             has_more=offset + limit < total_count
         )
-        
+
         # Build statistics
         stats = {
             "total_members": total_count,
@@ -555,7 +573,7 @@ async def list_project_members(
             "consumer_users": len([m for m in members if m["user_type"] == "consumer"]),
             "active_members": len([m for m in members if m["is_active"]])
         }
-        
+
         return ProjectMembersResponse(
             success=True,
             project=project_info,
@@ -563,7 +581,7 @@ async def list_project_members(
             pagination=pagination,
             statistics=stats
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -573,10 +591,10 @@ async def list_project_members(
 
 @router.post("/{project_hash}/members", response_model=AddMemberToProjectResponse)
 async def add_member_to_project(
-    project_hash: str = Path(...),
-    user_hash: str = Form(...),
-    role: Optional[str] = Form("consumer"),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        user_hash: str = Form(...),
+        role: Optional[str] = Form("consumer"),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> AddMemberToProjectResponse:
     """
     Add a member to a project with specified role.
@@ -594,81 +612,81 @@ async def add_member_to_project(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to add project members")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get current user for audit trail
         current_user = get_user_by_hash(session_data.user_hash)
-        
+
         # Validate role
         if role not in ['consumer', 'admin']:
             raise HTTPException(status_code=400, detail="Invalid role. Must be 'consumer' or 'admin'")
-        
+
         # Handle different role assignments
         if role == 'consumer':
             # Add consumer user to project
             if target_user.user_type != 'consumer':
                 raise HTTPException(status_code=400, detail="Only consumer users can be assigned consumer role")
-            
+
             # Check if user already has access
             existing_access = get_user_project_access(target_user.id, project.id)
             if existing_access:
                 raise HTTPException(status_code=400, detail="User already has access to this project")
-            
+
             # Grant project access
             user_project = grant_user_project_access(target_user.id, project.id, granted_by=current_user.id)
-            
+
             if not user_project:
                 raise HTTPException(status_code=500, detail="Failed to grant project access")
-            
+
             # Assign to default group
             assign_user_to_default_group(user_project.id, project.id)
-            
+
             access_type = "consumer_access"
-            
+
         elif role == 'admin':
             # Add admin user to project
             if target_user.user_type != 'admin':
                 raise HTTPException(status_code=400, detail="Only admin users can be assigned admin role")
-            
+
             # Check if admin already has access to this project
             admin_projects = get_admin_assigned_projects(target_user.id)
             if project.id in admin_projects:
                 raise HTTPException(status_code=400, detail="Admin user already has access to this project")
-            
+
             # Add admin to project
             success = add_admin_to_project(target_user.id, project.id, assigned_by=current_user.id)
-            
+
             if not success:
                 raise HTTPException(status_code=500, detail="Failed to add admin to project")
-            
+
             access_type = "admin_access"
-        
+
         # Get user's permissions in this project
         permissions = get_user_project_permissions(target_user.id, project.id)
-        
+
         # Get user groups for consumer users
         groups = []
         if target_user.user_type == 'consumer':
             user_groups = get_user_groups_for_user(target_user.id)
             groups = [g.group_name for g in user_groups]
-        
+
         member_info = {
             "user_hash": target_user.user_hash,
             "username": target_user.username,
@@ -681,22 +699,23 @@ async def add_member_to_project(
             "added_by": current_user.username,
             "added_at": datetime.now().isoformat()
         }
-        
+
         project_info = ProjectInfo(
             project_hash=project.project_hash,
             project_name=project.project_name,
             project_description=project.project_description
         )
-        
-        logger.info(f"Member added to project: {target_user.username} -> {project.project_name} as {role} by {current_user.username}")
-        
+
+        logger.info(
+            f"Member added to project: {target_user.username} -> {project.project_name} as {role} by {current_user.username}")
+
         return AddMemberToProjectResponse(
             success=True,
             message=f"User '{target_user.username}' added to project '{project.project_name}' as {role}",
             member=member_info,
             project=project_info
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -708,23 +727,26 @@ def assign_user_to_default_group(user_project_id: int, project_id: int):
     """Helper function to assign consumer user to default 'user' group in a project"""
     try:
         from src.Util.db_config import get_connection
-        
+
         with get_connection() as con:
             cur = con.cursor()
             # Get default 'user' group ID
             cur.execute("""
-                SELECT id FROM user_groups 
-                WHERE project_id = %s AND group_name = 'user' AND is_active = 1
-            """, [project_id])
-            
+                        SELECT id
+                        FROM user_groups
+                        WHERE project_id = %s
+                          AND group_name = 'user'
+                          AND is_active = 1
+                        """, [project_id])
+
             group_result = cur.fetchone()
             if group_result:
                 group_id = group_result[0]
                 cur.execute("""
-                    INSERT INTO user_project_groups (user_project_id, group_id, assigned_at)
-                    VALUES (%s, %s, NOW())
-                    ON DUPLICATE KEY UPDATE is_active = 1, assigned_at = NOW()
-                """, [user_project_id, group_id])
+                            INSERT INTO user_project_groups (user_project_id, group_id, assigned_at)
+                            VALUES (%s, %s, NOW()) ON DUPLICATE KEY
+                            UPDATE is_active = 1, assigned_at = NOW()
+                            """, [user_project_id, group_id])
                 con.commit()
     except Exception as e:
         logger.warning(f"Failed to assign user to default group: {str(e)}")
@@ -732,9 +754,9 @@ def assign_user_to_default_group(user_project_id: int, project_id: int):
 
 @router.delete("/{project_hash}/members/{user_hash}")
 async def remove_member_from_project(
-    project_hash: str = Path(...),
-    user_hash: str = Path(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        user_hash: str = Path(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Remove member from project.
@@ -752,32 +774,32 @@ async def remove_member_from_project(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to remove project members")
-        
+
         # Get project and user
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         current_user = get_user_by_hash(session_data.user_hash)
-        
+
         # Remove user from project
         success = revoke_user_project_access(target_user.id, project.id, removed_by=current_user.id)
-        
+
         if not success:
             raise HTTPException(status_code=400, detail="Failed to remove user from project")
-        
+
         # Log the activity
         log_activity(
             user_id=current_user.id,
@@ -786,9 +808,10 @@ async def remove_member_from_project(
             target_user_id=target_user.id,
             project_id=project.id
         )
-        
-        logger.info(f"User {target_user.username} removed from project {project.project_name} by {current_user.username}")
-        
+
+        logger.info(
+            f"User {target_user.username} removed from project {project.project_name} by {current_user.username}")
+
         return {
             "success": True,
             "message": f"User {target_user.username} removed from project {project.project_name}",
@@ -802,7 +825,7 @@ async def remove_member_from_project(
                 "email": target_user.email
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -812,12 +835,12 @@ async def remove_member_from_project(
 
 @router.get("/{project_hash}/activity")
 async def get_project_activity(
-    project_hash: str = Path(...),
-    limit: int = Query(50, ge=1, le=100, description="Number of activities to return"),
-    offset: int = Query(0, ge=0, description="Number of activities to skip"),
-    activity_type: Optional[str] = Query(None, description="Filter by activity type"),
-    days: int = Query(30, ge=1, le=365, description="Days to look back"),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        limit: int = Query(50, ge=1, le=100, description="Number of activities to return"),
+        offset: int = Query(0, ge=0, description="Number of activities to skip"),
+        activity_type: Optional[str] = Query(None, description="Filter by activity type"),
+        days: int = Query(30, ge=1, le=365, description="Days to look back"),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Get project-specific activity feed.
@@ -837,23 +860,23 @@ async def get_project_activity(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Check user access to project
         current_user = get_user_by_hash(session_data.user_hash)
         user_permissions = get_user_project_permissions(current_user.id, project.id)
         session_permissions = getattr(session_data, 'permissions', [])
-        
+
         if not user_permissions and 'admin' not in session_permissions:
             raise HTTPException(status_code=403, detail="Access denied to this project")
-        
+
         # Get project activities
         activities = get_recent_activity(
             limit=limit,
@@ -862,7 +885,7 @@ async def get_project_activity(
             activity_type=activity_type,
             days=days
         )
-        
+
         # Format response to match expected structure
         activities = {
             "activities": activities,
@@ -872,7 +895,7 @@ async def get_project_activity(
                 "total": len(activities)
             }
         }
-        
+
         return {
             "success": True,
             "project": {
@@ -887,7 +910,7 @@ async def get_project_activity(
             },
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -897,8 +920,8 @@ async def get_project_activity(
 
 @router.get("/{project_hash}/stats")
 async def get_detailed_project_stats(
-    project_hash: str = Path(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Get detailed project statistics.
@@ -914,26 +937,26 @@ async def get_detailed_project_stats(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         # Check user access to project
         current_user = get_user_by_hash(session_data.user_hash)
         user_permissions = get_user_project_permissions(current_user.id, project.id)
         session_permissions = getattr(session_data, 'permissions', [])
-        
+
         if not user_permissions and 'admin' not in session_permissions:
             raise HTTPException(status_code=403, detail="Access denied to this project")
-        
+
         # Get detailed project statistics
         stats = get_project_stats(project.id) or {}
-        
+
         return {
             "success": True,
             "project": {
@@ -944,7 +967,7 @@ async def get_detailed_project_stats(
             "statistics": stats,
             "generated_at": datetime.utcnow().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -954,9 +977,9 @@ async def get_detailed_project_stats(
 
 @router.patch("/{project_hash}/owner")
 async def transfer_project_ownership(
-    project_hash: str = Path(...),
-    new_owner_hash: str = Form(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        new_owner_hash: str = Form(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Transfer project ownership.
@@ -974,33 +997,33 @@ async def transfer_project_ownership(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to transfer project ownership")
-        
+
         # Get project and users
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         new_owner = get_user_by_hash(new_owner_hash)
         if not new_owner:
             raise HTTPException(status_code=404, detail="New owner not found")
-        
+
         current_user = get_user_by_hash(session_data.user_hash)
-        
+
         # Transfer ownership (placeholder implementation)
         # TODO: Implement actual ownership transfer logic
         success = True  # For now, just return success
-        
+
         if not success:
             raise HTTPException(status_code=500, detail="Failed to transfer project ownership")
-        
+
         # Log the activity
         log_activity(
             user_id=current_user.id,
@@ -1009,9 +1032,10 @@ async def transfer_project_ownership(
             target_user_id=new_owner.id,
             project_id=project.id
         )
-        
-        logger.info(f"Project ownership transferred: {project.project_name} -> {new_owner.username} by {current_user.username}")
-        
+
+        logger.info(
+            f"Project ownership transferred: {project.project_name} -> {new_owner.username} by {current_user.username}")
+
         return {
             "success": True,
             "message": f"Project ownership transferred to {new_owner.username}",
@@ -1030,7 +1054,7 @@ async def transfer_project_ownership(
             },
             "transferred_at": datetime.utcnow().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1040,9 +1064,9 @@ async def transfer_project_ownership(
 
 @router.patch("/{project_hash}/archive")
 async def archive_unarchive_project(
-    project_hash: str = Path(...),
-    archived: bool = Form(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        project_hash: str = Path(...),
+        archived: bool = Form(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Archive or unarchive a project.
@@ -1060,29 +1084,29 @@ async def archive_unarchive_project(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         user_permissions = getattr(session_data, 'permissions', [])
         if 'admin' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to archive/unarchive projects")
-        
+
         # Get project
         project = get_project_by_hash(project_hash)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
         current_user = get_user_by_hash(session_data.user_hash)
-        
+
         # Archive/unarchive project (placeholder implementation)
         # TODO: Implement actual archive/unarchive logic
         success = True  # For now, just return success
-        
+
         if not success:
             raise HTTPException(status_code=500, detail=f"Failed to {'archive' if archived else 'unarchive'} project")
-        
+
         # Log the activity
         action = "archived" if archived else "unarchived"
         log_activity(
@@ -1091,9 +1115,9 @@ async def archive_unarchive_project(
             details=f"Project {project.project_name} {action}",
             project_id=project.id
         )
-        
+
         logger.info(f"Project {action}: {project.project_name} by {current_user.username}")
-        
+
         return {
             "success": True,
             "message": f"Project {project.project_name} {'archived' if archived else 'unarchived'} successfully",
@@ -1108,9 +1132,9 @@ async def archive_unarchive_project(
                 "performed_at": datetime.utcnow().isoformat()
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Archive project error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to archive/unarchive project") 
+        raise HTTPException(status_code=500, detail="Failed to archive/unarchive project")

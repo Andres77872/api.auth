@@ -10,35 +10,35 @@ hierarchical access control system where:
 
 import json
 import secrets
-import os
-from typing import List, Optional, Tuple
 from datetime import datetime
+from typing import List, Optional
 
 import pymysql
 
 from src.Util.Models import (
-    Project, ProjectGroup, ProjectGroupMember, ProjectSummary
+    Project, ProjectGroup, ProjectGroupMember
 )
 from src.Util.db_config import get_connection
 
 
 # =================== PROJECT GROUP MANAGEMENT ===================
 
-def create_project_group(group_name: str, permissions: List[str], group_description: str = None, created_by: int = None) -> ProjectGroup:
+def create_project_group(group_name: str, permissions: List[str], group_description: str = None,
+                         created_by: int = None) -> ProjectGroup:
     """Create a new project group with permissions"""
     group_hash = secrets.token_hex(32).upper()
     permissions_json = json.dumps(permissions)
-    
+
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            INSERT INTO project_groups (group_hash, group_name, group_description, permissions, created_at)
-            VALUES (%s, %s, %s, %s, NOW())
-        """, [group_hash, group_name, group_description, permissions_json])
-        
+                    INSERT INTO project_groups (group_hash, group_name, group_description, permissions, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    """, [group_hash, group_name, group_description, permissions_json])
+
         group_id = con.insert_id()
         con.commit()
-        
+
         return ProjectGroup(
             id=group_id,
             group_hash=group_hash,
@@ -55,11 +55,19 @@ def get_project_group_by_id(group_id: int) -> Optional[ProjectGroup]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, group_hash, group_name, group_description, permissions, created_at, updated_at, is_active
-            FROM project_groups 
-            WHERE id = %s AND is_active = 1
-        """, [group_id])
-        
+                    SELECT id,
+                           group_hash,
+                           group_name,
+                           group_description,
+                           permissions,
+                           created_at,
+                           updated_at,
+                           is_active
+                    FROM project_groups
+                    WHERE id = %s
+                      AND is_active = 1
+                    """, [group_id])
+
         result = cur.fetchone()
         if result:
             permissions = json.loads(result[4]) if result[4] else []
@@ -81,11 +89,19 @@ def get_project_group_by_hash(group_hash: str) -> Optional[ProjectGroup]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, group_hash, group_name, group_description, permissions, created_at, updated_at, is_active
-            FROM project_groups 
-            WHERE group_hash = %s AND is_active = 1
-        """, [group_hash])
-        
+                    SELECT id,
+                           group_hash,
+                           group_name,
+                           group_description,
+                           permissions,
+                           created_at,
+                           updated_at,
+                           is_active
+                    FROM project_groups
+                    WHERE group_hash = %s
+                      AND is_active = 1
+                    """, [group_hash])
+
         result = cur.fetchone()
         if result:
             permissions = json.loads(result[4]) if result[4] else []
@@ -107,11 +123,19 @@ def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, group_hash, group_name, group_description, permissions, created_at, updated_at, is_active
-            FROM project_groups 
-            WHERE group_name = %s AND is_active = 1
-        """, [group_name])
-        
+                    SELECT id,
+                           group_hash,
+                           group_name,
+                           group_description,
+                           permissions,
+                           created_at,
+                           updated_at,
+                           is_active
+                    FROM project_groups
+                    WHERE group_name = %s
+                      AND is_active = 1
+                    """, [group_name])
+
         result = cur.fetchone()
         if result:
             permissions = json.loads(result[4]) if result[4] else []
@@ -133,13 +157,21 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, group_hash, group_name, group_description, permissions, created_at, updated_at, is_active
-            FROM project_groups 
-            WHERE is_active = 1
-            ORDER BY group_name ASC
-            LIMIT %s OFFSET %s
-        """, [limit, offset])
-        
+                    SELECT id,
+                           group_hash,
+                           group_name,
+                           group_description,
+                           permissions,
+                           created_at,
+                           updated_at,
+                           is_active
+                    FROM project_groups
+                    WHERE is_active = 1
+                    ORDER BY group_name ASC
+                        LIMIT %s
+                    OFFSET %s
+                    """, [limit, offset])
+
         results = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -153,45 +185,46 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
-        
+
         return results
 
 
-def update_project_group(group_id: int, group_name: str = None, group_description: str = None, permissions: List[str] = None) -> Optional[ProjectGroup]:
+def update_project_group(group_id: int, group_name: str = None, group_description: str = None,
+                         permissions: List[str] = None) -> Optional[ProjectGroup]:
     """Update project group information"""
     if not group_name and group_description is None and permissions is None:
         return None
-    
+
     with get_connection() as con:
         cur = con.cursor()
-        
+
         # Build dynamic update query
         update_fields = []
         update_values = []
-        
+
         if group_name:
             update_fields.append("group_name = %s")
             update_values.append(group_name)
-        
+
         if group_description is not None:
             update_fields.append("group_description = %s")
             update_values.append(group_description)
-        
+
         if permissions is not None:
             update_fields.append("permissions = %s")
             update_values.append(json.dumps(permissions))
-        
+
         update_fields.append("updated_at = NOW()")
         update_values.append(group_id)
-        
+
         query = f"""
             UPDATE project_groups 
             SET {', '.join(update_fields)}
             WHERE id = %s AND is_active = 1
         """
-        
+
         cur.execute(query, update_values)
-        
+
         if cur.rowcount > 0:
             con.commit()
             return get_project_group_by_id(group_id)
@@ -203,32 +236,37 @@ def delete_project_group(group_id: int, deleted_by: int = None) -> bool:
     """Soft delete a project group and all related relationships"""
     with get_connection() as con:
         cur = con.cursor()
-        
+
         try:
             # Start transaction
             con.begin()
-            
+
             # Soft delete the project group
             cur.execute("""
-                UPDATE project_groups 
-                SET is_active = 0, updated_at = NOW()
-                WHERE id = %s AND is_active = 1
-            """, [group_id])
-            
+                        UPDATE project_groups
+                        SET is_active  = 0,
+                            updated_at = NOW()
+                        WHERE id = %s
+                          AND is_active = 1
+                        """, [group_id])
+
             if cur.rowcount == 0:
                 con.rollback()
                 return False
-            
+
             # Soft delete all project memberships
             cur.execute("""
-                UPDATE project_group_members 
-                SET is_active = 0, removed_at = NOW(), removed_by = %s
-                WHERE project_group_id = %s AND is_active = 1
-            """, [deleted_by, group_id])
-            
+                        UPDATE project_group_members
+                        SET is_active  = 0,
+                            removed_at = NOW(),
+                            removed_by = %s
+                        WHERE project_group_id = %s
+                          AND is_active = 1
+                        """, [deleted_by, group_id])
+
             con.commit()
             return True
-            
+
         except Exception as e:
             con.rollback()
             print(f"Error deleting project group: {e}")
@@ -237,20 +275,21 @@ def delete_project_group(group_id: int, deleted_by: int = None) -> bool:
 
 # =================== PROJECT GROUP MEMBERSHIP ===================
 
-def assign_project_to_group(project_id: int, project_group_id: int, assigned_by: int = None) -> Optional[ProjectGroupMember]:
+def assign_project_to_group(project_id: int, project_group_id: int, assigned_by: int = None) -> Optional[
+    ProjectGroupMember]:
     """Assign a project to a project group"""
     with get_connection() as con:
         cur = con.cursor()
-        
+
         try:
             cur.execute("""
-                INSERT INTO project_group_members (project_id, project_group_id, assigned_at, assigned_by)
-                VALUES (%s, %s, NOW(), %s)
-            """, [project_id, project_group_id, assigned_by])
-            
+                        INSERT INTO project_group_members (project_id, project_group_id, assigned_at, assigned_by)
+                        VALUES (%s, %s, NOW(), %s)
+                        """, [project_id, project_group_id, assigned_by])
+
             member_id = con.insert_id()
             con.commit()
-            
+
             return ProjectGroupMember(
                 id=member_id,
                 project_id=project_id,
@@ -259,19 +298,23 @@ def assign_project_to_group(project_id: int, project_group_id: int, assigned_by:
                 assigned_by=assigned_by,
                 is_active=True
             )
-            
+
         except pymysql.IntegrityError:
             # Project already in group, reactivate if needed
             cur.execute("""
-                UPDATE project_group_members 
-                SET is_active = 1, removed_at = NULL, removed_by = NULL, assigned_by = %s
-                WHERE project_id = %s AND project_group_id = %s
-            """, [assigned_by, project_id, project_group_id])
-            
+                        UPDATE project_group_members
+                        SET is_active   = 1,
+                            removed_at  = NULL,
+                            removed_by  = NULL,
+                            assigned_by = %s
+                        WHERE project_id = %s
+                          AND project_group_id = %s
+                        """, [assigned_by, project_id, project_group_id])
+
             if cur.rowcount > 0:
                 con.commit()
                 return get_project_group_membership(project_id, project_group_id)
-            
+
             return None
 
 
@@ -280,11 +323,15 @@ def remove_project_from_group(project_id: int, project_group_id: int, removed_by
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            UPDATE project_group_members 
-            SET is_active = 0, removed_at = NOW(), removed_by = %s
-            WHERE project_id = %s AND project_group_id = %s AND is_active = 1
-        """, [removed_by, project_id, project_group_id])
-        
+                    UPDATE project_group_members
+                    SET is_active  = 0,
+                        removed_at = NOW(),
+                        removed_by = %s
+                    WHERE project_id = %s
+                      AND project_group_id = %s
+                      AND is_active = 1
+                    """, [removed_by, project_id, project_group_id])
+
         success = cur.rowcount > 0
         if success:
             con.commit()
@@ -296,11 +343,20 @@ def get_project_group_membership(project_id: int, project_group_id: int) -> Opti
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT id, project_id, project_group_id, assigned_at, assigned_by, removed_at, removed_by, is_active
-            FROM project_group_members 
-            WHERE project_id = %s AND project_group_id = %s AND is_active = 1
-        """, [project_id, project_group_id])
-        
+                    SELECT id,
+                           project_id,
+                           project_group_id,
+                           assigned_at,
+                           assigned_by,
+                           removed_at,
+                           removed_by,
+                           is_active
+                    FROM project_group_members
+                    WHERE project_id = %s
+                      AND project_group_id = %s
+                      AND is_active = 1
+                    """, [project_id, project_group_id])
+
         result = cur.fetchone()
         if result:
             return ProjectGroupMember(
@@ -321,14 +377,22 @@ def get_project_groups_for_project(project_id: int) -> List[ProjectGroup]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT pg.id, pg.group_hash, pg.group_name, pg.group_description, pg.permissions,
-                   pg.created_at, pg.updated_at, pg.is_active
-            FROM project_groups pg
-            INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-            WHERE pgm.project_id = %s AND pg.is_active = 1 AND pgm.is_active = 1
-            ORDER BY pg.group_name ASC
-        """, [project_id])
-        
+                    SELECT pg.id,
+                           pg.group_hash,
+                           pg.group_name,
+                           pg.group_description,
+                           pg.permissions,
+                           pg.created_at,
+                           pg.updated_at,
+                           pg.is_active
+                    FROM project_groups pg
+                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
+                    WHERE pgm.project_id = %s
+                      AND pg.is_active = 1
+                      AND pgm.is_active = 1
+                    ORDER BY pg.group_name ASC
+                    """, [project_id])
+
         groups = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -342,7 +406,7 @@ def get_project_groups_for_project(project_id: int) -> List[ProjectGroup]:
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
-        
+
         return groups
 
 
@@ -351,14 +415,21 @@ def get_projects_in_group(project_group_id: int) -> List[Project]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT p.id, p.project_hash, p.project_name, p.project_description, 
-                   p.created_at, p.updated_at, p.is_active
-            FROM projects p
-            INNER JOIN project_group_members pgm ON p.id = pgm.project_id
-            WHERE pgm.project_group_id = %s AND p.is_active = 1 AND pgm.is_active = 1
-            ORDER BY p.project_name ASC
-        """, [project_group_id])
-        
+                    SELECT p.id,
+                           p.project_hash,
+                           p.project_name,
+                           p.project_description,
+                           p.created_at,
+                           p.updated_at,
+                           p.is_active
+                    FROM projects p
+                             INNER JOIN project_group_members pgm ON p.id = pgm.project_id
+                    WHERE pgm.project_group_id = %s
+                      AND p.is_active = 1
+                      AND pgm.is_active = 1
+                    ORDER BY p.project_name ASC
+                    """, [project_group_id])
+
         projects = []
         for row in cur.fetchall():
             projects.append(Project(
@@ -370,7 +441,7 @@ def get_projects_in_group(project_group_id: int) -> List[Project]:
                 updated_at=row[5],
                 is_active=bool(row[6])
             ))
-        
+
         return projects
 
 
@@ -381,17 +452,19 @@ def get_project_permissions(project_id: int) -> List[str]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT DISTINCT pg.permissions
-            FROM project_groups pg
-            INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-            WHERE pgm.project_id = %s AND pg.is_active = 1 AND pgm.is_active = 1
-        """, [project_id])
-        
+                    SELECT DISTINCT pg.permissions
+                    FROM project_groups pg
+                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
+                    WHERE pgm.project_id = %s
+                      AND pg.is_active = 1
+                      AND pgm.is_active = 1
+                    """, [project_id])
+
         all_permissions = set()
         for row in cur.fetchall():
             permissions = json.loads(row[0]) if row[0] else []
             all_permissions.update(permissions)
-        
+
         return list(all_permissions)
 
 
@@ -400,23 +473,28 @@ def get_user_project_permissions(user_id: int, project_id: int) -> List[str]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT DISTINCT pg.permissions
-            FROM project_groups pg
-            INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-            INNER JOIN projects p ON pgm.project_id = p.id
-            INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-            INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-            INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-            WHERE ugm.user_id = %s AND p.id = %s 
-            AND pg.is_active = 1 AND pgm.is_active = 1 AND p.is_active = 1
-            AND ugp.is_active = 1 AND ug.is_active = 1 AND ugm.is_active = 1
-        """, [user_id, project_id])
-        
+                    SELECT DISTINCT pg.permissions
+                    FROM project_groups pg
+                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
+                             INNER JOIN projects p ON pgm.project_id = p.id
+                             INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
+                             INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
+                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND p.id = %s
+                      AND pg.is_active = 1
+                      AND pgm.is_active = 1
+                      AND p.is_active = 1
+                      AND ugp.is_active = 1
+                      AND ug.is_active = 1
+                      AND ugm.is_active = 1
+                    """, [user_id, project_id])
+
         all_permissions = set()
         for row in cur.fetchall():
             permissions = json.loads(row[0]) if row[0] else []
             all_permissions.update(permissions)
-        
+
         return list(all_permissions)
 
 
@@ -447,7 +525,7 @@ def create_default_project_groups():
             'permissions': ['read', 'view']
         }
     ]
-    
+
     created_groups = []
     for group_data in default_groups:
         # Check if group already exists
@@ -461,7 +539,7 @@ def create_default_project_groups():
             created_groups.append(group)
         else:
             created_groups.append(existing_group)
-    
+
     return created_groups
 
 
@@ -480,16 +558,23 @@ def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGrou
     with get_connection() as con:
         cur = con.cursor()
         search_pattern = f"%{search_term}%"
-        
+
         cur.execute("""
-            SELECT id, group_hash, group_name, group_description, permissions, created_at, updated_at, is_active
-            FROM project_groups 
-            WHERE is_active = 1 
-            AND (group_name LIKE %s OR group_description LIKE %s)
-            ORDER BY group_name ASC
-            LIMIT %s
-        """, [search_pattern, search_pattern, limit])
-        
+                    SELECT id,
+                           group_hash,
+                           group_name,
+                           group_description,
+                           permissions,
+                           created_at,
+                           updated_at,
+                           is_active
+                    FROM project_groups
+                    WHERE is_active = 1
+                      AND (group_name LIKE %s OR group_description LIKE %s)
+                    ORDER BY group_name ASC
+                        LIMIT %s
+                    """, [search_pattern, search_pattern, limit])
+
         results = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -503,5 +588,5 @@ def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGrou
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
-        
-        return results 
+
+        return results

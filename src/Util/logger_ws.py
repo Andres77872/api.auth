@@ -9,8 +9,8 @@ async def logger(payload: dict, realm: str, collection: str):
         'X-token-realm': '9CFE23E08EA0DCAAAEA5AA642F3BF7A4A38EBB2F05C053CD0363A8FD87995A41'
     }
     async with aiohttp.ClientSession() as session:
-        async with session.put(url + f'/log/{realm}/{collection}', 
-                              headers=headers, 
-                              json={'data': payload}) as res:
+        async with session.put(url + f'/log/{realm}/{collection}',
+                               headers=headers,
+                               json={'data': payload}) as res:
             if res.status != 202:
                 print(res)

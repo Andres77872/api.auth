@@ -16,16 +16,16 @@ This package contains all API route definitions organized by functional area:
 """
 
 from . import Access
-from . import auth
-from . import users
-from . import user_types_auth
-from . import projects
-from . import admin_user_groups
-from . import admin_project_groups
 from . import admin_dashboard
+from . import admin_project_groups
+from . import admin_user_groups
 from . import analytics
+from . import auth
+from . import projects
 from . import rbac
 from . import system
+from . import user_types_auth
+from . import users
 
 __all__ = [
     'Access',
@@ -39,4 +39,4 @@ __all__ = [
     'analytics',
     'rbac',
     'system'
-] 
+]

@@ -5,8 +5,9 @@ Updated models using Pydantic for validation and serialization.
 Includes both data models and API response models.
 """
 
-from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
+from typing import List, Optional, Dict, Any
+
 from pydantic import BaseModel, Field, ConfigDict
 
 

@@ -6,26 +6,26 @@ for the group-based multi-project authentication system.
 """
 
 import logging
+from datetime import datetime
+from typing import Optional, Dict, Any
+
 from fastapi import APIRouter, HTTPException, Depends, Form
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-from datetime import datetime
 
+from src.Util.Models import (
+    UserProfileResponse, UpdateProfileResponse, AccessSummaryResponse,
+    ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
+    UserInfo, ProjectInfo, PaginationInfo
+)
+from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.activity_logger import log_activity, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users, count_users, get_user_permissions_in_project,
-    get_user_by_id, is_root_user, is_admin_user
+    is_root_user
 )
-from src.Util.Models import (
-    UserProfileResponse, UpdateProfileResponse, AccessSummaryResponse,
-    ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
-    UserInfo, ProjectInfo, UserUpdateRequest, PaginationInfo
-)
-from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.password_generator import generate_temporary_password, create_password_reset_data
-from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.password_generator import create_password_reset_data
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -46,18 +46,18 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get user's complete profile with groups
         user_data = get_user_by_hash(session_data.user_hash)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get user's accessible projects
         user_projects = get_user_accessible_projects(user_data.id)
-        
+
         # Build user info
         user_info = UserInfo(
             user_hash=user_data.user_hash,
@@ -66,7 +66,7 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
             user_type=getattr(user_data, 'user_type', 'consumer'),
             created_at=user_data.created_at
         )
-        
+
         # Build accessible projects list
         accessible_projects = []
         if user_projects:
@@ -76,20 +76,20 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
                     project_name=getattr(proj, 'project_name', ''),
                     project_description=getattr(proj, 'project_description', None)
                 ))
-        
+
         # Build current project info
         current_project = ProjectInfo(
             project_hash=session_data.project_hash,
             project_name=session_data.project_name
         )
-        
+
         return UserProfileResponse(
             success=True,
             user=user_info,
             accessible_projects=accessible_projects,
             current_project=current_project
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -99,10 +99,10 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
 
 @router.put("/profile", response_model=UpdateProfileResponse)
 async def update_user_profile(
-    username: Optional[str] = Form(None),
-    email: Optional[str] = Form(None),
-    password: Optional[str] = Form(None),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        username: Optional[str] = Form(None),
+        email: Optional[str] = Form(None),
+        password: Optional[str] = Form(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateProfileResponse:
     """
     Update current user's profile information.
@@ -118,19 +118,19 @@ async def update_user_profile(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get current user
         current_user = get_user_by_hash(session_data.user_hash)
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         update_username = username
         update_email = email
         update_password = password
-        
+
         # Update user
         updated_user = update_user(
             current_user.id,
@@ -138,10 +138,10 @@ async def update_user_profile(
             email=update_email,
             password=update_password
         )
-        
+
         if not updated_user:
             raise HTTPException(status_code=400, detail="Update failed")
-        
+
         # Build updated user info
         user_info = UserInfo(
             user_hash=updated_user.user_hash,
@@ -149,13 +149,13 @@ async def update_user_profile(
             email=updated_user.email,
             user_type=getattr(updated_user, 'user_type', 'consumer')
         )
-        
+
         return UpdateProfileResponse(
             success=True,
             message="Profile updated successfully",
             user=user_info
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -164,7 +164,8 @@ async def update_user_profile(
 
 
 @router.get("/access-summary", response_model=AccessSummaryResponse)
-async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = Depends(security)) -> AccessSummaryResponse:
+async def get_user_access_summary(
+        credentials: HTTPAuthorizationCredentials = Depends(security)) -> AccessSummaryResponse:
     """
     Get summary of user's group memberships and project access.
     
@@ -174,20 +175,20 @@ async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = De
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         user_data = get_user_by_hash(session_data.user_hash)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get user's group memberships
         user_groups = get_user_groups_for_user(user_data.id)
-        
+
         # Get comprehensive access information
         accessible_projects = get_user_accessible_projects(user_data.id)
-        
+
         # Build user groups list
         group_list = []
         for group in user_groups:
@@ -195,7 +196,7 @@ async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = De
                 "group_name": group.group_name,
                 "description": group.description if hasattr(group, 'description') else group.group_description
             })
-        
+
         # Build accessible projects list
         project_list = []
         if accessible_projects:
@@ -205,7 +206,7 @@ async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = De
                     "project_name": getattr(proj, 'project_name', ''),
                     "project_description": getattr(proj, 'project_description', None)
                 })
-        
+
         # Build access summary
         access_summary = {
             "user": {
@@ -227,12 +228,12 @@ async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = De
                 "is_admin": "admin" in getattr(session_data, 'permissions', [])
             }
         }
-        
+
         return AccessSummaryResponse(
             success=True,
             access_summary=access_summary
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -242,12 +243,12 @@ async def get_user_access_summary(credentials: HTTPAuthorizationCredentials = De
 
 @router.get("", response_model=ListUsersResponse)
 async def list_all_users(
-    limit: int = 50,
-    offset: int = 0,
-    user_type: Optional[str] = None,
-    search: Optional[str] = None,
-    is_active: Optional[bool] = None,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        limit: int = 50,
+        offset: int = 0,
+        user_type: Optional[str] = None,
+        search: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> ListUsersResponse:
     """
     List all users with filtering options.
@@ -267,36 +268,39 @@ async def list_all_users(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         current_user = get_user_by_hash(session_data.user_hash)
         if not current_user:
             raise HTTPException(status_code=404, detail="Current user not found")
-        
+
+        # Check if user is root or has required permissions
+        is_root = is_root_user(current_user.id)
         user_permissions = getattr(session_data, 'permissions', [])
-        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+
+        if not is_root and 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to list users")
-        
+
         # Limit constraints
         if limit > 100:
             limit = 100
-        
+
         # Get users with filtering
         if search:
             from src.Util.db import search_users
             users = search_users(search, user_type, limit)
         else:
             users = list_users(limit=limit, offset=offset, user_type=user_type)
-        
+
         # Apply is_active filter if specified
         if is_active is not None:
             users = [u for u in users if u.is_active == is_active]
-        
+
         total_count = count_users(user_type=user_type)
-        
+
         # Build response data
         user_list = []
         for user in users:
@@ -309,7 +313,7 @@ async def list_all_users(
                 "created_at": user.created_at,
                 "updated_at": user.updated_at
             }
-            
+
             # Add project info for admin users
             if user.user_type == 'admin' and user.assigned_project_id:
                 from src.Util.db import get_project_by_id
@@ -320,29 +324,29 @@ async def list_all_users(
                         "project_hash": project.project_hash,
                         "project_name": project.project_name
                     }
-            
+
             user_list.append(user_info)
-        
+
         pagination = PaginationInfo(
             limit=limit,
             offset=offset,
             total=total_count,
             has_more=offset + limit < total_count
         )
-        
+
         filters_info = {
             "user_type": user_type,
             "search": search,
             "is_active": is_active
         }
-        
+
         return ListUsersResponse(
             success=True,
             users=user_list,
             pagination=pagination,
             filters=filters_info
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -352,8 +356,8 @@ async def list_all_users(
 
 @router.get("/{user_hash}", response_model=GetUserDetailsResponse)
 async def get_user_details(
-    user_hash: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        user_hash: str,
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> GetUserDetailsResponse:
     """
     Get detailed information about a specific user.
@@ -369,33 +373,33 @@ async def get_user_details(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Get current user
         current_user = get_user_by_hash(session_data.user_hash)
         user_permissions = getattr(session_data, 'permissions', [])
-        
+
         # Access control: Admin users can view anyone, regular users only themselves
         if current_user.id != target_user.id:
             if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
                 raise HTTPException(status_code=403, detail="Permission denied")
-        
+
         # Get user's groups and permissions
         user_groups = get_user_groups_for_user(target_user.id)
         accessible_projects = get_user_accessible_projects(target_user.id)
-        
+
         # Get permissions in current project if available
         permissions = []
         if hasattr(session_data, 'project_id') and session_data.project_id:
             permissions = get_user_permissions_in_project(target_user.id, session_data.project_id)
-        
+
         # Build user details
         user_details = {
             "user_hash": target_user.user_hash,
@@ -406,17 +410,17 @@ async def get_user_details(
             "created_at": target_user.created_at,
             "updated_at": target_user.updated_at
         }
-        
+
         # Add admin-specific info
         if target_user.user_type == 'admin':
             from src.Util.db import get_admin_project_assignments_with_details
             assignments = get_admin_project_assignments_with_details(target_user.id)
             user_details["project_assignments"] = assignments
             user_details["total_assigned_projects"] = len(assignments)
-        
+
         # Build groups list
         groups_list = [group.group_name for group in user_groups]
-        
+
         # Build accessible projects list
         projects_list = []
         if accessible_projects:
@@ -426,7 +430,7 @@ async def get_user_details(
                     project_name=getattr(proj, 'project_name', ''),
                     project_description=getattr(proj, 'project_description', None)
                 ))
-        
+
         # Build statistics
         statistics = {
             "total_groups": len(user_groups),
@@ -434,7 +438,7 @@ async def get_user_details(
             "total_permissions": len(permissions),
             "account_age_days": (datetime.utcnow() - target_user.created_at).days if target_user.created_at else 0
         }
-        
+
         return GetUserDetailsResponse(
             success=True,
             user=user_details,
@@ -443,7 +447,7 @@ async def get_user_details(
             accessible_projects=projects_list,
             statistics=statistics
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -453,9 +457,9 @@ async def get_user_details(
 
 @router.patch("/{user_hash}/status", response_model=UpdateUserStatusResponse)
 async def update_user_status(
-    user_hash: str,
-    is_active: bool = Form(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        user_hash: str,
+        is_active: bool = Form(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateUserStatusResponse:
     """
     Update user's active status (activate/deactivate).
@@ -472,52 +476,53 @@ async def update_user_status(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         current_user = get_user_by_hash(session_data.user_hash)
         user_permissions = getattr(session_data, 'permissions', [])
-        
+
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to update user status")
-        
+
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Prevent deactivating root users
         if target_user.user_type == 'root' and not is_active:
             raise HTTPException(status_code=400, detail="Cannot deactivate root users")
-        
+
         # Prevent users from deactivating themselves
         if current_user.id == target_user.id:
             raise HTTPException(status_code=400, detail="Cannot change your own status")
-        
+
         # Update user status using the update_user function with a custom is_active field
         # Note: We need to implement this in the database layer if not already present
         try:
             # First, let's try to update using the existing update_user function
             from src.Util.db_config import get_connection
-            
+
             with get_connection() as con:
                 cur = con.cursor()
                 cur.execute("""
-                    UPDATE users 
-                    SET is_active = %s, updated_at = NOW()
-                    WHERE user_hash = %s
-                """, [is_active, user_hash])
-                
+                            UPDATE users
+                            SET is_active  = %s,
+                                updated_at = NOW()
+                            WHERE user_hash = %s
+                            """, [is_active, user_hash])
+
                 if cur.rowcount == 0:
                     raise HTTPException(status_code=404, detail="User not found or update failed")
-                
+
                 con.commit()
-            
+
             # Get updated user
             updated_user = get_user_by_hash(user_hash)
-            
+
             # Build user info
             user_info = UserInfo(
                 user_hash=updated_user.user_hash,
@@ -526,7 +531,7 @@ async def update_user_status(
                 user_type=updated_user.user_type,
                 created_at=updated_user.created_at
             )
-            
+
             status_change = {
                 "previous_status": target_user.is_active,
                 "new_status": is_active,
@@ -534,20 +539,21 @@ async def update_user_status(
                 "changed_at": datetime.utcnow().isoformat(),
                 "action": "activated" if is_active else "deactivated"
             }
-            
-            logger.info(f"User status updated: {target_user.username} -> {'activated' if is_active else 'deactivated'} by {current_user.username}")
-            
+
+            logger.info(
+                f"User status updated: {target_user.username} -> {'activated' if is_active else 'deactivated'} by {current_user.username}")
+
             return UpdateUserStatusResponse(
                 success=True,
                 message=f"User '{target_user.username}' has been {'activated' if is_active else 'deactivated'}",
                 user=user_info,
                 status_change=status_change
             )
-            
+
         except Exception as db_error:
             logger.error(f"Database error updating user status: {str(db_error)}")
             raise HTTPException(status_code=500, detail="Failed to update user status")
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -557,8 +563,8 @@ async def update_user_status(
 
 @router.post("/{user_hash}/reset-password")
 async def reset_user_password(
-    user_hash: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        user_hash: str,
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Reset user's password and generate temporary password.
@@ -575,36 +581,36 @@ async def reset_user_password(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check admin permissions
         current_user = get_user_by_hash(session_data.user_hash)
         user_permissions = getattr(session_data, 'permissions', [])
-        
+
         if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
             raise HTTPException(status_code=403, detail="Admin permission required to reset passwords")
-        
+
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Prevent resetting root user passwords
         if target_user.user_type == 'root':
             raise HTTPException(status_code=400, detail="Cannot reset root user passwords")
-        
+
         # Generate password reset data (includes temporary password)
         reset_data = create_password_reset_data(target_user.id)
         temp_password = reset_data["temporary_password"]
-        
+
         # Update user's password in database
         success = update_user(target_user.id, password=temp_password)
-        
+
         if not success:
             raise HTTPException(status_code=500, detail="Failed to reset password")
-        
+
         # Log the activity
         log_activity(
             user_id=current_user.id,
@@ -613,9 +619,9 @@ async def reset_user_password(
             target_user_id=target_user.id,
             project_id=getattr(session_data, 'project_id', None)
         )
-        
+
         logger.info(f"Password reset by admin {current_user.username} for user {target_user.username}")
-        
+
         return {
             "success": True,
             "message": "Password reset successfully",
@@ -631,7 +637,7 @@ async def reset_user_password(
             },
             "instructions": "User must change password on next login"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -641,9 +647,9 @@ async def reset_user_password(
 
 @router.patch("/{user_hash}/type")
 async def change_user_type(
-    user_hash: str,
-    user_type: str = Form(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+        user_hash: str,
+        user_type: str = Form(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
     Change user type (ROOT only).
@@ -661,36 +667,36 @@ async def change_user_type(
     try:
         session_token = credentials.credentials
         session_data = validate_session(session_token)
-        
+
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
-        
+
         # Check ROOT permissions
         current_user = get_user_by_hash(session_data.user_hash)
         if not current_user or current_user.user_type != 'root':
             raise HTTPException(status_code=403, detail="ROOT permission required to change user types")
-        
+
         # Validate user type
         valid_types = ['root', 'admin', 'consumer']
         if user_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Invalid user type. Must be one of: {', '.join(valid_types)}")
-        
+
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Prevent changing own type
         if current_user.id == target_user.id:
             raise HTTPException(status_code=400, detail="Cannot change your own user type")
-        
+
         # Update user type
         from src.Util.db import update_user_type
         updated_user = update_user_type(target_user.id, user_type)
-        
+
         if not updated_user:
             raise HTTPException(status_code=500, detail="Failed to update user type")
-        
+
         # Log the activity
         log_activity(
             user_id=current_user.id,
@@ -699,9 +705,9 @@ async def change_user_type(
             target_user_id=target_user.id,
             project_id=getattr(session_data, 'project_id', None)
         )
-        
+
         logger.info(f"User type changed by ROOT {current_user.username}: {target_user.username} -> {user_type}")
-        
+
         return {
             "success": True,
             "message": f"User type changed to {user_type} successfully",
@@ -719,9 +725,9 @@ async def change_user_type(
                 "changed_at": datetime.utcnow().isoformat()
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"User type change error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User type change failed") 
+        raise HTTPException(status_code=500, detail="User type change failed")

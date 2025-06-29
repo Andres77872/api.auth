@@ -6,6 +6,7 @@ to eliminate duplication across database modules.
 """
 
 import os
+
 import pymysql
 import redis
 
@@ -40,4 +41,4 @@ def get_redis_client():
 
 
 # Global Redis client instance
-redis_client = get_redis_client() 
+redis_client = get_redis_client()
