@@ -17,7 +17,7 @@ CONNECTION_CONFIG = {
     "host": DB_HOST,
     "user": "root",
     "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": "magic-auth"
+    "database": "magic_auth"
 }
 
 # Redis connection configuration
