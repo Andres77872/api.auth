@@ -42,9 +42,9 @@ ROOT USER CAPABILITIES:
 ### 2. ADMIN USERS (Project-Scoped Administrators)
 ```
 ADMIN USER CAPABILITIES:
-├── Limited to their specific assigned project (assigned_project_id)
-├── Full administrative rights within their project scope only
-├── Can manage users, groups, and permissions in their project
+├── Can be assigned to one or multiple projects
+├── Full administrative rights within their assigned project scopes
+├── Can manage users, groups, and permissions in their assigned projects
 ├── Cannot access other projects or global system settings
 └── Project boundary enforcement at database level
 ```
@@ -67,8 +67,8 @@ CONSUMER USER CAPABILITIES:
 └─────────────┘    └──────────────┘    └─────────────────┘
 
 ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
-│ ADMIN USERS │───►│ PROJECT      │───►│ ASSIGNED        │
-│ (Project)   │    │ SCOPED       │    │ PROJECT ONLY    │
+│ ADMIN USERS │───►│ MULTI-PROJECT│───►│ ASSIGNED        │
+│ (Project)   │    │ SCOPED       │    │ PROJECTS ONLY   │
 └─────────────┘    └──────────────┘    └─────────────────┘
 
 ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
@@ -381,24 +381,29 @@ def check_project_group_permission(project_id, permission):
 ┌─────────────────────────────────────────────────────────────────┐
 │                    GROUP-BASED SECURITY LAYERS                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ 1. Transport Security (HTTPS/TLS)                               │
+│ 1. Password Security (Argon2 Hashing)                           │
+│    • Industry-standard Argon2id for password hashing            │
+│    • Automatic salt generation and management                   │
+│    • Secure migration path for legacy hashes                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ 2. Authentication (Session Tokens with Group Context)           │
+│ 2. Transport Security (HTTPS/TLS)                               │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. Authentication (Session Tokens with Group Context)           │
 │    • Token validation with user group information               │
 │    • Session expiration                                         │
 │    • Group-based project switching                              │
 ├─────────────────────────────────────────────────────────────────┤
-│ 3. Authorization (Hierarchical Group Permissions)               │
+│ 4. Authorization (Hierarchical Group Permissions)               │
 │    • User group defines project access                          │
 │    • Project group defines permissions                          │
 │    • Dynamic permission resolution                              │
 ├─────────────────────────────────────────────────────────────────┤
-│ 4. Data Security (Group-Based Data Isolation)                   │
+│ 5. Data Security (Group-Based Data Isolation)                   │
 │    • Users only see projects their groups access                │
 │    • Projects only accessible through group membership          │
 │    • Audit trail of all group assignments                       │
 ├─────────────────────────────────────────────────────────────────┤
-│ 5. Application Security (Group-Aware Validation)                │
+│ 6. Application Security (Group-Aware Validation)                │
 │    • Request validation with group context                      │
 │    • CORS configuration                                         │
 │    • Rate limiting per user group                               │

@@ -71,15 +71,17 @@ Welcome to the comprehensive documentation for the **3-Tier User Type Multi-Proj
 ### 3-Tier User Type Architecture
 ```
 ROOT USERS     → Unrestricted Global Access
-ADMIN USERS    → Project-Scoped Admin Access (assigned_project_id)
+ADMIN USERS    → Multi-Project Admin Access
 CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Groups → Permissions)
 ```
 
 ### Key Features
 - **3-Tier User Types**: Clear privilege separation (root, admin, consumer)
+- **Multi-Project Admin Support**: Admins can manage multiple projects while maintaining isolation
 - **Hierarchical Groups**: Clean user → group → project → permissions flow for consumer users
 - **Project Isolation**: Each project has independent access control with admin boundaries
 - **Scalable Design**: Supports thousands of users and projects with efficient user type management
+- **Upgraded Password Security**: Passwords are now hashed using the modern Argon2 algorithm
 - **Security First**: Multi-layer security with user type enforcement and comprehensive audit trails
 - **Developer Friendly**: Clean APIs with comprehensive documentation for all user types
 
@@ -88,6 +90,20 @@ CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Group
 - **MySQL** - Persistent data storage
 - **Redis** - Advanced multi-layer caching system (sessions, access checks, RBAC)
 - **Docker** - Containerized deployment
+
+### 3-Tier User Type Benefits
+- **Root Users**: Unrestricted global administration for system management
+- **Admin Users**: Multi-project administration with clear boundaries
+- **Consumer Users**: Group-based access with flexible RBAC permissions
+- **Centralized Management**: Manage users through types and groups efficiently
+- **Audit Trail**: Complete tracking of user type changes and group assignments
+- **Scalable**: Add users with appropriate privilege levels
+
+### Developer Experience
+- **Comprehensive Documentation**: Every endpoint documented with examples
+- **Multiple SDKs**: Python and JavaScript examples included
+- **Testing Tools**: Built-in health checks and validation
+- **Clean API Design**: Consistent, predictable endpoints
 
 ---
 
@@ -140,7 +156,7 @@ CONSUMER USERS → RBAC Access (User Groups → Project Access → Project Group
 
 ### 3-Tier User Type Benefits
 - **Root Users**: Unrestricted global administration for system management
-- **Admin Users**: Project-specific administration with clear boundaries
+- **Admin Users**: Multi-project administration with clear boundaries
 - **Consumer Users**: Group-based access with flexible RBAC permissions
 - **Centralized Management**: Manage users through types and groups efficiently
 - **Audit Trail**: Complete tracking of user type changes and group assignments
