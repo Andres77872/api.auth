@@ -6,10 +6,10 @@ USE magic_auth;
 
 -- =================== CREATE ROOT USER ===================
 -- Create the first root user (password: admin123)
--- Password hash for 'admin123': 240BE518FABD2724DDB6F04EEB1DA5967448D7E831C08C8FA822809F74C720A9
+-- Password hash for 'admin123': 1be6588ad163643cae7ba7bbc6492c9fd035e01f1a1a9ed46e90f8c8ab3494c1
 INSERT INTO users (user_hash, username, email, password_hash, user_type, created_at, is_active)
 VALUES (CONCAT('usr-', UUID()), 'root', 'root@system.local', 
-        '240BE518FABD2724DDB6F04EEB1DA5967448D7E831C08C8FA822809F74C720A9', 
+        '1be6588ad163643cae7ba7bbc6492c9fd035e01f1a1a9ed46e90f8c8ab3494c1',
         'root', NOW(), TRUE);
 
 SET @root_user_id = LAST_INSERT_ID();
