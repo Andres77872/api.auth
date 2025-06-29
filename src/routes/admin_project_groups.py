@@ -6,7 +6,7 @@ management, and permission control for the group-based multi-project authenticat
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -115,14 +115,24 @@ async def list_project_groups(
 
 @router.post("", response_model=CreateProjectGroupResponse)
 async def create_project_group_endpoint(
-    group_data: ProjectGroupCreate,
+    group_data: ProjectGroupCreate = None,
+    group_name: str = Form(None),
+    permissions: List[str] = Form(None),
+    description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
 ) -> CreateProjectGroupResponse:
     """
     Create a new project permission group (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectGroupCreate object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        group_data: Project group creation data
+        group_data: Project group creation data (JSON)
+        group_name: Group name (form)
+        permissions: Permissions list (form)
+        description: Group description (form)
         
     Returns:
         Created project group information
@@ -131,11 +141,24 @@ async def create_project_group_endpoint(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
+        # Use JSON data if available, otherwise use form data
+        if group_data:
+            create_name = group_data.group_name
+            create_permissions = group_data.permissions
+            create_description = group_data.description
+        else:
+            create_name = group_name
+            create_permissions = permissions or []
+            create_description = description
+        
+        if not create_name:
+            raise HTTPException(status_code=400, detail="Group name is required")
+        
         # Create project group
         new_group = create_project_permission_group(
-            group_data.group_name,
-            group_data.permissions,
-            group_data.description,
+            create_name,
+            create_permissions,
+            create_description,
             created_by=user_data.id
         )
         
@@ -152,7 +175,7 @@ async def create_project_group_endpoint(
         
         return CreateProjectGroupResponse(
             success=True,
-            message=f"Project group \"{group_data.group_name}\" created successfully",
+            message=f"Project group \"{create_name}\" created successfully",
             project_group=group_info
         )
         
@@ -225,14 +248,24 @@ async def get_project_group_details(
 async def update_project_group_endpoint(
     group_hash: str = Path(...),
     group_data: ProjectGroupUpdate = None,
+    group_name: Optional[str] = Form(None),
+    permissions: Optional[List[str]] = Form(None),
+    description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
 ) -> UpdateProjectGroupResponse:
     """
     Update project group information (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectGroupUpdate object directly
+    - Form: Send individual fields as form data
+    
     Args:
         group_hash: Project group identifier
-        group_data: Update data
+        group_data: Update data (JSON)
+        group_name: Group name (form)
+        permissions: Permissions list (form)
+        description: Group description (form)
         
     Returns:
         Updated project group information
@@ -243,12 +276,22 @@ async def update_project_group_endpoint(
         if not project_group:
             raise HTTPException(status_code=404, detail="Project group not found")
         
+        # Use JSON data if available, otherwise use form data
+        if group_data:
+            update_name = group_data.group_name
+            update_permissions = group_data.permissions
+            update_description = group_data.description
+        else:
+            update_name = group_name
+            update_permissions = permissions
+            update_description = description
+        
         # Update group
         updated_group = update_project_permission_group(
             project_group.id,
-            group_name=group_data.group_name if group_data else None,
-            group_description=group_data.description if group_data else None,
-            permissions=group_data.permissions if group_data else None
+            group_name=update_name,
+            group_description=update_description,
+            permissions=update_permissions
         )
         
         if not updated_group:
@@ -324,17 +367,25 @@ async def assign_project_to_group_endpoint(
     """
     Assign a project to a project group (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectAssignment object directly
+    - Form: Send project_hash as form data
+    
     Args:
         group_hash: Project group identifier
-        assignment: Project assignment data (JSON) or
-        project_hash: Project hash (form data)
+        assignment: Project assignment data (JSON)
+        project_hash: Project hash (form)
         
     Returns:
         Assignment confirmation
     """
     try:
         # Get target project hash
-        target_project_hash = assignment.project_hash if assignment else project_hash
+        if assignment:
+            target_project_hash = assignment.project_hash
+        else:
+            target_project_hash = project_hash
+            
         if not target_project_hash:
             raise HTTPException(status_code=400, detail="Project hash required")
         

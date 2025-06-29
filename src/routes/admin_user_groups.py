@@ -6,7 +6,7 @@ and access control for the group-based multi-project authentication system.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -116,14 +116,22 @@ async def list_user_groups(
 
 @router.post("", response_model=CreateUserGroupResponse)
 async def create_user_group_endpoint(
-    group_data: UserGroupCreate,
+    group_data: UserGroupCreate = None,
+    group_name: str = Form(None),
+    description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
 ) -> CreateUserGroupResponse:
     """
     Create a new global user group (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send UserGroupCreate object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        group_data: User group creation data
+        group_data: User group creation data (JSON)
+        group_name: Group name (form)
+        description: Group description (form)
         
     Returns:
         Created user group information
@@ -132,10 +140,21 @@ async def create_user_group_endpoint(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
+        # Use JSON data if available, otherwise use form data
+        if group_data:
+            create_name = group_data.group_name
+            create_description = group_data.description
+        else:
+            create_name = group_name
+            create_description = description
+        
+        if not create_name:
+            raise HTTPException(status_code=400, detail="Group name is required")
+        
         # Create user group
         new_group = create_user_group(
-            group_data.group_name,
-            group_data.description,
+            create_name,
+            create_description,
             created_by=user_data.id
         )
         
@@ -151,7 +170,7 @@ async def create_user_group_endpoint(
         
         return CreateUserGroupResponse(
             success=True,
-            message=f"User group \"{group_data.group_name}\" created successfully",
+            message=f"User group \"{create_name}\" created successfully",
             user_group=group_info
         )
         
@@ -234,14 +253,22 @@ async def get_user_group_details(
 async def update_user_group_endpoint(
     group_hash: str = Path(...),
     group_data: UserGroupUpdate = None,
+    group_name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
 ) -> UpdateUserGroupResponse:
     """
     Update user group information (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send UserGroupUpdate object directly
+    - Form: Send individual fields as form data
+    
     Args:
         group_hash: User group identifier
-        group_data: Update data
+        group_data: Update data (JSON)
+        group_name: Group name (form)
+        description: Group description (form)
         
     Returns:
         Updated user group information
@@ -252,11 +279,19 @@ async def update_user_group_endpoint(
         if not user_group:
             raise HTTPException(status_code=404, detail="User group not found")
         
+        # Use JSON data if available, otherwise use form data
+        if group_data:
+            update_name = group_data.group_name
+            update_description = group_data.description
+        else:
+            update_name = group_name
+            update_description = description
+        
         # Update group
         updated_group = update_user_group(
             user_group.id,
-            group_name=group_data.group_name if group_data else None,
-            group_description=group_data.description if group_data else None
+            group_name=update_name,
+            group_description=update_description
         )
         
         if not updated_group:
@@ -331,17 +366,25 @@ async def assign_user_to_group_endpoint(
     """
     Assign a user to a user group (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send GroupAssignment object directly
+    - Form: Send user_hash as form data
+    
     Args:
         group_hash: User group identifier
-        assignment: Group assignment data (JSON) or
-        user_hash: User hash (form data)
+        assignment: Group assignment data (JSON)
+        user_hash: User hash (form)
         
     Returns:
         Assignment confirmation
     """
     try:
         # Get target user hash
-        target_user_hash = assignment.user_hash if assignment else user_hash
+        if assignment:
+            target_user_hash = assignment.user_hash
+        else:
+            target_user_hash = user_hash
+            
         if not target_user_hash:
             raise HTTPException(status_code=400, detail="User hash required")
         
@@ -449,17 +492,25 @@ async def grant_group_project_access_endpoint(
     """
     Grant a user group access to a project (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectAccess object directly
+    - Form: Send project_hash as form data
+    
     Args:
         group_hash: User group identifier
-        project_access: Project access data (JSON) or
-        project_hash: Project hash (form data)
+        project_access: Project access data (JSON)
+        project_hash: Project hash (form)
         
     Returns:
         Access grant confirmation
     """
     try:
         # Get target project hash
-        target_project_hash = project_access.project_hash if project_access else project_hash
+        if project_access:
+            target_project_hash = project_access.project_hash
+        else:
+            target_project_hash = project_hash
+            
         if not target_project_hash:
             raise HTTPException(status_code=400, detail="Project hash required")
         

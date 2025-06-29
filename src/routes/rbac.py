@@ -183,15 +183,22 @@ async def create_project_permission(
     permission_data: PermissionCreate = None,
     permission_name: str = Form(None),
     category: str = Form("general"),
-    description: str = Form(None),
+    description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> CreatePermissionResponse:
     """
     Create a new permission for a project.
     
+    Accepts both JSON and form data:
+    - JSON: Send PermissionCreate object directly
+    - Form: Send individual fields as form data
+    
     Args:
         project_hash: Project identifier
-        permission_data: Permission creation data (JSON) or form fields
+        permission_data: Permission creation data (JSON)
+        permission_name: Permission name (form)
+        category: Permission category (form)
+        description: Permission description (form)
         
     Returns:
         Created permission information
@@ -200,7 +207,7 @@ async def create_project_permission(
         # Check authentication and permissions
         session_data, project = await require_project_admin(project_hash, credentials)
         
-        # Get permission data from either JSON or form
+        # Use JSON data if available, otherwise use form data
         if permission_data:
             perm_name = permission_data.permission_name
             perm_category = permission_data.category
@@ -326,15 +333,24 @@ async def create_project_role(
     role_data: PermissionGroupCreate = None,
     group_name: str = Form(None),
     priority: int = Form(50),
-    description: str = Form(None),
+    description: Optional[str] = Form(None),
+    permissions: List[str] = Form([]),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> CreateRoleResponse:
     """
     Create a new permission group (role) for a project.
     
+    Accepts both JSON and form data:
+    - JSON: Send PermissionGroupCreate object directly
+    - Form: Send individual fields as form data
+    
     Args:
         project_hash: Project identifier
-        role_data: Role creation data (JSON) or form fields
+        role_data: Role creation data (JSON)
+        group_name: Role name (form)
+        priority: Role priority (form)
+        description: Role description (form)
+        permissions: Permissions list (form)
         
     Returns:
         Created role information
@@ -343,7 +359,7 @@ async def create_project_role(
         # Check authentication and permissions
         session_data, project = await require_project_admin(project_hash, credentials)
         
-        # Get role data from either JSON or form
+        # Use JSON data if available, otherwise use form data
         if role_data:
             role_name = role_data.group_name
             role_priority = role_data.priority
@@ -353,7 +369,7 @@ async def create_project_role(
             role_name = group_name
             role_priority = priority
             role_description = description
-            role_permissions = []
+            role_permissions = permissions
         
         if not role_name:
             raise HTTPException(status_code=400, detail="Role name is required")
@@ -415,16 +431,22 @@ async def create_project_role(
 async def assign_user_to_role(
     user_hash: str = Path(...),
     project_hash: str = Path(...),
-    role_id: int = Form(...),
+    role_assignment: UserRoleAssignment = None,
+    role_id: int = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> AssignUserToRoleResponse:
     """
     Assign a user to a role in a specific project.
     
+    Accepts both JSON and form data:
+    - JSON: Send UserRoleAssignment object directly
+    - Form: Send role_id as form data
+    
     Args:
         user_hash: User identifier
         project_hash: Project identifier
-        role_id: Permission group (role) ID
+        role_assignment: Role assignment data (JSON)
+        role_id: Permission group (role) ID (form)
         
     Returns:
         Assignment confirmation
@@ -438,6 +460,15 @@ async def assign_user_to_role(
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # Use JSON data if available, otherwise use form data
+        if role_assignment:
+            assignment_role_id = role_assignment.role_id
+        else:
+            assignment_role_id = role_id
+        
+        if not assignment_role_id:
+            raise HTTPException(status_code=400, detail="Role ID is required")
+        
         # Get current user for audit trail
         current_user = get_user_by_hash(session_data.user_hash)
         
@@ -445,7 +476,7 @@ async def assign_user_to_role(
         assignment = assign_user_to_permission_group(
             user_id=target_user.id,
             project_id=project.id,
-            permission_group_id=role_id,
+            permission_group_id=assignment_role_id,
             assigned_by=current_user.id
         )
         
@@ -455,7 +486,7 @@ async def assign_user_to_role(
         assignment_details = {
             "user_hash": user_hash,
             "project_hash": project_hash,
-            "role_id": role_id,
+            "role_id": assignment_role_id,
             "assigned_by": current_user.username,
             "assigned_at": assignment.assigned_at
         }

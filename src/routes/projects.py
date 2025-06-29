@@ -7,7 +7,7 @@ for the group-based multi-project authentication system.
 
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Query, Path
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -127,14 +127,22 @@ async def list_projects(
 
 @router.post("", response_model=CreateProjectResponse)
 async def create_new_project(
-    project_data: ProjectCreateRequest,
+    project_data: ProjectCreateRequest = None,
+    project_name: str = Form(None),
+    project_description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> CreateProjectResponse:
     """
     Create new project and assign it to default project group.
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectCreateRequest object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        project_data: Project creation data
+        project_data: Project creation data (JSON)
+        project_name: Project name (form)
+        project_description: Project description (form)
         
     Returns:
         Created project information
@@ -154,13 +162,24 @@ async def create_new_project(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
+        # Use JSON data if available, otherwise use form data
+        if project_data:
+            create_name = project_data.project_name
+            create_description = project_data.project_description
+        else:
+            create_name = project_name
+            create_description = project_description
+        
+        if not create_name:
+            raise HTTPException(status_code=400, detail="Project name is required")
+        
         # Create project
-        new_project = create_project(project_data.project_name, project_data.project_description)
+        new_project = create_project(create_name, create_description)
         
         if not new_project:
             raise HTTPException(status_code=400, detail="Project creation failed")
         
-        logger.info(f"Project created: {project_data.project_name} by user: {user_data.username}")
+        logger.info(f"Project created: {create_name} by user: {user_data.username}")
         
         project_info = ProjectInfo(
             project_hash=new_project.project_hash,
@@ -171,7 +190,7 @@ async def create_new_project(
         
         return CreateProjectResponse(
             success=True,
-            message=f"Project \"{project_data.project_name}\" created successfully",
+            message=f"Project \"{create_name}\" created successfully",
             project=project_info
         )
         
@@ -255,14 +274,22 @@ async def get_project_details(
 async def update_project_details(
     project_hash: str = Path(...),
     project_data: ProjectUpdateRequest = None,
+    project_name: Optional[str] = Form(None),
+    project_description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateProjectResponse:
     """
     Update project information (admin only).
     
+    Accepts both JSON and form data:
+    - JSON: Send ProjectUpdateRequest object directly  
+    - Form: Send individual fields as form data
+    
     Args:
         project_hash: Project identifier
-        project_data: Project update data
+        project_data: Project update data (JSON)
+        project_name: Project name (form)
+        project_description: Project description (form)
         
     Returns:
         Updated project information
@@ -287,11 +314,19 @@ async def update_project_details(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
+        # Use JSON data if available, otherwise use form data
+        if project_data:
+            update_name = project_data.project_name
+            update_description = project_data.project_description
+        else:
+            update_name = project_name
+            update_description = project_description
+        
         # Update project
         updated_project = update_project(
             project.id,
-            project_name=project_data.project_name if project_data else None,
-            project_description=project_data.project_description if project_data else None,
+            project_name=update_name,
+            project_description=update_description,
             updated_by=user_data.id
         )
         

@@ -97,7 +97,10 @@ def require_root_or_admin_user(credentials: HTTPAuthorizationCredentials = Depen
 
 @router.post("/root", response_model=CreateRootUserResponse)
 async def create_root_user_endpoint(
-    user_data: CreateRootUserRequest,
+    user_data: CreateRootUserRequest = None,
+    username: str = Form(None),
+    password: str = Form(None),
+    email: Optional[str] = Form(None),
     current_user = Depends(require_root_user)
 ) -> CreateRootUserResponse:
     """
@@ -105,8 +108,15 @@ async def create_root_user_endpoint(
     
     **Root users only**: Only existing root users can create new root users.
     
+    Accepts both JSON and form data:
+    - JSON: Send CreateRootUserRequest object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        user_data: Root user creation data
+        user_data: Root user creation data (JSON)
+        username: Username (form)
+        password: Password (form)
+        email: Email (form)
         
     Returns:
         Created root user information
@@ -114,11 +124,24 @@ async def create_root_user_endpoint(
     try:
         logger.info(f"Root user creation attempt by user: {current_user.username}")
         
+        # Use JSON data if available, otherwise use form data
+        if user_data:
+            create_username = user_data.username
+            create_password = user_data.password
+            create_email = user_data.email
+        else:
+            create_username = username
+            create_password = password
+            create_email = email
+        
+        if not create_username or not create_password:
+            raise HTTPException(status_code=400, detail="Username and password are required")
+        
         # Create root user
         new_root_user = create_root_user(
-            username=user_data.username,
-            password=user_data.password,
-            email=user_data.email,
+            username=create_username,
+            password=create_password,
+            email=create_email,
             created_by=current_user.id
         )
         
@@ -134,7 +157,7 @@ async def create_root_user_endpoint(
         
         return CreateRootUserResponse(
             success=True,
-            message=f"Root user '{user_data.username}' created successfully",
+            message=f"Root user '{create_username}' created successfully",
             user=user_info
         )
         
@@ -147,7 +170,12 @@ async def create_root_user_endpoint(
 
 @router.post("/admin", response_model=CreateAdminUserResponse)
 async def create_admin_user_endpoint(
-    user_data: CreateAdminUserRequest,
+    user_data: CreateAdminUserRequest = None,
+    username: str = Form(None),
+    password: str = Form(None),
+    email: str = Form(None),
+    assigned_project_id: Optional[int] = Form(None),
+    assigned_project_ids: Optional[List[int]] = Form(None),
     current_user = Depends(require_root_user)
 ) -> CreateAdminUserResponse:
     """
@@ -155,8 +183,17 @@ async def create_admin_user_endpoint(
     
     **Root users only**: Only root users can create admin users.
     
+    Accepts both JSON and form data:
+    - JSON: Send CreateAdminUserRequest object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        user_data: Admin user creation data with project assignment(s)
+        user_data: Admin user creation data (JSON)
+        username: Username (form)
+        password: Password (form)
+        email: Email (form)
+        assigned_project_id: Single project ID (form)
+        assigned_project_ids: Multiple project IDs (form)
         
     Returns:
         Created admin user information with project assignment(s)
@@ -164,12 +201,29 @@ async def create_admin_user_endpoint(
     try:
         logger.info(f"Admin user creation attempt by user: {current_user.username}")
         
+        # Use JSON data if available, otherwise use form data
+        if user_data:
+            create_username = user_data.username
+            create_password = user_data.password
+            create_email = user_data.email
+            create_assigned_project_id = user_data.assigned_project_id
+            create_assigned_project_ids = user_data.assigned_project_ids
+        else:
+            create_username = username
+            create_password = password
+            create_email = email
+            create_assigned_project_id = assigned_project_id
+            create_assigned_project_ids = assigned_project_ids
+        
+        if not create_username or not create_password or not create_email:
+            raise HTTPException(status_code=400, detail="Username, password, and email are required")
+        
         # Handle both single and multiple project assignments
         project_ids = []
-        if user_data.assigned_project_ids:
-            project_ids = user_data.assigned_project_ids
-        elif user_data.assigned_project_id:
-            project_ids = [user_data.assigned_project_id]
+        if create_assigned_project_ids:
+            project_ids = create_assigned_project_ids
+        elif create_assigned_project_id:
+            project_ids = [create_assigned_project_id]
         else:
             raise HTTPException(status_code=400, detail="At least one project assignment is required")
         
@@ -183,9 +237,9 @@ async def create_admin_user_endpoint(
         
         # Create admin user
         new_admin_user = create_admin_user(
-            username=user_data.username,
-            password=user_data.password,
-            email=user_data.email,
+            username=create_username,
+            password=create_password,
+            email=create_email,
             assigned_project_id=project_ids[0],  # Primary project for backwards compatibility
             assigned_project_ids=project_ids,    # All assigned projects
             created_by=current_user.id
@@ -214,7 +268,7 @@ async def create_admin_user_endpoint(
         
         return CreateAdminUserResponse(
             success=True,
-            message=f"Admin user '{user_data.username}' created and assigned to {len(projects)} project(s)",
+            message=f"Admin user '{create_username}' created and assigned to {len(projects)} project(s)",
             user=user_data_dict
         )
         
@@ -301,7 +355,9 @@ async def get_user_type_information(
 @router.put("/{user_hash}/type", response_model=UpdateUserTypeResponse)
 async def update_user_type_endpoint(
     user_hash: str,
-    type_data: UpdateUserTypeRequest,
+    type_data: UpdateUserTypeRequest = None,
+    user_type: str = Form(None),
+    assigned_project_id: Optional[int] = Form(None),
     current_user = Depends(require_root_user)
 ) -> UpdateUserTypeResponse:
     """
@@ -309,9 +365,15 @@ async def update_user_type_endpoint(
     
     **Root users only**: Only root users can change user types.
     
+    Accepts both JSON and form data:
+    - JSON: Send UpdateUserTypeRequest object directly
+    - Form: Send individual fields as form data
+    
     Args:
         user_hash: Hash of the user to update
-        type_data: New user type and optional project assignment
+        type_data: New user type and optional project assignment (JSON)
+        user_type: User type (form)
+        assigned_project_id: Assigned project ID (form)
         
     Returns:
         Updated user type information
@@ -321,24 +383,35 @@ async def update_user_type_endpoint(
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # Use JSON data if available, otherwise use form data
+        if type_data:
+            new_user_type = type_data.user_type
+            new_assigned_project_id = type_data.assigned_project_id
+        else:
+            new_user_type = user_type
+            new_assigned_project_id = assigned_project_id
+        
+        if not new_user_type:
+            raise HTTPException(status_code=400, detail="User type is required")
+        
         # Validate user type
-        if type_data.user_type not in ['root', 'admin', 'consumer']:
+        if new_user_type not in ['root', 'admin', 'consumer']:
             raise HTTPException(status_code=400, detail="Invalid user type. Must be 'root', 'admin', or 'consumer'")
         
         # Validate project assignment for admin users
-        if type_data.user_type == 'admin':
-            if not type_data.assigned_project_id:
+        if new_user_type == 'admin':
+            if not new_assigned_project_id:
                 raise HTTPException(status_code=400, detail="Admin users must have an assigned project")
             
-            project = get_project_by_id(type_data.assigned_project_id)
+            project = get_project_by_id(new_assigned_project_id)
             if not project:
                 raise HTTPException(status_code=404, detail="Assigned project not found")
         
         # Update user type
         success = update_user_type(
             user_id=target_user.id,
-            new_user_type=type_data.user_type,
-            assigned_project_id=type_data.assigned_project_id,
+            new_user_type=new_user_type,
+            assigned_project_id=new_assigned_project_id,
             updated_by=current_user.id
         )
         
@@ -353,17 +426,17 @@ async def update_user_type_endpoint(
             user_id=updated_info_dict.get("user_id", target_user.id),
             user_hash=updated_info_dict.get("user_hash", target_user.user_hash),
             username=updated_info_dict.get("username", target_user.username),
-            user_type=updated_info_dict.get("user_type", type_data.user_type),
+            user_type=updated_info_dict.get("user_type", new_user_type),
             capabilities=updated_info_dict.get("capabilities", []),
             assigned_project_id=updated_info_dict.get("assigned_project_id"),
             assigned_projects=updated_info_dict.get("assigned_projects")
         )
         
-        logger.info(f"User type updated: {target_user.username} -> {type_data.user_type} by {current_user.username}")
+        logger.info(f"User type updated: {target_user.username} -> {new_user_type} by {current_user.username}")
         
         return UpdateUserTypeResponse(
             success=True,
-            message=f"User '{target_user.username}' type updated to '{type_data.user_type}'",
+            message=f"User '{target_user.username}' type updated to '{new_user_type}'",
             user_type_info=updated_info
         )
         
@@ -471,7 +544,8 @@ async def list_users_by_type(
 @router.put("/admin/{user_hash}/projects", response_model=UpdateAdminProjectsResponse)
 async def update_admin_multiple_projects(
     user_hash: str,
-    project_data: UpdateAdminProjects,
+    project_data: UpdateAdminProjects = None,
+    assigned_project_ids: List[int] = Form(None),
     current_user = Depends(require_root_user)
 ) -> UpdateAdminProjectsResponse:
     """
@@ -479,9 +553,14 @@ async def update_admin_multiple_projects(
     
     **Root users only**: Only root users can reassign admin users to multiple projects.
     
+    Accepts both JSON and form data:
+    - JSON: Send UpdateAdminProjects object directly
+    - Form: Send assigned_project_ids as form data
+    
     Args:
         user_hash: Hash of the admin user to update
-        project_data: New project assignments
+        project_data: New project assignments (JSON)
+        assigned_project_ids: Project IDs list (form)
         
     Returns:
         Updated project assignments information
@@ -495,9 +574,18 @@ async def update_admin_multiple_projects(
         if get_user_type(target_user.id) != 'admin':
             raise HTTPException(status_code=400, detail="User is not an admin user")
         
+        # Use JSON data if available, otherwise use form data
+        if project_data:
+            update_project_ids = project_data.assigned_project_ids
+        else:
+            update_project_ids = assigned_project_ids
+        
+        if not update_project_ids:
+            raise HTTPException(status_code=400, detail="At least one project assignment is required")
+        
         # Verify all new projects exist
         projects = []
-        for project_id in project_data.assigned_project_ids:
+        for project_id in update_project_ids:
             project = get_project_by_id(project_id)
             if not project:
                 raise HTTPException(status_code=404, detail=f"Project with ID {project_id} not found")
@@ -510,7 +598,7 @@ async def update_admin_multiple_projects(
         # Update all project assignments
         success = assign_admin_to_multiple_projects(
             user_id=target_user.id,
-            project_ids=project_data.assigned_project_ids,
+            project_ids=update_project_ids,
             assigned_by=current_user.id
         )
         
@@ -518,9 +606,9 @@ async def update_admin_multiple_projects(
             raise HTTPException(status_code=400, detail="Failed to update project assignments")
         
         # Update primary project in users table for backwards compatibility
-        if project_data.assigned_project_ids:
+        if update_project_ids:
             from src.Util.db.db_users import update_user
-            update_user(target_user.id, assigned_project_id=project_data.assigned_project_ids[0])
+            update_user(target_user.id, assigned_project_id=update_project_ids[0])
         
         new_project_names = [p.project_name for p in projects]
         logger.info(f"Admin project assignments updated: {target_user.username} "
@@ -558,7 +646,8 @@ async def update_admin_multiple_projects(
 @router.post("/admin/{user_hash}/projects/add", response_model=AddAdminToProjectResponse)
 async def add_admin_to_project_endpoint(
     user_hash: str,
-    project_data: AddAdminToProject,
+    project_data: AddAdminToProject = None,
+    project_id: int = Form(None),
     current_user = Depends(require_root_user)
 ) -> AddAdminToProjectResponse:
     """
@@ -566,9 +655,14 @@ async def add_admin_to_project_endpoint(
     
     **Root users only**: Only root users can add admin users to additional projects.
     
+    Accepts both JSON and form data:
+    - JSON: Send AddAdminToProject object directly
+    - Form: Send project_id as form data
+    
     Args:
         user_hash: Hash of the admin user
-        project_data: Project to add
+        project_data: Project to add (JSON)
+        project_id: Project ID (form)
         
     Returns:
         Addition confirmation
@@ -582,20 +676,29 @@ async def add_admin_to_project_endpoint(
         if get_user_type(target_user.id) != 'admin':
             raise HTTPException(status_code=400, detail="User is not an admin user")
         
+        # Use JSON data if available, otherwise use form data
+        if project_data:
+            add_project_id = project_data.project_id
+        else:
+            add_project_id = project_id
+        
+        if not add_project_id:
+            raise HTTPException(status_code=400, detail="Project ID is required")
+        
         # Verify project exists
-        project = get_project_by_id(project_data.project_id)
+        project = get_project_by_id(add_project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
         # Check if already assigned
         current_assignments = get_admin_assigned_projects(target_user.id)
-        if project_data.project_id in current_assignments:
+        if add_project_id in current_assignments:
             raise HTTPException(status_code=400, detail="Admin user is already assigned to this project")
         
         # Add to project
         success = add_admin_to_project(
             user_id=target_user.id,
-            project_id=project_data.project_id,
+            project_id=add_project_id,
             assigned_by=current_user.id
         )
         

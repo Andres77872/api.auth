@@ -6,9 +6,10 @@ for the group-based multi-project authentication system.
 """
 
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from typing import Optional
 
 from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
@@ -91,14 +92,24 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
 
 @router.put("/profile", response_model=UpdateProfileResponse)
 async def update_user_profile(
-    user_data: UserUpdateRequest,
+    user_data: UserUpdateRequest = None,
+    username: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateProfileResponse:
     """
     Update current user's profile information.
     
+    Accepts both JSON and form data:
+    - JSON: Send UserUpdateRequest object directly
+    - Form: Send individual fields as form data
+    
     Args:
-        user_data: User update data
+        user_data: User update data (JSON)
+        username: Username (form)
+        email: Email (form) 
+        password: Password (form)
         
     Returns:
         Updated user profile
@@ -115,12 +126,22 @@ async def update_user_profile(
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # Use JSON data if available, otherwise use form data
+        if user_data:
+            update_username = user_data.username
+            update_email = user_data.email
+            update_password = user_data.password
+        else:
+            update_username = username
+            update_email = email
+            update_password = password
+        
         # Update user
         updated_user = update_user(
             current_user.id,
-            username=user_data.username,
-            email=user_data.email,
-            password=user_data.password
+            username=update_username,
+            email=update_email,
+            password=update_password
         )
         
         if not updated_user:
