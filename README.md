@@ -318,7 +318,7 @@ services:
 ### 📡 **API Documentation** (150+ pages)
 - [Authentication API](docs/api/authentication.md) - Login, logout, session management
 - [User Type Management API](docs/api/user-type-management.md) - 3-tier user system
-- [RBAC Management API](docs/api/rbac.md) - Complete permission system
+- [RBAC Management API](docs/api/rbac-management.md) - Complete permission system
 - [Project Management API](docs/api/project-management.md) - Project operations
 - [Admin API](docs/api/admin.md) - Group and system administration
 - [System API](docs/api/system.md) - Monitoring and health checks

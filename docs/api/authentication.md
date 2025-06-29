@@ -561,4 +561,4 @@ await auth.logout();
 
 ---
 
-**Next:** Learn about [User Management API](user-management.md) or explore [Admin API](admin.md) for group management. 
+**Next:** Learn about [User Type Management API](user-type-management.md) or explore [Admin API](admin.md) for group management. 

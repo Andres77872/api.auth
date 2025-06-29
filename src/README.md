@@ -109,7 +109,7 @@ curl http://localhost:8000/system/info
 ### 📡 **API Documentation** (150+ pages)
 - [Authentication API](../docs/api/authentication.md) - Login, logout, session management
 - [User Type Management API](../docs/api/user-type-management.md) - 3-tier user system
-- [RBAC Management API](../docs/api/rbac.md) - Complete permission system
+- [RBAC Management API](../docs/api/rbac-management.md) - Complete permission system
 - [Project Management API](../docs/api/project-management.md) - Project operations
 - [Admin API](../docs/api/admin.md) - Group and system administration
 - [System API](../docs/api/system.md) - Monitoring and health checks
@@ -184,7 +184,7 @@ curl http://localhost:8000/system/info
 
 ### 📚 **By User Type**
 - **👑 ROOT USERS**: Start with [User Type Management API](../docs/api/user-type-management.md)
-- **🛡️ ADMIN USERS**: Focus on [Admin API](../docs/api/admin.md) and [RBAC Management](../docs/api/rbac.md)
+- **🛡️ ADMIN USERS**: Focus on [Admin API](../docs/api/admin.md) and [RBAC Management](../docs/api/rbac-management.md)
 - **👤 CONSUMER USERS**: Review [Authentication API](../docs/api/authentication.md)
 - **🔧 DEVELOPERS**: Begin with [Architecture Guide](../docs/architecture.md)
 
@@ -199,7 +199,7 @@ curl http://localhost:8000/system/info
 
 ### 💡 **Getting Advanced Support**
 1. **System Architecture Questions**: Review [Architecture Guide](../docs/architecture.md)
-2. **RBAC Implementation**: Check [RBAC Management API](../docs/api/rbac.md)
+2. **RBAC Implementation**: Check [RBAC Management API](../docs/api/rbac-management.md)
 3. **User Type Management**: See [User Type API](../docs/api/user-type-management.md)
 4. **Performance Issues**: Review [System API](../docs/api/system.md) monitoring
 
