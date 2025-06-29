@@ -143,6 +143,15 @@ ALTER TABLE permission_audit_log
     ADD CONSTRAINT fk_audit_performed_by FOREIGN KEY (performed_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- =================== ACTIVITY_LOGS TABLE CONSTRAINTS ===================
+ALTER TABLE activity_logs
+    ADD CONSTRAINT fk_activity_logs_user FOREIGN KEY (user_id) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_activity_logs_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_activity_logs_target_user FOREIGN KEY (target_user_id) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
+
 -- =================== ADDITIONAL CONSTRAINTS ===================
 -- Ensure admin users have at least one project assignment
 DELIMITER $$

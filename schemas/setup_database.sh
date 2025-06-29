@@ -58,10 +58,10 @@ echo "=== Step 1: Creating Database ==="
 execute_sql "01_create_database.sql"
 
 echo "=== Step 2: Creating Tables ==="
-execute_sql "02_create_tables.sql" "auth_system"
+execute_sql "02_create_tables.sql" "magic_auth"
 
 echo "=== Step 3: Adding Constraints ==="
-execute_sql "03_add_constraints.sql" "auth_system"
+execute_sql "03_add_constraints.sql" "magic_auth"
 
 # Ask if user wants to initialize with default data
 echo
@@ -69,7 +69,7 @@ read -p "Do you want to initialize with default data? (y/N): " INIT_DATA
 
 if [[ $INIT_DATA =~ ^[Yy]$ ]]; then
     echo "=== Step 4: Initializing Default Data ==="
-    execute_sql "04_initialize_data.sql" "auth_system"
+    execute_sql "04_initialize_data.sql" "magic_auth"
     
     echo
     echo "=== Default Users Created ==="
@@ -88,7 +88,7 @@ read -p "Do you want to add performance optimization indexes and procedures? (Y/
 
 if [[ ! $ADD_PERF =~ ^[Nn]$ ]]; then
     echo "=== Step 5: Adding Performance Optimizations ==="
-    execute_sql "05_performance_optimization.sql" "auth_system"
+    execute_sql "05_performance_optimization.sql" "magic_auth"
     echo "Performance optimizations added successfully!"
 else
     echo "=== Skipping Performance Optimizations ==="
@@ -101,6 +101,6 @@ echo "Next steps:"
 echo "1. Change default passwords if you initialized with default data"
 echo "2. Create your first project using the root account"
 echo "3. Set up proper backup procedures"
-echo "4. Configure your application to connect to the 'auth_system' database"
+echo "4. Configure your application to connect to the 'magic_auth' database"
 echo
 echo "For more information, see README.md" 

@@ -303,4 +303,26 @@ CREATE TABLE IF NOT EXISTS permission_audit_log (
     INDEX idx_audit_user (target_user_id, action_timestamp DESC),
     INDEX idx_audit_performer (performed_by, action_timestamp DESC),
     INDEX idx_audit_action (action_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== ACTIVITY_LOGS TABLE ===================
+-- Activity logging for user and system activities
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id INT UNSIGNED,
+    activity_type VARCHAR(50) NOT NULL,
+    details TEXT,
+    project_id INT UNSIGNED,
+    target_user_id INT UNSIGNED,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_activity_user_id (user_id),
+    INDEX idx_activity_type (activity_type),
+    INDEX idx_activity_project_id (project_id),
+    INDEX idx_activity_created_at (created_at DESC),
+    INDEX idx_activity_target_user_id (target_user_id),
+    INDEX idx_activity_compound (user_id, project_id, activity_type),
+    INDEX idx_activity_recent (created_at DESC, activity_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci; 

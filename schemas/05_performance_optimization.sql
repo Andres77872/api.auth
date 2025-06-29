@@ -35,6 +35,12 @@ CREATE INDEX idx_audit_log_project_time ON permission_audit_log(project_id, acti
 CREATE INDEX idx_audit_log_user_time ON permission_audit_log(target_user_id, action_timestamp);
 CREATE INDEX idx_audit_log_action_type ON permission_audit_log(action_type, action_timestamp);
 
+-- Activity log queries
+CREATE INDEX idx_activity_log_user_type_time ON activity_logs(user_id, activity_type, created_at);
+CREATE INDEX idx_activity_log_project_time ON activity_logs(project_id, created_at);
+CREATE INDEX idx_activity_log_target_user_time ON activity_logs(target_user_id, created_at);
+CREATE INDEX idx_activity_log_type_time ON activity_logs(activity_type, created_at);
+
 -- =================== COMPOSITE INDEXES FOR COMPLEX QUERIES ===================
 
 -- User permission check query optimization
@@ -214,6 +220,39 @@ BEGIN
     WHERE action_timestamp < DATE_SUB(NOW(), INTERVAL p_days_to_keep DAY);
 END$$
 
+-- Clean up old activity logs
+CREATE PROCEDURE sp_cleanup_activity_logs(
+    IN p_days_to_keep INT
+)
+BEGIN
+    DELETE FROM activity_logs 
+    WHERE created_at < DATE_SUB(NOW(), INTERVAL p_days_to_keep DAY);
+    
+    SELECT ROW_COUNT() as deleted_records;
+END$$
+
+-- Get activity log statistics
+CREATE PROCEDURE sp_activity_log_stats()
+BEGIN
+    SELECT 
+        COUNT(*) as total_activities,
+        COUNT(DISTINCT user_id) as unique_users,
+        COUNT(DISTINCT project_id) as unique_projects,
+        COUNT(DISTINCT activity_type) as unique_activity_types,
+        MIN(created_at) as oldest_activity,
+        MAX(created_at) as newest_activity
+    FROM activity_logs;
+    
+    SELECT 
+        activity_type,
+        COUNT(*) as count,
+        COUNT(DISTINCT user_id) as unique_users
+    FROM activity_logs 
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    GROUP BY activity_type 
+    ORDER BY count DESC;
+END$$
+
 DELIMITER ;
 
 -- =================== ANALYSIS TABLES ===================
@@ -247,5 +286,5 @@ CREATE TABLE IF NOT EXISTS permission_cache (
 --     round(data_length / 1024 / 1024, 2) as data_mb,
 --     round(index_length / 1024 / 1024, 2) as index_mb
 -- FROM information_schema.tables
--- WHERE table_schema = 'auth_system'
+-- WHERE table_schema = 'magic_auth'
 -- ORDER BY data_length DESC; 

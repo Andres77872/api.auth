@@ -1,253 +1,272 @@
 """
-Admin Dashboard Routes
+Admin Dashboard Routes - Phase 1 Implementation
 
-Handles admin dashboard functionality including statistics, activity logs,
-and system monitoring for the multi-project authentication system.
+Provides endpoints for the admin dashboard including:
+- Dashboard statistics
+- Activity feed
+- System health monitoring
 """
 
-import logging
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.security import HTTPAuthorizationCredentials
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
 
 from src.Util.db import (
-    validate_session, get_user_by_hash, count_users, count_projects,
-    count_user_groups, list_users, list_all_projects, count_active_sessions,
-    get_session_statistics, check_database_health, check_redis_health,
-    get_recent_activity_count, get_recent_users_count, get_recent_projects_count
+    count_users, count_projects, count_active_sessions,
+    get_recent_users_count, get_recent_projects_count,
+    get_recent_activity_count, check_database_health, check_redis_health
 )
 from src.Util.activity_logger import get_recent_activity, count_activity_logs
-from src.Util.Models import BaseResponse, PaginationInfo
-from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.db_config import get_connection, redis_client
+from src.middleware.authentication import verify_admin_access
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
-# Initialize router and security
-router = APIRouter(prefix="/admin/dashboard", tags=["Admin Dashboard"])
-security = HTTPBearerOrCookie()
+# Create router
+router = APIRouter(prefix="/admin", tags=["Admin Dashboard"])
 
 
-class DashboardStatsResponse(BaseResponse):
-    """Dashboard statistics response"""
-    statistics: Optional[Dict[str, Any]] = None
-    system_health: Optional[Dict[str, Any]] = None
-    recent_activity: Optional[Dict[str, Any]] = None
-
-
-class ActivityResponse(BaseResponse):
-    """Activity feed response"""
-    activities: List[Dict[str, Any]] = []
-    pagination: Optional[PaginationInfo] = None
-    filters: Optional[Dict[str, Any]] = None
-
-
-def require_admin_access(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Ensure user has admin access for dashboard"""
-    session_data = validate_session(credentials.credentials)
-    if not session_data:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    
-    user_permissions = getattr(session_data, 'permissions', [])
-    if 'admin' not in user_permissions:
-        raise HTTPException(status_code=403, detail="Admin access required for dashboard")
-    
-    return session_data
-
-
-@router.get("/stats", response_model=DashboardStatsResponse)
-async def get_dashboard_statistics(
-    session_data = Depends(require_admin_access)
-) -> DashboardStatsResponse:
+@router.get("/dashboard/stats")
+async def get_dashboard_stats(
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
     """
-    Get comprehensive dashboard statistics for admin users.
+    Get main dashboard statistics
     
-    **Admin access required**: Only admin users can access dashboard statistics.
-    
-    Returns:
-        Dashboard statistics including user counts, project stats, and system health
+    Returns comprehensive statistics for the admin dashboard including:
+    - Total counts (users, projects, sessions)
+    - Recent activity counts
+    - System health status
     """
     try:
         # Get basic counts
         total_users = count_users()
         total_projects = count_projects()
-        total_user_groups = count_user_groups()
-        
-        # Get user type breakdown
-        root_users = count_users(user_type='root')
-        admin_users = count_users(user_type='admin')
-        consumer_users = count_users(user_type='consumer')
-        
-        # Get active session count
         active_sessions = count_active_sessions()
         
-        # Get recent registrations (last 30 days)
-        recent_users = get_recent_users_count(30)
-        recent_projects = get_recent_projects_count(30)
+        # Get recent activity counts (last 7 days)
+        recent_users = get_recent_users_count(days=7)
+        recent_projects = get_recent_projects_count(days=7)
+        recent_activity = get_recent_activity_count(days=7)
         
-        # Build statistics
-        statistics = {
-            "users": {
-                "total": total_users,
+        # Get user type breakdown
+        admin_users = count_users(user_type='admin')
+        consumer_users = count_users(user_type='consumer')
+        root_users = count_users(user_type='root')
+        
+        # Get system health
+        db_health = check_database_health()
+        redis_health = check_redis_health()
+        
+        # Calculate growth percentages (simplified - could be enhanced with historical data)
+        user_growth = recent_users
+        project_growth = recent_projects
+        
+        return {
+            "totals": {
+                "users": total_users,
+                "projects": total_projects,
+                "active_sessions": active_sessions,
+                "recent_activities": recent_activity
+            },
+            "recent_activity": {
+                "new_users_7d": recent_users,
+                "new_projects_7d": recent_projects,
+                "total_activities_7d": recent_activity
+            },
+            "user_breakdown": {
                 "root_users": root_users,
                 "admin_users": admin_users,
-                "consumer_users": consumer_users,
-                "recent_registrations": recent_users
+                "consumer_users": consumer_users
             },
-            "projects": {
-                "total": total_projects,
-                "recent_projects": recent_projects
+            "growth": {
+                "user_growth_7d": user_growth,
+                "project_growth_7d": project_growth
             },
-            "groups": {
-                "user_groups": total_user_groups
+            "system_health": {
+                "database": db_health,
+                "redis": redis_health,
+                "overall_status": "healthy" if db_health["status"] == "healthy" and redis_health["status"] == "healthy" else "degraded"
             },
-            "activity": {
-                "active_sessions": active_sessions,
-                "session_health": "healthy" if active_sessions < 1000 else "high_load"
-            }
+            "generated_at": datetime.utcnow().isoformat()
         }
-        
-        # Check system health
-        system_health = {
-            "database": check_database_health(),
-            "redis": check_redis_health(),
-            "overall_status": "healthy"
-        }
-        
-        # If any component is unhealthy, mark overall as degraded
-        if not all(system_health[k].get("status") == "healthy" for k in ["database", "redis"]):
-            system_health["overall_status"] = "degraded"
-        
-        # Get recent activity summary
-        recent_activity = {
-            "total_recent_activities": get_recent_activity_count(7),
-            "login_attempts_today": get_login_attempts_today(),
-            "failed_logins_today": get_failed_logins_today(),
-            "new_users_today": get_new_users_today()
-        }
-        
-        return DashboardStatsResponse(
-            success=True,
-            statistics=statistics,
-            system_health=system_health,
-            recent_activity=recent_activity
-        )
         
     except Exception as e:
-        logger.error(f"Dashboard statistics error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get dashboard statistics")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve dashboard statistics: {str(e)}"
+        )
 
 
-@router.get("/activity", response_model=ActivityResponse)
+@router.get("/activity")
 async def get_activity_feed(
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    activity_type: Optional[str] = Query(None),
-    user_hash: Optional[str] = Query(None),
-    days: int = Query(7, ge=1, le=30),
-    session_data = Depends(require_admin_access)
-) -> ActivityResponse:
+    limit: int = Query(50, ge=1, le=100, description="Number of activities to return"),
+    offset: int = Query(0, ge=0, description="Number of activities to skip"),
+    activity_type: Optional[str] = Query(None, description="Filter by activity type"),
+    user_id: Optional[int] = Query(None, description="Filter by user ID"),
+    project_id: Optional[int] = Query(None, description="Filter by project ID"),
+    days: int = Query(30, ge=1, le=365, description="Days to look back"),
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
     """
-    Get activity feed for admin dashboard.
+    Get activity feed for the dashboard
     
-    **Admin access required**: Only admin users can access activity feed.
-    
-    Args:
-        limit: Number of activities to return
-        offset: Number of activities to skip
-        activity_type: Filter by activity type
-        user_hash: Filter by specific user
-        days: Number of days to look back
-        
-    Returns:
-        Activity feed with pagination
+    Returns recent activities with pagination and filtering options.
+    Supports filtering by activity type, user, project, and time range.
     """
     try:
-        # Get activities from the last N days
-        since_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Convert user_hash to user_id if provided
-        user_id = None
-        if user_hash:
-            from src.Util.db import get_user_by_hash
-            user = get_user_by_hash(user_hash)
-            user_id = user.id if user else None
-        
+        # Get recent activities with filters
         activities = get_recent_activity(
             limit=limit,
             offset=offset,
             user_id=user_id,
+            project_id=project_id,
             activity_type=activity_type,
             days=days
         )
         
+        # Get total count for pagination
         total_count = count_activity_logs(
             user_id=user_id,
+            project_id=project_id,
             activity_type=activity_type,
             days=days
         )
         
-        pagination = PaginationInfo(
-            limit=limit,
-            offset=offset,
-            total=total_count,
-            has_more=offset + limit < total_count
-        )
+        # Format activities for frontend
+        formatted_activities = []
+        for activity in activities:
+            formatted_activity = {
+                "id": activity["id"],
+                "activity_type": activity["activity_type"],
+                "details": activity["details"],
+                "created_at": activity["created_at"],
+                "user": {
+                    "id": activity["user_id"],
+                    "username": activity["username"],
+                    "user_hash": activity["user_hash"]
+                } if activity["user_id"] else None,
+                "project": {
+                    "id": activity["project_id"],
+                    "name": activity["project_name"],
+                    "hash": activity["project_hash"]
+                } if activity["project_id"] else None,
+                "target_user": {
+                    "id": activity["target_user_id"],
+                    "username": activity["target_username"],
+                    "user_hash": activity["target_user_hash"]
+                } if activity["target_user_id"] else None,
+                "ip_address": activity["ip_address"]
+            }
+            formatted_activities.append(formatted_activity)
         
-        filters_info = {
-            "activity_type": activity_type,
-            "user_hash": user_hash,
-            "days": days,
-            "since_date": since_date.isoformat()
+        # Calculate pagination info
+        has_more = (offset + limit) < total_count
+        next_offset = offset + limit if has_more else None
+        
+        return {
+            "activities": formatted_activities,
+            "pagination": {
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": has_more,
+                "next_offset": next_offset
+            },
+            "filters": {
+                "activity_type": activity_type,
+                "user_id": user_id,
+                "project_id": project_id,
+                "days": days
+            },
+            "generated_at": datetime.utcnow().isoformat()
         }
         
-        return ActivityResponse(
-            success=True,
-            activities=activities,
-            pagination=pagination,
-            filters=filters_info
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve activity feed: {str(e)}"
         )
+
+
+@router.get("/health")
+async def get_system_health(
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
+    """
+    Get detailed system health information
+    
+    Returns comprehensive system health data including:
+    - Database connectivity and status
+    - Redis connectivity and status
+    - System metrics and performance indicators
+    """
+    try:
+        # Get health checks
+        db_health = check_database_health()
+        redis_health = check_redis_health()
+        
+        # Get system metrics
+        total_users = count_users()
+        total_projects = count_projects()
+        active_sessions = count_active_sessions()
+        
+        # Calculate health score
+        health_score = 100
+        if db_health["status"] != "healthy":
+            health_score -= 50
+        if redis_health["status"] != "healthy":
+            health_score -= 30
+        
+        # Determine overall status
+        if health_score >= 100:
+            overall_status = "healthy"
+        elif health_score >= 70:
+            overall_status = "degraded"
+        else:
+            overall_status = "unhealthy"
+        
+        return {
+            "overall_status": overall_status,
+            "health_score": health_score,
+            "components": {
+                "database": db_health,
+                "redis": redis_health
+            },
+            "metrics": {
+                "total_users": total_users,
+                "total_projects": total_projects,
+                "active_sessions": active_sessions
+            },
+            "checked_at": datetime.utcnow().isoformat()
+        }
         
     except Exception as e:
-        logger.error(f"Activity feed error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get activity feed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve system health: {str(e)}"
+        )
 
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def get_login_attempts_today() -> int:
-    """Get login attempts for today (placeholder implementation)"""
-    # This would query actual login logs when implemented
-    return get_login_attempts_count(1)
-
-
-def get_failed_logins_today() -> int:
-    """Get failed login attempts for today (placeholder implementation)"""
-    # This would query actual failed login logs when implemented
-    return int(get_login_attempts_today() * 0.05)  # Assume 5% failure rate
-
-
-def get_new_users_today() -> int:
-    """Get new users registered today"""
-    return get_recent_users_count(1)
-
-
-def get_login_attempts_count(days: int) -> int:
-    """Get estimated login attempts based on active sessions"""
+@router.get("/activity/types")
+async def get_activity_types(
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
+    """
+    Get available activity types for filtering
+    
+    Returns list of all activity types that have been logged in the system.
+    """
     try:
-        # Estimate based on active sessions and user count
-        active_sessions = count_active_sessions()
-        total_users = count_users()
-        if total_users > 0:
-            return int(active_sessions * 1.5)  # Rough estimate
-        return 0
-    except Exception:
-        return 0
-
-
-# Activity logging functions are now handled by the activity_logger module 
+        # This would ideally come from the activity logger enum
+        from src.Util.activity_logger import ActivityType
+        
+        activity_types = [activity_type.value for activity_type in ActivityType]
+        
+        return {
+            "activity_types": activity_types,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve activity types: {str(e)}"
+        ) 

@@ -25,16 +25,16 @@ Execute each SQL file in order:
 mysql -u root -p < 01_create_database.sql
 
 # Create tables
-mysql -u root -p auth_system < 02_create_tables.sql
+mysql -u root -p magic_auth < 02_create_tables.sql
 
 # Add constraints
-mysql -u root -p auth_system < 03_add_constraints.sql
+mysql -u root -p magic_auth < 03_add_constraints.sql
 
 # Initialize data (optional but recommended)
-mysql -u root -p auth_system < 04_initialize_data.sql
+mysql -u root -p magic_auth < 04_initialize_data.sql
 
 # Add performance optimizations (recommended)
-mysql -u root -p auth_system < 05_performance_optimization.sql
+mysql -u root -p magic_auth < 05_performance_optimization.sql
 ```
 
 ### Method 2: Single Command
@@ -135,7 +135,7 @@ After running the initialization script, you'll have these users:
 
 2. **Duplicate key errors**
    - The database may already exist with data
-   - Drop the database first: `DROP DATABASE IF EXISTS auth_system;`
+   - Drop the database first: `DROP DATABASE IF EXISTS magic_auth;`
 
 3. **Character set issues**
    - Ensure your MySQL server supports utf8mb4
