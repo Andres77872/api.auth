@@ -23,7 +23,6 @@ from typing import List, Optional, Tuple
 from datetime import datetime
 
 import pymysql
-import hashlib
 import redis
 
 from src.Util.Models import (
@@ -31,6 +30,7 @@ from src.Util.Models import (
 )
 from src.Util.db_config import get_connection, redis_client as client
 from src.Util.cache_manager import cache_manager
+from src.Util.password_security import hash_password, verify_password, needs_rehash
 
 
 # =================== USER HASH UTILITY ===================
@@ -117,7 +117,7 @@ def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int 
 
 def create_root_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
     """Create a root (super admin) user"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    password_hash = hash_password(password)
     user_hash = generate_user_hash()
     
     with get_connection() as con:
@@ -148,7 +148,7 @@ def create_root_user(username: str, password: str, email: str = None, created_by
 
 def create_consumer_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
     """Create a consumer (end user) user"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    password_hash = hash_password(password)
     user_hash = generate_user_hash()
     
     with get_connection() as con:
@@ -189,31 +189,60 @@ def create_user(username: str, password: str, email: str = None, user_type: str 
 
 
 def get_user_by_credentials(username: str, password: str) -> Optional[User]:
-    """Get user by username/email and password (enhanced with user type)"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
-    
+    """Get user by username/email and password (enhanced with user type and password migration)"""
     with get_connection() as con:
         cur = con.cursor()
+        
+        # First, get the user by username/email
         cur.execute("""
             SELECT id, user_hash, username, email, password_hash, user_type, assigned_project_id, created_at, is_active
             FROM users 
-            WHERE (username = %s OR email = %s) AND password_hash = %s AND is_active = 1
-        """, [username, username, password_hash])
+            WHERE (username = %s OR email = %s) AND is_active = 1
+        """, [username, username])
         
         result = cur.fetchone()
-        if result:
-            return User(
-                id=result[0],
-                user_hash=result[1],
-                username=result[2],
-                email=result[3],
-                password_hash=result[4],
-                user_type=result[5],
-                assigned_project_id=result[6],
-                created_at=result[7],
-                is_active=bool(result[8])
-            )
-    return None
+        if not result:
+            return None
+        
+        stored_password_hash = result[4]
+        
+        # Verify password using the new secure method (handles both legacy and new hashes)
+        if not verify_password(password, stored_password_hash):
+            return None
+        
+        # Check if password hash needs migration to Argon2
+        if needs_rehash(stored_password_hash):
+            try:
+                # Migrate to new Argon2 hash
+                new_password_hash = hash_password(password)
+                cur.execute("""
+                    UPDATE users SET password_hash = %s, updated_at = NOW() 
+                    WHERE id = %s
+                """, [new_password_hash, result[0]])
+                con.commit()
+                
+                # Update the result with new hash for return
+                result = list(result)
+                result[4] = new_password_hash
+                
+                # Log the migration (optional)
+                print(f"Password migrated to Argon2 for user: {result[2]}")
+                
+            except Exception as e:
+                print(f"Warning: Password migration failed for user {result[2]}: {e}")
+                # Continue with login even if migration fails
+        
+        return User(
+            id=result[0],
+            user_hash=result[1],
+            username=result[2],
+            email=result[3],
+            password_hash=result[4],
+            user_type=result[5],
+            assigned_project_id=result[6],
+            created_at=result[7],
+            is_active=bool(result[8])
+        )
 
 
 def get_user_by_id(user_id: int) -> Optional[User]:
@@ -312,7 +341,7 @@ def update_user(user_id: int, username: str = None, email: str = None, password:
             update_values.append(email)
         
         if password:
-            password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+            password_hash = hash_password(password)
             update_fields.append("password_hash = %s")
             update_values.append(password_hash)
         
@@ -923,7 +952,7 @@ def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = No
 
 def create_admin_user(username: str, password: str, email: str, assigned_project_id: int = None, assigned_project_ids: List[int] = None, created_by: int = None) -> User:
     """Create an admin user assigned to one or multiple projects"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest().upper()
+    password_hash = hash_password(password)
     user_hash = generate_user_hash()
     
     # Handle backwards compatibility: if single project_id provided, convert to list
