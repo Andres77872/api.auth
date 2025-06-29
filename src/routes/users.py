@@ -92,7 +92,6 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
 
 @router.put("/profile", response_model=UpdateProfileResponse)
 async def update_user_profile(
-    user_data: UserUpdateRequest = None,
     username: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
     password: Optional[str] = Form(None),
@@ -101,15 +100,10 @@ async def update_user_profile(
     """
     Update current user's profile information.
     
-    Accepts both JSON and form data:
-    - JSON: Send UserUpdateRequest object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        user_data: User update data (JSON)
-        username: Username (form)
-        email: Email (form) 
-        password: Password (form)
+        username: Username
+        email: Email
+        password: Password
         
     Returns:
         Updated user profile
@@ -126,15 +120,9 @@ async def update_user_profile(
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Use JSON data if available, otherwise use form data
-        if user_data:
-            update_username = user_data.username
-            update_email = user_data.email
-            update_password = user_data.password
-        else:
-            update_username = username
-            update_email = email
-            update_password = password
+        update_username = username
+        update_email = email
+        update_password = password
         
         # Update user
         updated_user = update_user(

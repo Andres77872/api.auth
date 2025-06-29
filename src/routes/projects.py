@@ -127,22 +127,16 @@ async def list_projects(
 
 @router.post("", response_model=CreateProjectResponse)
 async def create_new_project(
-    project_data: ProjectCreateRequest = None,
-    project_name: str = Form(None),
+    project_name: str = Form(...),
     project_description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> CreateProjectResponse:
     """
     Create new project and assign it to default project group.
     
-    Accepts both JSON and form data:
-    - JSON: Send ProjectCreateRequest object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        project_data: Project creation data (JSON)
-        project_name: Project name (form)
-        project_description: Project description (form)
+        project_name: Project name
+        project_description: Project description
         
     Returns:
         Created project information
@@ -162,13 +156,8 @@ async def create_new_project(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
-        # Use JSON data if available, otherwise use form data
-        if project_data:
-            create_name = project_data.project_name
-            create_description = project_data.project_description
-        else:
-            create_name = project_name
-            create_description = project_description
+        create_name = project_name
+        create_description = project_description
         
         if not create_name:
             raise HTTPException(status_code=400, detail="Project name is required")
@@ -273,7 +262,6 @@ async def get_project_details(
 @router.put("/{project_hash}", response_model=UpdateProjectResponse)
 async def update_project_details(
     project_hash: str = Path(...),
-    project_data: ProjectUpdateRequest = None,
     project_name: Optional[str] = Form(None),
     project_description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -281,15 +269,10 @@ async def update_project_details(
     """
     Update project information (admin only).
     
-    Accepts both JSON and form data:
-    - JSON: Send ProjectUpdateRequest object directly  
-    - Form: Send individual fields as form data
-    
     Args:
         project_hash: Project identifier
-        project_data: Project update data (JSON)
-        project_name: Project name (form)
-        project_description: Project description (form)
+        project_name: Project name
+        project_description: Project description
         
     Returns:
         Updated project information
@@ -314,13 +297,8 @@ async def update_project_details(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
-        # Use JSON data if available, otherwise use form data
-        if project_data:
-            update_name = project_data.project_name
-            update_description = project_data.project_description
-        else:
-            update_name = project_name
-            update_description = project_description
+        update_name = project_name
+        update_description = project_description
         
         # Update project
         updated_project = update_project(

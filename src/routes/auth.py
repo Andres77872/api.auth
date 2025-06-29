@@ -34,9 +34,8 @@ security = HTTPBearer()
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
-    login_data: LoginRequest = None,
-    username: str = Form(None),
-    password: str = Form(None),
+    username: str = Form(...),
+    password: str = Form(...),
     project_hash: str = Form(None)
 ) -> LoginResponse:
     """
@@ -45,29 +44,18 @@ async def login(
     For root users: project_hash is optional (they have global access)
     For other users: project_hash is required
     
-    Accepts both JSON and form data:
-    - JSON: Send LoginRequest object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        login_data: Login request data (JSON)
-        username: User's username or email (form)
-        password: User's password (form)
-        project_hash: Project to authenticate against (form) - optional for root users
+        username: User's username or email
+        password: User's password
+        project_hash: Project to authenticate against - optional for root users
         
     Returns:
         User session data with group information and accessible projects
     """
     try:
-        # Use JSON data if available, otherwise use form data
-        if login_data:
-            auth_username = login_data.username
-            auth_password = login_data.password
-            auth_project_hash = login_data.project_hash
-        else:
-            auth_username = username
-            auth_password = password
-            auth_project_hash = project_hash
+        auth_username = username
+        auth_password = password
+        auth_project_hash = project_hash
         
         if not auth_username or not auth_password:
             raise HTTPException(status_code=400, detail="Username and password are required")
@@ -175,41 +163,28 @@ async def login(
 
 @router.post("/register", response_model=RegisterResponse)
 async def register(
-    register_data: RegisterRequest = None,
-    username: str = Form(None),
-    password: str = Form(None),
-    email: str = Form(None),
-    project_hash: str = Form(None)
+    username: str = Form(...),
+    password: str = Form(...),
+    email: str = Form(...),
+    project_hash: str = Form(...)
 ) -> RegisterResponse:
     """
     Register new user with automatic group assignment.
     
-    Accepts both JSON and form data:
-    - JSON: Send RegisterRequest object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        register_data: Registration request data (JSON)
-        username: Desired username (form)
-        password: User's password (form)
-        email: User's email address (form)
-        project_hash: Project to register for (form)
+        username: Desired username
+        password: User's password
+        email: User's email address
+        project_hash: Project to register for
         
     Returns:
         Registration result with user information
     """
     try:
-        # Use JSON data if available, otherwise use form data
-        if register_data:
-            reg_username = register_data.username
-            reg_password = register_data.password
-            reg_email = register_data.email
-            reg_project_hash = register_data.project_hash
-        else:
-            reg_username = username
-            reg_password = password
-            reg_email = email
-            reg_project_hash = project_hash
+        reg_username = username
+        reg_password = password
+        reg_email = email
+        reg_project_hash = project_hash
         
         if not reg_username or not reg_password or not reg_email or not reg_project_hash:
             raise HTTPException(status_code=400, detail="Username, password, email, and project_hash are required")
@@ -344,20 +319,14 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 @router.post("/switch-project", response_model=SwitchProjectResponse)
 async def switch_project(
-    switch_data: SwitchProjectRequest = None,
-    project_hash: str = Form(None),
+    project_hash: str = Form(...),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> SwitchProjectResponse:
     """
     Switch to a different project that the user's group has access to.
     
-    Accepts both JSON and form data:
-    - JSON: Send SwitchProjectRequest object directly
-    - Form: Send project_hash as form data
-    
     Args:
-        switch_data: Project switch data (JSON)
-        project_hash: Hash of the project to switch to (form)
+        project_hash: Hash of the project to switch to
         
     Returns:
         New session token with updated project context
@@ -369,11 +338,7 @@ async def switch_project(
         if not current_session:
             raise HTTPException(status_code=401, detail="Invalid session")
         
-        # Use JSON data if available, otherwise use form data
-        if switch_data:
-            target_project_hash = switch_data.project_hash
-        else:
-            target_project_hash = project_hash
+        target_project_hash = project_hash
         
         if not target_project_hash:
             raise HTTPException(status_code=400, detail="Project hash is required")
@@ -443,33 +408,22 @@ async def switch_project(
 
 @router.post("/check-availability", response_model=CheckAvailabilityResponse)
 async def check_availability(
-    availability_data: CheckAvailabilityRequest = None,
     username: Optional[str] = Form(None),
     email: Optional[str] = Form(None)
 ) -> CheckAvailabilityResponse:
     """
     Check if username or email is available globally.
     
-    Accepts both JSON and form data:
-    - JSON: Send CheckAvailabilityRequest object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        availability_data: Availability check data (JSON)
-        username: Username to check (form)
-        email: Email to check (form)
+        username: Username to check
+        email: Email to check
         
     Returns:
         Availability status for username and email
     """
     try:
-        # Use JSON data if available, otherwise use form data
-        if availability_data:
-            check_username = availability_data.username
-            check_email = availability_data.email
-        else:
-            check_username = username
-            check_email = email
+        check_username = username
+        check_email = email
         
         if not check_username and not check_email:
             raise HTTPException(status_code=400, detail="Username or email required")

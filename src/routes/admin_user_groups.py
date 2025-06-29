@@ -116,22 +116,16 @@ async def list_user_groups(
 
 @router.post("", response_model=CreateUserGroupResponse)
 async def create_user_group_endpoint(
-    group_data: UserGroupCreate = None,
-    group_name: str = Form(None),
+    group_name: str = Form(...),
     description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
 ) -> CreateUserGroupResponse:
     """
     Create a new global user group (admin only).
     
-    Accepts both JSON and form data:
-    - JSON: Send UserGroupCreate object directly
-    - Form: Send individual fields as form data
-    
     Args:
-        group_data: User group creation data (JSON)
-        group_name: Group name (form)
-        description: Group description (form)
+        group_name: Group name
+        description: Group description
         
     Returns:
         Created user group information
@@ -140,13 +134,8 @@ async def create_user_group_endpoint(
         # Get current user for audit trail
         user_data = get_user_by_hash(session_data.user_hash)
         
-        # Use JSON data if available, otherwise use form data
-        if group_data:
-            create_name = group_data.group_name
-            create_description = group_data.description
-        else:
-            create_name = group_name
-            create_description = description
+        create_name = group_name
+        create_description = description
         
         if not create_name:
             raise HTTPException(status_code=400, detail="Group name is required")
@@ -252,7 +241,6 @@ async def get_user_group_details(
 @router.put("/{group_hash}", response_model=UpdateUserGroupResponse)
 async def update_user_group_endpoint(
     group_hash: str = Path(...),
-    group_data: UserGroupUpdate = None,
     group_name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     session_data = Depends(require_admin)
@@ -260,15 +248,10 @@ async def update_user_group_endpoint(
     """
     Update user group information (admin only).
     
-    Accepts both JSON and form data:
-    - JSON: Send UserGroupUpdate object directly
-    - Form: Send individual fields as form data
-    
     Args:
         group_hash: User group identifier
-        group_data: Update data (JSON)
-        group_name: Group name (form)
-        description: Group description (form)
+        group_name: Group name
+        description: Group description
         
     Returns:
         Updated user group information
@@ -279,13 +262,8 @@ async def update_user_group_endpoint(
         if not user_group:
             raise HTTPException(status_code=404, detail="User group not found")
         
-        # Use JSON data if available, otherwise use form data
-        if group_data:
-            update_name = group_data.group_name
-            update_description = group_data.description
-        else:
-            update_name = group_name
-            update_description = description
+        update_name = group_name
+        update_description = description
         
         # Update group
         updated_group = update_user_group(
@@ -359,34 +337,21 @@ async def delete_user_group_endpoint(
 @router.post("/{group_hash}/members", response_model=AssignUserToGroupResponse)
 async def assign_user_to_group_endpoint(
     group_hash: str = Path(...),
-    assignment: GroupAssignment = None,
-    user_hash: str = Form(None),
+    user_hash: str = Form(...),
     session_data = Depends(require_admin)
 ) -> AssignUserToGroupResponse:
     """
     Assign a user to a user group (admin only).
     
-    Accepts both JSON and form data:
-    - JSON: Send GroupAssignment object directly
-    - Form: Send user_hash as form data
-    
     Args:
         group_hash: User group identifier
-        assignment: Group assignment data (JSON)
-        user_hash: User hash (form)
+        user_hash: User hash
         
     Returns:
         Assignment confirmation
     """
     try:
-        # Get target user hash
-        if assignment:
-            target_user_hash = assignment.user_hash
-        else:
-            target_user_hash = user_hash
-            
-        if not target_user_hash:
-            raise HTTPException(status_code=400, detail="User hash required")
+        target_user_hash = user_hash
         
         # Get user group
         user_group = get_user_group_by_hash(group_hash)
@@ -485,34 +450,21 @@ async def remove_user_from_group_endpoint(
 @router.post("/{group_hash}/projects", response_model=GrantGroupProjectAccessResponse)
 async def grant_group_project_access_endpoint(
     group_hash: str = Path(...),
-    project_access: ProjectAccess = None,
-    project_hash: str = Form(None),
+    project_hash: str = Form(...),
     session_data = Depends(require_admin)
 ) -> GrantGroupProjectAccessResponse:
     """
     Grant a user group access to a project (admin only).
     
-    Accepts both JSON and form data:
-    - JSON: Send ProjectAccess object directly
-    - Form: Send project_hash as form data
-    
     Args:
         group_hash: User group identifier
-        project_access: Project access data (JSON)
-        project_hash: Project hash (form)
+        project_hash: Project hash
         
     Returns:
         Access grant confirmation
     """
     try:
-        # Get target project hash
-        if project_access:
-            target_project_hash = project_access.project_hash
-        else:
-            target_project_hash = project_hash
-            
-        if not target_project_hash:
-            raise HTTPException(status_code=400, detail="Project hash required")
+        target_project_hash = project_hash
         
         # Get user group
         user_group = get_user_group_by_hash(group_hash)

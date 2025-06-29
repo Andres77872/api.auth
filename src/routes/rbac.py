@@ -180,8 +180,7 @@ async def list_project_permissions(
 @router.post("/projects/{project_hash}/permissions", response_model=CreatePermissionResponse)
 async def create_project_permission(
     project_hash: str = Path(...),
-    permission_data: PermissionCreate = None,
-    permission_name: str = Form(None),
+    permission_name: str = Form(...),
     category: str = Form("general"),
     description: Optional[str] = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -189,16 +188,11 @@ async def create_project_permission(
     """
     Create a new permission for a project.
     
-    Accepts both JSON and form data:
-    - JSON: Send PermissionCreate object directly
-    - Form: Send individual fields as form data
-    
     Args:
         project_hash: Project identifier
-        permission_data: Permission creation data (JSON)
-        permission_name: Permission name (form)
-        category: Permission category (form)
-        description: Permission description (form)
+        permission_name: Permission name
+        category: Permission category
+        description: Permission description
         
     Returns:
         Created permission information
@@ -207,15 +201,9 @@ async def create_project_permission(
         # Check authentication and permissions
         session_data, project = await require_project_admin(project_hash, credentials)
         
-        # Use JSON data if available, otherwise use form data
-        if permission_data:
-            perm_name = permission_data.permission_name
-            perm_category = permission_data.category
-            perm_description = permission_data.description
-        else:
-            perm_name = permission_name
-            perm_category = category
-            perm_description = description
+        perm_name = permission_name
+        perm_category = category
+        perm_description = description
         
         if not perm_name:
             raise HTTPException(status_code=400, detail="Permission name is required")
@@ -330,8 +318,7 @@ async def list_project_roles(
 @router.post("/projects/{project_hash}/roles", response_model=CreateRoleResponse)
 async def create_project_role(
     project_hash: str = Path(...),
-    role_data: PermissionGroupCreate = None,
-    group_name: str = Form(None),
+    group_name: str = Form(...),
     priority: int = Form(50),
     description: Optional[str] = Form(None),
     permissions: List[str] = Form([]),
@@ -340,17 +327,12 @@ async def create_project_role(
     """
     Create a new permission group (role) for a project.
     
-    Accepts both JSON and form data:
-    - JSON: Send PermissionGroupCreate object directly
-    - Form: Send individual fields as form data
-    
     Args:
         project_hash: Project identifier
-        role_data: Role creation data (JSON)
-        group_name: Role name (form)
-        priority: Role priority (form)
-        description: Role description (form)
-        permissions: Permissions list (form)
+        group_name: Role name
+        priority: Role priority
+        description: Role description
+        permissions: Permissions list
         
     Returns:
         Created role information
@@ -359,17 +341,10 @@ async def create_project_role(
         # Check authentication and permissions
         session_data, project = await require_project_admin(project_hash, credentials)
         
-        # Use JSON data if available, otherwise use form data
-        if role_data:
-            role_name = role_data.group_name
-            role_priority = role_data.priority
-            role_description = role_data.description
-            role_permissions = role_data.permissions
-        else:
-            role_name = group_name
-            role_priority = priority
-            role_description = description
-            role_permissions = permissions
+        role_name = group_name
+        role_priority = priority
+        role_description = description
+        role_permissions = permissions
         
         if not role_name:
             raise HTTPException(status_code=400, detail="Role name is required")
@@ -431,22 +406,16 @@ async def create_project_role(
 async def assign_user_to_role(
     user_hash: str = Path(...),
     project_hash: str = Path(...),
-    role_assignment: UserRoleAssignment = None,
-    role_id: int = Form(None),
+    role_id: int = Form(...),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> AssignUserToRoleResponse:
     """
     Assign a user to a role in a specific project.
     
-    Accepts both JSON and form data:
-    - JSON: Send UserRoleAssignment object directly
-    - Form: Send role_id as form data
-    
     Args:
         user_hash: User identifier
         project_hash: Project identifier
-        role_assignment: Role assignment data (JSON)
-        role_id: Permission group (role) ID (form)
+        role_id: Permission group (role) ID
         
     Returns:
         Assignment confirmation
@@ -460,14 +429,7 @@ async def assign_user_to_role(
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Use JSON data if available, otherwise use form data
-        if role_assignment:
-            assignment_role_id = role_assignment.role_id
-        else:
-            assignment_role_id = role_id
-        
-        if not assignment_role_id:
-            raise HTTPException(status_code=400, detail="Role ID is required")
+        assignment_role_id = role_id
         
         # Get current user for audit trail
         current_user = get_user_by_hash(session_data.user_hash)
