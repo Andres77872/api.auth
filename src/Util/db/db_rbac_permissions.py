@@ -6,12 +6,14 @@ This module implements proper RBAC architecture with:
 - Project-specific permission groups (roles)
 - User role assignments per project
 - Audit trail for all permission changes
+- Cached permission checks for performance
 
 Key RBAC Principles Enforced:
 - Each project has its own permission catalog
 - Permission groups are project-specific
 - Cannot assign permissions outside project scope
 - Complete audit trail
+- Cache-first permission checking with automatic invalidation
 """
 
 import json
@@ -27,6 +29,7 @@ from src.Util.Models import (
     UserProjectPermissionGroup
 )
 from src.Util.db_config import get_connection
+from src.Util.cache_manager import cache_manager
 
 
 # =================== PERMISSION MANAGEMENT ===================
@@ -64,6 +67,9 @@ def create_permission(
         
         permission_id = con.insert_id()
         con.commit()
+        
+        # Invalidate RBAC cache for this project
+        cache_manager.invalidate_rbac_cache(project_id)
         
         return Permission(
             id=permission_id,
@@ -116,7 +122,13 @@ def get_project_permissions(project_id: int, category: str = None) -> List[Permi
 
 
 def check_user_permission(user_id: int, project_id: int, permission_name: str) -> bool:
-    """Check if user has a specific permission within a project"""
+    """Check if user has a specific permission within a project (cache-first)"""
+    # Try cache first
+    cached_result = cache_manager.get_permission_check(user_id, project_id, permission_name)
+    if cached_result is not None:
+        return cached_result
+    
+    # If not in cache, check database
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -130,7 +142,12 @@ def check_user_permission(user_id: int, project_id: int, permission_name: str) -
         """, [user_id, project_id, permission_name])
         
         result = cur.fetchone()
-        return bool(result[0]) if result else False
+        has_permission = bool(result[0]) if result else False
+        
+        # Cache the result
+        cache_manager.set_permission_check(user_id, project_id, permission_name, has_permission)
+        
+        return has_permission
 
 
 def create_default_project_permissions(project_id: int, created_by: int = None) -> List[Permission]:
@@ -217,6 +234,9 @@ def create_permission_group(
         group_id = con.insert_id()
         con.commit()
         
+        # Invalidate RBAC cache for this project when new role is created
+        cache_manager.invalidate_rbac_cache(project_id)
+        
         return PermissionGroup(
             id=group_id,
             group_hash=group_hash,
@@ -258,6 +278,11 @@ def assign_user_to_permission_group(
             """, [user_id, project_id, permission_group_id, assigned_by])
             
             con.commit()
+            
+            # Invalidate user cache and RBAC cache for this project
+            cache_manager.invalidate_user_cache(user_id)
+            cache_manager.invalidate_rbac_cache(project_id)
+            
             return True
             
         except pymysql.IntegrityError:
@@ -270,8 +295,13 @@ def assign_user_to_permission_group(
             
             if cur.rowcount > 0:
                 con.commit()
+                
+                # Invalidate user cache and RBAC cache for this project
+                cache_manager.invalidate_user_cache(user_id)
+                cache_manager.invalidate_rbac_cache(project_id)
+                
                 return True
-            
+                
             return False
 
 
@@ -324,6 +354,11 @@ def assign_permission_to_group(permission_group_id: int, permission_id: int, ass
             """, [permission_group_id, permission_id, assigned_by])
             
             con.commit()
+            
+            # Invalidate RBAC cache when permission is assigned to role
+            project_id = result[0]
+            cache_manager.invalidate_rbac_cache(project_id)
+            
             return True
             
         except pymysql.IntegrityError:
@@ -336,6 +371,11 @@ def assign_permission_to_group(permission_group_id: int, permission_id: int, ass
             
             if cur.rowcount > 0:
                 con.commit()
+                
+                # Invalidate RBAC cache when permission is assigned to role
+                project_id = result[0]
+                cache_manager.invalidate_rbac_cache(project_id)
+                
                 return True
                 
             return False

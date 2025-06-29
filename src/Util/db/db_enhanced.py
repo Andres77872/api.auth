@@ -9,9 +9,10 @@ This module provides the enhanced authentication system functions for the
 
 Key features:
 - User type-aware login and registration
-- Session management with user type context
-- Permission checking based on user types
+- Session management with user type context (1-hour cache)
+- Permission checking based on user types with caching
 - Legacy compatibility functions
+- Cache-first access checks with automatic invalidation
 """
 
 import json
@@ -31,6 +32,7 @@ from src.Util.db.db_users import (
     get_user_project_access
 )
 from src.Util.db_config import redis_client as client
+from src.Util.cache_manager import cache_manager
 
 from src.Util.db.db_projects import (
     # Project operations  
@@ -147,7 +149,10 @@ def enhanced_login(username: str, password: str, project_hash: str) -> Optional[
         session_data['permissions'] = permissions
         available_projects = [proj for proj, _ in get_user_projects(user.id)]
     
-    # Store session in Redis
+    # Store session in cache with 1-hour TTL
+    cache_manager.set_session(session_token, session_data)
+    
+    # Also store in legacy Redis format for backward compatibility
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
     
     return EnhancedUserLogin(
@@ -194,10 +199,18 @@ def enhanced_register(username: str, password: str, email: str, project_hash: st
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
-    """Validate a session token and return user data with user type context"""
-    session_data = get_session_data(session_token)
+    """Validate a session token and return user data with user type context (cache-first)"""
+    # Try cache first
+    session_data = cache_manager.get_session(session_token)
+    
+    # If not in cache, check database/Redis
     if not session_data:
-        return None
+        session_data = get_session_data(session_token)
+        if not session_data:
+            return None
+        
+        # Cache the session data for future requests
+        cache_manager.set_session(session_token, session_data)
     
     # Get fresh project data
     project = get_project_by_hash(session_data['project_hash'])

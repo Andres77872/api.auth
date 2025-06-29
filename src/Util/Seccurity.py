@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 from src.Util.Models import UserLogin
 from src.Util.db.db_enhanced import validate_session
 from src.Util.db_config import redis_client as client
+from src.Util.cache_manager import cache_manager
 
 x_token_user_name = 'X-token-user'
 x_token_collection_name = 'X-token-collection'
@@ -17,7 +18,7 @@ x_token_collection = APIKeyHeader(name=x_token_collection_name, auto_error=True,
 
 def middleware_user_token_validation(request: Request) -> UserLogin:
     """
-    Enhanced token validation method for the multi-project authentication system.
+    Enhanced token validation method with cache-first approach.
     Validates session tokens and returns user information with project context.
     
     :param request: Request containing authentication headers
@@ -28,7 +29,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             user_token = request.headers[x_token_user_name]
             collection_token = request.headers[x_token_collection_name]
             
-            # Validate session token using enhanced system
+            # Validate session token using enhanced system (cache-first)
             enhanced_user = validate_session(user_token)
             
             if enhanced_user and enhanced_user.project_hash == collection_token:

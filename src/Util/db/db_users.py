@@ -30,6 +30,7 @@ from src.Util.Models import (
     User, Project, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
 )
 from src.Util.db_config import get_connection, redis_client as client
+from src.Util.cache_manager import cache_manager
 
 
 # =================== USER HASH UTILITY ===================
@@ -102,6 +103,10 @@ def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int 
         success = cur.rowcount > 0
         if success:
             con.commit()
+            
+            # Invalidate all cache for this user when user type changes
+            cache_manager.invalidate_user_cache(user_id)
+            
         return success
 
 
@@ -368,6 +373,10 @@ def update_user(user_id: int, username: str = None, email: str = None, password:
         
         if cur.rowcount > 0:
             con.commit()
+            
+            # Invalidate all cache for this user when user data changes
+            cache_manager.invalidate_user_cache(user_id)
+            
             return get_user_by_id(user_id)
         else:
             return None
