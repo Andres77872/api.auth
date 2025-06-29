@@ -8,7 +8,7 @@ for the group-based multi-project authentication system.
 import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.db import (
     count_users, count_projects, count_user_groups,
@@ -19,13 +19,14 @@ from src.Util.Models import (
     SystemInfoResponse, HealthCheckResponse, PingResponse,
     CacheStatsResponse, ClearCacheResponse, InvalidateCacheResponse
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/system", tags=["System Information"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
 
 
 @router.get("/info", response_model=SystemInfoResponse)

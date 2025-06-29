@@ -8,8 +8,8 @@ for the group-based multi-project authentication system.
 import secrets
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Form, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Form, HTTPException, Depends, Response
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 
@@ -23,23 +23,30 @@ from src.Util.Models import (
     SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo,
     LoginRequest, RegisterRequest, SwitchProjectRequest, CheckAvailabilityRequest
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
+
+# Cookie settings
+COOKIE_NAME = "session_token"
+COOKIE_MAX_AGE = 72 * 60 * 60  # 72 hours (3 days)
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
+    response: Response,
     username: str = Form(...),
     password: str = Form(...),
     project_hash: str = Form(None)
 ) -> LoginResponse:
     """
     Authenticate user and return session token with group context.
+    Sets HTTP-only cookie with JWT token.
     
     For root users: project_hash is optional (they have global access)
     For other users: project_hash is required
@@ -93,6 +100,16 @@ async def login(
                     user_type="root"
                 )
                 
+                # Set HTTP-only cookie with JWT token
+                response.set_cookie(
+                    key=COOKIE_NAME,
+                    value=root_session['session_token'],
+                    max_age=COOKIE_MAX_AGE,
+                    httponly=True,
+                    secure=True,
+                    samesite="strict"
+                )
+                
                 # Root users have global access - no specific project
                 return LoginResponse(
                     success=True,
@@ -119,6 +136,16 @@ async def login(
             raise HTTPException(status_code=401, detail="Invalid credentials or project access denied")
         
         logger.info(f"Successful login for user: {auth_username}")
+        
+        # Set HTTP-only cookie with JWT token
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=login_result.session_token,
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            secure=True,
+            samesite="strict"
+        )
         
         # Build user info
         user_info = UserInfo(
@@ -163,6 +190,7 @@ async def login(
 
 @router.post("/register", response_model=RegisterResponse)
 async def register(
+    response: Response,
     username: str = Form(...),
     password: str = Form(...),
     email: str = Form(...),
@@ -170,6 +198,7 @@ async def register(
 ) -> RegisterResponse:
     """
     Register new user with automatic group assignment.
+    Sets HTTP-only cookie with JWT token.
     
     Args:
         username: Desired username
@@ -204,6 +233,16 @@ async def register(
             raise HTTPException(status_code=400, detail="Registration failed")
         
         logger.info(f"Successful registration for user: {reg_username}")
+        
+        # Set HTTP-only cookie with JWT token
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=register_result.session_token,
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            secure=True,
+            samesite="strict"
+        )
         
         user_info = UserInfo(
             user_hash=register_result.user_hash,
@@ -294,9 +333,13 @@ async def validate_user_session(credentials: HTTPAuthorizationCredentials = Depe
 
 
 @router.post("/logout", response_model=LogoutResponse)
-async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)) -> LogoutResponse:
+async def logout(
+    response: Response,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> LogoutResponse:
     """
     Logout user and invalidate session.
+    Clears the session cookie.
     
     Returns:
         Logout confirmation
@@ -306,6 +349,8 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         
         # Invalidate session
         if invalidate_session(session_token):
+            # Clear the session cookie
+            response.delete_cookie(key=COOKIE_NAME)
             return LogoutResponse(success=True, message="Logged out successfully")
         else:
             raise HTTPException(status_code=400, detail="Logout failed")
@@ -319,11 +364,13 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 @router.post("/switch-project", response_model=SwitchProjectResponse)
 async def switch_project(
+    response: Response,
     project_hash: str = Form(...),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> SwitchProjectResponse:
     """
     Switch to a different project that the user's group has access to.
+    Updates the session cookie with new JWT token.
     
     Args:
         project_hash: Hash of the project to switch to
@@ -378,6 +425,16 @@ async def switch_project(
         
         # Invalidate old session
         invalidate_session(session_token)
+        
+        # Update the session cookie with new JWT token
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=new_session_token,
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            secure=True,
+            samesite="strict"
+        )
         
         # Get updated permissions for the new project
         permissions = get_user_permissions_in_project(user_data.id, new_project.id)

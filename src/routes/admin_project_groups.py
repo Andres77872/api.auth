@@ -8,7 +8,7 @@ management, and permission control for the group-based multi-project authenticat
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.db import (
@@ -26,13 +26,14 @@ from src.Util.Models import (
     RemoveProjectFromGroupResponse,
     ProjectInfo, ProjectGroupInfo, PaginationInfo
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/admin/project-groups", tags=["Admin - Project Groups"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
 
 # Pydantic models
 class ProjectGroupCreate(BaseModel):

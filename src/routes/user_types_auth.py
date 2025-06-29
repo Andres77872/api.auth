@@ -16,7 +16,7 @@ This module provides APIs for:
 
 import logging
 from fastapi import APIRouter, HTTPException, Depends, Form
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -39,13 +39,14 @@ from src.Util.Models import (
     UserInfo, ProjectInfo, UserTypeInfo, PaginationInfo,
     CreateRootUserRequest, CreateAdminUserRequest, UpdateUserTypeRequest
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/user-types", tags=["User Type Management"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
 
 # Pydantic models for requests that aren't in Models.py
 class UpdateAdminProject(BaseModel):

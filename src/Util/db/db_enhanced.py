@@ -33,6 +33,7 @@ from src.Util.db.db_users import (
 )
 from src.Util.db_config import redis_client as client
 from src.Util.cache_manager import cache_manager
+from src.Util.JWT_Security import JWTTokenHandler
 
 from src.Util.db.db_projects import (
     # Project operations  
@@ -98,11 +99,19 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
     if user_type == "root":
         if not project_hash:
             # Root user global login - no specific project
-            session_token = secrets.token_hex(32).upper()
             session_length = 60 * 60 * 24 * 7  # 7 days for root users
+            session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
+            
+            # Create JWT token for root user global session
+            session_token = JWTTokenHandler.create_access_token(
+                session_id=session_id,
+                user_hash=user.user_hash,
+                collection="",  # Empty for global root session
+            )
             
             # Build global session data for root user
             session_data = {
+                'session_id': session_id,
                 'user_id': user.id,
                 'user_hash': user.user_hash,
                 'user_type': 'root',
@@ -161,11 +170,19 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         return None
     
     # Create session with user type context
-    session_token = secrets.token_hex(32).upper()
     session_length = 60 * 60 * 24 * 3  # 3 days
+    session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
+    
+    # Create JWT token for project-based session
+    session_token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection=project.project_hash,
+    )
     
     # Build session data based on user type
     session_data = {
+        'session_id': session_id,
         'user_id': user.id,
         'user_hash': user.user_hash,
         'project_id': project.id,
@@ -337,10 +354,18 @@ def create_root_session(username: str, password: str) -> Optional[dict]:
     if not user or not is_root_user(user.id):
         return None
     
-    session_token = secrets.token_hex(32).upper()
     session_length = 60 * 60 * 24 * 7  # 7 days for root users
+    session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
+    
+    # Create JWT token for root user global session
+    session_token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection="",  # Empty for global root session
+    )
     
     session_data = {
+        'session_id': session_id,
         'user_id': user.id,
         'user_hash': user.user_hash,
         'user_type': 'root',

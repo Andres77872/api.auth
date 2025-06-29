@@ -10,7 +10,7 @@ import logging
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.db import (
@@ -31,13 +31,14 @@ from src.Util.Models import (
     CheckPermissionResponse, InitializeRBACResponse, ProjectAuditLogResponse, RBACProjectSummaryResponse,
     UserInfo, ProjectInfo, PermissionInfo, RoleInfo, PaginationInfo
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/rbac", tags=["RBAC Management"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
 
 # Pydantic models
 class PermissionCreate(BaseModel):

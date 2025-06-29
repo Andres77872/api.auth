@@ -8,7 +8,7 @@ for the group-based multi-project authentication system.
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.db import (
@@ -23,13 +23,14 @@ from src.Util.Models import (
     UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
     ProjectInfo, UserInfo, PaginationInfo, ProjectCreateRequest, ProjectUpdateRequest
 )
+from src.Util.Seccurity import HTTPBearerOrCookie
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize router and security
 router = APIRouter(prefix="/projects", tags=["Project Management"])
-security = HTTPBearer()
+security = HTTPBearerOrCookie()
 
 # Pydantic models
 class ProjectCreate(BaseModel):

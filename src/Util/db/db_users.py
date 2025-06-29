@@ -31,6 +31,7 @@ from src.Util.Models import (
 from src.Util.db_config import get_connection, redis_client as client
 from src.Util.cache_manager import cache_manager
 from src.Util.password_security import hash_password, verify_password, needs_rehash
+from src.Util.JWT_Security import JWTTokenHandler
 
 
 # =================== USER HASH UTILITY ===================
@@ -685,7 +686,7 @@ def get_session_data(session_token: str) -> Optional[dict]:
 
 def create_session(user_id: int, project_id: int, user_project_id: int = None, session_length: int = 259200) -> str:
     """Create a new session and store in Redis with user type context"""
-    session_token = secrets.token_hex(32).upper()
+    session_id = secrets.randbelow(2**31)  # Generate unique session ID for JWT
     
     # Get user and project data
     user = get_user_by_id(user_id)
@@ -698,8 +699,16 @@ def create_session(user_id: int, project_id: int, user_project_id: int = None, s
     if not project:
         return None
     
+    # Create JWT token
+    session_token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection=project.project_hash,
+    )
+    
     # Build session data based on user type
     session_data = {
+        'session_id': session_id,
         'user_id': user.id,
         'user_hash': user.user_hash,
         'project_id': project.id,

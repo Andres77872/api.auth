@@ -27,10 +27,12 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 
 ### 🔐 **Advanced Authentication**
 - ✅ User registration and login with user type context
-- ✅ Secure session management (3-day sessions with type information)
+- ✅ JWT-based secure session management (3-day sessions with type information)
+- ✅ HTTP-only cookie support with Bearer token fallback
 - ✅ Project switching based on user type and group access
 - ✅ Session validation with comprehensive user context
 - ✅ Availability checking for usernames/emails
+- 🆕 **Dual Authentication Methods**: Support for both Authorization Bearer headers and secure HTTP-only cookies
 
 ### 🎭 **Complete RBAC Management**
 - ✅ **Permission Management**: Create/manage granular permissions per project
@@ -59,7 +61,8 @@ A comprehensive authentication system with **3-tier user management** (Root/Admi
 - ✅ **Multi-Layer Security**: Transport, authentication, authorization, data isolation
 - ✅ **UUID-Based User Identification**: Secure, unpredictable user hashes with `usr-{UUID4}` format
 - ✅ **Audit Trails**: Complete tracking of user type changes and permission modifications
-- ✅ **Session Security**: Cryptographically signed tokens with type context
+- ✅ **JWT Session Security**: Industry-standard cryptographically signed tokens with type context
+- ✅ **Secure Cookie Support**: HTTP-only, secure, SameSite cookies for web applications
 - ✅ **Access Control**: Hierarchical permission resolution
 - ✅ **Data Isolation**: Users only see what their type/groups allow
 
