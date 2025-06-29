@@ -22,10 +22,8 @@ Consumer Users → RBAC Access (User Groups → Project Access → Project Group
 """
 
 # Import core database functions from main module
+from src.Util.db_config import redis_client as client
 from src.Util.db.db_enhanced import (
-    # Core database connection
-    client,
-
     # 3-tier authentication functions
     enhanced_login,
     enhanced_register,

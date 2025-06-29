@@ -5,7 +5,7 @@ from starlette.responses import RedirectResponse
 
 from src.Util.logger_ws import logger
 from src.routes import (
-    Access, auth, users, user_management, projects, 
+    Access, auth, users, user_types_auth, projects, 
     admin_user_groups, admin_project_groups, system, rbac
 )
 
@@ -31,7 +31,7 @@ app = FastAPI(
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
 app.include_router(users.router, tags=['User Management'])
-app.include_router(user_management.router, tags=['User Type Management'])
+app.include_router(user_types_auth.router, tags=['User Type Management'])
 app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
@@ -67,7 +67,8 @@ async def add_process_time_header(request: Request, call_next):
         return response
 
     if request.method == 'POST':
-        if int(request.headers['content-length']) > 8388608:
+        content_length = request.headers.get('content-length')
+        if content_length and int(content_length) > 8388608:
             response = returnJson_413()
             process_time = time.time() - start_time
             response.headers["X-Process-Time"] = str(process_time)

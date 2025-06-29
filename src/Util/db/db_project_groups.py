@@ -19,22 +19,7 @@ import pymysql
 from src.Util.Models import (
     Project, ProjectGroup, ProjectGroupMember, ProjectSummary
 )
-
-# Database connection settings
-ip = "192.168.1.90"
-# ip = "127.0.0.1"
-
-connectionDB = {
-    "host": ip,
-    "user": "root",
-    "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": "magic-auth"
-}
-
-
-def get_connection():
-    """Get database connection"""
-    return pymysql.connect(**connectionDB)
+from src.Util.db_config import get_connection
 
 
 # =================== PROJECT GROUP MANAGEMENT ===================

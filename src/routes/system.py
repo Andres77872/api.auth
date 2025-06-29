@@ -116,7 +116,8 @@ async def system_health():
         
         # Check Redis connectivity
         try:
-            client.ping()
+            from src.Util.db_config import redis_client
+            redis_client.ping()
             health_status["components"]["redis"] = {"status": "healthy", "message": "Redis accessible"}
         except Exception as e:
             health_status["components"]["redis"] = {"status": "unhealthy", "message": f"Redis error: {str(e)}"}

@@ -104,8 +104,10 @@ async def register(
         logger.info(f"Registration attempt for user: {username} in project: {project_hash}")
         
         # Check if username/email is available
-        if not check_username_email_available(username, email):
-            raise HTTPException(status_code=409, detail="Username or email already exists")
+        if not check_username_email_available(username):
+            raise HTTPException(status_code=409, detail="Username already exists")
+        if email and not check_username_email_available(email):
+            raise HTTPException(status_code=409, detail="Email already exists")
         
         # Register user with group assignment
         register_result = enhanced_register(username, password, email, project_hash)
@@ -233,7 +235,10 @@ async def switch_project(
         
         # For project switching, we create a new session without re-validating password
         # This is secure because we already have a valid session
-        from src.Util.db import create_session, get_project_by_hash
+        from src.Util.db import (
+            create_session, get_project_by_hash, get_user_accessible_projects,
+            get_user_project_access, get_user_permissions_in_project
+        )
         
         # Get the new project
         new_project = get_project_by_hash(project_hash)
@@ -241,14 +246,12 @@ async def switch_project(
             raise HTTPException(status_code=404, detail="Project not found")
         
         # Check if user has access to the new project through their groups
-        from src.Util.db import get_user_accessible_projects
         accessible_projects = get_user_accessible_projects(user_data.id)
         
         if not any(p.project_hash == project_hash for p in accessible_projects):
             raise HTTPException(status_code=403, detail="Access denied to requested project")
         
         # Create new session for the new project
-        from src.Util.db import get_user_project_access
         user_project = get_user_project_access(user_data.id, new_project.id)
         if not user_project:
             raise HTTPException(status_code=403, detail="No access to this project")
@@ -262,7 +265,6 @@ async def switch_project(
         invalidate_session(session_token)
         
         # Get updated permissions for the new project
-        from src.Util.db import get_user_permissions_in_project
         permissions = get_user_permissions_in_project(user_data.id, new_project.id)
         
         return {

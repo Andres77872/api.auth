@@ -170,6 +170,8 @@ class UserLogin:
     project_id: int
     user_project_id: int  # Legacy compatibility
     groups: List[str]
+    user_type: str = 'consumer'  # NEW: Include user type
+    assigned_project_id: Optional[int] = None  # NEW: For admin users
 
 
 # =================== LEGACY COMPATIBILITY MODELS ===================

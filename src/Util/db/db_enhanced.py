@@ -25,11 +25,12 @@ from src.Util.db.db_users import (
     get_user_by_credentials, check_username_email_available,
     get_user_type, get_admin_assigned_project,
     grant_user_project_access, get_user_projects, get_user_groups_in_project,
-    get_user_permissions_in_project, get_session_data, client,
+    get_user_permissions_in_project, get_session_data,
     
     # Re-export user functions
     get_user_project_access
 )
+from src.Util.db_config import redis_client as client
 
 from src.Util.db.db_projects import (
     # Project operations  

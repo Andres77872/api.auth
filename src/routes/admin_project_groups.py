@@ -49,11 +49,11 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     """Ensure user has admin permissions"""
     session_data = validate_session(credentials.credentials)
     if not session_data:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
     
     user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
-    if 'admin' not in user_permissions:
-        raise HTTPException(status_code=403, detail="Admin permission required")
+    if 'admin' not in user_permissions and 'manage_roles' not in user_permissions:
+        raise HTTPException(status_code=403, detail="Admin or manage_roles permission required")
     
     return session_data
 

@@ -29,27 +29,7 @@ import redis
 from src.Util.Models import (
     User, Project, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
 )
-
-# Database connection settings
-ip = "192.168.1.90"
-# ip = "127.0.0.1"
-
-connectionDB = {
-    "host": ip,
-    "user": "root",
-    "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": "magic-auth"
-}
-
-client = redis.StrictRedis(host=ip,
-                           port=6379,
-                           db=0,
-                           password=os.environ.get("DB_REDIS_PASSWORD"))
-
-
-def get_connection():
-    """Get database connection"""
-    return pymysql.connect(**connectionDB)
+from src.Util.db_config import get_connection, redis_client as client
 
 
 # =================== USER HASH UTILITY ===================
