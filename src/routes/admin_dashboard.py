@@ -17,6 +17,7 @@ from src.Util.db import (
     get_recent_activity_count, check_database_health, check_redis_health
 )
 from src.Util.activity_logger import get_recent_activity, count_activity_logs
+from src.Util.system_metrics import get_user_statistics, get_project_statistics, get_system_overview
 from src.middleware.authentication import verify_admin_access
 
 # Create router
@@ -269,4 +270,96 @@ async def get_activity_types(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve activity types: {str(e)}"
+        )
+
+
+@router.get("/users/statistics")
+async def get_user_statistics(
+    days: int = Query(30, ge=1, le=365, description="Days to look back for statistics"),
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
+    """
+    Get detailed user statistics for admin dashboard
+    
+    Phase 2 Implementation: User statistics with breakdown and growth rates
+    
+    Args:
+        days: Number of days to look back for growth calculations
+        
+    Returns:
+        Comprehensive user statistics including type breakdown and growth
+    """
+    try:
+        stats = get_user_statistics(days)
+        
+        return {
+            "success": True,
+            "statistics": stats,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve user statistics: {str(e)}"
+        )
+
+
+@router.get("/projects/statistics")
+async def get_project_statistics(
+    days: int = Query(30, ge=1, le=365, description="Days to look back for statistics"),
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
+    """
+    Get detailed project statistics for admin dashboard
+    
+    Phase 2 Implementation: Project statistics and health metrics
+    
+    Args:
+        days: Number of days to look back for analytics
+        
+    Returns:
+        Project counts, member averages, most active projects
+    """
+    try:
+        stats = get_project_statistics(days)
+        
+        return {
+            "success": True,
+            "statistics": stats,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve project statistics: {str(e)}"
+        )
+
+
+@router.get("/system/overview")
+async def get_system_overview(
+    current_user: dict = Depends(verify_admin_access)
+) -> Dict[str, Any]:
+    """
+    Get comprehensive system health and performance overview
+    
+    Phase 2 Implementation: System health with uptime, database status, cache status, API metrics
+    
+    Returns:
+        Complete system overview including health scores and performance metrics
+    """
+    try:
+        overview = get_system_overview()
+        
+        return {
+            "success": True,
+            "system_overview": overview,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve system overview: {str(e)}"
         ) 

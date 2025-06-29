@@ -305,6 +305,32 @@ def assign_user_to_permission_group(
             return False
 
 
+def remove_user_from_permission_group(
+    user_id: int,
+    project_id: int,
+    permission_group_id: int,
+    removed_by: int = None
+) -> bool:
+    """Remove a user from a permission group within a project"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE user_project_permission_groups 
+            SET is_active = 0, removed_at = NOW(), removed_by = %s
+            WHERE user_id = %s AND project_id = %s AND permission_group_id = %s AND is_active = 1
+        """, [removed_by, user_id, project_id, permission_group_id])
+        
+        success = cur.rowcount > 0
+        if success:
+            con.commit()
+            
+            # Invalidate user cache and RBAC cache for this project
+            cache_manager.invalidate_user_cache(user_id)
+            cache_manager.invalidate_rbac_cache(project_id)
+        
+        return success
+
+
 def get_project_permission_groups(project_id: int) -> List[PermissionGroup]:
     """Get all permission groups (roles) for a project"""
     with get_connection() as con:

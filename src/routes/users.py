@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 from src.Util.db import (
@@ -24,6 +24,8 @@ from src.Util.Models import (
     UserInfo, ProjectInfo, UserUpdateRequest, PaginationInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.password_generator import generate_temporary_password, create_password_reset_data
+from src.Util.activity_logger import log_activity, ActivityType
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -550,4 +552,176 @@ async def update_user_status(
         raise
     except Exception as e:
         logger.error(f"Update user status error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update user status") 
+        raise HTTPException(status_code=500, detail="Failed to update user status")
+
+
+@router.post("/{user_hash}/reset-password")
+async def reset_user_password(
+    user_hash: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    """
+    Reset user's password and generate temporary password.
+    
+    **Admin access required**: Only admin users can reset passwords.
+    **Phase 2 Implementation**: Admin password reset functionality
+    
+    Args:
+        user_hash: Hash of the user whose password to reset
+        
+    Returns:
+        Temporary password and reset instructions
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Check admin permissions
+        current_user = get_user_by_hash(session_data.user_hash)
+        user_permissions = getattr(session_data, 'permissions', [])
+        
+        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Admin permission required to reset passwords")
+        
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Prevent resetting root user passwords
+        if target_user.user_type == 'root':
+            raise HTTPException(status_code=400, detail="Cannot reset root user passwords")
+        
+        # Generate password reset data (includes temporary password)
+        reset_data = create_password_reset_data(target_user.id)
+        temp_password = reset_data["temporary_password"]
+        
+        # Update user's password in database
+        success = update_user(target_user.id, password=temp_password)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to reset password")
+        
+        # Log the activity
+        log_activity(
+            user_id=current_user.id,
+            activity_type=ActivityType.USER_PASSWORD_RESET,
+            details=f"Password reset for user {target_user.username}",
+            target_user_id=target_user.id,
+            project_id=getattr(session_data, 'project_id', None)
+        )
+        
+        logger.info(f"Password reset by admin {current_user.username} for user {target_user.username}")
+        
+        return {
+            "success": True,
+            "message": "Password reset successfully",
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "email": target_user.email
+            },
+            "reset_data": {
+                "temporary_password": temp_password,
+                "expires_at": reset_data["expires_at"],
+                "must_change_on_login": True
+            },
+            "instructions": "User must change password on next login"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Password reset error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Password reset failed")
+
+
+@router.patch("/{user_hash}/type")
+async def change_user_type(
+    user_hash: str,
+    user_type: str = Form(...),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    """
+    Change user type (ROOT only).
+    
+    **ROOT access required**: Only ROOT users can change user types.
+    **Phase 2 Implementation**: User type management system
+    
+    Args:
+        user_hash: Hash of the user whose type to change
+        user_type: New user type (root, admin, consumer)
+        
+    Returns:
+        Updated user information
+    """
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+        
+        # Check ROOT permissions
+        current_user = get_user_by_hash(session_data.user_hash)
+        if not current_user or current_user.user_type != 'root':
+            raise HTTPException(status_code=403, detail="ROOT permission required to change user types")
+        
+        # Validate user type
+        valid_types = ['root', 'admin', 'consumer']
+        if user_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid user type. Must be one of: {', '.join(valid_types)}")
+        
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Prevent changing own type
+        if current_user.id == target_user.id:
+            raise HTTPException(status_code=400, detail="Cannot change your own user type")
+        
+        # Update user type
+        from src.Util.db import update_user_type
+        updated_user = update_user_type(target_user.id, user_type)
+        
+        if not updated_user:
+            raise HTTPException(status_code=500, detail="Failed to update user type")
+        
+        # Log the activity
+        log_activity(
+            user_id=current_user.id,
+            activity_type=ActivityType.USER_TYPE_CHANGED,
+            details=f"Changed user type from {target_user.user_type} to {user_type} for user {target_user.username}",
+            target_user_id=target_user.id,
+            project_id=getattr(session_data, 'project_id', None)
+        )
+        
+        logger.info(f"User type changed by ROOT {current_user.username}: {target_user.username} -> {user_type}")
+        
+        return {
+            "success": True,
+            "message": f"User type changed to {user_type} successfully",
+            "user": {
+                "user_hash": updated_user.user_hash,
+                "username": updated_user.username,
+                "email": updated_user.email,
+                "user_type": updated_user.user_type,
+                "updated_at": getattr(updated_user, 'updated_at', datetime.utcnow().isoformat())
+            },
+            "change_details": {
+                "previous_type": target_user.user_type,
+                "new_type": user_type,
+                "changed_by": current_user.username,
+                "changed_at": datetime.utcnow().isoformat()
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User type change error: {str(e)}")
+        raise HTTPException(status_code=500, detail="User type change failed") 

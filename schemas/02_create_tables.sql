@@ -40,10 +40,17 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at DATETIME,
     created_by INT UNSIGNED,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    archived BOOLEAN DEFAULT FALSE,
+    owner_id INT UNSIGNED,
+    archived_at TIMESTAMP NULL,
+    archived_by INT UNSIGNED NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_project_hash (project_hash),
     INDEX idx_project_name (project_name),
-    INDEX idx_active_projects (is_active)
+    INDEX idx_active_projects (is_active),
+    INDEX idx_projects_archived (archived),
+    INDEX idx_projects_owner (owner_id),
+    INDEX idx_projects_created_at (project_created)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUPS TABLE ===================
@@ -337,6 +344,7 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     target_user_id INT UNSIGNED,
     ip_address VARCHAR(45),
     user_agent TEXT,
+    metadata JSON NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     INDEX idx_activity_user_id (user_id),
@@ -344,12 +352,86 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     INDEX idx_activity_project_id (project_id),
     INDEX idx_activity_created_at (created_at DESC),
     INDEX idx_activity_target_user_id (target_user_id),
+    INDEX idx_activity_ip_address (ip_address),
     INDEX idx_activity_compound (user_id, project_id, activity_type),
     INDEX idx_activity_recent (created_at DESC, activity_type),
     INDEX idx_activity_log_user_type_time (user_id, activity_type, created_at),
     INDEX idx_activity_log_project_time (project_id, created_at),
     INDEX idx_activity_log_target_user_time (target_user_id, created_at),
     INDEX idx_activity_log_type_time (activity_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PHASE 2 ENHANCEMENT TABLES ===================
+
+-- =================== USER_PASSWORD_RESETS TABLE ===================
+-- Track password reset operations and temporary passwords
+CREATE TABLE IF NOT EXISTS user_password_resets (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id INT UNSIGNED NOT NULL,
+    reset_token VARCHAR(255) NOT NULL,
+    temporary_password_hash VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP NULL,
+    created_by INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_user_password_resets_user_id (user_id),
+    INDEX idx_user_password_resets_token (reset_token),
+    INDEX idx_user_password_resets_expires (expires_at),
+    INDEX idx_user_password_resets_user_expires (user_id, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== ROLE_ASSIGNMENT_HISTORY TABLE ===================
+-- Maintain comprehensive audit trail for role assignments and changes
+CREATE TABLE IF NOT EXISTS role_assignment_history (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id INT UNSIGNED NOT NULL,
+    project_id INT UNSIGNED NOT NULL,
+    permission_group_id INT UNSIGNED NOT NULL,
+    action ENUM('assigned', 'removed', 'modified') NOT NULL,
+    performed_by INT UNSIGNED NOT NULL,
+    performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    details TEXT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    INDEX idx_role_history_user_project (user_id, project_id),
+    INDEX idx_role_history_performed_at (performed_at),
+    INDEX idx_role_history_action (action),
+    INDEX idx_role_history_user_performed (user_id, performed_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== SYSTEM_METRICS TABLE ===================
+-- Store system performance metrics for dashboard analytics
+CREATE TABLE IF NOT EXISTS system_metrics (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    metric_name VARCHAR(100) NOT NULL,
+    metric_value DECIMAL(15,4) NOT NULL,
+    metric_unit VARCHAR(20) NULL,
+    collected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_system_metrics_name_time (metric_name, collected_at),
+    INDEX idx_system_metrics_collected_at (collected_at),
+    INDEX idx_system_metrics_name_collected (metric_name, collected_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== BULK_OPERATIONS_LOG TABLE ===================
+-- Track bulk operations for monitoring and auditing purposes
+CREATE TABLE IF NOT EXISTS bulk_operations_log (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    operation_type ENUM('bulk_update_users', 'bulk_delete_users', 'bulk_assign_roles', 'bulk_assign_groups') NOT NULL,
+    performed_by INT UNSIGNED NOT NULL,
+    target_count INT NOT NULL,
+    success_count INT NOT NULL,
+    error_count INT NOT NULL,
+    operation_details JSON NULL,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    status ENUM('running', 'completed', 'failed') DEFAULT 'running',
+    PRIMARY KEY (id),
+    INDEX idx_bulk_ops_performer (performed_by),
+    INDEX idx_bulk_ops_type_time (operation_type, started_at),
+    INDEX idx_bulk_ops_status (status),
+    INDEX idx_bulk_ops_performer_started (performed_by, started_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERFORMANCE OPTIMIZATION TABLES ===================

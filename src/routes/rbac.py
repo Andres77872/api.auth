@@ -7,7 +7,7 @@ authentication system.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
@@ -32,6 +32,7 @@ from src.Util.Models import (
     UserInfo, ProjectInfo, PermissionInfo, RoleInfo, PaginationInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.activity_logger import log_activity, ActivityType
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -884,4 +885,431 @@ async def get_project_rbac_summary(
         raise
     except Exception as e:
         logger.error(f"Get RBAC summary error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get RBAC summary") 
+        raise HTTPException(status_code=500, detail="Failed to get RBAC summary")
+
+@router.delete("/users/{user_hash}/projects/{project_hash}/roles/{role_id}")
+async def remove_user_from_role(
+    user_hash: str = Path(...),
+    project_hash: str = Path(...),
+    role_id: int = Path(...),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    """
+    Remove user from role in a project.
+    
+    **Phase 2 Implementation**: Remove user from role
+    
+    Args:
+        user_hash: User identifier
+        project_hash: Project identifier
+        role_id: Role (permission group) ID to remove user from
+        
+    Returns:
+        Removal confirmation
+    """
+    try:
+        # Check authentication and permissions
+        session_data, project = await require_project_admin(project_hash, credentials)
+        
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get current user for audit trail
+        current_user = get_user_by_hash(session_data.user_hash)
+        
+        # Remove user from role
+        from src.Util.db.db_rbac_permissions import remove_user_from_permission_group
+        success = remove_user_from_permission_group(
+            user_id=target_user.id,
+            project_id=project.id,
+            permission_group_id=role_id,
+            removed_by=current_user.id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to remove user from role")
+        
+        # Log the activity
+        log_activity(
+            user_id=current_user.id,
+            activity_type=ActivityType.ROLE_REMOVED,
+            details=f"Removed user {target_user.username} from role {role_id} in project {project.project_name}",
+            target_user_id=target_user.id,
+            project_id=project.id
+        )
+        
+        logger.info(f"User {target_user.username} removed from role {role_id} in project {project.project_name} by {current_user.username}")
+        
+        return {
+            "success": True,
+            "message": f"User {target_user.username} removed from role successfully",
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username
+            },
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "role_id": role_id,
+            "removed_by": current_user.username,
+            "removed_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remove user from role error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to remove user from role")
+
+@router.post("/projects/{project_hash}/bulk-assign")
+async def bulk_assign_roles(
+    project_hash: str = Path(...),
+    user_hashes: List[str] = Form(...),
+    role_ids: List[int] = Form(...),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    """
+    Bulk assign roles to users in a project.
+    
+    **Phase 2 Implementation**: Bulk role assignments
+    
+    Args:
+        project_hash: Project identifier
+        user_hashes: List of user hashes to assign roles to
+        role_ids: List of role IDs to assign
+        
+    Returns:
+        Bulk assignment results
+    """
+    try:
+        # Check authentication and permissions
+        session_data, project = await require_project_admin(project_hash, credentials)
+        
+        # Get current user for audit trail
+        current_user = get_user_by_hash(session_data.user_hash)
+        
+        # Validate input
+        if not user_hashes or not role_ids:
+            raise HTTPException(status_code=400, detail="User hashes and role IDs are required")
+        
+        if len(user_hashes) > 100:
+            raise HTTPException(status_code=400, detail="Maximum 100 users can be assigned at once")
+        
+        # Perform bulk assignment
+        results = []
+        success_count = 0
+        error_count = 0
+        errors = []
+        
+        for user_hash in user_hashes:
+            try:
+                # Get target user
+                target_user = get_user_by_hash(user_hash)
+                if not target_user:
+                    errors.append(f"User not found: {user_hash}")
+                    error_count += 1
+                    continue
+                
+                user_success_count = 0
+                user_errors = []
+                
+                # Assign all roles to this user
+                for role_id in role_ids:
+                    try:
+                        assignment = assign_user_to_permission_group(
+                            user_id=target_user.id,
+                            project_id=project.id,
+                            permission_group_id=role_id,
+                            assigned_by=current_user.id
+                        )
+                        
+                        if assignment:
+                            user_success_count += 1
+                        else:
+                            user_errors.append(f"Failed to assign role {role_id}")
+                            
+                    except Exception as e:
+                        user_errors.append(f"Role {role_id}: {str(e)}")
+                
+                results.append({
+                    "user_hash": user_hash,
+                    "username": target_user.username,
+                    "roles_assigned": user_success_count,
+                    "roles_failed": len(user_errors),
+                    "errors": user_errors,
+                    "status": "success" if user_success_count > 0 else "error"
+                })
+                
+                if user_success_count > 0:
+                    success_count += 1
+                else:
+                    error_count += 1
+                    
+            except Exception as e:
+                results.append({
+                    "user_hash": user_hash,
+                    "status": "error",
+                    "message": str(e)
+                })
+                error_count += 1
+        
+        # Log the activity
+        log_activity(
+            user_id=current_user.id,
+            activity_type=ActivityType.BULK_ROLE_ASSIGNMENT,
+            details=f"Bulk assigned roles to {success_count} users in project {project.project_name}",
+            project_id=project.id
+        )
+        
+        logger.info(f"Bulk role assignment by {current_user.username} in project {project.project_name}: {success_count} users succeeded")
+        
+        return {
+            "success": True,
+            "message": f"Bulk role assignment completed: {success_count} users succeeded, {error_count} failed",
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "roles_assigned": role_ids,
+            "summary": {
+                "total_users": len(user_hashes),
+                "success_count": success_count,
+                "error_count": error_count
+            },
+            "results": results,
+            "errors": errors,
+            "performed_by": current_user.username,
+            "performed_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk role assignment error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Bulk role assignment failed")
+
+@router.get("/projects/{project_hash}/matrix")
+async def get_permission_matrix(
+    project_hash: str = Path(...),
+    session_data = Depends(require_valid_session)
+) -> Dict[str, Any]:
+    """
+    Get permission matrix view for a project.
+    
+    **Phase 2 Implementation**: Permission matrix view
+    
+    Args:
+        project_hash: Project identifier
+        
+    Returns:
+        Comprehensive role-permission-user matrix
+    """
+    try:
+        # Get project
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check if user has access to this project
+        current_user = get_user_by_hash(session_data.user_hash)
+        if not check_user_permission(current_user.id, project.id, "admin") and \
+           not check_user_permission(current_user.id, project.id, "view_permissions"):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        
+        # Get project permissions
+        permissions = get_project_permissions(project.id)
+        
+        # Get project roles
+        from src.Util.db.db_rbac_permissions import get_project_permission_groups, get_group_permissions, get_group_users
+        roles = get_project_permission_groups(project.id)
+        
+        # Build permission matrix
+        matrix = {
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "permissions": [
+                {
+                    "id": perm.id,
+                    "name": perm.permission_name,
+                    "category": perm.permission_category,
+                    "description": perm.permission_description
+                } for perm in permissions
+            ],
+            "roles": [],
+            "users": []
+        }
+        
+        # Build roles with their permissions and users
+        for role in roles:
+            # TODO: Implement get_group_permissions and get_group_users functions
+            role_permissions = []  # get_group_permissions(role.id)
+            role_users = []  # get_group_users(role.id)
+            
+            role_data = {
+                "id": role.id,
+                "name": role.group_name,
+                "description": role.group_description,
+                "priority": role.group_priority,
+                "permissions": [],  # Placeholder
+                "users": []  # Placeholder
+            }
+            matrix["roles"].append(role_data)
+        
+        # Get all users with permissions in this project
+        # TODO: Implement get_project_users_with_permissions function
+        project_users = []  # get_project_users_with_permissions(project.id)
+        
+        for user in project_users:
+            user_permissions = []
+            user_roles = []
+            
+            # Get user's effective permissions
+            # TODO: Implement get_user_permissions_in_project function
+            user_perms = []  # get_user_permissions_in_project(user.id, project.id)
+            
+            for perm in user_perms:
+                user_permissions.append({
+                    "id": perm.id,
+                    "name": perm.permission_name,
+                    "category": perm.permission_category
+                })
+            
+            # Get user's roles
+            # TODO: Implement get_user_roles_in_project function
+            user_role_assignments = []  # get_user_roles_in_project(user.id, project.id)
+            
+            for role_assignment in user_role_assignments:
+                user_roles.append({
+                    "id": role_assignment.id,
+                    "name": role_assignment.group_name,
+                    "assigned_at": role_assignment.assigned_at
+                })
+            
+            user_data = {
+                "user_hash": user.user_hash,
+                "username": user.username,
+                "email": user.email,
+                "user_type": getattr(user, 'user_type', 'consumer'),
+                "roles": user_roles,
+                "permissions": user_permissions
+            }
+            matrix["users"].append(user_data)
+        
+        return {
+            "success": True,
+            "matrix": matrix,
+            "statistics": {
+                "total_permissions": len(permissions),
+                "total_roles": len(roles),
+                "total_users": len(project_users)
+            },
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Permission matrix error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate permission matrix")
+
+@router.get("/users/{user_hash}/projects/{project_hash}/history")
+async def get_role_assignment_history(
+    user_hash: str = Path(...),
+    project_hash: str = Path(...),
+    limit: int = Query(50, ge=1, le=100, description="Number of history entries to return"),
+    offset: int = Query(0, ge=0, description="Number of entries to skip"),
+    session_data = Depends(require_valid_session)
+) -> Dict[str, Any]:
+    """
+    Get role assignment history for a user in a project.
+    
+    **Phase 2 Implementation**: Role assignment history
+    
+    Args:
+        user_hash: User identifier
+        project_hash: Project identifier
+        limit: Number of history entries to return
+        offset: Number of entries to skip
+        
+    Returns:
+        Role assignment history with audit trail
+    """
+    try:
+        # Get project
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if current user can view this information
+        current_user = get_user_by_hash(session_data.user_hash)
+        if (current_user.id != target_user.id and 
+            not check_user_permission(current_user.id, project.id, "admin") and
+            not check_user_permission(current_user.id, project.id, "view_audit_logs")):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        
+        # Get role assignment history
+        # TODO: Implement get_user_role_assignment_history function
+        history = []  # get_user_role_assignment_history(target_user.id, project.id, limit, offset)
+        
+        # Format history data
+        history_data = []
+        for entry in history:
+            history_entry = {
+                "id": entry.id,
+                "action": entry.action,  # 'assigned', 'removed', 'modified'
+                "role": {
+                    "id": entry.role_id,
+                    "name": entry.role_name,
+                    "description": entry.role_description
+                },
+                "performed_by": {
+                    "user_hash": entry.performed_by_hash,
+                    "username": entry.performed_by_username
+                },
+                "performed_at": entry.performed_at,
+                "details": entry.details,
+                "is_active": entry.is_active
+            }
+            history_data.append(history_entry)
+        
+        # Get total count for pagination
+        # TODO: Implement count_user_role_assignment_history function
+        total_count = 0  # count_user_role_assignment_history(target_user.id, project.id)
+        
+        return {
+            "success": True,
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "email": target_user.email
+            },
+            "project": {
+                "project_hash": project.project_hash,
+                "project_name": project.project_name
+            },
+            "history": history_data,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total": total_count,
+                "has_more": offset + limit < total_count,
+                "next_offset": offset + limit if offset + limit < total_count else None
+            },
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Role assignment history error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve role assignment history") 

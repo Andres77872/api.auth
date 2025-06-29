@@ -6,10 +6,11 @@ and access control for the group-based multi-project authentication system.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from datetime import datetime
 
 from src.Util.db import (
     validate_session, get_user_by_hash,
@@ -27,6 +28,7 @@ from src.Util.Models import (
     UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.activity_logger import log_activity, ActivityType
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -558,4 +560,256 @@ async def revoke_group_project_access_endpoint(
         raise
     except Exception as e:
         logger.error(f"Group project access revocation error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Group project access revocation error") 
+        raise HTTPException(status_code=500, detail="Group project access revocation error")
+
+
+@router.get("/{group_hash}/members")
+async def get_group_members_with_pagination(
+    group_hash: str = Path(...),
+    limit: int = Query(50, ge=1, le=100, description="Number of members to return"),
+    offset: int = Query(0, ge=0, description="Number of members to skip"),
+    session_data = Depends(require_admin)
+) -> Dict[str, Any]:
+    """
+    List group members with pagination.
+    
+    **Phase 2 Implementation**: List group members with pagination
+    
+    Args:
+        group_hash: User group identifier
+        limit: Number of members to return
+        offset: Number of members to skip
+        
+    Returns:
+        Paginated list of group members
+    """
+    try:
+        # Get user group
+        user_group = get_user_group_by_hash(group_hash)
+        if not user_group:
+            raise HTTPException(status_code=404, detail="User group not found")
+        
+        # Get all members first for total count
+        all_members = get_users_in_group(user_group.id)
+        total_count = len(all_members)
+        
+        # Apply pagination
+        paginated_members = all_members[offset:offset + limit]
+        
+        # Format member data
+        members_data = []
+        for member in paginated_members:
+            member_info = {
+                "user_hash": member.user_hash,
+                "username": member.username,
+                "email": member.email,
+                "user_type": getattr(member, 'user_type', 'consumer'),
+                "is_active": getattr(member, 'is_active', True),
+                "joined_group_at": getattr(member, 'created_at', None)
+            }
+            members_data.append(member_info)
+        
+        pagination_info = {
+            "limit": limit,
+            "offset": offset,
+            "total": total_count,
+            "has_more": offset + limit < total_count,
+            "next_offset": offset + limit if offset + limit < total_count else None
+        }
+        
+        return {
+            "success": True,
+            "user_group": {
+                "group_hash": user_group.group_hash,
+                "group_name": user_group.group_name,
+                "description": user_group.description
+            },
+            "members": members_data,
+            "pagination": pagination_info,
+            "statistics": {
+                "total_members": total_count,
+                "members_shown": len(members_data)
+            },
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Group members listing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list group members")
+
+
+@router.post("/{group_hash}/members/bulk")
+async def bulk_add_users_to_group(
+    group_hash: str = Path(...),
+    user_hashes: List[str] = Form(...),
+    session_data = Depends(require_admin)
+) -> Dict[str, Any]:
+    """
+    Bulk add users to group.
+    
+    **Phase 2 Implementation**: Bulk add users to group
+    
+    Args:
+        group_hash: User group identifier
+        user_hashes: List of user hashes to add to group
+        
+    Returns:
+        Bulk assignment results
+    """
+    try:
+        # Get user group
+        user_group = get_user_group_by_hash(group_hash)
+        if not user_group:
+            raise HTTPException(status_code=404, detail="User group not found")
+        
+        # Get current user for audit trail
+        current_user = get_user_by_hash(session_data.user_hash)
+        
+        # Validate input
+        if not user_hashes:
+            raise HTTPException(status_code=400, detail="At least one user hash is required")
+        
+        if len(user_hashes) > 100:
+            raise HTTPException(status_code=400, detail="Maximum 100 users can be assigned at once")
+        
+        # Perform bulk assignment
+        results = []
+        success_count = 0
+        error_count = 0
+        errors = []
+        
+        for user_hash in user_hashes:
+            try:
+                # Get target user
+                target_user = get_user_by_hash(user_hash)
+                if not target_user:
+                    errors.append(f"User not found: {user_hash}")
+                    error_count += 1
+                    continue
+                
+                # Assign user to group
+                assignment_result = assign_user_to_user_group(
+                    target_user.id,
+                    user_group.id,
+                    assigned_by=current_user.id
+                )
+                
+                if assignment_result:
+                    results.append({
+                        "user_hash": user_hash,
+                        "username": target_user.username,
+                        "status": "success",
+                        "message": "Added to group successfully"
+                    })
+                    success_count += 1
+                else:
+                    results.append({
+                        "user_hash": user_hash,
+                        "username": target_user.username,
+                        "status": "error",
+                        "message": "Assignment failed - user may already be in group"
+                    })
+                    error_count += 1
+                    
+            except Exception as e:
+                results.append({
+                    "user_hash": user_hash,
+                    "status": "error",
+                    "message": str(e)
+                })
+                error_count += 1
+        
+        # Log the activity
+        log_activity(
+            user_id=current_user.id,
+            activity_type=ActivityType.BULK_GROUP_ASSIGNMENT,
+            details=f"Bulk added {success_count} users to group {user_group.group_name}",
+            project_id=None
+        )
+        
+        logger.info(f"Bulk group assignment by {current_user.username}: {success_count} succeeded, {error_count} failed")
+        
+        return {
+            "success": True,
+            "message": f"Bulk assignment completed: {success_count} succeeded, {error_count} failed",
+            "user_group": {
+                "group_hash": user_group.group_hash,
+                "group_name": user_group.group_name
+            },
+            "summary": {
+                "total_requested": len(user_hashes),
+                "success_count": success_count,
+                "error_count": error_count
+            },
+            "results": results,
+            "errors": errors,
+            "performed_by": current_user.username,
+            "performed_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk group assignment error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Bulk group assignment failed")
+
+
+@router.get("/users/{user_hash}/groups")
+async def get_user_groups(
+    user_hash: str = Path(...),
+    session_data = Depends(require_admin)
+) -> Dict[str, Any]:
+    """
+    Get groups for specific user.
+    
+    **Phase 2 Implementation**: Get groups for specific user
+    
+    Args:
+        user_hash: User identifier
+        
+    Returns:
+        List of groups the user belongs to
+    """
+    try:
+        # Get target user
+        target_user = get_user_by_hash(user_hash)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get user's groups
+        from src.Util.db import get_user_groups_for_user
+        user_groups = get_user_groups_for_user(target_user.id)
+        
+        # Format group data
+        groups_data = []
+        for group in user_groups:
+            group_info = {
+                "group_hash": group.group_hash,
+                "group_name": group.group_name,
+                "description": group.description,
+                "joined_at": getattr(group, 'created_at', None)
+            }
+            groups_data.append(group_info)
+        
+        return {
+            "success": True,
+            "user": {
+                "user_hash": target_user.user_hash,
+                "username": target_user.username,
+                "email": target_user.email,
+                "user_type": getattr(target_user, 'user_type', 'consumer')
+            },
+            "groups": groups_data,
+            "statistics": {
+                "total_groups": len(groups_data)
+            },
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User groups listing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list user groups") 

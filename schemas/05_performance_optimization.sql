@@ -81,7 +81,51 @@ WHERE u.is_active = 1
   AND us.is_active = 1 
   AND us.expires_at > NOW();
 
--- =================== STORED PROCEDURES FOR COMMON OPERATIONS ===================
+-- User Summary View for enhanced performance
+CREATE OR REPLACE VIEW user_summary_view AS
+SELECT 
+    u.id,
+    u.user_hash,
+    u.username,
+    u.email,
+    u.user_type,
+    u.is_active,
+    u.created_at,
+    COUNT(DISTINCT ug.user_group_id) as total_groups,
+    COUNT(DISTINCT up.project_id) as total_projects,
+    MAX(al.created_at) as last_activity
+FROM users u
+LEFT JOIN user_group_members ug ON u.id = ug.user_id AND ug.is_active = 1
+LEFT JOIN user_projects up ON u.id = up.user_id AND up.is_active = 1
+LEFT JOIN activity_logs al ON u.id = al.user_id
+GROUP BY u.id;
+
+-- Project Health View for monitoring and analytics
+CREATE OR REPLACE VIEW project_health_view AS
+SELECT 
+    p.id,
+    p.project_hash,
+    p.project_name,
+    p.archived,
+    p.owner_id,
+    COUNT(DISTINCT up.user_id) as member_count,
+    COUNT(DISTINCT pg.id) as role_count,
+    COUNT(DISTINCT perm.id) as permission_count,
+    MAX(al.created_at) as last_activity,
+    CASE 
+        WHEN COUNT(DISTINCT up.user_id) = 0 THEN 'inactive'
+        WHEN COUNT(DISTINCT up.user_id) < 5 THEN 'low'
+        WHEN COUNT(DISTINCT up.user_id) < 20 THEN 'medium'
+        ELSE 'high'
+    END as activity_level
+FROM projects p
+LEFT JOIN user_projects up ON p.id = up.project_id AND up.is_active = 1
+LEFT JOIN permission_groups pg ON p.id = pg.project_id AND pg.is_active = 1
+LEFT JOIN permissions perm ON p.id = perm.project_id AND perm.is_active = 1
+LEFT JOIN activity_logs al ON p.id = al.project_id
+GROUP BY p.id;
+
+-- =================== BASIC STORED PROCEDURES ===================
 
 DELIMITER $$
 
@@ -154,42 +198,7 @@ BEGIN
     END IF;
 END$$
 
--- Procedure to validate user access efficiently
-CREATE PROCEDURE sp_validate_user_access(
-    IN p_user_id INT,
-    IN p_project_id INT,
-    OUT p_has_access BOOLEAN,
-    OUT p_access_type VARCHAR(20)
-)
-BEGIN
-    DECLARE v_user_type VARCHAR(20);
-    
-    -- Get user type
-    SELECT user_type INTO v_user_type
-    FROM users
-    WHERE id = p_user_id AND is_active = 1;
-    
-    IF v_user_type = 'root' THEN
-        SET p_has_access = TRUE;
-        SET p_access_type = 'root_access';
-    ELSEIF v_user_type = 'admin' THEN
-        SELECT COUNT(*) > 0 INTO p_has_access
-        FROM admin_project_assignments
-        WHERE user_id = p_user_id 
-          AND project_id = p_project_id 
-          AND is_active = 1;
-        SET p_access_type = IF(p_has_access, 'admin_access', 'no_access');
-    ELSE -- consumer
-        SELECT COUNT(*) > 0 INTO p_has_access
-        FROM user_projects
-        WHERE user_id = p_user_id 
-          AND project_id = p_project_id 
-          AND is_active = 1;
-        SET p_access_type = IF(p_has_access, 'consumer_access', 'no_access');
-    END IF;
-END$$
-
--- Procedure to clean up orphaned records
+-- Clean up orphaned records
 CREATE PROCEDURE sp_cleanup_orphaned_records()
 BEGIN
     -- Remove user_project_groups entries for deleted user_projects
@@ -224,51 +233,6 @@ BEGIN
     WHERE expires_at < NOW() AND is_active = 1;
     
     SELECT ROW_COUNT() as cleaned_sessions;
-END$$
-
--- Archive old audit logs
-CREATE PROCEDURE sp_archive_audit_logs(
-    IN p_days_to_keep INT
-)
-BEGIN
-    -- This is a placeholder - implement based on your archival strategy
-    -- For example, move old records to an archive table
-    SELECT COUNT(*) as records_to_archive
-    FROM permission_audit_log
-    WHERE action_timestamp < DATE_SUB(NOW(), INTERVAL p_days_to_keep DAY);
-END$$
-
--- Clean up old activity logs
-CREATE PROCEDURE sp_cleanup_activity_logs(
-    IN p_days_to_keep INT
-)
-BEGIN
-    DELETE FROM activity_logs 
-    WHERE created_at < DATE_SUB(NOW(), INTERVAL p_days_to_keep DAY);
-    
-    SELECT ROW_COUNT() as deleted_records;
-END$$
-
--- Get activity log statistics
-CREATE PROCEDURE sp_activity_log_stats()
-BEGIN
-    SELECT 
-        COUNT(*) as total_activities,
-        COUNT(DISTINCT user_id) as unique_users,
-        COUNT(DISTINCT project_id) as unique_projects,
-        COUNT(DISTINCT activity_type) as unique_activity_types,
-        MIN(created_at) as oldest_activity,
-        MAX(created_at) as newest_activity
-    FROM activity_logs;
-    
-    SELECT 
-        activity_type,
-        COUNT(*) as count,
-        COUNT(DISTINCT user_id) as unique_users
-    FROM activity_logs 
-    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-    GROUP BY activity_type 
-    ORDER BY count DESC;
 END$$
 
 -- Clean up expired permission cache entries
@@ -323,50 +287,6 @@ BEGIN
            'Expired permission cache entries' as issue_description
     FROM permission_cache
     WHERE expires_at < NOW();
-END$$
-DELIMITER ;
-
--- =================== PERFORMANCE MONITORING ===================
-
--- Create procedure for performance statistics
-DELIMITER $$
-CREATE PROCEDURE sp_performance_stats()
-BEGIN
-    -- Table sizes
-    SELECT 
-        'users' as table_name,
-        COUNT(*) as total_records,
-        COUNT(CASE WHEN is_active = 1 THEN 1 END) as active_records
-    FROM users
-    UNION ALL
-    SELECT 
-        'projects' as table_name,
-        COUNT(*) as total_records,
-        COUNT(CASE WHEN is_active = 1 THEN 1 END) as active_records
-    FROM projects
-    UNION ALL
-    SELECT 
-        'user_sessions' as table_name,
-        COUNT(*) as total_records,
-        COUNT(CASE WHEN is_active = 1 AND expires_at > NOW() THEN 1 END) as active_records
-    FROM user_sessions
-    UNION ALL
-    SELECT 
-        'activity_logs' as table_name,
-        COUNT(*) as total_records,
-        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 END) as recent_records
-    FROM activity_logs;
-    
-    -- Index usage statistics (MySQL 5.7+)
-    SELECT 
-        TABLE_NAME,
-        INDEX_NAME,
-        SEQ_IN_INDEX,
-        COLUMN_NAME,
-        CARDINALITY
-    FROM INFORMATION_SCHEMA.STATISTICS 
-    WHERE TABLE_SCHEMA = 'magic_auth'
-    ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;
 END$$
 DELIMITER ;
 

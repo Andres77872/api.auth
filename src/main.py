@@ -8,7 +8,7 @@ from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_t
 from src.Util.logger_ws import logger
 from src.routes import (
     Access, auth, users, user_types_auth, projects,
-    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, rbac
+    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, rbac, bulk_operations
 )
 
 # Read description from README file
@@ -37,6 +37,7 @@ app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
 app.include_router(analytics.router, tags=['Analytics'])
 app.include_router(rbac.router, tags=['RBAC Management'])
 app.include_router(system.router, tags=['System Information'])
+app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 
 # ACCESS CONTROL (Legacy compatibility)
 app.include_router(

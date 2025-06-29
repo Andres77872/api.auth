@@ -14,6 +14,10 @@ ALTER TABLE users
 -- =================== PROJECTS TABLE CONSTRAINTS ===================
 ALTER TABLE projects
     ADD CONSTRAINT fk_projects_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_projects_owner FOREIGN KEY (owner_id) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_projects_archived_by FOREIGN KEY (archived_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- =================== USER_GROUPS TABLE CONSTRAINTS ===================
@@ -159,7 +163,33 @@ ALTER TABLE permission_cache
     ADD CONSTRAINT fk_permission_cache_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
--- =================== ADDITIONAL CONSTRAINTS ===================
+-- =================== ADDITIONAL TABLE CONSTRAINTS ===================
+
+-- =================== USER_PASSWORD_RESETS TABLE CONSTRAINTS ===================
+ALTER TABLE user_password_resets
+    ADD CONSTRAINT fk_user_password_resets_user FOREIGN KEY (user_id) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_user_password_resets_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- =================== ROLE_ASSIGNMENT_HISTORY TABLE CONSTRAINTS ===================
+ALTER TABLE role_assignment_history
+    ADD CONSTRAINT fk_role_history_user FOREIGN KEY (user_id) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_role_history_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_role_history_permission_group FOREIGN KEY (permission_group_id) 
+        REFERENCES permission_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_role_history_performed_by FOREIGN KEY (performed_by) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- =================== BULK_OPERATIONS_LOG TABLE CONSTRAINTS ===================
+ALTER TABLE bulk_operations_log
+    ADD CONSTRAINT fk_bulk_ops_performed_by FOREIGN KEY (performed_by) 
+        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- =================== DATA INTEGRITY CONSTRAINTS ===================
+
 -- Ensure admin users have at least one project assignment
 DELIMITER $$
 CREATE TRIGGER tr_validate_admin_project_assignment
@@ -178,10 +208,6 @@ BEGIN
     END IF;
 END$$
 DELIMITER ;
-
--- =================== DATA INTEGRITY CONSTRAINTS ===================
-
--- Note: user_type ENUM constraint is already defined in table creation, no additional CHECK needed
 
 -- Ensure session tokens expire in the future when created
 DELIMITER $$
@@ -205,6 +231,49 @@ BEGIN
     IF NEW.expires_at <= NOW() THEN
         SIGNAL SQLSTATE '45000' 
         SET MESSAGE_TEXT = 'Permission cache expiry must be in the future';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure password reset tokens expire in the future when created
+DELIMITER $$
+CREATE TRIGGER tr_validate_password_reset_expiry
+BEFORE INSERT ON user_password_resets
+FOR EACH ROW
+BEGIN
+    IF NEW.expires_at <= NOW() THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Password reset expiry must be in the future';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure bulk operations have valid counts
+DELIMITER $$
+CREATE TRIGGER tr_validate_bulk_operation_counts
+BEFORE INSERT ON bulk_operations_log
+FOR EACH ROW
+BEGIN
+    IF NEW.target_count < 0 OR NEW.success_count < 0 OR NEW.error_count < 0 THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Bulk operation counts must be non-negative';
+    END IF;
+    IF NEW.success_count + NEW.error_count > NEW.target_count THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Sum of success and error counts cannot exceed target count';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure bulk operations completion time is after start time
+DELIMITER $$
+CREATE TRIGGER tr_validate_bulk_operation_completion
+BEFORE UPDATE ON bulk_operations_log
+FOR EACH ROW
+BEGIN
+    IF NEW.completed_at IS NOT NULL AND NEW.completed_at < NEW.started_at THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Bulk operation completion time must be after start time';
     END IF;
 END$$
 DELIMITER ; 
