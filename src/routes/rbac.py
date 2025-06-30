@@ -109,8 +109,18 @@ async def require_project_admin(project_hash: str, credentials: HTTPAuthorizatio
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check if user has admin permission in this project
+    # Get user information
     user_data = get_user_by_hash(session_data.user_hash)
+    
+    # Root users have access to all projects
+    if user_data.user_type == "root":
+        return session_data, project
+        
+    # Admin users have access to their associated projects
+    if user_data.user_type == "admin" and user_data.assigned_project_id == project.id:
+        return session_data, project
+        
+    # Otherwise check specific permissions for this project
     if not check_user_permission(user_data.id, project.id, "admin") and \
             not check_user_permission(user_data.id, project.id, "manage_roles"):
         raise HTTPException(status_code=403, detail="Project admin permission required")
@@ -228,7 +238,7 @@ async def create_project_permission(
             project_id=project.id,
             permission_name=perm_name,
             category=perm_category,
-            description=perm_description,
+            permission_description=perm_description,
             created_by=user_data.id
         )
 
