@@ -29,7 +29,8 @@ from src.Util.db import (
     delete_user_group, assign_user_to_user_group,
     remove_user_from_user_group, get_users_in_group,
     grant_group_project_access, revoke_group_project_access,
-    get_projects_for_user_group, get_project_by_hash, get_user_groups_for_user
+    get_projects_for_user_group, get_project_by_hash, get_user_groups_for_user,
+    get_total_user_groups_count
 )
 
 # Configure logging
@@ -79,17 +80,27 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
 async def list_user_groups(
         limit: int = Query(50, ge=1, le=100),
         offset: int = Query(0, ge=0),
+        sort_by: str = Query('group_name', description="Field to sort by (group_name, created_at, updated_at, id)"),
+        sort_order: str = Query('asc', description="Sort direction (asc or desc)"),
+        search: str = Query(None, description="Search term to filter group names"),
         session_data=Depends(require_admin)
 ) -> ListUserGroupsResponse:
     """
     List all global user groups (admin only).
     
+    Args:
+        limit: Number of groups to return
+        offset: Number of groups to skip
+        sort_by: Field to sort by
+        sort_order: Sort direction (asc or desc)
+        search: Search term to filter group names
+        
     Returns:
         List of user groups with member counts
     """
     try:
-        # Get all user groups
-        user_groups = list_all_user_groups(limit, offset)
+        # Get all user groups with sorting parameters
+        user_groups = list_all_user_groups(limit, offset, sort_by, sort_order, search)
 
         # Add member counts
         groups_with_counts = []
@@ -104,10 +115,13 @@ async def list_user_groups(
             )
             groups_with_counts.append(group_info)
 
+        # Get total count for pagination
+        total_count = get_total_user_groups_count()
+        
         pagination = PaginationInfo(
             limit=limit,
             offset=offset,
-            total=len(groups_with_counts)
+            total=total_count
         )
 
         return ListUserGroupsResponse(
@@ -120,7 +134,7 @@ async def list_user_groups(
         raise
     except Exception as e:
         logger.error(f"User groups listing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User groups listing error")
+        raise HTTPException(status_code=500, detail="Failed to list user groups")
 
 
 @router.post("", response_model=CreateUserGroupResponse)

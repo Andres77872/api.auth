@@ -122,18 +122,38 @@ def get_user_group_by_name(group_name: str) -> Optional[UserGroup]:
     return None
 
 
-def list_all_user_groups(limit: int = 100, offset: int = 0) -> List[UserGroup]:
-    """List all active user groups with pagination"""
+def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'group_name', sort_order: str = 'asc', search: str = None) -> List[UserGroup]:
+    """List all active user groups with pagination, sorting and search"""
+    # Validate sort parameters to prevent SQL injection
+    valid_sort_fields = ['group_name', 'created_at', 'updated_at', 'id']
+    if sort_by not in valid_sort_fields:
+        sort_by = 'group_name'  # Default to group_name if invalid field
+    
+    # Validate sort order
+    sort_direction = 'DESC' if sort_order.lower() == 'desc' else 'ASC'
+    
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
+        
+        # Build the query with optional search
+        where_clause = "WHERE is_active = 1"
+        params = []
+        
+        if search:
+            where_clause += " AND group_name LIKE %s"
+            params.append(f'%{search}%')
+            
+        query = f"""
                     SELECT id, group_hash, group_name, group_description, created_at, updated_at, is_active
                     FROM user_groups
-                    WHERE is_active = 1
-                    ORDER BY group_name ASC
-                        LIMIT %s
+                    {where_clause}
+                    ORDER BY {sort_by} {sort_direction}
+                    LIMIT %s
                     OFFSET %s
-                    """, [limit, offset])
+                    """
+        
+        params.extend([limit, offset])
+        cur.execute(query, params)
 
         results = []
         for row in cur.fetchall():
@@ -146,7 +166,6 @@ def list_all_user_groups(limit: int = 100, offset: int = 0) -> List[UserGroup]:
                 updated_at=row[5],
                 is_active=bool(row[6])
             ))
-
         return results
 
 
@@ -603,4 +622,16 @@ def count_user_groups() -> int:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("SELECT COUNT(*) FROM user_groups WHERE is_active = 1")
+        return cur.fetchone()[0]
+
+
+def get_total_user_groups_count() -> int:
+    """Get total count of active user groups"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM user_groups
+                    WHERE is_active = 1
+                    """)
         return cur.fetchone()[0]
