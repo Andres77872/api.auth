@@ -25,7 +25,7 @@ from src.Util.activity_logger import log_activity, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash, get_project_by_hash,
     # RBAC Permission functions
-    create_permission, get_project_permissions, check_user_permission,
+    create_permission, get_rbac_project_permissions as get_project_permissions, check_user_permission,
     # RBAC Permission Group functions
     create_permission_group, assign_user_to_permission_group,
     # RBAC Initialization
