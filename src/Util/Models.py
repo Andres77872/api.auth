@@ -856,3 +856,32 @@ class ProjectRoleSummary(BaseModelConfig):
     total_permissions: int
     total_users: int
     permission_categories: List[str] = Field(default_factory=list)
+
+
+# =================== ADMIN USER GROUPS ADDITIONAL RESPONSES ===================
+
+class GroupMembersPaginatedResponse(BaseResponse):
+    """Response model for paginated group members listing"""
+    user_group: Optional[UserGroupInfo] = None
+    members: List[Dict[str, Any]] = Field(default_factory=list)
+    pagination: Optional[PaginationInfo] = None
+    statistics: Optional[Dict[str, Any]] = None
+    generated_at: Optional[str] = None
+
+
+class BulkAddUsersToGroupResponse(BaseResponse):
+    """Response model for bulk adding users to a group"""
+    user_group: Optional[Dict[str, Any]] = None
+    summary: Optional[Dict[str, Any]] = None
+    results: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    performed_by: Optional[str] = None
+    performed_at: Optional[str] = None
+
+
+class UserGroupsForUserResponse(BaseResponse):
+    """Response model for listing user's group memberships"""
+    user: Optional[Dict[str, Any]] = None
+    groups: List[Dict[str, Any]] = Field(default_factory=list)
+    statistics: Optional[Dict[str, Any]] = None
+    generated_at: Optional[str] = None

@@ -7,7 +7,7 @@ and access control for the group-based multi-project authentication system.
 
 import logging
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
@@ -17,7 +17,8 @@ from src.Util.Models import (
     ListUserGroupsResponse, CreateUserGroupResponse, UserGroupDetailsResponse,
     UpdateUserGroupResponse, DeleteUserGroupResponse, AssignUserToGroupResponse,
     RemoveUserFromGroupResponse, GrantGroupProjectAccessResponse, RevokeGroupProjectAccessResponse,
-    UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo
+    UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo, GroupMembersPaginatedResponse,
+    BulkAddUsersToGroupResponse, UserGroupsForUserResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import log_activity, ActivityType
@@ -28,7 +29,7 @@ from src.Util.db import (
     delete_user_group, assign_user_to_user_group,
     remove_user_from_user_group, get_users_in_group,
     grant_group_project_access, revoke_group_project_access,
-    get_projects_for_user_group, get_project_by_hash
+    get_projects_for_user_group, get_project_by_hash, get_user_groups_for_user
 )
 
 # Configure logging
@@ -568,13 +569,13 @@ async def revoke_group_project_access_endpoint(
         raise HTTPException(status_code=500, detail="Group project access revocation error")
 
 
-@router.get("/{group_hash}/members")
+@router.get("/{group_hash}/members", response_model=GroupMembersPaginatedResponse)
 async def get_group_members_with_pagination(
         group_hash: str = Path(...),
         limit: int = Query(50, ge=1, le=100, description="Number of members to return"),
         offset: int = Query(0, ge=0, description="Number of members to skip"),
         session_data=Depends(require_admin)
-) -> Dict[str, Any]:
+) -> GroupMembersPaginatedResponse:
     """
     List group members with pagination.
     
@@ -614,29 +615,30 @@ async def get_group_members_with_pagination(
             }
             members_data.append(member_info)
 
-        pagination_info = {
-            "limit": limit,
-            "offset": offset,
-            "total": total_count,
-            "has_more": offset + limit < total_count,
-            "next_offset": offset + limit if offset + limit < total_count else None
-        }
+        pagination_info = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=total_count,
+            has_more=offset + limit < total_count
+        )
 
-        return {
-            "success": True,
-            "user_group": {
-                "group_hash": user_group.group_hash,
-                "group_name": user_group.group_name,
-                "description": user_group.group_description
-            },
-            "members": members_data,
-            "pagination": pagination_info,
-            "statistics": {
+        user_group_info = UserGroupInfo(
+            group_hash=user_group.group_hash,
+            group_name=user_group.group_name,
+            description=user_group.group_description
+        )
+
+        return GroupMembersPaginatedResponse(
+            success=True,
+            user_group=user_group_info,
+            members=members_data,
+            pagination=pagination_info,
+            statistics={
                 "total_members": total_count,
                 "members_shown": len(members_data)
             },
-            "generated_at": datetime.utcnow().isoformat()
-        }
+            generated_at=datetime.utcnow().isoformat()
+        )
 
     except HTTPException:
         raise
@@ -645,12 +647,12 @@ async def get_group_members_with_pagination(
         raise HTTPException(status_code=500, detail="Failed to list group members")
 
 
-@router.post("/{group_hash}/members/bulk")
+@router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
 async def bulk_add_users_to_group(
         group_hash: str = Path(...),
         user_hashes: List[str] = Form(...),
         session_data=Depends(require_admin)
-) -> Dict[str, Any]:
+) -> BulkAddUsersToGroupResponse:
     """
     Bulk add users to group.
     
@@ -737,23 +739,23 @@ async def bulk_add_users_to_group(
         logger.info(
             f"Bulk group assignment by {current_user.username}: {success_count} succeeded, {error_count} failed")
 
-        return {
-            "success": True,
-            "message": f"Bulk assignment completed: {success_count} succeeded, {error_count} failed",
-            "user_group": {
+        return BulkAddUsersToGroupResponse(
+            success=True,
+            message=f"Bulk assignment completed: {success_count} succeeded, {error_count} failed",
+            user_group={
                 "group_hash": user_group.group_hash,
                 "group_name": user_group.group_name
             },
-            "summary": {
+            summary={
                 "total_requested": len(user_hashes),
                 "success_count": success_count,
                 "error_count": error_count
             },
-            "results": results,
-            "errors": errors,
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
-        }
+            results=results,
+            errors=errors,
+            performed_by=current_user.username,
+            performed_at=datetime.utcnow().isoformat()
+        )
 
     except HTTPException:
         raise
@@ -762,11 +764,11 @@ async def bulk_add_users_to_group(
         raise HTTPException(status_code=500, detail="Bulk group assignment failed")
 
 
-@router.get("/users/{user_hash}/groups")
+@router.get("/users/{user_hash}/groups", response_model=UserGroupsForUserResponse)
 async def get_user_groups(
         user_hash: str = Path(...),
         session_data=Depends(require_admin)
-) -> Dict[str, Any]:
+) -> UserGroupsForUserResponse:
     """
     Get groups for specific user.
     
@@ -785,7 +787,6 @@ async def get_user_groups(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Get user's groups
-        from src.Util.db import get_user_groups_for_user
         user_groups = get_user_groups_for_user(target_user.id)
 
         # Format group data
@@ -799,20 +800,20 @@ async def get_user_groups(
             }
             groups_data.append(group_info)
 
-        return {
-            "success": True,
-            "user": {
+        return UserGroupsForUserResponse(
+            success=True,
+            user={
                 "user_hash": target_user.user_hash,
                 "username": target_user.username,
                 "email": target_user.email,
                 "user_type": getattr(target_user, 'user_type', 'consumer')
             },
-            "groups": groups_data,
-            "statistics": {
+            groups=groups_data,
+            statistics={
                 "total_groups": len(groups_data)
             },
-            "generated_at": datetime.utcnow().isoformat()
-        }
+            generated_at=datetime.utcnow().isoformat()
+        )
 
     except HTTPException:
         raise
