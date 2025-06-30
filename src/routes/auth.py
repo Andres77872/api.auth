@@ -188,7 +188,7 @@ async def register(
         response: Response,
         username: str = Form(...),
         password: str = Form(...),
-        email: str = Form(...),
+        email: Optional[str] = Form(None),
         project_hash: str = Form(...)
 ) -> RegisterResponse:
     """
@@ -198,7 +198,7 @@ async def register(
     Args:
         username: Desired username
         password: User's password
-        email: User's email address
+        email: User's email address (optional)
         project_hash: Project to register for
         
     Returns:
@@ -210,8 +210,8 @@ async def register(
         reg_email = email
         reg_project_hash = project_hash
 
-        if not reg_username or not reg_password or not reg_email or not reg_project_hash:
-            raise HTTPException(status_code=400, detail="Username, password, email, and project_hash are required")
+        if not reg_username or not reg_password or not reg_project_hash:
+            raise HTTPException(status_code=400, detail="Username, password, and project_hash are required")
 
         logger.info(f"Registration attempt for user: {reg_username} in project: {reg_project_hash}")
 
