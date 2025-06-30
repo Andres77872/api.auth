@@ -97,7 +97,7 @@ async def list_user_groups(
             group_info = UserGroupInfo(
                 group_hash=group.group_hash,
                 group_name=group.group_name,
-                description=group.description,
+                description=group.group_description,
                 member_count=len(members),
                 created_at=group.created_at
             )
@@ -161,7 +161,7 @@ async def create_user_group_endpoint(
         group_info = UserGroupInfo(
             group_hash=new_group.group_hash,
             group_name=new_group.group_name,
-            description=new_group.description,
+            description=new_group.group_description,
             created_at=new_group.created_at
         )
 
@@ -207,7 +207,7 @@ async def get_user_group_details(
         group_info = UserGroupInfo(
             group_hash=user_group.group_hash,
             group_name=user_group.group_name,
-            description=user_group.description,
+            description=user_group.group_description,
             created_at=user_group.created_at
         )
 
@@ -286,7 +286,7 @@ async def update_user_group_endpoint(
         group_info = UserGroupInfo(
             group_hash=updated_group.group_hash,
             group_name=updated_group.group_name,
-            description=updated_group.description
+            description=updated_group.group_description
         )
 
         return UpdateUserGroupResponse(
@@ -627,7 +627,7 @@ async def get_group_members_with_pagination(
             "user_group": {
                 "group_hash": user_group.group_hash,
                 "group_name": user_group.group_name,
-                "description": user_group.description
+                "description": user_group.group_description
             },
             "members": members_data,
             "pagination": pagination_info,
@@ -794,7 +794,7 @@ async def get_user_groups(
             group_info = {
                 "group_hash": group.group_hash,
                 "group_name": group.group_name,
-                "description": group.description,
+                "description": group.group_description,
                 "joined_at": getattr(group, 'created_at', None)
             }
             groups_data.append(group_info)
