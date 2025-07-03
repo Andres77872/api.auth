@@ -879,6 +879,20 @@ class BulkAddUsersToGroupResponse(BaseResponse):
     performed_at: Optional[str] = None
 
 
+class ChangeUserTypeResponse(BaseResponse):
+    """Response model for user type change operation"""
+    user_hash: str
+    username: str
+    email: Optional[str] = None
+    user_type: str
+    user_type_info: Optional[Dict[str, Any]] = None
+    affected_groups: List[Dict[str, Any]] = Field(default_factory=list)
+    affected_projects: List[Dict[str, Any]] = Field(default_factory=list)
+    previous_type: str
+    changed_by: str
+    changed_at: str
+
+
 class UserGroupsForUserResponse(BaseResponse):
     """Response model for listing user's group memberships"""
     user: Optional[Dict[str, Any]] = None

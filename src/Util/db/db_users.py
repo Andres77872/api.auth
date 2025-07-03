@@ -19,7 +19,7 @@ import json
 import secrets
 import uuid
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import (
@@ -431,67 +431,108 @@ def delete_user(user_id: int, deleted_by: int = None) -> bool:
         return success
 
 
-def list_users(limit: int = 100, offset: int = 0, user_type: str = None, project_id: int = None) -> List[User]:
-    """List all active users with filtering by user type and project"""
+def list_users(
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = 'username',
+        sort_order: str = 'asc',
+        search: Optional[str] = None,
+        user_type_filter: Optional[str] = None,
+        group_filter: Optional[str] = None,
+        project_filter: Optional[str] = None,
+        include_inactive: bool = False,
+        # legacy parameters retained for backwards-compatibility
+        user_type: str = None,
+        project_id: int = None) -> List[User]:
+    """List users leveraging the MySQL stored procedure *sp_list_users*.
+
+    The signature has been expanded to match the filtering options available in
+    the /users/list endpoint. The previous *user_type* / *project_id* arguments
+    are still accepted; they are internally mapped to their newer equivalents
+    to avoid breaking legacy callers (e.g. user_types_auth routes).
+    """
+
+    # Map legacy arguments -----------------------------------------------------
+    if user_type_filter is None and user_type is not None:
+        user_type_filter = user_type
+    if project_filter is None and project_id is not None:
+        project_filter = str(project_id)
+
+    # Normalise input ----------------------------------------------------------
+    if sort_order.lower() not in ['asc', 'desc']:
+        sort_order = 'asc'
+
+    with get_connection() as con:
+        cur = con.cursor()
+        try:
+            cur.callproc(
+                'sp_list_users',
+                [
+                    int(limit),
+                    int(offset),
+                    sort_by,
+                    sort_order,
+                    search,
+                    user_type_filter,
+                    group_filter,
+                    project_filter,
+                    int(include_inactive)
+                ]
+            )
+
+            # The first (and only) result-set contains the users
+            results = cur.fetchall()
+
+            users: List[User] = []
+            for row in results:
+                users.append(
+                    User(
+                        id=row[0],
+                        user_hash=row[1],
+                        username=row[2],
+                        email=row[3],
+                        password_hash=row[4],
+                        user_type=row[5],
+                        assigned_project_id=row[6],
+                        created_at=row[7],
+                        is_active=bool(row[8])
+                    )
+                )
+
+            # Clean-up any additional result-sets produced by the connector
+            while cur.nextset():
+                pass
+
+            return users
+        finally:
+            cur.close()
+
+
+def count_users(user_type: str = None, **kwargs) -> int:
+    """Count total number of users.
+
+    The function now gracefully accepts (and ignores for now) any additional
+    filtering arguments that may be forwarded by newer routes. This prevents
+    *TypeError* exceptions in call-sites that already pass those parameters.
+    A fully-featured counting implementation will be introduced in a future
+    iteration.
+    """
+    include_inactive: bool = bool(kwargs.get('include_inactive', False))
     with get_connection() as con:
         cur = con.cursor()
 
-        query = """
-                SELECT id,
-                       user_hash,
-                       username,
-                       email,
-                       password_hash,
-                       user_type,
-                       assigned_project_id,
-                       created_at,
-                       is_active
-                FROM users
-                WHERE is_active = 1 \
-                """
-        params = []
+        base_query = "SELECT COUNT(*) FROM users WHERE 1 = 1 "
+        params: List[Any] = []
+
+        if not include_inactive:
+            base_query += "AND is_active = 1 "
 
         if user_type:
-            query += " AND user_type = %s"
+            base_query += "AND user_type = %s "
             params.append(user_type)
 
-        if project_id:
-            query += " AND (user_type = 'root' OR assigned_project_id = %s OR user_type = 'consumer')"
-            params.append(project_id)
-
-        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cur.execute(query, params)
-
-        results = []
-        for row in cur.fetchall():
-            results.append(User(
-                id=row[0],
-                user_hash=row[1],
-                username=row[2],
-                email=row[3],
-                password_hash=row[4],
-                user_type=row[5],
-                assigned_project_id=row[6],
-                created_at=row[7],
-                is_active=bool(row[8])
-            ))
-
-        return results
-
-
-def count_users(user_type: str = None) -> int:
-    """Count total number of active users by type"""
-    with get_connection() as con:
-        cur = con.cursor()
-
-        if user_type:
-            cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1 AND user_type = %s", [user_type])
-        else:
-            cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
-
-        return cur.fetchone()[0]
+        cur.execute(base_query, params)
+        return int(cur.fetchone()[0])
 
 
 def search_users(search_term: str, user_type: str = None, limit: int = 50) -> List[User]:

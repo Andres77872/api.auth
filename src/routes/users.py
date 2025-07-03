@@ -7,7 +7,7 @@ for the group-based multi-project authentication system.
 
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, HTTPException, Depends, Form
 from fastapi.security import HTTPAuthorizationCredentials
@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from src.Util.Models import (
     UserProfileResponse, UpdateProfileResponse, AccessSummaryResponse,
     ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
-    UserInfo, ProjectInfo, PaginationInfo
+    ChangeUserTypeResponse, UserInfo, ProjectInfo, PaginationInfo, UserGroup, UserGroupMember
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import log_activity, ActivityType
@@ -23,7 +23,9 @@ from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users, count_users, get_user_permissions_in_project,
-    is_root_user
+    is_root_user, get_user_groups_in_project, get_user_effective_permissions,
+    get_user_group_membership, get_user_type_info, check_user_permission,
+    get_user_type, assign_user_to_user_group, remove_user_from_user_group
 )
 from src.Util.password_generator import create_password_reset_data
 
@@ -37,57 +39,69 @@ security = HTTPBearerOrCookie()
 
 @router.get("/profile", response_model=UserProfileResponse)
 async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserProfileResponse:
-    """
-    Get current user's profile information including groups and project access.
-    
-    Returns:
-        User profile with group memberships and accessible projects
+    """Get the current user's profile
+
+    Returns the current user's profile information including
+    their group memberships, hierarchical access structure, and accessible projects.
     """
     try:
+        # Validate session token
         session_token = credentials.credentials
         session_data = validate_session(session_token)
 
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
-
-        # Get user's complete profile with groups
+        # Get user data
         user_data = get_user_by_hash(session_data.user_hash)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
+            
+        # Get user type information (includes role assignments)
+        user_type_info = get_user_type_info(user_data.id)
 
-        # Get user's accessible projects
+        # Get user's groups
+        user_groups = get_user_groups_for_user(user_data.id)
+        
+        # Get user's accessible projects through group memberships
         user_projects = get_user_accessible_projects(user_data.id)
+        
+        # Format groups for response
+        groups = []
+        for group in user_groups:
+            # Get membership details for this user in this group
+            membership = get_user_group_membership(user_data.id, group.id)
+            groups.append({
+                "group_hash": group.group_hash,
+                "group_name": group.group_name,
+                "group_description": group.group_description,
+                "assigned_at": membership.assigned_at if membership else None,
+                "assigned_by": membership.assigned_by if membership else None
+            })
+        
+        # Format projects for response
+        projects = []
+        for project in user_projects:
+            # Get effective permissions for this user in this project
+            effective_permissions = get_user_effective_permissions(user_data.id, project.project_hash)
+            
+            projects.append(ProjectInfo(
+                project_hash=project.project_hash,
+                project_name=project.project_name,
+                project_description=project.project_description,
+                project_group=project.project_group_name,
+                permissions=effective_permissions
+            ))
 
-        # Build user info
-        user_info = UserInfo(
+        # Build the response with enhanced information
+        return UserProfileResponse(
             user_hash=user_data.user_hash,
             username=user_data.username,
             email=user_data.email,
-            user_type=getattr(user_data, 'user_type', 'consumer'),
-            created_at=user_data.created_at
-        )
-
-        # Build accessible projects list
-        accessible_projects = []
-        if user_projects:
-            for proj in user_projects:
-                accessible_projects.append(ProjectInfo(
-                    project_hash=getattr(proj, 'project_hash', ''),
-                    project_name=getattr(proj, 'project_name', ''),
-                    project_description=getattr(proj, 'project_description', None)
-                ))
-
-        # Build current project info
-        current_project = ProjectInfo(
-            project_hash=session_data.project_hash,
-            project_name=session_data.project_name
-        )
-
-        return UserProfileResponse(
-            success=True,
-            user=user_info,
-            accessible_projects=accessible_projects,
-            current_project=current_project
+            user_type=user_data.user_type,
+            user_type_info=user_type_info,  # Include detailed user type information
+            created_at=user_data.created_at,
+            last_login=user_data.last_login,
+            is_active=user_data.is_active,
+            groups=groups,  # Include group memberships
+            projects=projects
         )
 
     except HTTPException:
@@ -167,10 +181,10 @@ async def update_user_profile(
 async def get_user_access_summary(
         credentials: HTTPAuthorizationCredentials = Depends(security)) -> AccessSummaryResponse:
     """
-    Get summary of user's group memberships and project access.
+    Get comprehensive summary of user's hierarchical group memberships, project access, and effective permissions.
     
     Returns:
-        Comprehensive access summary with groups and permissions
+        Detailed access summary with hierarchical groups, projects, and effective permissions
     """
     try:
         session_token = credentials.credentials
@@ -182,36 +196,66 @@ async def get_user_access_summary(
         user_data = get_user_by_hash(session_data.user_hash)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
+            
+        # Get user type information with role assignments
+        user_type_info = get_user_type_info(user_data.id)
 
-        # Get user's group memberships
+        # Get user's group memberships with hierarchical information
         user_groups = get_user_groups_for_user(user_data.id)
 
-        # Get comprehensive access information
+        # Get comprehensive access information through group-based access control
         accessible_projects = get_user_accessible_projects(user_data.id)
 
-        # Build user groups list
+        # Build user groups list with membership details
         group_list = []
         for group in user_groups:
+            # Get membership details for this user in this group
+            membership = get_user_group_membership(user_data.id, group.id)
+            
+            # Get projects accessible through this group
+            group_projects = get_projects_for_user_group(group.id)
+            
             group_list.append({
+                "group_hash": group.group_hash,
                 "group_name": group.group_name,
-                "description": group.description if hasattr(group, 'description') else group.group_description
+                "group_description": group.group_description,
+                "assigned_at": membership.assigned_at if membership else None,
+                "assigned_by": membership.assigned_by if membership else None,
+                "projects_count": len(group_projects) if group_projects else 0
             })
 
-        # Build accessible projects list
+        # Build accessible projects list with effective permissions
         project_list = []
-        if accessible_projects:
-            for proj in accessible_projects:
-                project_list.append({
-                    "project_hash": getattr(proj, 'project_hash', ''),
-                    "project_name": getattr(proj, 'project_name', ''),
-                    "project_description": getattr(proj, 'project_description', None)
+        for proj in accessible_projects:
+            # Get user's effective permissions for this project
+            effective_permissions = get_user_effective_permissions(user_data.id, proj.project_hash)
+            
+            # Get user's group memberships for this project
+            user_project_groups = get_user_groups_in_project(user_data.id, proj.project_hash)
+            
+            project_groups = []
+            for pg in user_project_groups:
+                project_groups.append({
+                    "group_hash": pg.group_hash if hasattr(pg, 'group_hash') else '',
+                    "group_name": pg.group_name,
+                    "permissions": pg.permissions if hasattr(pg, 'permissions') else []
                 })
+            
+            project_list.append({
+                "project_hash": proj.project_hash,
+                "project_name": proj.project_name,
+                "project_description": proj.project_description,
+                "access_groups": project_groups,
+                "effective_permissions": effective_permissions
+            })
 
-        # Build access summary
+        # Build comprehensive access summary
         access_summary = {
             "user": {
                 "user_hash": user_data.user_hash,
                 "username": user_data.username,
+                "user_type": user_data.user_type,
+                "user_type_details": user_type_info,
                 "email": user_data.email
             },
             "user_groups": group_list,
@@ -241,29 +285,38 @@ async def get_user_access_summary(
         raise HTTPException(status_code=500, detail="Access summary error")
 
 
-@router.get("", response_model=ListUsersResponse)
+@router.get("/list", response_model=ListUsersResponse)
 async def list_all_users(
-        limit: int = 50,
+        limit: int = 100,
         offset: int = 0,
-        user_type: Optional[str] = None,
+        sort_by: str = 'username',
+        sort_order: str = 'asc',
         search: Optional[str] = None,
-        is_active: Optional[bool] = None,
-        credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> ListUsersResponse:
+        user_type_filter: Optional[str] = None,
+        group_filter: Optional[str] = None,
+        project_filter: Optional[str] = None,
+        include_inactive: bool = False,
+        include_group_info: bool = True,
+        include_project_access: bool = True,
+        credentials: HTTPAuthorizationCredentials = Depends(security)) -> ListUsersResponse:
     """
-    List all users with filtering options.
-    
-    **Admin access required**: Only root and admin users can list users.
+    List all users with optional filters, group/project info, and pagination.
     
     Args:
-        limit: Number of users to return (max 100)
-        offset: Number of users to skip
-        user_type: Filter by user type (root, admin, consumer)
+        limit: Maximum number of users to return
+        offset: Offset for pagination
+        sort_by: Field to sort by
+        sort_order: Sort order (asc or desc)
         search: Search term for username or email
-        is_active: Filter by active status
+        user_type_filter: Filter by user type (root, admin, consumer)
+        group_filter: Filter by user group (by hash or name)
+        project_filter: Filter by project access (by hash or name) 
+        include_inactive: Include inactive users
+        include_group_info: Include group membership information
+        include_project_access: Include project access information
         
     Returns:
-        List of users with pagination
+        List of users matching the filters with their group memberships and project access
     """
     try:
         session_token = credentials.credentials
@@ -272,72 +325,106 @@ async def list_all_users(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
 
-        # Check admin permissions
+        # Check if user has permission to list users (root or admin)
         current_user = get_user_by_hash(session_data.user_hash)
         if not current_user:
-            raise HTTPException(status_code=404, detail="Current user not found")
+            raise HTTPException(status_code=404, detail="User not found")
 
-        # Check if user is root or has required permissions
+        # Only root users can see all users across projects
+        # Admin users can only see users in their assigned projects
         is_root = is_root_user(current_user.id)
-        user_permissions = getattr(session_data, 'permissions', [])
+        if not is_root:
+            user_type = get_user_type(current_user.id)
+            if user_type != 'admin':
+                raise HTTPException(status_code=403, detail="Access denied: Admin privileges required")
+            
+            # If admin, we'll filter users based on their assigned projects later
+            # For now, we get their assigned projects
+            admin_projects = get_user_accessible_projects(current_user.id)
+            admin_project_ids = [proj.id for proj in admin_projects] if hasattr(admin_projects[0], 'id') else []
 
-        if not is_root and 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required to list users")
+        # Get all users with filters
+        all_users = list_users(
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            search=search,
+            user_type_filter=user_type_filter,
+            group_filter=group_filter,
+            project_filter=project_filter,
+            include_inactive=include_inactive
+        )
 
-        # Limit constraints
-        if limit > 100:
-            limit = 100
+        # Get total user count with filters
+        total_count = count_users(
+            search=search,
+            user_type_filter=user_type_filter,
+            group_filter=group_filter,
+            project_filter=project_filter,
+            include_inactive=include_inactive
+        )
 
-        # Get users with filtering
-        if search:
-            from src.Util.db import search_users
-            users = search_users(search_term=search, user_type=user_type, limit=limit)
-        else:
-            users = list_users(limit=limit, offset=offset, user_type=user_type)
-
-        # Apply is_active filter if specified
-        if is_active is not None:
-            users = [u for u in users if u.is_active == is_active]
-
-        # Get total count with same user_type filter
-        total_count = count_users(user_type=user_type)
-        
-        # If we filtered by is_active or search, adjust the count accordingly
-        # This is a simple approach - for production, consider adding proper counting functions
-        if is_active is not None or search:
-            total_count = len(users)  # Use the filtered count as total
-
-        # Build response data
-        user_list = []
-        for user in users:
-            user_info = {
+        # Format the user list for the response
+        users_list = []
+        for user in all_users:
+            # Skip users not in admin's projects if current user is admin
+            if not is_root and user.id != current_user.id:
+                user_projects = get_user_accessible_projects(user.id)
+                user_project_ids = [proj.id for proj in user_projects] if hasattr(user_projects[0], 'id') else []
+                
+                # Check if the user has access to at least one of the admin's projects
+                if not any(pid in admin_project_ids for pid in user_project_ids):
+                    continue
+            
+            # Get user type information
+            user_type_info = get_user_type_info(user.id) if user else None
+            
+            # Get group memberships if requested
+            user_groups = []
+            if include_group_info and user:
+                groups = get_user_groups_for_user(user.id)
+                for group in groups:
+                    user_groups.append({
+                        "group_hash": group.group_hash,
+                        "group_name": group.group_name,
+                        "group_description": group.group_description
+                    })
+            
+            # Get project access if requested
+            user_projects = []
+            if include_project_access and user:
+                projects = get_user_accessible_projects(user.id)
+                for project in projects:
+                    # Get effective permissions for this project
+                    effective_permissions = get_user_effective_permissions(user.id, project.project_hash)
+                    
+                    user_projects.append({
+                        "project_hash": project.project_hash,
+                        "project_name": project.project_name,
+                        "permissions": effective_permissions
+                    })
+            
+            # Add the user to the response list
+            users_list.append({
                 "user_hash": user.user_hash,
                 "username": user.username,
                 "email": user.email,
                 "user_type": user.user_type,
-                "is_active": user.is_active,
+                "user_type_info": user_type_info,
                 "created_at": user.created_at,
-                "updated_at": user.updated_at
-            }
+                "last_login": user.last_login,
+                "is_active": user.is_active,
+                "groups": user_groups if include_group_info else [],
+                "projects": user_projects if include_project_access else []
+            })
 
-            # Add project info for admin users
-            if user.user_type == 'admin' and user.assigned_project_id:
-                from src.Util.db import get_project_by_id
-                project = get_project_by_id(user.assigned_project_id)
-                if project:
-                    user_info["assigned_project"] = {
-                        "project_id": project.id,
-                        "project_hash": project.project_hash,
-                        "project_name": project.project_name
-                    }
-
-            user_list.append(user_info)
-
+        # Pagination info
         pagination = PaginationInfo(
+            total=total_count,
             limit=limit,
             offset=offset,
-            total=total_count,
-            has_more=offset + limit < total_count
+            has_more=(offset + len(users_list)) < total_count
         )
 
         filters_info = {
@@ -363,18 +450,23 @@ async def list_all_users(
 @router.get("/{user_hash}", response_model=GetUserDetailsResponse)
 async def get_user_details(
         user_hash: str,
-        credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> GetUserDetailsResponse:
+        include_group_hierarchy: bool = True,
+        include_permission_details: bool = True,
+        credentials: HTTPAuthorizationCredentials = Depends(security)) -> GetUserDetailsResponse:
     """
-    Get detailed information about a specific user.
+    Get detailed information about a specific user including hierarchical group memberships and permissions.
     
-    **Admin access or own profile**: Admin users can view any user, regular users can only view their own profile.
+    Admin users can view details of any user in their assigned projects.
+    Root users can view details of any user.
+    Regular users can only view their own details.
     
     Args:
-        user_hash: Hash of the user to get details for
+        user_hash: The user hash to get details for
+        include_group_hierarchy: Whether to include hierarchical group information
+        include_permission_details: Whether to include detailed permission information
         
     Returns:
-        Detailed user information including permissions and groups
+        Comprehensive user information including hierarchical groups, permissions, and projects
     """
     try:
         session_token = credentials.credentials
@@ -383,47 +475,116 @@ async def get_user_details(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
 
-        # Get target user
+        # Get current user
+        current_user = get_user_by_hash(session_data.user_hash)
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+
+        # Get requested user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Get current user
-        current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
+        # Check access permissions based on user type
+        is_root = is_root_user(current_user.id)
+        is_own_profile = current_user.user_hash == target_user.user_hash
+        
+        if not is_own_profile and not is_root:
+            # Admin users can only view users in their assigned projects
+            user_type = get_user_type(current_user.id)
+            if user_type != 'admin':
+                raise HTTPException(status_code=403, detail="Access denied")
+            
+            # Check if target user is in one of the admin's projects
+            admin_projects = get_user_accessible_projects(current_user.id)
+            target_user_projects = get_user_accessible_projects(target_user.id)
+            
+            admin_project_hashes = [p.project_hash for p in admin_projects]
+            target_project_hashes = [p.project_hash for p in target_user_projects]
+            
+            if not any(ph in admin_project_hashes for ph in target_project_hashes):
+                raise HTTPException(status_code=403, detail="Access denied: User not in your projects")
 
-        # Access control: Admin users can view anyone, regular users only themselves
-        if current_user.id != target_user.id:
-            if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-                raise HTTPException(status_code=403, detail="Permission denied")
-
-        # Get user's groups and permissions
+        # Get user type information with role assignments
+        user_type_info = get_user_type_info(target_user.id)
+        
+        # Get user's group memberships with hierarchical information if requested
         user_groups = get_user_groups_for_user(target_user.id)
+
+        # Get user's accessible projects through group-based access
         accessible_projects = get_user_accessible_projects(target_user.id)
 
-        # Get permissions in current project if available
-        permissions = []
-        if hasattr(session_data, 'project_id') and session_data.project_id:
-            permissions = get_user_permissions_in_project(target_user.id, session_data.project_id)
+        # Build user groups list with membership details
+        group_list = []
+        for group in user_groups:
+            # Get membership details for this user in this group
+            membership = get_user_group_membership(target_user.id, group.id)
+            
+            group_data = {
+                "group_hash": group.group_hash,
+                "group_name": group.group_name,
+                "group_description": group.group_description,
+                "assigned_at": membership.assigned_at if membership else None,
+                "assigned_by": membership.assigned_by if membership else None
+            }
+            
+            # Add hierarchical information if requested
+            if include_group_hierarchy:
+                # Get projects accessible through this group
+                group_projects = get_projects_for_user_group(group.id)
+                group_data["projects_count"] = len(group_projects) if group_projects else 0
+                
+                # If relevant, we could add parent/child group relationships here
+                # This would require adding hierarchical group queries to the database module
+                
+            group_list.append(group_data)
 
-        # Build user details
+        # Build accessible projects list with detailed permissions
+        project_list = []
+        for proj in accessible_projects:
+            project_data = {
+                "project_hash": proj.project_hash,
+                "project_name": proj.project_name,
+                "project_description": proj.project_description
+            }
+            
+            # Get effective permissions for this project
+            if include_permission_details:
+                # Get user's effective permissions for this project
+                effective_permissions = get_user_effective_permissions(target_user.id, proj.project_hash)
+                project_data["effective_permissions"] = effective_permissions
+                
+                # Get user's group memberships for this project
+                user_project_groups = get_user_groups_in_project(target_user.id, proj.project_hash)
+                
+                # Format project groups
+                project_groups = []
+                for pg in user_project_groups:
+                    project_groups.append({
+                        "group_hash": pg.group_hash if hasattr(pg, 'group_hash') else '',
+                        "group_name": pg.group_name,
+                        "permissions": pg.permissions if hasattr(pg, 'permissions') else []
+                    })
+                    
+                project_data["access_groups"] = project_groups
+                
+            project_list.append(project_data)
+
+        # Format the response with comprehensive user details
         user_details = {
             "user_hash": target_user.user_hash,
             "username": target_user.username,
             "email": target_user.email,
             "user_type": target_user.user_type,
-            "is_active": target_user.is_active,
+            "user_type_info": user_type_info,
             "created_at": target_user.created_at,
-            "updated_at": target_user.updated_at
+            "last_login": target_user.last_login,
+            "is_active": target_user.is_active,
+            "groups": group_list,
+            "projects": project_list
         }
 
-        # Add admin-specific info
-        if target_user.user_type == 'admin':
-            from src.Util.db import get_admin_project_assignments_with_details
-            assignments = get_admin_project_assignments_with_details(target_user.id)
-            user_details["project_assignments"] = assignments
-            user_details["total_assigned_projects"] = len(assignments)
-
+        return GetUserDetailsResponse(user=user_details)
         # Build groups list
         groups_list = [group.group_name for group in user_groups]
 
@@ -461,23 +622,24 @@ async def get_user_details(
         raise HTTPException(status_code=500, detail="Failed to get user details")
 
 
-@router.patch("/{user_hash}/status", response_model=UpdateUserStatusResponse)
+@router.put("/{user_hash}/status", response_model=UpdateUserStatusResponse)
 async def update_user_status(
         user_hash: str,
-        is_active: bool = Form(...),
+        is_active: bool,
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> UpdateUserStatusResponse:
     """
-    Update user's active status (activate/deactivate).
+    Activate or deactivate a user account based on hierarchical permissions.
     
-    **Admin access required**: Only admin users can change user status.
+    Root users can change status of any user.
+    Admin users can only change status of users within their assigned projects.
     
     Args:
         user_hash: Hash of the user to update
-        is_active: Whether the user should be active
+        is_active: New status (true=active, false=inactive)
         
     Returns:
-        Updated user status information
+        Updated user status with confirmation message
     """
     try:
         session_token = credentials.credentials
@@ -486,84 +648,84 @@ async def update_user_status(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
 
-        # Check admin permissions
+        # Get current user
         current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
-
-        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required to update user status")
-
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+            
         # Get target user
         target_user = get_user_by_hash(user_hash)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
+            
+        # Check permissions based on user type and hierarchical access
+        is_root = is_root_user(current_user.id)
+        
+        if not is_root:
+            # Only admin users can change user status
+            user_type = get_user_type(current_user.id)
+            if user_type != 'admin':
+                raise HTTPException(status_code=403, detail="Access denied: Admin privileges required")
+                
+            # Admin users can only manage users in their assigned projects
+            admin_projects = get_user_accessible_projects(current_user.id)
+            target_user_projects = get_user_accessible_projects(target_user.id)
+            
+            admin_project_hashes = [p.project_hash for p in admin_projects]
+            target_project_hashes = [p.project_hash for p in target_user_projects]
+            
+            if not any(ph in admin_project_hashes for ph in target_project_hashes):
+                raise HTTPException(status_code=403, detail="Access denied: User not in your projects")
 
-        # Prevent deactivating root users
-        if target_user.user_type == 'root' and not is_active:
-            raise HTTPException(status_code=400, detail="Cannot deactivate root users")
+        # Prevent root users from being deactivated by non-root users
+        if target_user.user_type == 'root' and not is_active and not is_root:
+            raise HTTPException(status_code=403, detail="Cannot deactivate root users")
+            
+        # Prevent self-deactivation
+        if current_user.user_hash == target_user.user_hash and not is_active:
+            raise HTTPException(status_code=403, detail="Cannot deactivate your own account")
 
-        # Prevent users from deactivating themselves
-        if current_user.id == target_user.id:
-            raise HTTPException(status_code=400, detail="Cannot change your own status")
+        # Update user status
+        update_result = update_user(
+            user_id=target_user.id,
+            is_active=is_active
+        )
 
-        # Update user status using the update_user function with a custom is_active field
-        # Note: We need to implement this in the database layer if not already present
-        try:
-            # First, let's try to update using the existing update_user function
-            from src.Util.db_config import get_connection
-
-            with get_connection() as con:
-                cur = con.cursor()
-                cur.execute("""
-                            UPDATE users
-                            SET is_active  = %s,
-                                updated_at = NOW()
-                            WHERE user_hash = %s
-                            """, [is_active, user_hash])
-
-                if cur.rowcount == 0:
-                    raise HTTPException(status_code=404, detail="User not found or update failed")
-
-                con.commit()
-
-            # Get updated user
-            updated_user = get_user_by_hash(user_hash)
-
-            # Build user info
-            user_info = UserInfo(
-                user_hash=updated_user.user_hash,
-                username=updated_user.username,
-                email=updated_user.email,
-                user_type=updated_user.user_type,
-                created_at=updated_user.created_at
-            )
-
-            status_change = {
-                "previous_status": target_user.is_active,
-                "new_status": is_active,
-                "changed_by": current_user.username,
-                "changed_at": datetime.utcnow().isoformat(),
-                "action": "activated" if is_active else "deactivated"
-            }
-
-            logger.info(
-                f"User status updated: {target_user.username} -> {'activated' if is_active else 'deactivated'} by {current_user.username}")
-
-            return UpdateUserStatusResponse(
-                success=True,
-                message=f"User '{target_user.username}' has been {'activated' if is_active else 'deactivated'}",
-                user=user_info,
-                status_change=status_change
-            )
-
-        except Exception as db_error:
-            logger.error(f"Database error updating user status: {str(db_error)}")
+        if not update_result:
             raise HTTPException(status_code=500, detail="Failed to update user status")
+            
+        # If deactivating user, handle cleaning up their active sessions
+        if not is_active:
+            from src.Util.db import invalidate_user_sessions
+            invalidate_user_sessions(target_user.id)
+
+        # Log the activity with enhanced details for audit trail
+        activity_type = ActivityType.USER_ACTIVATED if is_active else ActivityType.USER_DEACTIVATED
+        log_activity(
+            user_id=current_user.id,
+            activity_type=activity_type,
+            target_id=target_user.id,
+            project_id=session_data.project_id if hasattr(session_data, 'project_id') else None,
+            details={
+                "action": "user_status_change",
+                "username": target_user.username,
+                "new_status": "active" if is_active else "inactive",
+                "changed_by": current_user.username,
+                "user_type": target_user.user_type
+            }
+        )
+
+        return UpdateUserStatusResponse(
+            success=True,
+            message=f"User {target_user.username} has been {'activated' if is_active else 'deactivated'}",
+            user_hash=target_user.user_hash,
+            is_active=is_active
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update user status error: {str(e)}")
+        logger.error(f"Error updating user status: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to update user status")
 
 
@@ -651,24 +813,26 @@ async def reset_user_password(
         raise HTTPException(status_code=500, detail="Password reset failed")
 
 
-@router.patch("/{user_hash}/type")
+@router.patch("/{user_hash}/type", response_model=ChangeUserTypeResponse)
 async def change_user_type(
         user_hash: str,
         user_type: str = Form(...),
+        project_hash: Optional[str] = Form(None),  # Required when changing to admin type
         credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> Dict[str, Any]:
+) -> ChangeUserTypeResponse:
     """
-    Change user type (ROOT only).
+    Change user type with support for hierarchical group-based permissions.
     
     **ROOT access required**: Only ROOT users can change user types.
-    **Phase 2 Implementation**: User type management system
+    When changing to admin type, a project assignment is required.
     
     Args:
         user_hash: Hash of the user whose type to change
         user_type: New user type (root, admin, consumer)
+        project_hash: Project hash to assign admin to (required when user_type=admin)
         
     Returns:
-        Updated user information
+        Updated user information with related group and project access changes
     """
     try:
         session_token = credentials.credentials
@@ -679,7 +843,11 @@ async def change_user_type(
 
         # Check ROOT permissions
         current_user = get_user_by_hash(session_data.user_hash)
-        if not current_user or current_user.user_type != 'root':
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+            
+        # Only root users can change user types
+        if not is_root_user(current_user.id):
             raise HTTPException(status_code=403, detail="ROOT permission required to change user types")
 
         # Validate user type
@@ -693,44 +861,146 @@ async def change_user_type(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Prevent changing own type
-        if current_user.id == target_user.id:
+        if current_user.user_hash == target_user.user_hash:
             raise HTTPException(status_code=400, detail="Cannot change your own user type")
+            
+        # Validate project assignment for admin users
+        project = None
+        if user_type == 'admin':
+            if not project_hash:
+                raise HTTPException(status_code=400, detail="Project hash is required when setting user as admin")
+                
+            # Verify project exists
+            from src.Util.db import get_project_by_hash
+            project = get_project_by_hash(project_hash)
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        # Update user type
-        from src.Util.db import update_user_type
-        updated_user = update_user_type(target_user.id, user_type)
+        # Update user type with appropriate project assignment
+        previous_type = target_user.user_type
+        update_result = update_user_type(target_user.id, user_type, project_id=project.id if project else None)
 
-        if not updated_user:
+        if not update_result:
             raise HTTPException(status_code=500, detail="Failed to update user type")
+            
+        # Get updated user information
+        updated_user = get_user_by_hash(user_hash)
+        if not updated_user:
+            raise HTTPException(status_code=500, detail="User updated but retrieval failed")
+            
+        # Handle group membership changes based on user type change
+        affected_groups = []
+        affected_projects = []
+        
+        # If changing from admin/consumer to root, remove all group memberships
+        if user_type == 'root' and previous_type in ['admin', 'consumer']:
+            # Root users don't belong to any groups - clear all memberships
+            from src.Util.db import remove_user_from_all_groups
+            removed_groups = remove_user_from_all_groups(target_user.id)
+            affected_groups = removed_groups
+            
+            # Log specific group removals for audit purposes
+            for group in removed_groups:
+                log_activity(
+                    user_id=current_user.id,
+                    activity_type=ActivityType.USER_REMOVED_FROM_GROUP,
+                    target_id=target_user.id,
+                    details={
+                        "action": "removed_from_group",
+                        "group_name": group.group_name,
+                        "reason": "user_type_change_to_root"
+                    }
+                )
+        
+        # If changing to admin, assign to project admin group if it exists
+        elif user_type == 'admin' and project:
+            from src.Util.db import get_admin_group_for_project, add_user_to_group
+            admin_group = get_admin_group_for_project(project.id)
+            
+            if admin_group:
+                add_result = add_user_to_group(
+                    user_id=target_user.id,
+                    group_id=admin_group.id,
+                    assigned_by_user_id=current_user.id
+                )
+                
+                if add_result:
+                    affected_groups.append(admin_group)
+                    affected_projects.append(project)
+                    
+                    # Log admin group assignment
+                    log_activity(
+                        user_id=current_user.id,
+                        activity_type=ActivityType.USER_ADDED_TO_GROUP,
+                        target_id=target_user.id,
+                        project_id=project.id,
+                        details={
+                            "action": "added_to_admin_group",
+                            "group_name": admin_group.group_name,
+                            "project_name": project.project_name
+                        }
+                    )
 
-        # Log the activity
+        # Log the user type change activity
         log_activity(
             user_id=current_user.id,
             activity_type=ActivityType.USER_TYPE_CHANGED,
-            details=f"Changed user type from {target_user.user_type} to {user_type} for user {target_user.username}",
-            target_user_id=target_user.id,
-            project_id=getattr(session_data, 'project_id', None)
+            target_id=target_user.id,
+            project_id=project.id if project else None,
+            details={
+                "action": "user_type_changed",
+                "username": target_user.username,
+                "previous_type": previous_type,
+                "new_type": user_type,
+                "project_assignment": project.project_name if project else None
+            }
         )
 
-        logger.info(f"User type changed by ROOT {current_user.username}: {target_user.username} -> {user_type}")
+        logger.info(f"User type changed by ROOT {current_user.username}: {target_user.username} from {previous_type} to {user_type}")
 
-        return {
-            "success": True,
-            "message": f"User type changed to {user_type} successfully",
-            "user": {
-                "user_hash": updated_user.user_hash,
-                "username": updated_user.username,
-                "email": updated_user.email,
-                "user_type": updated_user.user_type,
-                "updated_at": getattr(updated_user, 'updated_at', datetime.utcnow().isoformat())
-            },
-            "change_details": {
-                "previous_type": target_user.user_type,
-                "new_type": user_type,
-                "changed_by": current_user.username,
-                "changed_at": datetime.utcnow().isoformat()
-            }
-        }
+        # Get user type info with updated role assignments
+        user_type_info = get_user_type_info(target_user.id)
+        
+        # Format affected groups for response
+        groups_info = []
+        if affected_groups:
+            for group in affected_groups:
+                groups_info.append({
+                    "group_hash": group.group_hash,
+                    "group_name": group.group_name,
+                    "action": "added" if user_type == 'admin' else "removed"
+                })
+        
+        # Format affected projects for response
+        projects_info = []
+        if affected_projects:
+            for proj in affected_projects:
+                projects_info.append({
+                    "project_hash": proj.project_hash,
+                    "project_name": proj.project_name,
+                    "action": "assigned" if user_type == 'admin' else "removed"
+                })
+        elif project:
+            projects_info.append({
+                "project_hash": project.project_hash,
+                "project_name": project.project_name,
+                "action": "assigned" if user_type == 'admin' else "removed"
+            })
+
+        return ChangeUserTypeResponse(
+            success=True,
+            message=f"User type changed to {user_type} successfully",
+            user_hash=updated_user.user_hash,
+            username=updated_user.username,
+            email=updated_user.email,
+            user_type=updated_user.user_type,
+            user_type_info=user_type_info,
+            affected_groups=groups_info,
+            affected_projects=projects_info,
+            previous_type=previous_type,
+            changed_by=current_user.username,
+            changed_at=datetime.utcnow().isoformat()
+        )
 
     except HTTPException:
         raise
