@@ -586,7 +586,6 @@ async def get_user_details(
         raise
     except Exception as e:
         logger.error(f"Get user details error: {str(e)}")
-        raise e
         raise HTTPException(status_code=500, detail="Failed to get user details")
 
 
