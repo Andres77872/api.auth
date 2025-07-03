@@ -284,7 +284,6 @@ async def get_project_details(
         raise
     except Exception as e:
         logger.error(f"Project details error: {str(e)}")
-        raise e
         raise HTTPException(status_code=500, detail="Project details error")
 
 
@@ -462,8 +461,9 @@ async def list_project_members(
         with get_connection() as con:
             cur = con.cursor()
 
-            # Query to get all users with access to this project
-            query = """
+            # Query to get all users with access to this project (group-based schema)
+            query = (
+                """
                     SELECT DISTINCT u.id,
                                     u.user_hash,
                                     u.username,
@@ -471,25 +471,21 @@ async def list_project_members(
                                     u.user_type,
                                     u.is_active,
                                     u.created_at,
-                                    up.granted_at,
-                                    up.granted_by
+                                    vupa.access_granted_at,
+                                    NULL AS granted_by
                     FROM users u
-                             LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                             LEFT JOIN admin_project_assignments apa
-                                       ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                             INNER JOIN v_user_project_access vupa
+                                        ON u.id = vupa.user_id
                     WHERE u.is_active = 1
-                      AND (
-                        u.user_type = 'root' OR
-                        (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                        (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                        ) \
-                    """
+                      AND vupa.project_id = %s
+                """
+            )
+
+            params: list[Any] = [project.id]
 
             if user_type:
                 query += " AND u.user_type = %s"
-                params = [project.id, project.id, user_type]
-            else:
-                params = [project.id, project.id]
+                params.append(user_type)
 
             query += " ORDER BY u.user_type, u.username LIMIT %s OFFSET %s"
             params.extend([limit, offset])
@@ -497,27 +493,22 @@ async def list_project_members(
             cur.execute(query, params)
             results = cur.fetchall()
 
-            # Get total count
-            count_query = """
+            # Get total count (group-based schema)
+            count_query = (
+                """
                           SELECT COUNT(DISTINCT u.id)
                           FROM users u
-                                   LEFT JOIN user_projects up
-                                             ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                                   LEFT JOIN admin_project_assignments apa
-                                             ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                                   INNER JOIN v_user_project_access vupa
+                                              ON u.id = vupa.user_id
                           WHERE u.is_active = 1
-                            AND (
-                              u.user_type = 'root' OR
-                              (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                              (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                              ) \
-                          """
+                            AND vupa.project_id = %s
+                """
+            )
 
+            count_params: list[Any] = [project.id]
             if user_type:
                 count_query += " AND u.user_type = %s"
-                count_params = [project.id, project.id, user_type]
-            else:
-                count_params = [project.id, project.id]
+                count_params.append(user_type)
 
             cur.execute(count_query, count_params)
             total_count = cur.fetchone()[0]
