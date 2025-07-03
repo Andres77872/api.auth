@@ -368,6 +368,10 @@ def db_validate_session(user_hash: str, user_session: str) -> bool:
             user = get_user_by_hash(user_hash)
             if user:
                 user_type = get_user_type(user.id)
+                # Make sure session user type matches stored user type
+                if result.user_type and result.user_type != user_type:
+                    print(f"User type mismatch: session={result.user_type}, stored={user_type}")
+                    return False
                 return True
         return False
     except Exception as e:
