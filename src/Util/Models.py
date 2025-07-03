@@ -86,6 +86,7 @@ class Permission(BaseModelConfig):
     updated_at: Optional[datetime] = None
     created_by: Optional[int] = None
     is_active: bool = True
+    granted_through_role: Optional[str] = None
 
 
 class PermissionGroup(BaseModelConfig):

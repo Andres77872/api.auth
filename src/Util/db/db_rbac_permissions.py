@@ -136,7 +136,7 @@ def check_user_permission(user_id: int, project_id: int, permission_name: str) -
     if cached_result is not None:
         return cached_result
 
-    # If not in cache, check database
+    # If not in cache, check database using group-based access model
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -144,14 +144,16 @@ def check_user_permission(user_id: int, project_id: int, permission_name: str) -
                     FROM permissions p
                              JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
                              JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-                             JOIN user_project_permission_groups uppg ON pg.id = uppg.permission_group_id
-                    WHERE uppg.user_id = %s
-                      AND uppg.project_id = %s
+                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
+                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugpg.project_id = %s
                       AND p.permission_name = %s
                       AND p.is_active = 1
                       AND pgp.is_active = 1
                       AND pg.is_active = 1
-                      AND uppg.is_active = 1
+                      AND ugpg.is_active = 1
+                      AND ugm.is_active = 1
                     """, [user_id, project_id, permission_name])
 
         result = cur.fetchone()
@@ -270,7 +272,7 @@ def assign_user_to_permission_group(
         permission_group_id: int,
         assigned_by: int = None
 ) -> bool:
-    """Assign a user to a permission group within a project"""
+    """Assign a user to a permission group within a project through user groups"""
     # Verify permission group belongs to the project
     with get_connection() as con:
         cur = con.cursor()
@@ -285,11 +287,31 @@ def assign_user_to_permission_group(
         if not result or result[0] != project_id:
             raise ValueError("Permission group does not belong to the specified project")
 
+        # Get user's user groups that have access to this project
+        cur.execute("""
+                    SELECT DISTINCT ug.id
+                    FROM user_groups ug
+                    JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                    JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugp.project_id = %s
+                      AND ugm.is_active = 1
+                      AND ug.is_active = 1
+                      AND ugp.is_active = 1
+                    LIMIT 1
+                    """, [user_id, project_id])
+
+        user_group_result = cur.fetchone()
+        if not user_group_result:
+            raise ValueError("User does not belong to any user group with access to this project")
+
+        user_group_id = user_group_result[0]
+
         try:
             cur.execute("""
-                        INSERT INTO user_project_permission_groups (user_id, project_id, permission_group_id, assigned_by)
+                        INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_by)
                         VALUES (%s, %s, %s, %s)
-                        """, [user_id, project_id, permission_group_id, assigned_by])
+                        """, [user_group_id, project_id, permission_group_id, assigned_by])
 
             con.commit()
 
@@ -300,17 +322,17 @@ def assign_user_to_permission_group(
             return True
 
         except pymysql.IntegrityError:
-            # User already assigned, reactivate if needed
+            # Assignment already exists, reactivate if needed
             cur.execute("""
-                        UPDATE user_project_permission_groups
+                        UPDATE user_group_permission_groups
                         SET is_active   = 1,
                             removed_at  = NULL,
                             removed_by  = NULL,
                             assigned_by = %s
-                        WHERE user_id = %s
+                        WHERE user_group_id = %s
                           AND project_id = %s
                           AND permission_group_id = %s
-                        """, [assigned_by, user_id, project_id, permission_group_id])
+                        """, [assigned_by, user_group_id, project_id, permission_group_id])
 
             if cur.rowcount > 0:
                 con.commit()
@@ -330,21 +352,42 @@ def remove_user_from_permission_group(
         permission_group_id: int,
         removed_by: int = None
 ) -> bool:
-    """Remove a user from a permission group within a project"""
+    """Remove a user from a permission group within a project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
+        
+        # Get user's user groups that are assigned to this permission group
         cur.execute("""
-                    UPDATE user_project_permission_groups
-                    SET is_active  = 0,
-                        removed_at = NOW(),
-                        removed_by = %s
-                    WHERE user_id = %s
-                      AND project_id = %s
-                      AND permission_group_id = %s
-                      AND is_active = 1
-                    """, [removed_by, user_id, project_id, permission_group_id])
+                    SELECT DISTINCT ugpg.user_group_id
+                    FROM user_group_permission_groups ugpg
+                    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugpg.project_id = %s
+                      AND ugpg.permission_group_id = %s
+                      AND ugpg.is_active = 1
+                      AND ugm.is_active = 1
+                    """, [user_id, project_id, permission_group_id])
 
-        success = cur.rowcount > 0
+        user_group_assignments = cur.fetchall()
+        if not user_group_assignments:
+            return False
+
+        success = False
+        for (user_group_id,) in user_group_assignments:
+            cur.execute("""
+                        UPDATE user_group_permission_groups
+                        SET is_active  = 0,
+                            removed_at = NOW(),
+                            removed_by = %s
+                        WHERE user_group_id = %s
+                          AND project_id = %s
+                          AND permission_group_id = %s
+                          AND is_active = 1
+                        """, [removed_by, user_group_id, project_id, permission_group_id])
+            
+            if cur.rowcount > 0:
+                success = True
+
         if success:
             con.commit()
 
@@ -448,7 +491,7 @@ def assign_permission_to_group(permission_group_id: int, permission_id: int, ass
 
 
 def get_user_permission_groups_in_project(user_id: int, project_id: int) -> List[PermissionGroup]:
-    """Get all permission groups assigned to a user in a specific project"""
+    """Get all permission groups assigned to a user in a specific project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -464,13 +507,15 @@ def get_user_permission_groups_in_project(user_id: int, project_id: int) -> List
                            pg.updated_at,
                            pg.created_by,
                            pg.is_active,
-                           uppg.assigned_at
+                           ugpg.assigned_at
                     FROM permission_groups pg
-                             JOIN user_project_permission_groups uppg ON pg.id = uppg.permission_group_id
-                    WHERE uppg.user_id = %s
-                      AND uppg.project_id = %s
+                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
+                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugpg.project_id = %s
                       AND pg.is_active = 1
-                      AND uppg.is_active = 1
+                      AND ugpg.is_active = 1
+                      AND ugm.is_active = 1
                     ORDER BY pg.group_priority DESC, pg.group_name
                     """, [user_id, project_id])
 
@@ -491,7 +536,7 @@ def get_user_permission_groups_in_project(user_id: int, project_id: int) -> List
 
 
 def get_user_effective_permissions(user_id: int, project_id: int) -> List[Permission]:
-    """Get all effective permissions for a user in a project"""
+    """Get all effective permissions for a user in a project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
@@ -511,13 +556,15 @@ def get_user_effective_permissions(user_id: int, project_id: int) -> List[Permis
                     FROM permissions p
                              JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
                              JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-                             JOIN user_project_permission_groups uppg ON pg.id = uppg.permission_group_id
-                    WHERE uppg.user_id = %s
-                      AND uppg.project_id = %s
+                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
+                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugpg.project_id = %s
                       AND p.is_active = 1
                       AND pgp.is_active = 1
                       AND pg.is_active = 1
-                      AND uppg.is_active = 1
+                      AND ugpg.is_active = 1
+                      AND ugm.is_active = 1
                     ORDER BY p.permission_category, p.permission_name
                     """, [user_id, project_id])
 
@@ -588,15 +635,17 @@ def get_project_audit_log(project_id: int, action_type: str = None, limit: int =
 
 
 def get_project_user_assignments(project_id: int) -> List:
-    """Get all user role assignments for a project"""
+    """Get all user role assignments for a project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    SELECT COUNT(DISTINCT user_id) as total_users,
-                           COUNT(*)                as total_assignments
-                    FROM user_project_permission_groups
-                    WHERE project_id = %s
-                      AND is_active = 1
+                    SELECT COUNT(DISTINCT ugm.user_id) as total_users,
+                           COUNT(*)                     as total_assignments
+                    FROM user_group_permission_groups ugpg
+                    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
+                    WHERE ugpg.project_id = %s
+                      AND ugpg.is_active = 1
+                      AND ugm.is_active = 1
                     """, [project_id])
 
         result = cur.fetchone()

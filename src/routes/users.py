@@ -6,6 +6,7 @@ for the group-based multi-project authentication system.
 """
 
 import logging
+import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -22,10 +23,11 @@ from src.Util.activity_logger import log_activity, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
-    list_users, count_users, get_user_permissions_in_project,
+    list_users_with_access, count_users, get_user_permissions_in_project,
     is_root_user, get_user_groups_in_project, get_user_effective_permissions,
     get_user_group_membership, get_user_type_info, check_user_permission,
-    get_user_type, assign_user_to_user_group, remove_user_from_user_group
+    get_user_type, assign_user_to_user_group, remove_user_from_user_group,
+    get_project_by_hash
 )
 from src.Util.password_generator import create_password_reset_data
 
@@ -80,14 +82,15 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
         projects = []
         for project in user_projects:
             # Get effective permissions for this user in this project
-            effective_permissions = get_user_effective_permissions(user_data.id, project.project_hash)
+            effective_permissions = get_user_effective_permissions(user_data.id, project.id)
+            permission_names = [perm.permission_name for perm in effective_permissions] if effective_permissions else []
             
             projects.append(ProjectInfo(
                 project_hash=project.project_hash,
                 project_name=project.project_name,
                 project_description=project.project_description,
-                project_group=project.project_group_name,
-                permissions=effective_permissions
+                project_group=getattr(project, 'project_group_name', None),
+                permissions=permission_names
             ))
 
         # Build the response with enhanced information
@@ -228,7 +231,8 @@ async def get_user_access_summary(
         project_list = []
         for proj in accessible_projects:
             # Get user's effective permissions for this project
-            effective_permissions = get_user_effective_permissions(user_data.id, proj.project_hash)
+            effective_permissions = get_user_effective_permissions(user_data.id, proj.id)
+            permission_names = [perm.permission_name for perm in effective_permissions] if effective_permissions else []
             
             # Get user's group memberships for this project
             user_project_groups = get_user_groups_in_project(user_data.id, proj.project_hash)
@@ -246,7 +250,7 @@ async def get_user_access_summary(
                 "project_name": proj.project_name,
                 "project_description": proj.project_description,
                 "access_groups": project_groups,
-                "effective_permissions": effective_permissions
+                "effective_permissions": permission_names
             })
 
         # Build comprehensive access summary
@@ -341,10 +345,10 @@ async def list_all_users(
             # If admin, we'll filter users based on their assigned projects later
             # For now, we get their assigned projects
             admin_projects = get_user_accessible_projects(current_user.id)
-            admin_project_ids = [proj.id for proj in admin_projects] if hasattr(admin_projects[0], 'id') else []
+            admin_project_ids = [proj.id for proj in admin_projects] if admin_projects else []
 
-        # Get all users with filters
-        all_users = list_users(
+        # Fetch users using stored procedure with aggregated group/project data
+        all_users = list_users_with_access(
             limit=limit,
             offset=offset,
             sort_by=sort_by,
@@ -356,67 +360,56 @@ async def list_all_users(
             include_inactive=include_inactive
         )
 
-        # Get total user count with filters
+        # Total count (basic, does not yet include group/project filters)
         total_count = count_users(
             search=search,
             user_type_filter=user_type_filter,
-            group_filter=group_filter,
-            project_filter=project_filter,
             include_inactive=include_inactive
         )
 
-        # Format the user list for the response
-        users_list = []
+        users_list: List[Dict[str, Any]] = []
         for user in all_users:
+            user_id = user["id"]
+
             # Skip users not in admin's projects if current user is admin
-            if not is_root and user.id != current_user.id:
-                user_projects = get_user_accessible_projects(user.id)
-                user_project_ids = [proj.id for proj in user_projects] if hasattr(user_projects[0], 'id') else []
-                
-                # Check if the user has access to at least one of the admin's projects
+            if not is_root and user_id != current_user.id:
+                user_projects_check = get_user_accessible_projects(user_id)
+                user_project_ids = [proj.id for proj in user_projects_check] if user_projects_check else []
                 if not any(pid in admin_project_ids for pid in user_project_ids):
                     continue
-            
-            # Get user type information
-            user_type_info = get_user_type_info(user.id) if user else None
-            
-            # Get group memberships if requested
-            user_groups = []
-            if include_group_info and user:
-                groups = get_user_groups_for_user(user.id)
-                for group in groups:
-                    user_groups.append({
-                        "group_hash": group.group_hash,
-                        "group_name": group.group_name,
-                        "group_description": group.group_description
-                    })
-            
-            # Get project access if requested
-            user_projects = []
-            if include_project_access and user:
-                projects = get_user_accessible_projects(user.id)
-                for project in projects:
-                    # Get effective permissions for this project
-                    effective_permissions = get_user_effective_permissions(user.id, project.project_hash)
-                    
-                    user_projects.append({
-                        "project_hash": project.project_hash,
-                        "project_name": project.project_name,
-                        "permissions": effective_permissions
-                    })
-            
-            # Add the user to the response list
+
+            user_type_info = get_user_type_info(user_id)
+
+            # Parse groups JSON returned from SP
+            parsed_groups = []
+            if include_group_info and user.get("groups_json"):
+                parsed_groups = json.loads(user["groups_json"]) if isinstance(user["groups_json"], str) else user["groups_json"]
+
+            # Parse projects JSON and add effective permissions if requested
+            parsed_projects = []
+            if include_project_access and user.get("projects_json"):
+                raw_projects = json.loads(user["projects_json"]) if isinstance(user["projects_json"], str) else user["projects_json"]
+                for proj in raw_projects:
+                    # Get project_id from project_hash for permission check
+                    project_data = get_project_by_hash(proj["project_hash"])
+                    if project_data:
+                        effective_permissions = get_user_effective_permissions(user_id, project_data.id)
+                        proj["permissions"] = [perm.permission_name for perm in effective_permissions]
+                    else:
+                        proj["permissions"] = []
+                    parsed_projects.append(proj)
+
             users_list.append({
-                "user_hash": user.user_hash,
-                "username": user.username,
-                "email": user.email,
-                "user_type": user.user_type,
+                "user_hash": user["user_hash"],
+                "username": user["username"],
+                "email": user["email"],
+                "user_type": user["user_type"],
                 "user_type_info": user_type_info,
-                "created_at": user.created_at,
-                "last_login": user.last_login,
-                "is_active": user.is_active,
-                "groups": user_groups if include_group_info else [],
-                "projects": user_projects if include_project_access else []
+                "created_at": user["created_at"],
+                "last_login": user.get("last_login"),
+                "is_active": user["is_active"],
+                "groups": parsed_groups if include_group_info else [],
+                "projects": parsed_projects if include_project_access else []
             })
 
         # Pagination info
@@ -428,14 +421,16 @@ async def list_all_users(
         )
 
         filters_info = {
-            "user_type": user_type,
+            "user_type_filter": user_type_filter,
+            "group_filter": group_filter,
+            "project_filter": project_filter,
             "search": search,
-            "is_active": is_active
+            "include_inactive": include_inactive
         }
 
         return ListUsersResponse(
             success=True,
-            users=user_list,
+            users=users_list,
             pagination=pagination,
             filters=filters_info
         )
@@ -551,8 +546,9 @@ async def get_user_details(
             # Get effective permissions for this project
             if include_permission_details:
                 # Get user's effective permissions for this project
-                effective_permissions = get_user_effective_permissions(target_user.id, proj.project_hash)
-                project_data["effective_permissions"] = effective_permissions
+                effective_permissions = get_user_effective_permissions(target_user.id, proj.id)
+                permission_names = [perm.permission_name for perm in effective_permissions] if effective_permissions else []
+                project_data["effective_permissions"] = permission_names
                 
                 # Get user's group memberships for this project
                 user_project_groups = get_user_groups_in_project(target_user.id, proj.project_hash)

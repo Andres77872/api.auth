@@ -276,7 +276,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     user_type = session_data.get('user_type', 'consumer')
 
     # Handle global root sessions (no project context)
-    if user_type == 'root' and session_data.get('is_global_session'):
+    if user_type == 'root':
         return EnhancedUserLogin(
             user_hash=session_data['user_hash'],
             project_hash="",  # Empty for global session

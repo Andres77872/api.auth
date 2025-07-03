@@ -23,6 +23,7 @@ from src.Util.db_config import redis_client
 
 # Configure logging
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 # Cache TTL settings (in seconds)
 SESSION_TTL = 3600  # 1 hour for sessions
