@@ -1,5 +1,5 @@
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
--- Initial Data Script
+-- Initial Data Script (Restructured for Group-Based Access)
 -- MySQL Database
 
 USE magic_auth;
@@ -20,174 +20,311 @@ VALUES ('DEFAULTPROJECT', 'Default Project', 'Initial default project for the sy
 
 SET @default_project_id = LAST_INSERT_ID();
 
--- =================== CREATE DEFAULT USER GROUPS (Legacy) ===================
--- These are project-specific groups for backward compatibility
-INSERT INTO user_groups (group_hash, group_name, group_description, project_id, permissions, created_at, is_active)
+-- =================== CREATE DEFAULT USER GROUPS ===================
+-- Global user groups that can span multiple projects
+INSERT INTO user_groups (group_hash, group_name, group_description, parent_group_id, group_level, created_by, created_at, is_active)
 VALUES 
-    (CONCAT('GRP-', UUID()), 'admin', 'Project administrators', @default_project_id, 
-     '["admin", "read", "write", "delete", "manage_users"]', NOW(), TRUE),
-    (CONCAT('GRP-', UUID()), 'user', 'Regular users', @default_project_id, 
-     '["read", "write"]', NOW(), TRUE),
-    (CONCAT('GRP-', UUID()), 'readonly', 'Read-only users', @default_project_id, 
-     '["read"]', NOW(), TRUE);
+    -- Root level groups
+    (CONCAT('UG-', UUID()), 'administrators', 'System administrators group', NULL, 0, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'project_managers', 'Project managers group', NULL, 0, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'developers', 'Developers group', NULL, 0, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'testers', 'Quality assurance testers group', NULL, 0, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'viewers', 'Read-only viewers group', NULL, 0, @root_user_id, NOW(), TRUE);
 
--- =================== CREATE DEFAULT PROJECT GROUPS ===================
-INSERT INTO project_groups (group_hash, group_name, group_description, permissions, created_at, is_active)
+-- Get user group IDs for later use
+SET @admin_group_id = (SELECT id FROM user_groups WHERE group_name = 'administrators');
+SET @manager_group_id = (SELECT id FROM user_groups WHERE group_name = 'project_managers');
+SET @developer_group_id = (SELECT id FROM user_groups WHERE group_name = 'developers');
+SET @tester_group_id = (SELECT id FROM user_groups WHERE group_name = 'testers');
+SET @viewer_group_id = (SELECT id FROM user_groups WHERE group_name = 'viewers');
+
+-- Create hierarchical sub-groups
+INSERT INTO user_groups (group_hash, group_name, group_description, parent_group_id, group_level, created_by, created_at, is_active)
 VALUES 
-    (CONCAT('PG-', UUID()), 'full-access', 'Full access to project resources', 
-     '["admin", "read", "write", "delete", "manage_users", "manage_groups", "export_data"]', NOW(), TRUE),
-    (CONCAT('PG-', UUID()), 'read-write', 'Read and write access to project resources', 
-     '["read", "write", "create"]', NOW(), TRUE),
-    (CONCAT('PG-', UUID()), 'read-only', 'Read-only access to project resources', 
-     '["read", "view"]', NOW(), TRUE);
+    -- Sub-groups under developers
+    (CONCAT('UG-', UUID()), 'senior_developers', 'Senior developers sub-group', @developer_group_id, 1, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'junior_developers', 'Junior developers sub-group', @developer_group_id, 1, @root_user_id, NOW(), TRUE),
+    
+    -- Sub-groups under testers
+    (CONCAT('UG-', UUID()), 'automation_testers', 'Automation testers sub-group', @tester_group_id, 1, @root_user_id, NOW(), TRUE),
+    (CONCAT('UG-', UUID()), 'manual_testers', 'Manual testers sub-group', @tester_group_id, 1, @root_user_id, NOW(), TRUE);
 
--- Link default project to project groups
-INSERT INTO project_group_members (project_id, project_group_id, assigned_at, assigned_by, is_active)
-SELECT @default_project_id, id, NOW(), @root_user_id, TRUE
-FROM project_groups;
+-- =================== GRANT USER GROUPS ACCESS TO DEFAULT PROJECT ===================
+-- Link user groups to the default project
+INSERT INTO user_group_projects (user_group_id, project_id, granted_at, granted_by, is_active)
+VALUES 
+    (@admin_group_id, @default_project_id, NOW(), @root_user_id, TRUE),
+    (@manager_group_id, @default_project_id, NOW(), @root_user_id, TRUE),
+    (@developer_group_id, @default_project_id, NOW(), @root_user_id, TRUE),
+    (@tester_group_id, @default_project_id, NOW(), @root_user_id, TRUE),
+    (@viewer_group_id, @default_project_id, NOW(), @root_user_id, TRUE);
 
 -- =================== CREATE DEFAULT PERMISSIONS ===================
 INSERT INTO permissions (permission_hash, project_id, permission_name, permission_display_name, 
-                        permission_description, permission_category, is_system_permission, created_by, created_at, is_active)
+                        permission_description, permission_category, parent_permission_id, permission_level,
+                        is_system_permission, created_by, created_at, is_active)
 VALUES 
-    -- General permissions
+    -- Root level permissions - General category
     (CONCAT('PERM-', UUID()), @default_project_id, 'read', 'Read Access', 
-     'Can view content and data', 'general', TRUE, @root_user_id, NOW(), TRUE),
+     'Can view content and data', 'general', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('PERM-', UUID()), @default_project_id, 'write', 'Write Access', 
-     'Can create and modify content', 'general', TRUE, @root_user_id, NOW(), TRUE),
+     'Can create and modify content', 'general', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('PERM-', UUID()), @default_project_id, 'delete', 'Delete Access', 
-     'Can delete content and data', 'general', TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('PERM-', UUID()), @default_project_id, 'create', 'Create Access', 
-     'Can create new items', 'general', TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('PERM-', UUID()), @default_project_id, 'update', 'Update Access', 
-     'Can modify existing items', 'general', TRUE, @root_user_id, NOW(), TRUE),
+     'Can delete content and data', 'general', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     
-    -- Admin permissions
+    -- Root level permissions - Admin category
     (CONCAT('PERM-', UUID()), @default_project_id, 'admin', 'Administrator', 
-     'Full administrative access', 'admin', TRUE, @root_user_id, NOW(), TRUE),
+     'Full administrative access', 'admin', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('PERM-', UUID()), @default_project_id, 'manage_users', 'Manage Users', 
-     'Can manage user accounts and roles', 'admin', TRUE, @root_user_id, NOW(), TRUE),
+     'Can manage user accounts and roles', 'admin', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('PERM-', UUID()), @default_project_id, 'manage_roles', 'Manage Roles', 
-     'Can create and modify roles and permissions', 'admin', TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('PERM-', UUID()), @default_project_id, 'view_audit', 'View Audit Log', 
-     'Can view audit trail and logs', 'admin', TRUE, @root_user_id, NOW(), TRUE),
+     'Can create and modify roles and permissions', 'admin', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     
-    -- Data permissions
+    -- Root level permissions - Data category
     (CONCAT('PERM-', UUID()), @default_project_id, 'export_data', 'Export Data', 
-     'Can export data from the system', 'data', TRUE, @root_user_id, NOW(), TRUE),
+     'Can export data from the system', 'data', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('PERM-', UUID()), @default_project_id, 'import_data', 'Import Data', 
-     'Can import data into the system', 'data', TRUE, @root_user_id, NOW(), TRUE),
+     'Can import data into the system', 'data', NULL, 0, TRUE, @root_user_id, NOW(), TRUE),
     
-    -- API permissions
+    -- Root level permissions - API category
     (CONCAT('PERM-', UUID()), @default_project_id, 'api_access', 'API Access', 
-     'Can access API endpoints', 'api', TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('PERM-', UUID()), @default_project_id, 'full_access', 'Full Access', 
-     'Complete access to all features', 'admin', TRUE, @root_user_id, NOW(), TRUE);
+     'Can access API endpoints', 'api', NULL, 0, TRUE, @root_user_id, NOW(), TRUE);
+
+-- Get permission IDs for hierarchical permissions
+SET @read_perm_id = (SELECT id FROM permissions WHERE permission_name = 'read' AND project_id = @default_project_id);
+SET @write_perm_id = (SELECT id FROM permissions WHERE permission_name = 'write' AND project_id = @default_project_id);
+SET @admin_perm_id = (SELECT id FROM permissions WHERE permission_name = 'admin' AND project_id = @default_project_id);
+
+-- Create hierarchical permissions
+INSERT INTO permissions (permission_hash, project_id, permission_name, permission_display_name, 
+                        permission_description, permission_category, parent_permission_id, permission_level,
+                        is_system_permission, created_by, created_at, is_active)
+VALUES 
+    -- Sub-permissions under 'read'
+    (CONCAT('PERM-', UUID()), @default_project_id, 'read_projects', 'Read Projects', 
+     'Can view project information', 'general', @read_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('PERM-', UUID()), @default_project_id, 'read_users', 'Read Users', 
+     'Can view user information', 'general', @read_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE),
+    
+    -- Sub-permissions under 'write'
+    (CONCAT('PERM-', UUID()), @default_project_id, 'create_content', 'Create Content', 
+     'Can create new content', 'general', @write_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('PERM-', UUID()), @default_project_id, 'update_content', 'Update Content', 
+     'Can modify existing content', 'general', @write_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE);
 
 -- =================== CREATE DEFAULT PERMISSION GROUPS (ROLES) ===================
 INSERT INTO permission_groups (group_hash, project_id, group_name, group_display_name, 
-                              group_description, group_priority, is_system_role, created_by, created_at, is_active)
+                              group_description, parent_permission_group_id, group_level, group_priority, 
+                              is_system_role, created_by, created_at, is_active)
 VALUES 
-    (CONCAT('ROLE-', UUID()), @default_project_id, 'admin', 'Administrator', 
-     'Full administrative access to all features', 100, TRUE, @root_user_id, NOW(), TRUE),
+    -- Root level permission groups
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'full_admin', 'Full Administrator', 
+     'Complete administrative access to all features', NULL, 0, 100, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'project_admin', 'Project Administrator', 
+     'Administrative access within project scope', NULL, 0, 90, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('ROLE-', UUID()), @default_project_id, 'manager', 'Manager', 
-     'Management access with user and role management', 80, TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('ROLE-', UUID()), @default_project_id, 'editor', 'Editor', 
-     'Content editing and management access', 60, TRUE, @root_user_id, NOW(), TRUE),
-    (CONCAT('ROLE-', UUID()), @default_project_id, 'contributor', 'Contributor', 
-     'Can create and edit own content', 40, TRUE, @root_user_id, NOW(), TRUE),
+     'Management access with user oversight', NULL, 0, 80, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'developer', 'Developer', 
+     'Development access with content management', NULL, 0, 60, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'tester', 'Tester', 
+     'Testing access with limited content creation', NULL, 0, 40, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('ROLE-', UUID()), @default_project_id, 'viewer', 'Viewer', 
-     'Read-only access to content', 20, TRUE, @root_user_id, NOW(), TRUE),
+     'Read-only access to content', NULL, 0, 20, TRUE, @root_user_id, NOW(), TRUE),
     (CONCAT('ROLE-', UUID()), @default_project_id, 'api_user', 'API User', 
-     'API access for integrations', 30, TRUE, @root_user_id, NOW(), TRUE);
+     'API access for integrations', NULL, 0, 30, TRUE, @root_user_id, NOW(), TRUE);
 
--- =================== ASSIGN PERMISSIONS TO ROLES ===================
--- Admin role gets all permissions
-INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'admin' AND p.project_id = @default_project_id;
+-- Get permission group IDs
+SET @full_admin_role_id = (SELECT id FROM permission_groups WHERE group_name = 'full_admin' AND project_id = @default_project_id);
+SET @project_admin_role_id = (SELECT id FROM permission_groups WHERE group_name = 'project_admin' AND project_id = @default_project_id);
+SET @manager_role_id = (SELECT id FROM permission_groups WHERE group_name = 'manager' AND project_id = @default_project_id);
+SET @developer_role_id = (SELECT id FROM permission_groups WHERE group_name = 'developer' AND project_id = @default_project_id);
+SET @tester_role_id = (SELECT id FROM permission_groups WHERE group_name = 'tester' AND project_id = @default_project_id);
+SET @viewer_role_id = (SELECT id FROM permission_groups WHERE group_name = 'viewer' AND project_id = @default_project_id);
+SET @api_user_role_id = (SELECT id FROM permission_groups WHERE group_name = 'api_user' AND project_id = @default_project_id);
 
--- Manager role permissions
-INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'manager' 
-  AND p.project_id = @default_project_id
-  AND p.permission_name IN ('read', 'write', 'create', 'update', 'manage_users', 'view_audit', 'export_data', 'api_access');
+-- Create hierarchical permission groups
+INSERT INTO permission_groups (group_hash, project_id, group_name, group_display_name, 
+                              group_description, parent_permission_group_id, group_level, group_priority, 
+                              is_system_role, created_by, created_at, is_active)
+VALUES 
+    -- Sub-roles under developer
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'senior_developer', 'Senior Developer', 
+     'Senior development access with additional privileges', @developer_role_id, 1, 65, TRUE, @root_user_id, NOW(), TRUE),
+    (CONCAT('ROLE-', UUID()), @default_project_id, 'junior_developer', 'Junior Developer', 
+     'Limited development access for junior staff', @developer_role_id, 1, 55, TRUE, @root_user_id, NOW(), TRUE);
 
--- Editor role permissions
+-- =================== ASSIGN PERMISSIONS TO PERMISSION GROUPS ===================
+-- Full Admin gets all permissions
 INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'editor' 
-  AND p.project_id = @default_project_id
-  AND p.permission_name IN ('read', 'write', 'create', 'update', 'api_access');
+SELECT @full_admin_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id;
 
--- Contributor role permissions
+-- Project Admin gets most permissions except some admin functions
 INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'contributor' 
-  AND p.project_id = @default_project_id
-  AND p.permission_name IN ('read', 'create', 'update');
+SELECT @project_admin_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
+  AND p.permission_name IN ('read', 'write', 'delete', 'manage_users', 'export_data', 'import_data', 'api_access',
+                            'read_projects', 'read_users', 'create_content', 'update_content');
 
--- Viewer role permissions
+-- Manager permissions
 INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'viewer' 
-  AND p.project_id = @default_project_id
-  AND p.permission_name IN ('read');
+SELECT @manager_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
+  AND p.permission_name IN ('read', 'write', 'manage_users', 'export_data', 'api_access',
+                            'read_projects', 'read_users', 'create_content', 'update_content');
 
--- API User role permissions
+-- Developer permissions
 INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
-SELECT pg.id, p.id, NOW(), @root_user_id, TRUE
-FROM permission_groups pg, permissions p
-WHERE pg.group_name = 'api_user' 
-  AND p.project_id = @default_project_id
+SELECT @developer_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
+  AND p.permission_name IN ('read', 'write', 'api_access', 'read_projects', 'create_content', 'update_content');
+
+-- Tester permissions
+INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
+SELECT @tester_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
+  AND p.permission_name IN ('read', 'read_projects', 'read_users');
+
+-- Viewer permissions
+INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
+SELECT @viewer_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
+  AND p.permission_name IN ('read', 'read_projects');
+
+-- API User permissions
+INSERT INTO permission_group_permissions (permission_group_id, permission_id, granted_at, granted_by, is_active)
+SELECT @api_user_role_id, p.id, NOW(), @root_user_id, TRUE
+FROM permissions p
+WHERE p.project_id = @default_project_id
   AND p.permission_name IN ('api_access', 'read');
 
 -- =================== CREATE SAMPLE ADMIN USER ===================
 -- Create a sample admin user (password: admin123)
-INSERT INTO users (user_hash, username, email, password_hash, user_type, assigned_project_id, created_by, created_at, is_active)
+-- Note: Admin users get project access through user groups, not direct assignment
+INSERT INTO users (user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
 VALUES (CONCAT('usr-', UUID()), 'admin', 'admin@example.com', 
-        '240BE518FABD2724DDB6F04EEB1DA5967448D7E831C08C8FA822809F74C720A9', 
-        'admin', @default_project_id, @root_user_id, NOW(), TRUE);
+        '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_admin123', 
+        'admin', @root_user_id, NOW(), TRUE);
 
 SET @admin_user_id = LAST_INSERT_ID();
 
--- Add admin to admin_project_assignments for multi-project support
-INSERT INTO admin_project_assignments (user_id, project_id, assigned_at, assigned_by, is_active)
-VALUES (@admin_user_id, @default_project_id, NOW(), @root_user_id, TRUE);
+-- Add admin user to administrators user group
+INSERT INTO user_group_members (user_id, user_group_id, assigned_at, assigned_by, is_active)
+VALUES (@admin_user_id, @admin_group_id, NOW(), @root_user_id, TRUE);
+
+-- Link administrators user group to project_admin permission group
+INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
+VALUES (@admin_group_id, @default_project_id, @project_admin_role_id, NOW(), @root_user_id, TRUE);
 
 -- =================== CREATE SAMPLE CONSUMER USER ===================
 -- Create a sample consumer user (password: user123)
--- Password hash for 'user123': 0B14D501A594442A01C6859541BCB3E8164D183D32937B851835442F69D5C94E
+-- Password hash for 'user123': $argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_user123
 INSERT INTO users (user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
 VALUES (CONCAT('usr-', UUID()), 'user', 'user@example.com', 
-        '0B14D501A594442A01C6859541BCB3E8164D183D32937B851835442F69D5C94E', 
+        '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_user123', 
         'consumer', @root_user_id, NOW(), TRUE);
 
 SET @consumer_user_id = LAST_INSERT_ID();
 
--- Grant consumer user access to default project
-INSERT INTO user_projects (user_id, project_id, user_project_hash, granted_at, granted_by, is_active)
-VALUES (@consumer_user_id, @default_project_id, 
-        CONCAT('uprj-', UUID()), NOW(), @root_user_id, TRUE);
+-- Add consumer user to developers user group
+INSERT INTO user_group_members (user_id, user_group_id, assigned_at, assigned_by, is_active)
+VALUES (@consumer_user_id, @developer_group_id, NOW(), @root_user_id, TRUE);
 
-SET @user_project_id = LAST_INSERT_ID();
+-- Link developers user group to developer permission group
+INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
+VALUES (@developer_group_id, @default_project_id, @developer_role_id, NOW(), @root_user_id, TRUE);
 
--- Assign consumer user to the 'contributor' role in the default project
-INSERT INTO user_project_permission_groups (user_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-SELECT @consumer_user_id, @default_project_id, id, NOW(), @root_user_id, TRUE
-FROM permission_groups 
-WHERE group_name = 'contributor' AND project_id = @default_project_id;
+-- =================== CREATE ADDITIONAL SAMPLE USERS ===================
+-- Create a sample manager user
+INSERT INTO users (user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+VALUES (CONCAT('usr-', UUID()), 'manager', 'manager@example.com', 
+        '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_manager123', 
+        'consumer', @root_user_id, NOW(), TRUE);
 
--- Output created users info
-SELECT 'Created users:' as '';
-SELECT 'Username: root, Password: admin123, Type: Root User' as 'User Info'
+SET @manager_user_id = LAST_INSERT_ID();
+
+-- Add manager to project_managers user group
+INSERT INTO user_group_members (user_id, user_group_id, assigned_at, assigned_by, is_active)
+VALUES (@manager_user_id, @manager_group_id, NOW(), @root_user_id, TRUE);
+
+-- Link project_managers user group to manager permission group
+INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
+VALUES (@manager_group_id, @default_project_id, @manager_role_id, NOW(), @root_user_id, TRUE);
+
+-- Create a sample tester user
+INSERT INTO users (user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+VALUES (CONCAT('usr-', UUID()), 'tester', 'tester@example.com', 
+        '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_tester123', 
+        'consumer', @root_user_id, NOW(), TRUE);
+
+SET @tester_user_id = LAST_INSERT_ID();
+
+-- Add tester to testers user group
+INSERT INTO user_group_members (user_id, user_group_id, assigned_at, assigned_by, is_active)
+VALUES (@tester_user_id, @tester_group_id, NOW(), @root_user_id, TRUE);
+
+-- Link testers user group to tester permission group
+INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
+VALUES (@tester_group_id, @default_project_id, @tester_role_id, NOW(), @root_user_id, TRUE);
+
+-- =================== LINK ADDITIONAL USER GROUPS TO PERMISSION GROUPS ===================
+-- Link viewers user group to viewer permission group
+INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
+VALUES (@viewer_group_id, @default_project_id, @viewer_role_id, NOW(), @root_user_id, TRUE);
+
+-- =================== CREATE AUDIT LOG ENTRIES ===================
+-- Log the initial setup actions
+INSERT INTO permission_audit_log (action_type, project_id, performed_by, new_values, action_timestamp)
+VALUES 
+    ('INITIAL_SETUP', @default_project_id, @root_user_id, 
+     JSON_OBJECT('action', 'database_initialization', 'project_name', 'Default Project'), NOW()),
+    ('CREATE_USER_GROUPS', @default_project_id, @root_user_id, 
+     JSON_OBJECT('groups_created', 5, 'hierarchical_groups', 4), NOW()),
+    ('CREATE_PERMISSION_GROUPS', @default_project_id, @root_user_id, 
+     JSON_OBJECT('roles_created', 7, 'hierarchical_roles', 2), NOW()),
+    ('ASSIGN_INITIAL_PERMISSIONS', @default_project_id, @root_user_id, 
+     JSON_OBJECT('permission_assignments', 'completed'), NOW());
+
+-- Output setup summary
+SELECT 'Database initialization completed successfully!' as '';
+SELECT CONCAT('Created ', COUNT(*), ' users') as 'User Summary' FROM users WHERE is_active = TRUE
 UNION ALL
-SELECT 'Username: admin, Password: admin123, Type: Admin User (Default Project)'
+SELECT CONCAT('Created ', COUNT(*), ' user groups') FROM user_groups WHERE is_active = TRUE
 UNION ALL
-SELECT 'Username: user, Password: user123, Type: Consumer User (Contributor Role)'; 
+SELECT CONCAT('Created ', COUNT(*), ' permission groups') FROM permission_groups WHERE project_id = @default_project_id AND is_active = TRUE
+UNION ALL
+SELECT CONCAT('Created ', COUNT(*), ' permissions') FROM permissions WHERE project_id = @default_project_id AND is_active = TRUE;
+
+-- Output user login information
+SELECT 'User Login Information:' as '';
+SELECT 'Username: root, Password: admin123, Type: Root User (Global Access)' as 'Login Info'
+UNION ALL
+SELECT 'Username: admin, Password: admin123, Type: Admin User (Project Administrator via administrators group)'
+UNION ALL
+SELECT 'Username: manager, Password: manager123, Type: Consumer User (Manager via project_managers group)'
+UNION ALL
+SELECT 'Username: user, Password: user123, Type: Consumer User (Developer via developers group)'
+UNION ALL
+SELECT 'Username: tester, Password: tester123, Type: Consumer User (Tester via testers group)';
+
+-- Output group structure
+SELECT 'User Group Structure:' as '';
+SELECT 
+    CONCAT(
+        'Group: ', ug.group_name, 
+        ' (Level ', ug.group_level, ')',
+        CASE WHEN ug.parent_group_id IS NOT NULL 
+             THEN CONCAT(' -> Parent: ', pug.group_name)
+             ELSE ' (Root Level)'
+        END
+    ) as 'Group Hierarchy'
+FROM user_groups ug
+LEFT JOIN user_groups pug ON ug.parent_group_id = pug.id
+WHERE ug.is_active = TRUE
+ORDER BY ug.group_level, ug.group_name; 

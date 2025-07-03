@@ -1,13 +1,11 @@
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
--- Foreign Keys and Constraints Script
+-- Foreign Keys and Constraints Script (Updated for Group-Based Access)
 -- MySQL Database
 
 USE magic_auth;
 
 -- =================== USERS TABLE CONSTRAINTS ===================
 ALTER TABLE users
-    ADD CONSTRAINT fk_users_assigned_project FOREIGN KEY (assigned_project_id) 
-        REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_users_created_by FOREIGN KEY (created_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -22,18 +20,9 @@ ALTER TABLE projects
 
 -- =================== USER_GROUPS TABLE CONSTRAINTS ===================
 ALTER TABLE user_groups
-    ADD CONSTRAINT fk_user_groups_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- =================== USER_PROJECTS TABLE CONSTRAINTS ===================
-ALTER TABLE user_projects
-    ADD CONSTRAINT fk_user_projects_user FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_projects_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_projects_granted_by FOREIGN KEY (granted_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_projects_revoked_by FOREIGN KEY (revoked_by) 
+    ADD CONSTRAINT fk_user_groups_parent FOREIGN KEY (parent_group_id) 
+        REFERENCES user_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_user_groups_created_by FOREIGN KEY (created_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- =================== USER_GROUP_MEMBERS TABLE CONSTRAINTS ===================
@@ -58,21 +47,12 @@ ALTER TABLE user_group_projects
     ADD CONSTRAINT fk_user_group_projects_revoked_by FOREIGN KEY (revoked_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- =================== PROJECT_GROUP_MEMBERS TABLE CONSTRAINTS ===================
-ALTER TABLE project_group_members
-    ADD CONSTRAINT fk_project_group_members_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_project_group_members_group FOREIGN KEY (project_group_id) 
-        REFERENCES project_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_project_group_members_assigned_by FOREIGN KEY (assigned_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_project_group_members_removed_by FOREIGN KEY (removed_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
-
 -- =================== PERMISSIONS TABLE CONSTRAINTS ===================
 ALTER TABLE permissions
     ADD CONSTRAINT fk_permissions_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_permissions_parent FOREIGN KEY (parent_permission_id) 
+        REFERENCES permissions(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_permissions_created_by FOREIGN KEY (created_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -80,6 +60,8 @@ ALTER TABLE permissions
 ALTER TABLE permission_groups
     ADD CONSTRAINT fk_permission_groups_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_permission_groups_parent FOREIGN KEY (parent_permission_group_id) 
+        REFERENCES permission_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_permission_groups_created_by FOREIGN KEY (created_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -94,45 +76,25 @@ ALTER TABLE permission_group_permissions
     ADD CONSTRAINT fk_pgp_revoked_by FOREIGN KEY (revoked_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- =================== USER_PROJECT_PERMISSION_GROUPS TABLE CONSTRAINTS ===================
-ALTER TABLE user_project_permission_groups
-    ADD CONSTRAINT fk_uppg_user FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_uppg_project FOREIGN KEY (project_id) 
+-- =================== USER_GROUP_PERMISSION_GROUPS TABLE CONSTRAINTS ===================
+ALTER TABLE user_group_permission_groups
+    ADD CONSTRAINT fk_ugpg_user_group FOREIGN KEY (user_group_id) 
+        REFERENCES user_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_ugpg_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_uppg_permission_group FOREIGN KEY (permission_group_id) 
+    ADD CONSTRAINT fk_ugpg_permission_group FOREIGN KEY (permission_group_id) 
         REFERENCES permission_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_uppg_assigned_by FOREIGN KEY (assigned_by) 
+    ADD CONSTRAINT fk_ugpg_assigned_by FOREIGN KEY (assigned_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_uppg_removed_by FOREIGN KEY (removed_by) 
+    ADD CONSTRAINT fk_ugpg_removed_by FOREIGN KEY (removed_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- =================== USER_SESSIONS TABLE CONSTRAINTS ===================
 ALTER TABLE user_sessions
-    ADD CONSTRAINT fk_user_sessions_user_project FOREIGN KEY (user_project_id) 
-        REFERENCES user_projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- =================== USER_PROJECT_GROUPS TABLE CONSTRAINTS ===================
-ALTER TABLE user_project_groups
-    ADD CONSTRAINT fk_user_project_groups_user_project FOREIGN KEY (user_project_id) 
-        REFERENCES user_projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_project_groups_group FOREIGN KEY (group_id) 
-        REFERENCES user_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_project_groups_assigned_by FOREIGN KEY (assigned_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_project_groups_removed_by FOREIGN KEY (removed_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
-
--- =================== ADMIN_PROJECT_ASSIGNMENTS TABLE CONSTRAINTS ===================
-ALTER TABLE admin_project_assignments
-    ADD CONSTRAINT fk_admin_assignments_user FOREIGN KEY (user_id) 
+    ADD CONSTRAINT fk_user_sessions_user FOREIGN KEY (user_id) 
         REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_admin_assignments_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_admin_assignments_assigned_by FOREIGN KEY (assigned_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_admin_assignments_removed_by FOREIGN KEY (removed_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
+    ADD CONSTRAINT fk_user_sessions_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- =================== PERMISSION_AUDIT_LOG TABLE CONSTRAINTS ===================
 ALTER TABLE permission_audit_log
@@ -140,6 +102,8 @@ ALTER TABLE permission_audit_log
         REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_audit_target_user FOREIGN KEY (target_user_id) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_audit_user_group FOREIGN KEY (user_group_id) 
+        REFERENCES user_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_audit_permission FOREIGN KEY (permission_id) 
         REFERENCES permissions(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_audit_permission_group FOREIGN KEY (permission_group_id) 
@@ -153,6 +117,8 @@ ALTER TABLE activity_logs
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_activity_logs_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_activity_logs_user_group FOREIGN KEY (user_group_id) 
+        REFERENCES user_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_activity_logs_target_user FOREIGN KEY (target_user_id) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -176,6 +142,8 @@ ALTER TABLE user_password_resets
 ALTER TABLE role_assignment_history
     ADD CONSTRAINT fk_role_history_user FOREIGN KEY (user_id) 
         REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_role_history_user_group FOREIGN KEY (user_group_id) 
+        REFERENCES user_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
     ADD CONSTRAINT fk_role_history_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
     ADD CONSTRAINT fk_role_history_permission_group FOREIGN KEY (permission_group_id) 
@@ -190,21 +158,196 @@ ALTER TABLE bulk_operations_log
 
 -- =================== DATA INTEGRITY CONSTRAINTS ===================
 
--- Ensure admin users have at least one project assignment
+-- Ensure hierarchical user groups don't create cycles
 DELIMITER $$
-CREATE TRIGGER tr_validate_admin_project_assignment
-BEFORE UPDATE ON users
+CREATE TRIGGER tr_validate_user_group_hierarchy
+BEFORE INSERT ON user_groups
 FOR EACH ROW
 BEGIN
-    IF NEW.user_type = 'admin' AND NEW.assigned_project_id IS NULL THEN
-        -- Check if user has any active project assignments in admin_project_assignments
-        IF NOT EXISTS (
-            SELECT 1 FROM admin_project_assignments 
-            WHERE user_id = NEW.id AND is_active = 1
-        ) THEN
+    DECLARE hierarchy_depth INT DEFAULT 0;
+    DECLARE current_parent_id INT;
+    
+    SET current_parent_id = NEW.parent_group_id;
+    
+    -- Check for cycles and depth limit
+    WHILE current_parent_id IS NOT NULL AND hierarchy_depth < 10 DO
+        SET hierarchy_depth = hierarchy_depth + 1;
+        
+        -- Check if we're creating a cycle
+        IF current_parent_id = NEW.id THEN
             SIGNAL SQLSTATE '45000' 
-            SET MESSAGE_TEXT = 'Admin users must have at least one project assignment';
+            SET MESSAGE_TEXT = 'Circular reference detected in user group hierarchy';
         END IF;
+        
+        -- Get next parent
+        SELECT parent_group_id INTO current_parent_id 
+        FROM user_groups 
+        WHERE id = current_parent_id;
+    END WHILE;
+    
+    -- Set the correct level
+    SET NEW.group_level = hierarchy_depth;
+    
+    -- Enforce maximum hierarchy depth
+    IF hierarchy_depth >= 10 THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'User group hierarchy depth cannot exceed 10 levels';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure hierarchical permission groups don't create cycles
+DELIMITER $$
+CREATE TRIGGER tr_validate_permission_group_hierarchy
+BEFORE INSERT ON permission_groups
+FOR EACH ROW
+BEGIN
+    DECLARE hierarchy_depth INT DEFAULT 0;
+    DECLARE current_parent_id INT;
+    
+    SET current_parent_id = NEW.parent_permission_group_id;
+    
+    -- Check for cycles and depth limit
+    WHILE current_parent_id IS NOT NULL AND hierarchy_depth < 10 DO
+        SET hierarchy_depth = hierarchy_depth + 1;
+        
+        -- Check if we're creating a cycle
+        IF current_parent_id = NEW.id THEN
+            SIGNAL SQLSTATE '45000' 
+            SET MESSAGE_TEXT = 'Circular reference detected in permission group hierarchy';
+        END IF;
+        
+        -- Get next parent and verify same project
+        SELECT parent_permission_group_id, project_id INTO current_parent_id, @parent_project_id
+        FROM permission_groups 
+        WHERE id = current_parent_id;
+        
+        -- Ensure parent is in same project
+        IF @parent_project_id != NEW.project_id THEN
+            SIGNAL SQLSTATE '45000' 
+            SET MESSAGE_TEXT = 'Permission group hierarchy must be within the same project';
+        END IF;
+    END WHILE;
+    
+    -- Set the correct level
+    SET NEW.group_level = hierarchy_depth;
+    
+    -- Enforce maximum hierarchy depth
+    IF hierarchy_depth >= 10 THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Permission group hierarchy depth cannot exceed 10 levels';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure hierarchical permissions don't create cycles
+DELIMITER $$
+CREATE TRIGGER tr_validate_permission_hierarchy
+BEFORE INSERT ON permissions
+FOR EACH ROW
+BEGIN
+    DECLARE hierarchy_depth INT DEFAULT 0;
+    DECLARE current_parent_id INT;
+    
+    SET current_parent_id = NEW.parent_permission_id;
+    
+    -- Check for cycles and depth limit
+    WHILE current_parent_id IS NOT NULL AND hierarchy_depth < 10 DO
+        SET hierarchy_depth = hierarchy_depth + 1;
+        
+        -- Check if we're creating a cycle
+        IF current_parent_id = NEW.id THEN
+            SIGNAL SQLSTATE '45000' 
+            SET MESSAGE_TEXT = 'Circular reference detected in permission hierarchy';
+        END IF;
+        
+        -- Get next parent and verify same project
+        SELECT parent_permission_id, project_id INTO current_parent_id, @parent_project_id
+        FROM permissions 
+        WHERE id = current_parent_id;
+        
+        -- Ensure parent is in same project
+        IF @parent_project_id != NEW.project_id THEN
+            SIGNAL SQLSTATE '45000' 
+            SET MESSAGE_TEXT = 'Permission hierarchy must be within the same project';
+        END IF;
+    END WHILE;
+    
+    -- Set the correct level
+    SET NEW.permission_level = hierarchy_depth;
+    
+    -- Enforce maximum hierarchy depth
+    IF hierarchy_depth >= 10 THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Permission hierarchy depth cannot exceed 10 levels';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure permission group and permission belong to same project
+DELIMITER $$
+CREATE TRIGGER tr_validate_permission_group_permissions_project
+BEFORE INSERT ON permission_group_permissions
+FOR EACH ROW
+BEGIN
+    DECLARE perm_project_id INT;
+    DECLARE group_project_id INT;
+    
+    -- Get project IDs
+    SELECT project_id INTO perm_project_id
+    FROM permissions 
+    WHERE id = NEW.permission_id AND is_active = 1;
+    
+    SELECT project_id INTO group_project_id
+    FROM permission_groups 
+    WHERE id = NEW.permission_group_id AND is_active = 1;
+    
+    -- Verify they belong to the same project
+    IF perm_project_id IS NULL OR group_project_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Invalid permission or permission group ID';
+    END IF;
+    
+    IF perm_project_id != group_project_id THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Permission and permission group must belong to the same project';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Ensure user group permission assignments are valid
+DELIMITER $$
+CREATE TRIGGER tr_validate_user_group_permission_groups
+BEFORE INSERT ON user_group_permission_groups
+FOR EACH ROW
+BEGIN
+    DECLARE group_project_id INT;
+    
+    -- Verify permission group belongs to the specified project
+    SELECT project_id INTO group_project_id
+    FROM permission_groups 
+    WHERE id = NEW.permission_group_id AND is_active = 1;
+    
+    IF group_project_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Invalid permission group ID';
+    END IF;
+    
+    IF group_project_id != NEW.project_id THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Permission group must belong to the specified project';
+    END IF;
+    
+    -- Verify user group exists and is active
+    IF NOT EXISTS (SELECT 1 FROM user_groups WHERE id = NEW.user_group_id AND is_active = 1) THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Invalid or inactive user group ID';
+    END IF;
+    
+    -- Verify project exists and is active
+    IF NOT EXISTS (SELECT 1 FROM projects WHERE id = NEW.project_id AND is_active = 1) THEN
+        SIGNAL SQLSTATE '45000' 
+        SET MESSAGE_TEXT = 'Invalid or inactive project ID';
     END IF;
 END$$
 DELIMITER ;
