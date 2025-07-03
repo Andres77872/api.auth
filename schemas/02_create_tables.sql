@@ -20,13 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_hash (user_hash),
-    UNIQUE KEY uk_username (username),
-    INDEX idx_email (email),
-    INDEX idx_user_type (user_type),
-    INDEX idx_active_users (is_active, user_type),
-    INDEX idx_users_type_active (user_type, is_active),
-    INDEX idx_users_username_password (username, password_hash, is_active),
-    INDEX idx_users_email_password (email, password_hash, is_active)
+    UNIQUE KEY uk_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PROJECTS TABLE ===================
@@ -45,12 +39,7 @@ CREATE TABLE IF NOT EXISTS projects (
     archived_at TIMESTAMP NULL,
     archived_by INT UNSIGNED NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_project_hash (project_hash),
-    INDEX idx_project_name (project_name),
-    INDEX idx_active_projects (is_active),
-    INDEX idx_projects_archived (archived),
-    INDEX idx_projects_owner (owner_id),
-    INDEX idx_projects_created_at (project_created)
+    UNIQUE KEY uk_project_hash (project_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUPS TABLE ===================
@@ -69,12 +58,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_hash (group_hash),
-    UNIQUE KEY uk_group_name (group_name), -- Global unique group names
-    INDEX idx_group_name (group_name),
-    INDEX idx_parent_group (parent_group_id),
-    INDEX idx_group_level (group_level),
-    INDEX idx_active_groups (is_active),
-    INDEX idx_hierarchical_lookup (parent_group_id, group_level, is_active)
+    UNIQUE KEY uk_group_name (group_name) -- Global unique group names
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUP_MEMBERS TABLE ===================
@@ -89,11 +73,7 @@ CREATE TABLE IF NOT EXISTS user_group_members (
     removed_by INT UNSIGNED,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_user_group_member (user_id, user_group_id),
-    INDEX idx_user_groups (user_id, is_active),
-    INDEX idx_group_users (user_group_id, is_active),
-    INDEX idx_user_group_members_user (user_id, is_active),
-    INDEX idx_user_group_members_group (user_group_id, is_active)
+    UNIQUE KEY uk_user_group_member (user_id, user_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUP_PROJECTS TABLE ===================
@@ -109,10 +89,7 @@ CREATE TABLE IF NOT EXISTS user_group_projects (
     revoked_by INT UNSIGNED,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_group_project (user_group_id, project_id),
-    INDEX idx_group_projects (user_group_id, is_active),
-    INDEX idx_project_groups (project_id, is_active),
-    INDEX idx_user_group_projects_access (user_group_id, project_id, is_active)
+    UNIQUE KEY uk_group_project (user_group_id, project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSIONS TABLE ===================
@@ -135,14 +112,7 @@ CREATE TABLE IF NOT EXISTS permissions (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_hash (permission_hash),
-    UNIQUE KEY uk_project_permission (project_id, permission_name),
-    INDEX idx_project_permissions (project_id, is_active),
-    INDEX idx_permission_category (permission_category),
-    INDEX idx_system_permissions (is_system_permission),
-    INDEX idx_parent_permission (parent_permission_id),
-    INDEX idx_permission_level (permission_level),
-    INDEX idx_user_permission_check (project_id, permission_name, is_active),
-    INDEX idx_hierarchical_perms (project_id, parent_permission_id, permission_level)
+    UNIQUE KEY uk_project_permission (project_id, permission_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSION_GROUPS TABLE ===================
@@ -166,14 +136,7 @@ CREATE TABLE IF NOT EXISTS permission_groups (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_group_hash (group_hash),
-    UNIQUE KEY uk_project_role (project_id, group_name),
-    INDEX idx_project_roles (project_id, is_active),
-    INDEX idx_role_priority (group_priority DESC),
-    INDEX idx_system_roles (is_system_role),
-    INDEX idx_parent_permission_group (parent_permission_group_id),
-    INDEX idx_permission_group_level (group_level),
-    INDEX idx_permission_groups_lookup (project_id, group_name, is_active),
-    INDEX idx_hierarchical_perm_groups (project_id, parent_permission_group_id, group_level)
+    UNIQUE KEY uk_project_role (project_id, group_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSION_GROUP_PERMISSIONS TABLE ===================
@@ -188,10 +151,7 @@ CREATE TABLE IF NOT EXISTS permission_group_permissions (
     revoked_by INT UNSIGNED,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_group_permission (permission_group_id, permission_id),
-    INDEX idx_group_permissions (permission_group_id, is_active),
-    INDEX idx_permission_groups (permission_id, is_active),
-    INDEX idx_perm_group_permissions_active (permission_group_id, permission_id, is_active)
+    UNIQUE KEY uk_group_permission (permission_group_id, permission_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUP_PERMISSION_GROUPS TABLE ===================
@@ -208,11 +168,7 @@ CREATE TABLE IF NOT EXISTS user_group_permission_groups (
     removed_by INT UNSIGNED,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id),
-    INDEX idx_user_group_perms (user_group_id, project_id, is_active),
-    INDEX idx_project_user_group_perms (project_id, user_group_id, is_active),
-    INDEX idx_perm_group_assignments (permission_group_id, is_active),
-    INDEX idx_full_permission_lookup (user_group_id, project_id, permission_group_id, is_active)
+    UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_SESSIONS TABLE ===================
@@ -226,11 +182,7 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_session_token (session_token),
-    INDEX idx_user_sessions (user_id, project_id, is_active),
-    INDEX idx_active_sessions (is_active, expires_at),
-    INDEX idx_user_sessions_token_expires (session_token, is_active, expires_at),
-    INDEX idx_sessions_token_active (session_token, is_active, expires_at)
+    UNIQUE KEY uk_session_token (session_token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSION_AUDIT_LOG TABLE ===================
@@ -251,16 +203,7 @@ CREATE TABLE IF NOT EXISTS permission_audit_log (
     user_agent TEXT,
     table_name VARCHAR(100),
     record_id INT UNSIGNED,
-    PRIMARY KEY (id),
-    INDEX idx_audit_timestamp (action_timestamp DESC),
-    INDEX idx_audit_project (project_id, action_timestamp DESC),
-    INDEX idx_audit_user (target_user_id, action_timestamp DESC),
-    INDEX idx_audit_performer (performed_by, action_timestamp DESC),
-    INDEX idx_audit_action (action_type),
-    INDEX idx_audit_user_group (user_group_id, action_timestamp DESC),
-    INDEX idx_audit_log_project_time (project_id, action_timestamp),
-    INDEX idx_audit_log_user_time (target_user_id, action_timestamp),
-    INDEX idx_audit_log_action_type (action_type, action_timestamp)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ACTIVITY_LOGS TABLE ===================
@@ -277,20 +220,7 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     user_agent TEXT,
     metadata JSON NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    INDEX idx_activity_user_id (user_id),
-    INDEX idx_activity_type (activity_type),
-    INDEX idx_activity_project_id (project_id),
-    INDEX idx_activity_created_at (created_at DESC),
-    INDEX idx_activity_target_user_id (target_user_id),
-    INDEX idx_activity_user_group_id (user_group_id),
-    INDEX idx_activity_ip_address (ip_address),
-    INDEX idx_activity_compound (user_id, project_id, activity_type),
-    INDEX idx_activity_recent (created_at DESC, activity_type),
-    INDEX idx_activity_log_user_type_time (user_id, activity_type, created_at),
-    INDEX idx_activity_log_project_time (project_id, created_at),
-    INDEX idx_activity_log_target_user_time (target_user_id, created_at),
-    INDEX idx_activity_log_type_time (activity_type, created_at)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ADDITIONAL ENHANCEMENT TABLES ===================
@@ -305,11 +235,7 @@ CREATE TABLE IF NOT EXISTS user_password_resets (
     used_at TIMESTAMP NULL,
     created_by INT UNSIGNED NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    INDEX idx_user_password_resets_user_id (user_id),
-    INDEX idx_user_password_resets_token (reset_token),
-    INDEX idx_user_password_resets_expires (expires_at),
-    INDEX idx_user_password_resets_user_expires (user_id, expires_at)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ROLE_ASSIGNMENT_HISTORY TABLE ===================
@@ -324,12 +250,7 @@ CREATE TABLE IF NOT EXISTS role_assignment_history (
     performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     details TEXT NULL,
     is_active BOOLEAN DEFAULT TRUE,
-    PRIMARY KEY (id),
-    INDEX idx_role_history_user_project (user_id, project_id),
-    INDEX idx_role_history_user_group (user_group_id),
-    INDEX idx_role_history_performed_at (performed_at),
-    INDEX idx_role_history_action (action),
-    INDEX idx_role_history_user_performed (user_id, performed_at DESC)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== SYSTEM_METRICS TABLE ===================
@@ -339,10 +260,7 @@ CREATE TABLE IF NOT EXISTS system_metrics (
     metric_value DECIMAL(15,4) NOT NULL,
     metric_unit VARCHAR(20) NULL,
     collected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    INDEX idx_system_metrics_name_time (metric_name, collected_at),
-    INDEX idx_system_metrics_collected_at (collected_at),
-    INDEX idx_system_metrics_name_collected (metric_name, collected_at DESC)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== BULK_OPERATIONS_LOG TABLE ===================
@@ -357,11 +275,7 @@ CREATE TABLE IF NOT EXISTS bulk_operations_log (
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP NULL,
     status ENUM('running', 'completed', 'failed') DEFAULT 'running',
-    PRIMARY KEY (id),
-    INDEX idx_bulk_ops_performer (performed_by),
-    INDEX idx_bulk_ops_type_time (operation_type, started_at),
-    INDEX idx_bulk_ops_status (status),
-    INDEX idx_bulk_ops_performer_started (performed_by, started_at DESC)
+    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERFORMANCE OPTIMIZATION TABLES ===================
@@ -374,8 +288,7 @@ CREATE TABLE IF NOT EXISTS permission_cache (
     has_permission BOOLEAN NOT NULL,
     cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME NOT NULL,
-    PRIMARY KEY (user_id, project_id, permission_name),
-    INDEX idx_expires (expires_at)
+    PRIMARY KEY (user_id, project_id, permission_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table for query performance tracking
@@ -386,7 +299,5 @@ CREATE TABLE IF NOT EXISTS query_performance_log (
     execution_time_ms INT,
     rows_examined INT,
     rows_returned INT,
-    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_query_hash (query_hash),
-    INDEX idx_logged_at (logged_at)
+    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci; 

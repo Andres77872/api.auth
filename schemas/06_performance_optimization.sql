@@ -504,21 +504,5 @@ BEGIN
 END$$
 DELIMITER ;
 
--- =================== PERFORMANCE INDEXES FOR GROUP-BASED ACCESS ===================
-
--- Additional indexes for group hierarchy performance
-CREATE INDEX idx_user_groups_hierarchy_lookup ON user_groups (parent_group_id, group_level, group_name);
-CREATE INDEX idx_permissions_hierarchy_lookup ON permissions (project_id, parent_permission_id, permission_level);
-CREATE INDEX idx_permission_groups_hierarchy_lookup ON permission_groups (project_id, parent_permission_group_id, group_level);
-
--- Composite indexes for complex group-based queries
-CREATE INDEX idx_user_group_members_active_lookup ON user_group_members (user_id, user_group_id, is_active);
-CREATE INDEX idx_user_group_projects_active_lookup ON user_group_projects (user_group_id, project_id, is_active);
-CREATE INDEX idx_user_group_permission_groups_full ON user_group_permission_groups (user_group_id, project_id, permission_group_id, is_active);
-
--- Indexes for permission checking performance
-CREATE INDEX idx_permission_group_permissions_lookup ON permission_group_permissions (permission_group_id, permission_id, is_active);
-CREATE INDEX idx_permissions_project_name_lookup ON permissions (project_id, permission_name, is_active);
-
 -- =================== SUMMARY ===================
-SELECT 'Performance optimization script completed successfully for group-based access!' as status; 
+SELECT 'Performance optimization script completed successfully for group-based access!' as status;
