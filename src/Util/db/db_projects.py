@@ -356,20 +356,68 @@ def get_project_stats(project_id: int) -> dict:
 # =================== PROJECT GROUP MANAGEMENT ===================
 
 def create_default_groups(project_id: int):
-    """Create default groups for a new project"""
+    """Create default groups for a new project using the *global* `user_groups` table.
+
+    In the re-designed schema `user_groups` is no longer tied to a single project – the
+    relation between a group and a project is expressed through the `user_group_projects`
+    link table.  The legacy implementation inserted the groups with a `project_id` column
+    that no longer exists which caused the "Unknown column 'project_id'" MySQL error.
+
+    This refactor will:
+    1. Insert (or re-activate) the three default groups (`admin`, `user`, `readonly`) in
+       `user_groups`.  We make the names project-specific by prefixing them with the
+       project id to avoid global name clashes while still keeping them human readable.
+    2. Record the relationship between each created group and the new project in
+       `user_group_projects` (ON DUPLICATE KEY to handle re-runs).
+    """
+
+    import secrets
+
     default_groups = [
         ("admin", "Project administrators", '["admin", "read", "write", "delete", "manage_users"]'),
         ("user", "Regular users", '["read", "write"]'),
-        ("readonly", "Read-only users", '["read"]')
+        ("readonly", "Read-only users", '["read"]'),
     ]
 
     with get_connection() as con:
         cur = con.cursor()
-        for group_name, description, permissions in default_groups:
-            cur.execute("""
-                        INSERT INTO user_groups (project_id, group_name, group_description, permissions, created_at)
-                        VALUES (%s, %s, %s, %s, NOW())
-                        """, [project_id, group_name, description, permissions])
+
+        created_group_ids = []
+
+        for base_name, description, permissions in default_groups:
+            # Build a **globally unique** group name while retaining readability
+            group_name = f"{base_name}_{project_id}"
+
+            # Try to insert. If the name already exists we update `is_active` and fetch the id.
+            cur.execute(
+                """
+                INSERT INTO user_groups (group_hash, group_name, group_description, created_at, is_active)
+                VALUES (%s, %s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
+                """,
+                [f"UG-{secrets.token_hex(16).upper()}", group_name, description],
+            )
+
+            # `lastrowid` is only reliable when a new row was inserted.  When the row already
+            # exists we need to fetch its id.
+            group_id = cur.lastrowid
+            if not group_id:
+                cur.execute("SELECT id FROM user_groups WHERE group_name = %s", [group_name])
+                group_id = cur.fetchone()[0]
+
+            created_group_ids.append(group_id)
+
+        # Link the (new or existing) groups with the project in user_group_projects
+        for gid in created_group_ids:
+            cur.execute(
+                """
+                INSERT INTO user_group_projects (user_group_id, project_id, granted_at, is_active)
+                VALUES (%s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active = 1, granted_at = NOW()
+                """,
+                [gid, project_id],
+            )
+
         con.commit()
 
 
