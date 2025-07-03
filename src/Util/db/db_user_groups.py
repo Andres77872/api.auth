@@ -593,9 +593,10 @@ def get_user_accessible_projects(user_id: int) -> List[ProjectSummary]:
         for row in cur.fetchall():
             projects.append(
                 ProjectSummary(
-                    project_hash=row[0],
-                    project_name=row[1],
-                    project_description=row[2],
+                    id=row[0],
+                    project_hash=row[1],
+                    project_name=row[2],
+                    project_description=row[3],
                     project_group_name="",  # Not provided in new SP
                     permissions=[],  # Permissions not part of this query
                 )
@@ -626,3 +627,107 @@ def get_total_user_groups_count() -> int:
                     WHERE is_active = 1
                     """)
         return cur.fetchone()[0]
+
+
+def get_user_groups_in_project(user_id: int, project_id: int) -> List[UserGroup]:
+    """
+    Get user groups that a user belongs to AND that have access to a specific project.
+    
+    This function returns the intersection of:
+    - User groups the user is a member of
+    - User groups that have access to the specified project
+    
+    Args:
+        user_id: The user ID
+        project_id: The project ID
+        
+    Returns:
+        List of UserGroup objects that the user belongs to and that have access to the project
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+                    SELECT DISTINCT ug.id,
+                           ug.group_hash,
+                           ug.group_name,
+                           ug.group_description,
+                           ug.created_at,
+                           ug.updated_at,
+                           ug.is_active
+                    FROM user_groups ug
+                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                             INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugp.project_id = %s
+                      AND ug.is_active = 1
+                      AND ugm.is_active = 1
+                      AND ugp.is_active = 1
+                    ORDER BY ug.group_name ASC
+                    """, [user_id, project_id])
+
+        groups = []
+        for row in cur.fetchall():
+            groups.append(UserGroup(
+                id=row[0],
+                group_hash=row[1],
+                group_name=row[2],
+                group_description=row[3],
+                created_at=row[4],
+                updated_at=row[5],
+                is_active=bool(row[6])
+            ))
+
+        return groups
+
+
+def get_user_groups_in_project_by_hash(user_id: int, project_hash: str) -> List[UserGroup]:
+    """
+    Get user groups that a user belongs to AND that have access to a specific project (by project hash).
+    
+    This function returns the intersection of:
+    - User groups the user is a member of
+    - User groups that have access to the specified project
+    
+    Args:
+        user_id: The user ID
+        project_hash: The project hash
+        
+    Returns:
+        List of UserGroup objects that the user belongs to and that have access to the project
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+                    SELECT DISTINCT ug.id,
+                           ug.group_hash,
+                           ug.group_name,
+                           ug.group_description,
+                           ug.created_at,
+                           ug.updated_at,
+                           ug.is_active
+                    FROM user_groups ug
+                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                             INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                             INNER JOIN projects p ON ugp.project_id = p.id
+                    WHERE ugm.user_id = %s
+                      AND p.project_hash = %s
+                      AND ug.is_active = 1
+                      AND ugm.is_active = 1
+                      AND ugp.is_active = 1
+                      AND p.is_active = 1
+                    ORDER BY ug.group_name ASC
+                    """, [user_id, project_hash])
+
+        groups = []
+        for row in cur.fetchall():
+            groups.append(UserGroup(
+                id=row[0],
+                group_hash=row[1],
+                group_name=row[2],
+                group_description=row[3],
+                created_at=row[4],
+                updated_at=row[5],
+                is_active=bool(row[6])
+            ))
+
+        return groups

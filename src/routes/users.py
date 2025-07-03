@@ -24,10 +24,10 @@ from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users_with_access, count_users, get_user_permissions_in_project,
-    is_root_user, get_user_groups_in_project, get_user_effective_permissions,
+    is_root_user, get_user_groups_in_project_by_hash, get_user_effective_permissions,
     get_user_group_membership, get_user_type_info, check_user_permission,
     get_user_type, assign_user_to_user_group, remove_user_from_user_group,
-    get_project_by_hash
+    get_project_by_hash, get_projects_for_user_group
 )
 from src.Util.password_generator import create_password_reset_data
 
@@ -235,7 +235,7 @@ async def get_user_access_summary(
             permission_names = [perm.permission_name for perm in effective_permissions] if effective_permissions else []
             
             # Get user's group memberships for this project
-            user_project_groups = get_user_groups_in_project(user_data.id, proj.project_hash)
+            user_project_groups = get_user_groups_in_project_by_hash(user_data.id, proj.project_hash)
             
             project_groups = []
             for pg in user_project_groups:
@@ -551,7 +551,7 @@ async def get_user_details(
                 project_data["effective_permissions"] = permission_names
                 
                 # Get user's group memberships for this project
-                user_project_groups = get_user_groups_in_project(target_user.id, proj.project_hash)
+                user_project_groups = get_user_groups_in_project_by_hash(target_user.id, proj.project_hash)
                 
                 # Format project groups
                 project_groups = []
@@ -580,41 +580,13 @@ async def get_user_details(
             "projects": project_list
         }
 
-        return GetUserDetailsResponse(user=user_details)
-        # Build groups list
-        groups_list = [group.group_name for group in user_groups]
-
-        # Build accessible projects list
-        projects_list = []
-        if accessible_projects:
-            for proj in accessible_projects:
-                projects_list.append(ProjectInfo(
-                    project_hash=getattr(proj, 'project_hash', ''),
-                    project_name=getattr(proj, 'project_name', ''),
-                    project_description=getattr(proj, 'project_description', None)
-                ))
-
-        # Build statistics
-        statistics = {
-            "total_groups": len(user_groups),
-            "total_accessible_projects": len(accessible_projects) if accessible_projects else 0,
-            "total_permissions": len(permissions),
-            "account_age_days": (datetime.utcnow() - target_user.created_at).days if target_user.created_at else 0
-        }
-
-        return GetUserDetailsResponse(
-            success=True,
-            user=user_details,
-            permissions=permissions,
-            groups=groups_list,
-            accessible_projects=projects_list,
-            statistics=statistics
-        )
+        return GetUserDetailsResponse(success=True, user=user_details)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Get user details error: {str(e)}")
+        raise e
         raise HTTPException(status_code=500, detail="Failed to get user details")
 
 

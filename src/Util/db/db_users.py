@@ -156,6 +156,7 @@ def create_root_user(username: str, password: str, email: str = None, created_by
             user_type='root',
             assigned_project_id=None,
             created_at=datetime.now(),
+            last_login=None,  # New user, no login yet
             is_active=True
         )
 
@@ -188,6 +189,7 @@ def create_consumer_user(username: str, password: str, email: str = None, create
             user_type='consumer',
             assigned_project_id=None,
             created_at=datetime.now(),
+            last_login=None,  # New user, no login yet
             is_active=True
         )
 
@@ -272,6 +274,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
             user_type=user_type,
             assigned_project_id=None,
             created_at=created_at,
+            last_login=None,  # Field doesn't exist in DB yet
             is_active=bool(is_active_flag)
         )
 
@@ -305,6 +308,7 @@ def get_user_by_id(user_id: int) -> Optional[User]:
                 user_type=result[5],
                 assigned_project_id=None,
                 created_at=result[6],
+                last_login=None,  # Field doesn't exist in DB yet
                 is_active=bool(result[7])
             )
     return None
@@ -339,6 +343,7 @@ def get_user_by_hash(user_hash: str) -> Optional[User]:
                 user_type=result[5],
                 assigned_project_id=None,
                 created_at=result[6],
+                last_login=None,  # Field doesn't exist in DB yet
                 is_active=bool(result[7])
             )
     return None
@@ -499,6 +504,7 @@ def list_users(
                         user_type=row[4],
                         assigned_project_id=None,
                         created_at=row[5],
+                        last_login=row[6],  # last_login from stored procedure (NULL)
                         is_active=bool(row[7])
                     )
                 )
@@ -580,6 +586,7 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
                 user_type=row[5],
                 assigned_project_id=None,
                 created_at=row[6],
+                last_login=None,  # Field doesn't exist in DB yet
                 is_active=bool(row[7])
             ))
 
@@ -1155,6 +1162,7 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
                 user_type='admin',
                 assigned_project_id=assigned_project_id,
                 created_at=datetime.now(),
+                last_login=None,  # New user, no login yet
                 is_active=True
             )
 

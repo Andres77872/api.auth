@@ -35,6 +35,7 @@ class User(BaseModelConfig):
     assigned_project_id: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
     is_active: bool = True
 
 
@@ -205,7 +206,8 @@ LegacyUserGroup = UserGroup
 
 class BaseResponse(BaseModelConfig):
     """Base response model"""
-    success: bool
+    # Default success to True so individual endpoints don't need to explicitly set it
+    success: bool = True
     message: Optional[str] = None
 
 
@@ -828,6 +830,7 @@ class EnhancedUserLogin(BaseModelConfig):
 
 class ProjectSummary(BaseModelConfig):
     """Summary of projects accessible to user"""
+    id: int
     project_hash: str
     project_name: str
     project_description: Optional[str] = None

@@ -149,7 +149,8 @@ BEGIN
 
     -- Root users: all projects
     IF v_user_type = 'root' THEN
-        SELECT p.project_hash,
+        SELECT p.id,
+               p.project_hash,
                p.project_name,
                p.project_description
         FROM projects p
@@ -157,7 +158,8 @@ BEGIN
         ORDER BY p.project_name;
     ELSE
         -- Admin / consumer users: via group memberships
-        SELECT DISTINCT p.project_hash,
+        SELECT DISTINCT p.id,
+                        p.project_hash,
                         p.project_name,
                         p.project_description
         FROM user_group_members ugm

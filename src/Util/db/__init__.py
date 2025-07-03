@@ -131,7 +131,9 @@ from src.Util.db.db_user_groups import (
     get_group_project_access,
     get_projects_for_user_group,
     get_user_groups_for_project,
-    get_user_accessible_projects
+    get_user_accessible_projects,
+    get_user_groups_in_project,
+    get_user_groups_in_project_by_hash
 )
 # Import user management functions
 from src.Util.db.db_users import (
@@ -163,7 +165,6 @@ from src.Util.db.db_users import (
     get_user_project_access,
     get_user_projects,
     revoke_user_project_access,
-    get_user_groups_in_project,
     get_user_permissions_in_project,
     assign_user_to_group,
     remove_user_from_group,
