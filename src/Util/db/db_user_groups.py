@@ -585,34 +585,25 @@ def get_user_accessible_projects(user_id: int) -> List[ProjectSummary]:
     """Get all projects accessible by a user through their group memberships"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT DISTINCT p.project_hash,
-                                    p.project_name,
-                                    p.project_description,
-                                    pg.group_name as project_group_name,
-                                    pg.permissions
-                    FROM users u
-                             JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
-                             JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
-                             JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
-                             JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1
-                             JOIN project_group_members pgm ON p.id = pgm.project_id AND pgm.is_active = 1
-                             JOIN project_groups pg ON pgm.project_group_id = pg.id AND pg.is_active = 1
-                    WHERE u.id = %s
-                      AND u.is_active = 1
-                    ORDER BY p.project_name ASC
-                    """, [user_id])
 
-        projects = []
+        # Call stored procedure to obtain projects
+        cur.callproc('sp_get_user_accessible_projects', [user_id])
+
+        projects: List[ProjectSummary] = []
         for row in cur.fetchall():
-            permissions = json.loads(row[4]) if row[4] else []
-            projects.append(ProjectSummary(
-                project_hash=row[0],
-                project_name=row[1],
-                project_description=row[2],
-                project_group_name=row[3],
-                permissions=permissions
-            ))
+            projects.append(
+                ProjectSummary(
+                    project_hash=row[0],
+                    project_name=row[1],
+                    project_description=row[2],
+                    project_group_name="",  # Not provided in new SP
+                    permissions=[],  # Permissions not part of this query
+                )
+            )
+
+        # Clean up additional result-sets (just in case)
+        while cur.nextset():
+            pass
 
         return projects
 

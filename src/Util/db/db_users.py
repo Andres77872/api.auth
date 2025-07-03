@@ -201,29 +201,30 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
     with get_connection() as con:
         cur = con.cursor()
 
-        # First, get the user by username/email
-        cur.execute("""
-                    SELECT id,
-                           user_hash,
-                           username,
-                           email,
-                           password_hash,
-                           user_type,
-                           assigned_project_id,
-                           created_at,
-                           is_active
-                    FROM users
-                    WHERE (username = %s OR email = %s)
-                      AND is_active = 1
-                    """, [username, username])
+        # Fetch user record via stored procedure (uses new 3-tier schema)
+        cur.callproc('sp_user_login', [username])
 
         result = cur.fetchone()
+        # Cleanup any additional result-sets returned by the connector
+        while cur.nextset():
+            pass
+
         if not result:
             return None
 
-        stored_password_hash = result[4]
+        # Map result to variables (assigned_project_id was removed in new schema)
+        (
+            user_id,
+            user_hash,
+            db_username,
+            db_email,
+            stored_password_hash,
+            user_type,
+            created_at,
+            is_active_flag,
+        ) = result
 
-        # Verify password using the new secure method (handles both legacy and new hashes)
+        # Verify password (handles legacy & new Argon2 hashes)
         if not verify_password(password, stored_password_hash):
             return None
 
@@ -237,7 +238,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                             SET password_hash = %s,
                                 updated_at    = NOW()
                             WHERE id = %s
-                            """, [new_password_hash, result[0]])
+                            """, [new_password_hash, user_id])
                 con.commit()
 
                 # Update the result with new hash for return
@@ -245,22 +246,22 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 result[4] = new_password_hash
 
                 # Log the migration (optional)
-                print(f"Password migrated to Argon2 for user: {result[2]}")
+                print(f"Password migrated to Argon2 for user: {db_username}")
 
             except Exception as e:
-                print(f"Warning: Password migration failed for user {result[2]}: {e}")
+                print(f"Warning: Password migration failed for user {db_username}: {e}")
                 # Continue with login even if migration fails
 
         return User(
-            id=result[0],
-            user_hash=result[1],
-            username=result[2],
-            email=result[3],
+            id=user_id,
+            user_hash=user_hash,
+            username=db_username,
+            email=db_email,
             password_hash=result[4],
-            user_type=result[5],
-            assigned_project_id=result[6],
-            created_at=result[7],
-            is_active=bool(result[8])
+            user_type=user_type,
+            assigned_project_id=None,  # Column removed in new schema
+            created_at=created_at,
+            is_active=bool(is_active_flag)
         )
 
 

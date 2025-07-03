@@ -7,6 +7,9 @@ for the group-based multi-project authentication system.
 
 import logging
 from typing import Optional
+import json
+import secrets
+from datetime import timedelta
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Response
 from fastapi.security import HTTPAuthorizationCredentials
@@ -17,11 +20,11 @@ from src.Util.Models import (
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.db import (
-    enhanced_login, enhanced_register, validate_session,
-    check_username_email_available, invalidate_session,
-    get_user_by_hash
+    check_username_email_available,
+    get_user_by_hash,
+    get_user_by_credentials,
+    enhanced_register,
 )
-from src.Util.db import get_user_by_credentials, get_user_type
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -34,146 +37,193 @@ security = HTTPBearerOrCookie()
 COOKIE_NAME = "session_token"
 COOKIE_MAX_AGE = 72 * 60 * 60  # 72 hours (3 days)
 
+# NEW: low-level dependencies for session storage & JWT
+from src.Util.db_config import redis_client  # Central redis client
+from src.Util.JWT_Security import JWTTokenHandler
+
+# NEW: helpers aligned with the group-based schema
+from src.Util.db.db_user_groups import get_user_accessible_projects
+from src.Util.db.db_projects import get_project_by_hash
+
+# ---------------------------------------------------------------------------
+# Session helpers (group-based, no user_projects table required)
+# ---------------------------------------------------------------------------
+
+SESSION_EXPIRE_HOURS = 72  # Default session lifetime (3 days)
+
+def _store_session(token: str, data: dict, hours: int = SESSION_EXPIRE_HOURS) -> None:
+    """Persist the session payload in Redis with appropriate TTL."""
+    redis_client.set(
+        f"session:{token}",
+        json.dumps(data, default=str),
+        ex=hours * 3600,
+    )
+
+def _delete_session(token: str) -> None:
+    """Remove session payload from Redis (logout / refresh)."""
+    redis_client.delete(f"session:{token}")
+
+def _get_session(token: str) -> Optional[dict]:
+    """Fetch session payload from Redis."""
+    raw = redis_client.get(f"session:{token}")
+    return json.loads(raw.decode()) if raw else None
+
+def _create_session(user: "User", project: Optional["Project"] = None) -> tuple[str, int]:
+    """Generate JWT & persist session payload. Returns (token, ttl_seconds)."""
+    session_id = secrets.randbelow(2 ** 31)
+
+    collection = project.project_hash if project else ""
+    token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection=collection,
+        expires_delta=timedelta(hours=SESSION_EXPIRE_HOURS),
+    )
+
+    payload = {
+        "session_id": session_id,
+        "user_id": user.id,
+        "user_hash": user.user_hash,
+        "user_type": user.user_type,
+        "project_id": getattr(project, "id", None),
+        "project_hash": getattr(project, "project_hash", ""),
+        "project_name": getattr(project, "project_name", "Global Root Access" if user.user_type == "root" else None),
+    }
+
+    # Persist
+    _store_session(token, payload)
+    return token, SESSION_EXPIRE_HOURS * 3600
+
+# ---------------------------------------------------------------------------
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
         response: Response,
         username: str = Form(...),
-        password: str = Form(...),
-        project_hash: str = Form(None)
+        password: str = Form(...)
 ) -> LoginResponse:
     """
-    Authenticate user and return session token with group context.
-    Sets HTTP-only cookie with JWT token.
-    
-    For root users: project_hash is optional (they have global access)
-    For other users: project_hash is required
-    
-    Args:
-        username: User's username or email
-        password: User's password
-        project_hash: Project to authenticate against - optional for root users
-        
-    Returns:
-        User session data with group information and accessible projects
+    Authenticate user and return session token.
+
+    The project context is now determined automatically:
+    • Root users receive a global session (no project binding).
+    • Admin / consumer users are automatically placed in the first
+      project they have access to. The complete list of accessible
+      projects is always returned so clients may switch context later
+      with the `/auth/switch-project` endpoint.
     """
+    auth_username = username
+    auth_password = password
     try:
-        auth_username = username
-        auth_password = password
-        auth_project_hash = project_hash
 
         if not auth_username or not auth_password:
             raise HTTPException(status_code=400, detail="Username and password are required")
 
         logger.info(f"Login attempt for user: {auth_username}")
 
-        # Verify credentials without project context first
-        user_check = get_user_by_credentials(auth_username, auth_password)
-        if not user_check:
-            logger.warning(f"Failed login attempt for user: {auth_username}")
+        # Step 1: verify credentials (username or email)
+        user_record = get_user_by_credentials(auth_username, auth_password)
+        if not user_record:
+            logger.warning("Failed login attempt for user: %s", auth_username)
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        user_type = get_user_type(user_check.id)
+        # ------------------------------------------------------------------
+        # Root users -> global session (no project context required)
+        # ------------------------------------------------------------------
+        if user_record.user_type == "root":
+            session_token, _ = _create_session(user_record, None)
 
-        # For root users, project_hash is optional
-        if user_type == "root":
-            if not auth_project_hash:
-                # Root user login without project - create a global session
-                logger.info(f"Root user global login: {auth_username}")
+            # Persist cookie
+            response.set_cookie(
+                key=COOKIE_NAME,
+                value=session_token,
+                max_age=COOKIE_MAX_AGE,
+                httponly=True,
+                secure=True,
+                samesite="strict",
+            )
 
-                # Create a special global session for root users
-                from src.Util.db.db_enhanced import create_root_session
-                root_session = create_root_session(auth_username, auth_password)
-
-                if not root_session:
-                    raise HTTPException(status_code=401, detail="Root session creation failed")
-
-                user_info = UserInfo(
-                    user_hash=user_check.user_hash,
-                    username=user_check.username,
-                    email=user_check.email,
-                    user_type="root"
+            # Even for root we still expose list of projects for UI convenience
+            accessible_projects = get_user_accessible_projects(user_record.id)
+            accessible_projects_info = [
+                ProjectInfo(
+                    project_hash=p.project_hash,
+                    project_name=p.project_name,
+                    project_description=p.project_description,
                 )
+                for p in accessible_projects
+            ]
 
-                # Set HTTP-only cookie with JWT token
-                response.set_cookie(
-                    key=COOKIE_NAME,
-                    value=root_session['session_token'],
-                    max_age=COOKIE_MAX_AGE,
-                    httponly=True,
-                    secure=True,
-                    samesite="strict"
-                )
+            return LoginResponse(
+                success=True,
+                message="Root user login successful - global access granted",
+                session_token=session_token,
+                user=UserInfo(
+                    user_hash=user_record.user_hash,
+                    username=user_record.username,
+                    email=user_record.email,
+                    user_type="root",
+                ),
+                project=None,
+                accessible_projects=accessible_projects_info,
+            )
 
-                # Root users have global access - no specific project
-                return LoginResponse(
-                    success=True,
-                    message="Root user login successful - global access granted",
-                    session_token=root_session['session_token'],
-                    user=user_info,
-                    project=None,  # No specific project for global root access
-                    accessible_projects=[],  # Root users can access all projects
-                    expires_at=None
-                )
-            else:
-                # Root user wants to login to a specific project
-                logger.info(f"Root user project-specific login: {auth_username} in project: {auth_project_hash}")
-        else:
-            # Non-root users must provide project_hash
-            if not auth_project_hash:
-                raise HTTPException(status_code=400, detail="Project hash is required for non-root users")
+        # ------------------------------------------------------------------
+        # Non-root users → choose default project
+        # ------------------------------------------------------------------
+        accessible = get_user_accessible_projects(user_record.id)
+        if not accessible:
+            logger.warning("User %s has no project access", auth_username)
+            raise HTTPException(status_code=403, detail="User has no access to any project")
 
-        # Standard login flow for non-root users or root users with project context
-        login_result = enhanced_login(auth_username, auth_password, auth_project_hash)
+        # Select the first accessible project as the default context
+        default_project_hash = accessible[0].project_hash
+        target_project = get_project_by_hash(default_project_hash)
+        if not target_project:
+            raise HTTPException(status_code=500, detail="Failed to resolve default project context")
 
-        if not login_result:
-            logger.warning(f"Failed enhanced login for user: {auth_username}")
-            raise HTTPException(status_code=401, detail="Invalid credentials or project access denied")
+        # Build session & response
+        session_token, _ = _create_session(user_record, target_project)
 
-        logger.info(f"Successful login for user: {auth_username}")
-
-        # Set HTTP-only cookie with JWT token
+        # Set secure HTTP-only cookie
         response.set_cookie(
             key=COOKIE_NAME,
-            value=login_result.session_token,
+            value=session_token,
             max_age=COOKIE_MAX_AGE,
             httponly=True,
             secure=True,
-            samesite="strict"
+            samesite="strict",
         )
 
-        # Build user info
-        user_info = UserInfo(
-            user_hash=login_result.user_hash,
-            username=getattr(login_result, 'username', auth_username),
-            email=getattr(login_result, 'email', None),
-            user_type=getattr(login_result, 'user_type', 'consumer')
-        )
-
-        # Build project info
+        # Build project info object for the chosen default project
         project_info = ProjectInfo(
-            project_hash=login_result.project_hash,
-            project_name=login_result.project_name
+            project_hash=target_project.project_hash,
+            project_name=target_project.project_name,
+            project_description=target_project.project_description,
         )
 
-        # Build accessible projects list
-        accessible_projects = []
-        if hasattr(login_result, 'available_projects') and login_result.available_projects:
-            for proj in login_result.available_projects:
-                accessible_projects.append(ProjectInfo(
-                    project_hash=getattr(proj, 'project_hash', ''),
-                    project_name=getattr(proj, 'project_name', ''),
-                    project_description=getattr(proj, 'project_description', None)
-                ))
+        # Map all accessible projects into API schema
+        accessible_projects_info = [
+            ProjectInfo(
+                project_hash=p.project_hash,
+                project_name=p.project_name,
+                project_description=p.project_description,
+            )
+            for p in accessible
+        ]
 
         return LoginResponse(
             success=True,
             message="Login successful",
-            session_token=login_result.session_token,
-            user=user_info,
+            session_token=session_token,
+            user=UserInfo(
+                user_hash=user_record.user_hash,
+                username=user_record.username,
+                email=user_record.email,
+                user_type=user_record.user_type,
+            ),
             project=project_info,
-            accessible_projects=accessible_projects,
-            expires_at=getattr(login_result, 'expires_at', None)
+            accessible_projects=accessible_projects_info,
         )
 
     except HTTPException:
@@ -279,47 +329,34 @@ async def validate_user_session(
     try:
         session_token = credentials.credentials
 
-        # Validate session with group context
-        session_data = validate_session(session_token)
-
-        if not session_data:
+        raw = _get_session(session_token)
+        if not raw:
             raise HTTPException(status_code=401, detail="Invalid or expired session")
 
         user_info = UserInfo(
-            user_hash=session_data.user_hash,
-            username=getattr(session_data, 'username', 'user'),
-            email=getattr(session_data, 'email', None),
-            user_type=getattr(session_data, 'user_type', 'consumer')
+            user_hash=raw["user_hash"],
+            username=raw.get("username", "user"),
+            user_type=raw.get("user_type", "consumer"),
         )
 
-        # Handle global root sessions (no specific project)
-        if (session_data.user_type == 'root' and
-                session_data.project_hash == "" and
-                session_data.project_name == "Global Root Access"):
+        if raw.get("project_hash"):
+            project_info = ProjectInfo(
+                project_hash=raw["project_hash"],
+                project_name=raw.get("project_name", ""),
+            )
+        else:
             project_info = ProjectInfo(
                 project_hash="",
                 project_name="Global Root Access",
-                project_description="Unrestricted global access for root user"
+                project_description="Unrestricted global access for root user",
             )
-        else:
-            # Regular project-based session
-            project_info = ProjectInfo(
-                project_hash=session_data.project_hash,
-                project_name=session_data.project_name
-            )
-
-        session_info = {
-            "expires_at": getattr(session_data, 'expires_at', None),
-            "created_at": getattr(session_data, 'created_at', None),
-            "is_global_session": session_data.user_type == 'root' and session_data.project_hash == ""
-        }
 
         return ValidateSessionResponse(
             success=True,
             valid=True,
             user=user_info,
             project=project_info,
-            session=session_info
+            session={"created_at": None, "is_global_session": raw.get("project_hash") == ""},
         )
 
     except HTTPException:
@@ -344,13 +381,10 @@ async def logout(
     try:
         session_token = credentials.credentials
 
-        # Invalidate session
-        if invalidate_session(session_token):
-            # Clear the session cookie
-            response.delete_cookie(key=COOKIE_NAME)
-            return LogoutResponse(success=True, message="Logged out successfully")
-        else:
-            raise HTTPException(status_code=400, detail="Logout failed")
+        _delete_session(session_token)
+        # Clear the session cookie
+        response.delete_cookie(key=COOKIE_NAME)
+        return LogoutResponse(success=True, message="Logged out successfully")
 
     except HTTPException:
         raise
@@ -374,98 +408,55 @@ async def refresh_token(
     try:
         session_token = credentials.credentials
 
-        # Validate current session
-        session_data = validate_session(session_token)
-        if not session_data:
+        raw = _get_session(session_token)
+        if not raw:
             raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-        # Get user data
-        user_data = get_user_by_hash(session_data.user_hash)
+        # Fetch fresh user & project records
+        user_data = get_user_by_hash(raw["user_hash"])
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Create new session token with same context
-        from src.Util.db import create_session, get_project_by_hash
-
-        # Handle global root sessions differently
-        if (session_data.user_type == 'root' and
-                session_data.project_hash == "" and
-                session_data.project_name == "Global Root Access"):
-
-            # Create new global root session
-            from src.Util.db.db_enhanced import create_root_session
-            root_session = create_root_session(user_data.username, "")  # No password needed for refresh
-
-            if not root_session:
-                raise HTTPException(status_code=500, detail="Failed to refresh root session")
-
-            new_session_token = root_session['session_token']
-
-            # Build response for global root session
-            user_info = UserInfo(
-                user_hash=user_data.user_hash,
-                username=user_data.username,
-                email=user_data.email,
-                user_type="root"
-            )
-
-            project_info = ProjectInfo(
-                project_hash="",
-                project_name="Global Root Access",
-                project_description="Unrestricted global access for root user"
-            )
-
-        else:
-            # Regular project-based session refresh
-            project = get_project_by_hash(session_data.project_hash)
-            if not project:
+        current_project = None
+        if raw.get("project_hash"):
+            current_project = get_project_by_hash(raw["project_hash"])
+            if not current_project:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            # Create new session with same project context
-            new_session_token = create_session(
-                user_data.id,
-                project.id,
-                getattr(session_data, 'user_project_id', None)
-            )
+        # Create brand-new session with same context
+        new_token, _ = _create_session(user_data, current_project)
 
-            if not new_session_token:
-                raise HTTPException(status_code=500, detail="Failed to create new session")
-
-            user_info = UserInfo(
-                user_hash=user_data.user_hash,
-                username=user_data.username,
-                email=user_data.email,
-                user_type=getattr(session_data, 'user_type', 'consumer')
-            )
-
-            project_info = ProjectInfo(
-                project_hash=project.project_hash,
-                project_name=project.project_name
-            )
-
-        # Invalidate old session
-        invalidate_session(session_token)
-
-        # Set new session cookie
+        # Delete old session & set cookie
+        _delete_session(session_token)
         response.set_cookie(
             key=COOKIE_NAME,
-            value=new_session_token,
+            value=new_token,
             max_age=COOKIE_MAX_AGE,
             httponly=True,
             secure=True,
-            samesite="strict"
+            samesite="strict",
         )
 
-        logger.info(f"Token refreshed for user: {user_data.username}")
+        project_info = None
+        if current_project:
+            project_info = ProjectInfo(
+                project_hash=current_project.project_hash,
+                project_name=current_project.project_name,
+                project_description=current_project.project_description,
+            )
 
         return LoginResponse(
             success=True,
             message="Token refreshed successfully",
-            session_token=new_session_token,
-            user=user_info,
+            session_token=new_token,
+            user=UserInfo(
+                user_hash=user_data.user_hash,
+                username=user_data.username,
+                email=user_data.email,
+                user_type=user_data.user_type,
+            ),
             project=project_info,
-            accessible_projects=[],  # Can be populated if needed
-            expires_at=None
+            accessible_projects=[],
         )
 
     except HTTPException:
@@ -493,80 +484,48 @@ async def switch_project(
     """
     try:
         session_token = credentials.credentials
-        current_session = validate_session(session_token)
-
-        if not current_session:
+        current_raw = _get_session(session_token)
+        if not current_raw:
             raise HTTPException(status_code=401, detail="Invalid session")
 
-        target_project_hash = project_hash
-
-        if not target_project_hash:
-            raise HTTPException(status_code=400, detail="Project hash is required")
-
-        # Get user data
-        user_data = get_user_by_hash(current_session.user_hash)
+        user_data = get_user_by_hash(current_raw["user_hash"])
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # For project switching, we create a new session without re-validating password
-        # This is secure because we already have a valid session
-        from src.Util.db import (
-            create_session, get_project_by_hash, get_user_accessible_projects,
-            get_user_project_access, get_user_permissions_in_project
-        )
-
-        # Get the new project
-        new_project = get_project_by_hash(target_project_hash)
+        # Validate desired project exists & user has access
+        new_project = get_project_by_hash(project_hash)
         if not new_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Check if user has access to the new project through their groups
-        accessible_projects = get_user_accessible_projects(user_data.id)
-
-        if not any(p.project_hash == target_project_hash for p in accessible_projects):
+        accessible = get_user_accessible_projects(user_data.id)
+        if not any(p.project_hash == project_hash for p in accessible):
             raise HTTPException(status_code=403, detail="Access denied to requested project")
 
-        # Create new session for the new project
-        user_project = get_user_project_access(user_data.id, new_project.id)
-        if not user_project:
-            raise HTTPException(status_code=403, detail="No access to this project")
+        # Create new session and update cookie
+        new_token, _ = _create_session(user_data, new_project)
+        _delete_session(session_token)
 
-        new_session_token = create_session(user_data.id, new_project.id, user_project.id)
-
-        if not new_session_token:
-            raise HTTPException(status_code=403, detail="Failed to create new session")
-
-        # Invalidate old session
-        invalidate_session(session_token)
-
-        # Update the session cookie with new JWT token
         response.set_cookie(
             key=COOKIE_NAME,
-            value=new_session_token,
+            value=new_token,
             max_age=COOKIE_MAX_AGE,
             httponly=True,
             secure=True,
-            samesite="strict"
+            samesite="strict",
         )
-
-        # Get updated permissions for the new project
-        permissions = get_user_permissions_in_project(user_data.id, new_project.id)
 
         project_info = ProjectInfo(
             project_hash=new_project.project_hash,
-            project_name=new_project.project_name
+            project_name=new_project.project_name,
+            project_description=new_project.project_description,
         )
-
-        user_groups = getattr(current_session, 'user_groups', [])
-        if hasattr(current_session, 'groups'):
-            user_groups = current_session.groups
 
         return SwitchProjectResponse(
             success=True,
             message=f"Successfully switched to project: {new_project.project_name}",
-            session_token=new_session_token,
+            session_token=new_token,
             project=project_info,
-            user_groups=user_groups
+            user_groups=[],
         )
 
     except HTTPException:

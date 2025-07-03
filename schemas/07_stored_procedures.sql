@@ -98,4 +98,76 @@ BEGIN
     DEALLOCATE PREPARE stmt;
 END$$
 
+-- =====================================================
+-- sp_user_login
+-- -----------------------------------------------------
+-- Fetch a single active user by username OR email.
+-- This lightweight procedure is used by the application
+-- layer for authentication. It returns only the fields
+-- required for login so that password verification and
+-- any post-processing can be done in Python.
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_user_login$$
+CREATE PROCEDURE sp_user_login(
+    IN p_username_email VARCHAR(255)
+)
+BEGIN
+    SELECT id,
+           user_hash,
+           username,
+           email,
+           password_hash,
+           user_type,
+           created_at,
+           is_active
+    FROM users
+    WHERE is_active = 1
+      AND (username = p_username_email OR email = p_username_email)
+    LIMIT 1;
+END$$
+
+-- =====================================================
+-- sp_get_user_accessible_projects
+-- -----------------------------------------------------
+-- Return list of projects the specified user can access
+-- based on their user groups. Root users automatically
+-- receive access to all active projects.
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_get_user_accessible_projects$$
+CREATE PROCEDURE sp_get_user_accessible_projects(
+    IN p_user_id INT
+)
+BEGIN
+    DECLARE v_user_type VARCHAR(20);
+
+    -- Determine user type
+    SELECT user_type
+    INTO v_user_type
+    FROM users
+    WHERE id = p_user_id
+      AND is_active = 1;
+
+    -- Root users: all projects
+    IF v_user_type = 'root' THEN
+        SELECT p.project_hash,
+               p.project_name,
+               p.project_description
+        FROM projects p
+        WHERE p.is_active = 1
+        ORDER BY p.project_name;
+    ELSE
+        -- Admin / consumer users: via group memberships
+        SELECT DISTINCT p.project_hash,
+                        p.project_name,
+                        p.project_description
+        FROM user_group_members ugm
+                 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
+                 JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1
+                 JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1
+        WHERE ugm.user_id = p_user_id
+          AND ugm.is_active = 1
+        ORDER BY p.project_name;
+    END IF;
+END$$
+
 DELIMITER ; 
