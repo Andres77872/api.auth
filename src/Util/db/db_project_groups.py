@@ -473,29 +473,13 @@ def get_user_project_permissions(user_id: int, project_id: int) -> List[str]:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    SELECT DISTINCT pg.permissions
-                    FROM project_groups pg
-                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-                             INNER JOIN projects p ON pgm.project_id = p.id
-                             INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-                             INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND p.id = %s
-                      AND pg.is_active = 1
-                      AND pgm.is_active = 1
-                      AND p.is_active = 1
-                      AND ugp.is_active = 1
-                      AND ug.is_active = 1
-                      AND ugm.is_active = 1
+                    SELECT DISTINCT permission_name
+                    FROM v_user_effective_permissions
+                    WHERE user_id = %s
+                      AND project_id = %s
                     """, [user_id, project_id])
 
-        all_permissions = set()
-        for row in cur.fetchall():
-            permissions = json.loads(row[0]) if row[0] else []
-            all_permissions.update(permissions)
-
-        return list(all_permissions)
+        return [row[0] for row in cur.fetchall()]
 
 
 def check_user_project_permission(user_id: int, project_id: int, required_permission: str) -> bool:

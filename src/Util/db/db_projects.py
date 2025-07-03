@@ -273,59 +273,83 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
 
 
 def get_project_stats(project_id: int) -> dict:
-    """Get statistics for a project"""
+    """Get statistics for a project (group-based implementation)"""
     with get_connection() as con:
         cur = con.cursor()
 
-        # Count total users with access
-        cur.execute("""
-                    SELECT COUNT(*)
-                    FROM user_projects
-                    WHERE project_id = %s
-                      AND is_active = 1
-                    """, [project_id])
+        # ------------------------------------------------------------------
+        # 1. Total distinct users that currently have access via groups
+        # ------------------------------------------------------------------
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT ugm.user_id)
+            FROM user_group_members ugm
+                     JOIN user_group_projects ugp
+                          ON ugm.user_group_id = ugp.user_group_id
+                         AND ugp.is_active = 1
+            WHERE ugp.project_id = %s
+              AND ugm.is_active = 1
+            """,
+            [project_id],
+        )
         total_users = cur.fetchone()[0]
 
-        # Count active sessions
-        cur.execute("""
-                    SELECT COUNT(*)
-                    FROM user_sessions us
-                             INNER JOIN user_projects up ON us.user_project_id = up.id
-                    WHERE up.project_id = %s
-                      AND us.is_active = 1
-                      AND us.expires_at > NOW()
-                    """, [project_id])
+        # ------------------------------------------------------------------
+        # 2. Active sessions for this project (uses simplified user_sessions)
+        # ------------------------------------------------------------------
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM user_sessions
+            WHERE project_id = %s
+              AND is_active = 1
+              AND expires_at > NOW()
+            """,
+            [project_id],
+        )
         active_sessions = cur.fetchone()[0]
 
-        # Count groups
-        cur.execute("""
-                    SELECT COUNT(*)
-                    FROM user_groups
-                    WHERE project_id = %s
-                      AND is_active = 1
-                    """, [project_id])
+        # ------------------------------------------------------------------
+        # 3. Total groups that currently grant access to this project
+        # ------------------------------------------------------------------
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT ugp.user_group_id)
+            FROM user_group_projects ugp
+            WHERE ugp.project_id = %s
+              AND ugp.is_active = 1
+            """,
+            [project_id],
+        )
         total_groups = cur.fetchone()[0]
 
-        # Get group distribution
-        cur.execute("""
-                    SELECT ug.group_name, COUNT(upg.id) as user_count
-                    FROM user_groups ug
-                             LEFT JOIN user_project_groups upg ON ug.id = upg.group_id AND upg.is_active = 1
-                    WHERE ug.project_id = %s
-                      AND ug.is_active = 1
-                    GROUP BY ug.id, ug.group_name
-                    ORDER BY user_count DESC
-                    """, [project_id])
-
-        group_distribution = {}
-        for row in cur.fetchall():
-            group_distribution[row[0]] = row[1]
+        # ------------------------------------------------------------------
+        # 4. Distribution of users per group
+        # ------------------------------------------------------------------
+        cur.execute(
+            """
+            SELECT ug.group_name, COUNT(DISTINCT ugm.user_id) AS user_count
+            FROM user_groups ug
+                     JOIN user_group_projects ugp
+                          ON ug.id = ugp.user_group_id
+                         AND ugp.is_active = 1
+                     LEFT JOIN user_group_members ugm
+                               ON ugm.user_group_id = ug.id
+                              AND ugm.is_active = 1
+            WHERE ugp.project_id = %s
+              AND ug.is_active = 1
+            GROUP BY ug.id, ug.group_name
+            ORDER BY user_count DESC
+            """,
+            [project_id],
+        )
+        group_distribution = {row[0]: row[1] for row in cur.fetchall()}
 
         return {
-            'total_users': total_users,
-            'active_sessions': active_sessions,
-            'total_groups': total_groups,
-            'group_distribution': group_distribution
+            "total_users": total_users,
+            "active_sessions": active_sessions,
+            "total_groups": total_groups,
+            "group_distribution": group_distribution,
         }
 
 

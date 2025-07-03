@@ -284,6 +284,7 @@ async def get_project_details(
         raise
     except Exception as e:
         logger.error(f"Project details error: {str(e)}")
+        raise e
         raise HTTPException(status_code=500, detail="Project details error")
 
 
