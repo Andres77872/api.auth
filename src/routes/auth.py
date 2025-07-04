@@ -239,7 +239,7 @@ async def register(
         username: str = Form(...),
         password: str = Form(...),
         email: Optional[str] = Form(None),
-        project_hash: str = Form(...)
+        user_group_hash: str = Form(...)
 ) -> RegisterResponse:
     """
     Register new user with automatic group assignment.
@@ -258,12 +258,12 @@ async def register(
         reg_username = username
         reg_password = password
         reg_email = email
-        reg_project_hash = project_hash
+        reg_group_hash = user_group_hash
 
-        if not reg_username or not reg_password or not reg_project_hash:
-            raise HTTPException(status_code=400, detail="Username, password, and project_hash are required")
+        if not reg_username or not reg_password or not reg_group_hash:
+            raise HTTPException(status_code=400, detail="Username, password, and user_group_hash are required")
 
-        logger.info(f"Registration attempt for user: {reg_username} in project: {reg_project_hash}")
+        logger.info(f"Registration attempt for user: {reg_username} in group: {reg_group_hash}")
 
         # Check if username/email is available
         if not check_username_email_available(reg_username):
@@ -272,7 +272,7 @@ async def register(
             raise HTTPException(status_code=409, detail="Email already exists")
 
         # Register user with group assignment
-        register_result = enhanced_register(reg_username, reg_password, reg_email, reg_project_hash)
+        register_result = enhanced_register(reg_username, reg_password, reg_email, reg_group_hash)
 
         if not register_result:
             raise HTTPException(status_code=400, detail="Registration failed")

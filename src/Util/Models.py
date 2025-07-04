@@ -680,11 +680,11 @@ class LoginRequest(BaseModelConfig):
 
 
 class RegisterRequest(BaseModelConfig):
-    """Register request model"""
+    """Register request model – updated to accept a *user_group_hash* instead of a project hash"""
     username: str
     password: str
     email: str
-    project_hash: str
+    user_group_hash: str
 
 
 class SwitchProjectRequest(BaseModelConfig):

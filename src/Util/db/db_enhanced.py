@@ -22,22 +22,33 @@ from typing import Optional
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import EnhancedUserLogin, UserLogin
 from src.Util.cache_manager import cache_manager
+# -- Database helpers --------------------------------------------------------
 from src.Util.db.db_projects import (
     # Project operations
     get_project_by_hash,  # Re-export project functions
 )
-# Import specialized modules
+
+# User operations with user type support
 from src.Util.db.db_users import (
-    # User operations with user type support
     create_root_user, create_admin_user, create_consumer_user,
     get_user_by_credentials, check_username_email_available,
     get_user_type, get_admin_assigned_project,
-    grant_user_project_access, get_user_projects, get_user_groups_in_project,
-    get_user_permissions_in_project, get_session_data,
-
-    # Re-export user functions
-    get_user_project_access
+    get_user_project_access,  # legacy accessor still used in some paths
+    get_user_projects,  # used for available project listing
+    get_session_data,
 )
+
+# NEW: user-group utilities --------------------------------------------------
+from src.Util.db.db_user_groups import (
+    get_user_group_by_hash,
+    assign_user_to_group,
+    get_projects_for_user_group,
+    get_user_groups_in_project,
+    get_user_groups_in_project_by_hash,
+)
+
+# NEW: RBAC permission resolver that works through user groups --------------
+from src.Util.db.db_rbac_permissions import get_user_effective_permissions
 from src.Util.db_config import redis_client as client
 
 
@@ -160,103 +171,155 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         if not check_admin_project_access(user.id, project.id):
             return None
     elif user_type == "consumer":
-        # Consumer users need group-based access
-        user_project = get_user_project_access(user.id, project.id)
-        if not user_project:
-            return None
+        # Consumer users need group-based access (no direct user_project records)
+        groups = get_user_groups_in_project(user.id, project.id)
+        if not groups:
+            return None  # user not part of any group that grants project access
+
+        # Resolve effective permissions via group->role mapping
+        perms = get_user_effective_permissions(user.id, project.id)
+
+        # Prepare convenience collections ----------------------------------
+        group_names = [g.group_name for g in groups]
+        permission_names = [p.permission_name for p in perms]
+
+        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+
+        # Consumer-specific session data additions
+        session_specific = {
+            'groups': group_names,
+            'permissions': permission_names,
+        }
     else:
         return None
 
-    # Create session with user type context
-    session_length = 60 * 60 * 24 * 3  # 3 days
-    session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
+    # ------------------------------------------------------------------
+    # Shared session creation logic (moved outside the user_type blocks)
+    # ------------------------------------------------------------------
 
-    # Create JWT token for project-based session
+    session_length = 60 * 60 * 24 * 3  # 3 days for project-scoped sessions
+    session_id = secrets.randbelow(2 ** 31)
+
     session_token = JWTTokenHandler.create_access_token(
         session_id=session_id,
         user_hash=user.user_hash,
         collection=project.project_hash,
     )
 
-    # Build session data based on user type
+    # Base payload
     session_data = {
         'session_id': session_id,
         'user_id': user.id,
         'user_hash': user.user_hash,
         'project_id': project.id,
         'project_hash': project.project_hash,
-        'user_type': user_type
+        'user_type': user_type,
     }
 
-    # Add user type specific data
+    # Merge user-type specific extras -----------------------------------
     if user_type == "root":
-        session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
-        session_data['groups'] = ['root_users']
-        available_projects = []  # Root users can access all projects
+        session_data.update({
+            'permissions': ['admin', 'global_admin', 'unrestricted_access'],
+            'groups': ['root_users'],
+        })
     elif user_type == "admin":
-        session_data['assigned_project_id'] = get_admin_assigned_project(user.id)
-        session_data['permissions'] = ['admin', 'project_admin', 'manage_users', 'manage_groups', 'manage_permissions']
-        session_data['groups'] = ['project_admins']
-        # Admin users only see their assigned project
         available_projects = [project] if check_admin_project_access(user.id, project.id) else []
+        session_data.update({
+            'assigned_project_id': get_admin_assigned_project(user.id),
+            'permissions': ['admin', 'project_admin', 'manage_users', 'manage_groups', 'manage_permissions'],
+            'groups': ['project_admins'],
+        })
     elif user_type == "consumer":
-        user_project = get_user_project_access(user.id, project.id)
-        session_data['user_project_id'] = user_project.id
-        session_data['user_project_hash'] = user_project.user_project_hash
-        groups = get_user_groups_in_project(user_project.id)
-        permissions = get_user_permissions_in_project(user_project.id)
-        session_data['groups'] = [g.group_name for g in groups]
-        session_data['permissions'] = permissions
-        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+        session_data.update(session_specific)
 
-    # Store session in cache with 1-hour TTL
-    cache_manager.set_session(session_token, session_data)
+    # Persist session -------------------------------------------------------
+    cache_manager.set_session(session_token, session_data)  # cache (1-h default inside)
+    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)  # Redis store
 
-    # Also store in legacy Redis format for backward compatibility
-    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-
+    # Build response --------------------------------------------------------
     return EnhancedUserLogin(
         user_hash=user.user_hash,
         project_hash=project.project_hash,
         project_name=project.project_name,
-        user_project_hash=session_data.get('user_project_hash', ''),
+        user_project_hash='',  # deprecated in group-based flow
         session_token=session_token,
         session_length=session_length,
         user_id=user.id,
         project_id=project.id,
-        user_project_id=session_data.get('user_project_id'),
+        user_project_id=None,
         groups=session_data.get('groups', []),
         permissions=session_data.get('permissions', []),
         available_projects=available_projects,
-        user_type=user_type,  # NEW: Include user type
-        assigned_project_id=session_data.get('assigned_project_id')  # NEW: For admin users
+        user_type=user_type,
+        assigned_project_id=session_data.get('assigned_project_id'),
     )
 
 
-def enhanced_register(username: str, password: str, email: str, project_hash: str, user_type: str = "consumer") -> \
-Optional[EnhancedUserLogin]:
-    """Enhanced registration with 3-tier user type support"""
-    # Check if username/email is available
-    if not check_username_email_available(username) or (email and not check_username_email_available(email)):
+def enhanced_register(
+        username: str,
+        password: str,
+        email: str,
+        group_hash: str,
+        user_type: str = "consumer",
+) -> Optional[EnhancedUserLogin]:
+    """Register a new user and immediately place them in the specified *user group*.
+
+    The supplied *group_hash* determines both the group membership **and** the
+    set of projects the user will be able to access (via the
+    *user_group_projects* linkage).
+
+    Notes:
+        • A *default* project context is required for the immediate login that
+          follows registration.  The first project associated with the group
+          is used for this purpose.
+        • Admin users still need an *assigned_project_id* for legacy reasons –
+          the first project linked to the group is used.
+    """
+
+    # ---------------------------------------------------------------------
+    # 1. Basic availability checks
+    # ---------------------------------------------------------------------
+    if not check_username_email_available(username) or (
+            email and not check_username_email_available(email)):
         return None
 
-    # Get or validate project
-    project = get_project_by_hash(project_hash)
-    if not project:
+    # ---------------------------------------------------------------------
+    # 2. Resolve target user group
+    # ---------------------------------------------------------------------
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        return None  # Unknown / inactive group
+
+    # Determine a *default* project from the group's access list
+    grp_projects = get_projects_for_user_group(user_group.id)
+    if not grp_projects:
+        # A user must have at least one project via the group to receive a
+        # valid session.
         return None
 
-    # Create user based on type
+    # The stored procedure returns tuples → (project_id, project_hash, name, desc)
+    default_project_id, default_project_hash, _pname, _pdesc = grp_projects[0]
+
+    # ---------------------------------------------------------------------
+    # 3. Create the user record (root / admin / consumer)
+    # ---------------------------------------------------------------------
     if user_type == "root":
         user = create_root_user(username, password, email)
     elif user_type == "admin":
-        user = create_admin_user(username, password, email, project.id)
+        # Legacy admin creation still needs a single *assigned_project_id*
+        user = create_admin_user(username, password, email, assigned_project_id=default_project_id)
     else:  # consumer (default)
         user = create_consumer_user(username, password, email)
-        # Grant user access to the project for consumer users
-        grant_user_project_access(user.id, project.id)
 
-    # Continue with login flow
-    return enhanced_login(username, password, project_hash)
+    # ---------------------------------------------------------------------
+    # 4. Add the user to the requested group
+    # ---------------------------------------------------------------------
+    assign_user_to_group(user.id, user_group.id)
+
+    # ---------------------------------------------------------------------
+    # 5. Finalise: issue session token using default project context
+    # ---------------------------------------------------------------------
+    return enhanced_login(username, password, default_project_hash)
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
@@ -317,13 +380,15 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         permissions = session_data.get('permissions', ['admin', 'project_admin'])
         available_projects = [project]
     elif user_type == "consumer":
-        # Get fresh user groups and permissions for consumer users
-        if 'user_project_id' not in session_data:
+        # Resolve group memberships and permissions dynamically (group-based)
+        groups_objs = get_user_groups_in_project_by_hash(session_data['user_id'], project_hash)
+        if not groups_objs:
             return None
-        groups = get_user_groups_in_project(session_data['user_project_id'])
-        permissions = get_user_permissions_in_project(session_data['user_project_id'])
+
+        groups = [g.group_name for g in groups_objs]
+        perms_objs = get_user_effective_permissions(session_data['user_id'], project.id)
+        permissions = [p.permission_name for p in perms_objs]
         available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
-        groups = [g.group_name for g in groups]
     else:
         return None
 

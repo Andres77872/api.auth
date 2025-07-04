@@ -214,7 +214,6 @@ async def create_new_project(
         raise
     except Exception as e:
         logger.error(f"Project creation error: {str(e)}")
-        raise e
         raise HTTPException(status_code=500, detail="Project creation error")
 
 
