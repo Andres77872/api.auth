@@ -271,8 +271,11 @@ async def register(
         if reg_email and not check_username_email_available(reg_email):
             raise HTTPException(status_code=409, detail="Email already exists")
 
+        print(f"Registering user: {reg_username} with group: {reg_group_hash}")
+
         # Register user with group assignment
         register_result = enhanced_register(reg_username, reg_password, reg_email, reg_group_hash)
+        print(f"Register result: {register_result}")
 
         if not register_result:
             raise HTTPException(status_code=400, detail="Registration failed")

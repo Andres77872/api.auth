@@ -16,6 +16,7 @@ Key features:
 """
 
 import json
+import logging
 import secrets
 from typing import Optional
 
@@ -262,64 +263,124 @@ def enhanced_register(
         group_hash: str,
         user_type: str = "consumer",
 ) -> Optional[EnhancedUserLogin]:
-    """Register a new user and immediately place them in the specified *user group*.
+    """Register a new user, assign to a group, and create a session.
 
-    The supplied *group_hash* determines both the group membership **and** the
-    set of projects the user will be able to access (via the
-    *user_group_projects* linkage).
+    This function creates a new user, assigns them to a specified user group,
+    and then generates a session token for a default project associated with
+    that group. This avoids issues with transactional visibility that can
+    occur when calling enhanced_login immediately after registration.
 
-    Notes:
-        • A *default* project context is required for the immediate login that
-          follows registration.  The first project associated with the group
-          is used for this purpose.
-        • Admin users still need an *assigned_project_id* for legacy reasons –
-          the first project linked to the group is used.
+    The supplied *group_hash* determines group membership and accessible projects.
+    The first project linked to the group is used for the initial session.
     """
-
-    # ---------------------------------------------------------------------
     # 1. Basic availability checks
-    # ---------------------------------------------------------------------
-    if not check_username_email_available(username) or (
-            email and not check_username_email_available(email)):
+    if not check_username_email_available(username) or \
+       (email and not check_username_email_available(email)):
         return None
 
-    # ---------------------------------------------------------------------
-    # 2. Resolve target user group
-    # ---------------------------------------------------------------------
+    # 2. Resolve target user group and default project
     user_group = get_user_group_by_hash(group_hash)
     if not user_group:
-        return None  # Unknown / inactive group
+        logging.debug(f"Group hash not found: {group_hash}")
+        return None  # Unknown or inactive group
 
-    # Determine a *default* project from the group's access list
     grp_projects = get_projects_for_user_group(user_group.id)
     if not grp_projects:
-        # A user must have at least one project via the group to receive a
-        # valid session.
-        return None
+        logging.debug(f"Group hash not linked to any projects: {group_hash}")
+        return None  # Group must be linked to at least one project
 
-    # The stored procedure returns tuples → (project_id, project_hash, name, desc)
-    default_project_id, default_project_hash, _pname, _pdesc = grp_projects[0]
+    default_project_id, default_project_hash, project_name, _ = grp_projects[0]
 
-    # ---------------------------------------------------------------------
-    # 3. Create the user record (root / admin / consumer)
-    # ---------------------------------------------------------------------
+    # 3. Create the user record
+    user = None
     if user_type == "root":
         user = create_root_user(username, password, email)
     elif user_type == "admin":
-        # Legacy admin creation still needs a single *assigned_project_id*
         user = create_admin_user(username, password, email, assigned_project_id=default_project_id)
-    else:  # consumer (default)
+    else:  # Default to consumer
         user = create_consumer_user(username, password, email)
 
-    # ---------------------------------------------------------------------
+    if not user:
+        logging.debug(f"Failed to create user: {username}")
+        return None  # User creation failed
+
     # 4. Add the user to the requested group
-    # ---------------------------------------------------------------------
     assign_user_to_group(user.id, user_group.id)
 
-    # ---------------------------------------------------------------------
-    # 5. Finalise: issue session token using default project context
-    # ---------------------------------------------------------------------
-    return enhanced_login(username, password, default_project_hash)
+    # 5. Create session directly, bypassing enhanced_login
+    session_length = 60 * 60 * 24 * 3  # 3 days for project-scoped sessions
+    session_id = secrets.randbelow(2 ** 31)
+
+    session_token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection=default_project_hash,
+    )
+
+    # Base session payload
+    session_data = {
+        'session_id': session_id,
+        'user_id': user.id,
+        'user_hash': user.user_hash,
+        'project_id': default_project_id,
+        'project_hash': default_project_hash,
+        'user_type': user_type,
+    }
+
+    # User-type specific session details
+    groups = []
+    permissions = []
+    assigned_project_id = None
+    available_projects = []
+
+    if user_type == "consumer":
+        # For new consumer, we know their group and can get permissions
+        groups = [user_group.group_name]
+        perms_objs = get_user_effective_permissions(user.id, default_project_id)
+        permissions = [p.permission_name for p in perms_objs]
+        session_data.update({'groups': groups, 'permissions': permissions})
+        # Get all projects accessible to the user
+        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+
+    elif user_type == "admin":
+        assigned_project_id = default_project_id
+        groups = ['project_admins']
+        permissions = ['admin', 'project_admin', 'manage_users', 'manage_groups', 'manage_permissions']
+        session_data.update({
+            'assigned_project_id': assigned_project_id,
+            'permissions': permissions,
+            'groups': groups,
+        })
+        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+
+    elif user_type == "root":
+        groups = ['root_users']
+        permissions = ['admin', 'global_admin', 'unrestricted_access']
+        session_data.update({'groups': groups, 'permissions': permissions})
+        # Root users can access all projects, so this list could be populated differently
+        # For now, keeping it simple as per original logic.
+
+    # Persist session
+    cache_manager.set_session(session_token, session_data)
+    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
+    logging.debug(f"Created session for user {user.username} ({user.id})")
+    # Build response object
+    return EnhancedUserLogin(
+        user_hash=user.user_hash,
+        project_hash=default_project_hash,
+        project_name=project_name,
+        user_project_hash='',  # Deprecated
+        session_token=session_token,
+        session_length=session_length,
+        user_id=user.id,
+        project_id=default_project_id,
+        user_project_id=None,  # Deprecated
+        groups=groups,
+        permissions=permissions,
+        available_projects=available_projects,
+        user_type=user_type,
+        assigned_project_id=assigned_project_id,
+    )
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
