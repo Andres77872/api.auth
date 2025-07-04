@@ -23,7 +23,7 @@ from src.Util.db_config import get_connection
 
 # =================== USER GROUP MANAGEMENT ===================
 
-def create_user_group(group_name: str, group_description: str = None, created_by: int = None) -> UserGroup:
+def create_user_group(group_name: str, group_description: str = None, created_by: str = None) -> UserGroup:
     """Create a new global user group"""
     group_hash = secrets.token_hex(32).upper()
 
@@ -47,7 +47,7 @@ def create_user_group(group_name: str, group_description: str = None, created_by
         )
 
 
-def get_user_group_by_id(group_id: int) -> Optional[UserGroup]:
+def get_user_group_by_id(group_id: str) -> Optional[UserGroup]:
     """Get user group by ID"""
     with get_connection() as con:
         cur = con.cursor()
@@ -169,7 +169,7 @@ def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'grou
         return results
 
 
-def update_user_group(group_id: int, group_name: str = None, group_description: str = None) -> Optional[UserGroup]:
+def update_user_group(group_id: str, group_name: str = None, group_description: str = None) -> Optional[UserGroup]:
     """Update user group information"""
     if not group_name and group_description is None:
         return None
@@ -207,7 +207,7 @@ def update_user_group(group_id: int, group_name: str = None, group_description: 
             return None
 
 
-def delete_user_group(group_id: int, deleted_by: int = None) -> bool:
+def delete_user_group(group_id: str, deleted_by: str = None) -> bool:
     """Soft delete a user group and all related relationships"""
     with get_connection() as con:
         cur = con.cursor()
@@ -260,7 +260,7 @@ def delete_user_group(group_id: int, deleted_by: int = None) -> bool:
 
 # =================== USER GROUP MEMBERSHIP ===================
 
-def assign_user_to_group(user_id: int, user_group_id: int, assigned_by: int = None) -> Optional[UserGroupMember]:
+def assign_user_to_group(user_id: str, user_group_id: str, assigned_by: str = None) -> Optional[UserGroupMember]:
     """Assign a user to a user group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -302,7 +302,7 @@ def assign_user_to_group(user_id: int, user_group_id: int, assigned_by: int = No
             return None
 
 
-def remove_user_from_group(user_id: int, user_group_id: int, removed_by: int = None) -> bool:
+def remove_user_from_group(user_id: str, user_group_id: str, removed_by: str = None) -> bool:
     """Remove a user from a user group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -322,7 +322,7 @@ def remove_user_from_group(user_id: int, user_group_id: int, removed_by: int = N
         return success
 
 
-def get_user_group_membership(user_id: int, user_group_id: int) -> Optional[UserGroupMember]:
+def get_user_group_membership(user_id: str, user_group_id: str) -> Optional[UserGroupMember]:
     """Get specific user group membership"""
     with get_connection() as con:
         cur = con.cursor()
@@ -356,7 +356,7 @@ def get_user_group_membership(user_id: int, user_group_id: int) -> Optional[User
     return None
 
 
-def get_user_groups_for_user(user_id: int) -> List[UserGroup]:
+def get_user_groups_for_user(user_id: str) -> List[UserGroup]:
     """Get all user groups a user belongs to"""
     with get_connection() as con:
         cur = con.cursor()
@@ -391,7 +391,7 @@ def get_user_groups_for_user(user_id: int) -> List[UserGroup]:
         return groups
 
 
-def get_users_in_group(user_group_id: int) -> List[User]:
+def get_users_in_group(user_group_id: str) -> List[User]:
     """Get all users in a user group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -430,7 +430,7 @@ def get_users_in_group(user_group_id: int) -> List[User]:
 
 # =================== PROJECT ACCESS MANAGEMENT ===================
 
-def grant_group_project_access(user_group_id: int, project_id: int, granted_by: int = None) -> Optional[
+def grant_group_project_access(user_group_id: str, project_id: str, granted_by: str = None) -> Optional[
     UserGroupProject]:
     """Grant a user group access to a project"""
     with get_connection() as con:
@@ -473,7 +473,7 @@ def grant_group_project_access(user_group_id: int, project_id: int, granted_by: 
             return None
 
 
-def revoke_group_project_access(user_group_id: int, project_id: int, revoked_by: int = None) -> bool:
+def revoke_group_project_access(user_group_id: str, project_id: str, revoked_by: str = None) -> bool:
     """Revoke a user group's access to a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -493,7 +493,7 @@ def revoke_group_project_access(user_group_id: int, project_id: int, revoked_by:
         return success
 
 
-def get_group_project_access(user_group_id: int, project_id: int) -> Optional[UserGroupProject]:
+def get_group_project_access(user_group_id: str, project_id: str) -> Optional[UserGroupProject]:
     """Get specific group project access"""
     with get_connection() as con:
         cur = con.cursor()
@@ -527,7 +527,7 @@ def get_group_project_access(user_group_id: int, project_id: int) -> Optional[Us
     return None
 
 
-def get_projects_for_user_group(user_group_id: int) -> List[Tuple[int, str, str]]:
+def get_projects_for_user_group(user_group_id: str) -> List[Tuple[int, str, str]]:
     """Get all projects accessible by a user group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -544,7 +544,7 @@ def get_projects_for_user_group(user_group_id: int) -> List[Tuple[int, str, str]
         return cur.fetchall()
 
 
-def get_user_groups_for_project(project_id: int) -> List[UserGroup]:
+def get_user_groups_for_project(project_id: str) -> List[UserGroup]:
     """Get all user groups that have access to a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -581,7 +581,7 @@ def get_user_groups_for_project(project_id: int) -> List[UserGroup]:
 
 # =================== UTILITIES ===================
 
-def get_user_accessible_projects(user_id: int) -> List[ProjectSummary]:
+def get_user_accessible_projects(user_id: str) -> List[ProjectSummary]:
     """Get all projects accessible by a user through their group memberships"""
     with get_connection() as con:
         cur = con.cursor()
@@ -629,7 +629,7 @@ def get_total_user_groups_count() -> int:
         return cur.fetchone()[0]
 
 
-def get_user_groups_in_project(user_id: int, project_id: int) -> List[UserGroup]:
+def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]:
     """
     Get user groups that a user belongs to AND that have access to a specific project.
     
@@ -680,7 +680,7 @@ def get_user_groups_in_project(user_id: int, project_id: int) -> List[UserGroup]
         return groups
 
 
-def get_user_groups_in_project_by_hash(user_id: int, project_hash: str) -> List[UserGroup]:
+def get_user_groups_in_project_by_hash(user_id: str, project_hash: str) -> List[UserGroup]:
     """
     Get user groups that a user belongs to AND that have access to a specific project (by project hash).
     

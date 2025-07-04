@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Optional, Dict, Any, List
 
 from src.Util.db_config import get_connection
+from src.Util.uuid_generator import generate_activity_log_id
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -57,11 +58,11 @@ class ActivityLogger:
 
     @staticmethod
     def log_activity(
-            user_id: Optional[int],
+            user_id: Optional[str],
             activity_type: str,
             details: Dict[str, Any],
-            project_id: Optional[int] = None,
-            target_user_id: Optional[int] = None,
+            project_id: Optional[str] = None,
+            target_user_id: Optional[str] = None,
             ip_address: Optional[str] = None,
             user_agent: Optional[str] = None
     ) -> bool:
@@ -84,13 +85,15 @@ class ActivityLogger:
             with get_connection() as con:
                 cur = con.cursor()
 
+                activity_id = generate_activity_log_id()
+
                 # Insert activity log entry
                 cur.execute("""
-                            INSERT INTO activity_logs (user_id, activity_type, details, project_id, target_user_id,
+                            INSERT INTO activity_logs (id, user_id, activity_type, details, project_id, target_user_id,
                                                        ip_address, user_agent, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                             """, [
-                                user_id, activity_type, str(details), project_id, target_user_id,
+                                activity_id, user_id, activity_type, str(details), project_id, target_user_id,
                                 ip_address, user_agent
                             ])
 
@@ -105,8 +108,8 @@ class ActivityLogger:
     def get_recent_activity(
             limit: int = 50,
             offset: int = 0,
-            user_id: Optional[int] = None,
-            project_id: Optional[int] = None,
+            user_id: Optional[str] = None,
+            project_id: Optional[str] = None,
             activity_type: Optional[str] = None,
             days: int = 30
     ) -> List[Dict[str, Any]]:
@@ -201,8 +204,8 @@ class ActivityLogger:
 
     @staticmethod
     def count_activity_logs(
-            user_id: Optional[int] = None,
-            project_id: Optional[int] = None,
+            user_id: Optional[str] = None,
+            project_id: Optional[str] = None,
             activity_type: Optional[str] = None,
             days: int = 30
     ) -> int:
@@ -251,7 +254,7 @@ class ActivityLogger:
             return 0
 
     @staticmethod
-    def log_user_login(user_id: int, project_id: Optional[int] = None, ip_address: Optional[str] = None,
+    def log_user_login(user_id: str, project_id: Optional[str] = None, ip_address: Optional[str] = None,
                        user_agent: Optional[str] = None) -> bool:
         """Log user login activity"""
         return ActivityLogger.log_activity(
@@ -264,7 +267,7 @@ class ActivityLogger:
         )
 
     @staticmethod
-    def log_user_logout(user_id: int, project_id: Optional[int] = None, ip_address: Optional[str] = None) -> bool:
+    def log_user_logout(user_id: str, project_id: Optional[str] = None, ip_address: Optional[str] = None) -> bool:
         """Log user logout activity"""
         return ActivityLogger.log_activity(
             user_id=user_id,
@@ -275,7 +278,7 @@ class ActivityLogger:
         )
 
     @staticmethod
-    def log_user_registration(user_id: int, project_id: Optional[int] = None, ip_address: Optional[str] = None) -> bool:
+    def log_user_registration(user_id: str, project_id: Optional[str] = None, ip_address: Optional[str] = None) -> bool:
         """Log user registration activity"""
         return ActivityLogger.log_activity(
             user_id=user_id,
@@ -286,8 +289,8 @@ class ActivityLogger:
         )
 
     @staticmethod
-    def log_admin_action(user_id: int, action: str, details: Dict[str, Any], project_id: Optional[int] = None,
-                         target_user_id: Optional[int] = None) -> bool:
+    def log_admin_action(user_id: str, action: str, details: Dict[str, Any], project_id: Optional[str] = None,
+                         target_user_id: Optional[str] = None) -> bool:
         """Log administrative actions"""
         return ActivityLogger.log_activity(
             user_id=user_id,
@@ -303,7 +306,7 @@ activity_logger = ActivityLogger()
 
 
 # Convenience functions
-def log_activity(user_id: Optional[int], activity_type: str, details: Dict[str, Any], **kwargs) -> bool:
+def log_activity(user_id: Optional[str], activity_type: str, details: Dict[str, Any], **kwargs) -> bool:
     """Convenience function for logging activities"""
     return activity_logger.log_activity(user_id, activity_type, details, **kwargs)
 

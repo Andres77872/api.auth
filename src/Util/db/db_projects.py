@@ -18,7 +18,7 @@ from src.Util.db_config import get_connection
 
 # =================== PROJECT MANAGEMENT ===================
 
-def create_project(project_name: str, project_description: str = None, created_by: int = None) -> Project:
+def create_project(project_name: str, project_description: str = None, created_by: str = None) -> Project:
     """Create a new project/application with RBAC initialization"""
     project_hash = secrets.token_hex(32).upper()
 
@@ -77,7 +77,7 @@ def get_project_by_hash(project_hash: str) -> Optional[Project]:
     return None
 
 
-def get_project_by_id(project_id: int) -> Optional[Project]:
+def get_project_by_id(project_id: str) -> Optional[Project]:
     """Get project by project ID"""
     with get_connection() as con:
         cur = con.cursor()
@@ -136,8 +136,8 @@ def count_projects() -> int:
         return cur.fetchone()[0]
 
 
-def update_project(project_id: int, project_name: str = None, project_description: str = None,
-                   updated_by: int = None) -> Optional[Project]:
+def update_project(project_id: str, project_name: str = None, project_description: str = None,
+                   updated_by: str = None) -> Optional[Project]:
     """Update project information"""
     if not project_name and project_description is None:
         return None
@@ -175,7 +175,7 @@ def update_project(project_id: int, project_name: str = None, project_descriptio
             return None
 
 
-def delete_project(project_id: int, deleted_by: int = None) -> bool:
+def delete_project(project_id: str, deleted_by: str = None) -> bool:
     """Soft delete a project and all related data"""
     with get_connection() as con:
         cur = con.cursor()
@@ -272,7 +272,7 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
         return results
 
 
-def get_project_stats(project_id: int) -> dict:
+def get_project_stats(project_id: str) -> dict:
     """Get statistics for a project (group-based implementation)"""
     with get_connection() as con:
         cur = con.cursor()
@@ -355,7 +355,7 @@ def get_project_stats(project_id: int) -> dict:
 
 # =================== PROJECT GROUP MANAGEMENT ===================
 
-def create_default_groups(project_id: int):
+def create_default_groups(project_id: str):
     """Create default groups for a new project using the *global* `user_groups` table.
 
     In the re-designed schema `user_groups` is no longer tied to a single project – the
@@ -421,7 +421,7 @@ def create_default_groups(project_id: int):
         con.commit()
 
 
-def get_project_groups(project_id: int) -> List[UserGroup]:
+def get_project_groups(project_id: str) -> List[UserGroup]:
     """Get all groups for a project"""
     with get_connection() as con:
         cur = con.cursor()

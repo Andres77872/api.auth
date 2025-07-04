@@ -26,13 +26,13 @@ class BaseModelConfig(BaseModel):
 
 class User(BaseModelConfig):
     """Global user entity"""
-    id: int
+    id: str
     user_hash: str
     username: str
     email: Optional[str] = None
     password_hash: str
     user_type: str = "consumer"
-    assigned_project_id: Optional[int] = None
+    assigned_project_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
@@ -41,7 +41,7 @@ class User(BaseModelConfig):
 
 class Project(BaseModelConfig):
     """Global project entity"""
-    id: int
+    id: str
     project_hash: str
     project_name: str
     project_description: Optional[str] = None
@@ -52,7 +52,7 @@ class Project(BaseModelConfig):
 
 class UserGroup(BaseModelConfig):
     """Global user groups that define project access"""
-    id: int
+    id: str
     group_hash: str
     group_name: str
     group_description: Optional[str] = None
@@ -63,7 +63,7 @@ class UserGroup(BaseModelConfig):
 
 class ProjectGroup(BaseModelConfig):
     """Project groups that define permissions"""
-    id: int
+    id: str
     group_hash: str
     group_name: str
     group_description: Optional[str] = None
@@ -75,9 +75,9 @@ class ProjectGroup(BaseModelConfig):
 
 class Permission(BaseModelConfig):
     """Model for project-specific permissions in RBAC system"""
-    id: int
+    id: str
     permission_hash: str
-    project_id: int
+    project_id: str
     permission_name: str
     permission_display_name: str
     permission_description: Optional[str] = None
@@ -85,16 +85,16 @@ class Permission(BaseModelConfig):
     is_system_permission: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    created_by: Optional[int] = None
+    created_by: Optional[str] = None
     is_active: bool = True
     granted_through_role: Optional[str] = None
 
 
 class PermissionGroup(BaseModelConfig):
     """Model for project-specific permission groups (roles) in RBAC system"""
-    id: int
+    id: str
     group_hash: str
-    project_id: int
+    project_id: str
     group_name: str
     group_display_name: str
     group_description: Optional[str] = None
@@ -102,7 +102,7 @@ class PermissionGroup(BaseModelConfig):
     is_system_role: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    created_by: Optional[int] = None
+    created_by: Optional[str] = None
     is_active: bool = True
     permissions: Optional[List[Permission]] = None
 
@@ -111,91 +111,91 @@ class PermissionGroup(BaseModelConfig):
 
 class UserProject(BaseModelConfig):
     """Model for user-project access relationships (consumer users)"""
-    id: int
-    user_id: int
-    project_id: int
+    id: str
+    user_id: str
+    project_id: str
     user_project_hash: str
     granted_at: Optional[datetime] = None
-    granted_by: Optional[int] = None
+    granted_by: Optional[str] = None
     revoked_at: Optional[datetime] = None
-    revoked_by: Optional[int] = None
+    revoked_by: Optional[str] = None
     is_active: bool = True
 
 
 class UserGroupMember(BaseModelConfig):
     """Model for user group membership relationships"""
-    id: int
-    user_id: int
-    user_group_id: int
+    id: str
+    user_id: str
+    user_group_id: str
     assigned_at: Optional[datetime] = None
-    assigned_by: Optional[int] = None
+    assigned_by: Optional[str] = None
     removed_at: Optional[datetime] = None
-    removed_by: Optional[int] = None
+    removed_by: Optional[str] = None
     is_active: bool = True
 
 
 class UserGroupProject(BaseModelConfig):
     """Model for user group to project access relationships"""
-    id: int
-    user_group_id: int
-    project_id: int
+    id: str
+    user_group_id: str
+    project_id: str
     granted_at: Optional[datetime] = None
-    granted_by: Optional[int] = None
+    granted_by: Optional[str] = None
     revoked_at: Optional[datetime] = None
-    revoked_by: Optional[int] = None
+    revoked_by: Optional[str] = None
     is_active: bool = True
 
 
 class ProjectGroupMember(BaseModelConfig):
     """Model for project group membership relationships"""
-    id: int
-    project_id: int
-    project_group_id: int
+    id: str
+    project_id: str
+    project_group_id: str
     assigned_at: Optional[datetime] = None
-    assigned_by: Optional[int] = None
+    assigned_by: Optional[str] = None
     removed_at: Optional[datetime] = None
-    removed_by: Optional[int] = None
+    removed_by: Optional[str] = None
     is_active: bool = True
 
 
 class PermissionGroupPermission(BaseModelConfig):
     """Model for permission group to permission relationships"""
-    id: int
-    permission_group_id: int
-    permission_id: int
+    id: str
+    permission_group_id: str
+    permission_id: str
     granted_at: Optional[datetime] = None
-    granted_by: Optional[int] = None
+    granted_by: Optional[str] = None
     revoked_at: Optional[datetime] = None
-    revoked_by: Optional[int] = None
+    revoked_by: Optional[str] = None
     is_active: bool = True
 
 
 class UserProjectPermissionGroup(BaseModelConfig):
     """Model for user to permission group assignments within projects"""
-    id: int
-    user_id: int
-    project_id: int
-    permission_group_id: int
+    id: str
+    user_id: str
+    project_id: str
+    permission_group_id: str
     assigned_at: Optional[datetime] = None
-    assigned_by: Optional[int] = None
+    assigned_by: Optional[str] = None
     removed_at: Optional[datetime] = None
-    removed_by: Optional[int] = None
+    removed_by: Optional[str] = None
     is_active: bool = True
 
 
 class PermissionAuditLog(BaseModelConfig):
     """Model for permission and RBAC audit log entries"""
-    id: int
+    id: str
     action_type: str
     table_name: Optional[str] = None
-    record_id: Optional[int] = None
+    record_id: Optional[str] = None
     old_values: Optional[str] = None  # JSON string
     new_values: Optional[str] = None  # JSON string
-    performed_by: Optional[int] = None
+    performed_by: Optional[str] = None
     performed_at: Optional[datetime] = None
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
-    project_id: Optional[int] = None
+    project_id: Optional[str] = None
 
 
 # Legacy alias for backward compatibility
@@ -226,6 +226,7 @@ class UserInfo(BaseModelConfig):
     email: Optional[str] = None
     user_type: Optional[str] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class ProjectInfo(BaseModelConfig):
@@ -234,6 +235,7 @@ class ProjectInfo(BaseModelConfig):
     project_name: str
     project_description: Optional[str] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class UserGroupInfo(BaseModelConfig):
@@ -243,6 +245,7 @@ class UserGroupInfo(BaseModelConfig):
     description: Optional[str] = None
     member_count: Optional[int] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class ProjectGroupInfo(BaseModelConfig):
@@ -253,24 +256,27 @@ class ProjectGroupInfo(BaseModelConfig):
     permissions: List[str] = Field(default_factory=list)
     project_count: Optional[int] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class PermissionInfo(BaseModelConfig):
     """Permission information for responses"""
-    id: int
+    id: str
     permission_name: str
     category: str
     description: Optional[str] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class RoleInfo(BaseModelConfig):
     """Role (permission group) information for responses"""
-    id: int
+    id: str
     group_name: str
     priority: int
     description: Optional[str] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     is_active: bool = True
 
 
@@ -403,13 +409,15 @@ class DeleteProjectResponse(BaseResponse):
 
 class UserTypeInfo(BaseModelConfig):
     """User type information"""
-    user_id: int
+    user_id: str
     user_hash: str
     username: str
     user_type: str
     capabilities: List[str] = Field(default_factory=list)
-    assigned_project_id: Optional[int] = None
+    assigned_project_id: Optional[str] = None
     assigned_projects: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class CreateRootUserResponse(BaseResponse):
@@ -729,14 +737,14 @@ class CreateAdminUserRequest(BaseModelConfig):
     username: str
     password: str
     email: str
-    assigned_project_id: Optional[int] = None
-    assigned_project_ids: Optional[List[int]] = None
+    assigned_project_id: Optional[str] = None
+    assigned_project_ids: Optional[List[str]] = None
 
 
 class UpdateUserTypeRequest(BaseModelConfig):
     """Update user type request model"""
     user_type: str
-    assigned_project_id: Optional[int] = None
+    assigned_project_id: Optional[str] = None
 
 
 class UserGroupCreateRequest(BaseModelConfig):
@@ -782,7 +790,7 @@ class PermissionGroupCreateRequest(BaseModelConfig):
 
 class AssignUserToRoleRequest(BaseModelConfig):
     """Assign user to role request model"""
-    role_id: int
+    role_id: str
 
 
 class AssignmentRequest(BaseModelConfig):
@@ -800,12 +808,12 @@ class UserLogin(BaseModelConfig):
     user_session_length: int
     user_hash: str
     user_collection: str
-    user_id: int
-    project_id: Optional[int] = None  # Optional for global root sessions
-    user_project_id: Optional[int] = None
+    user_id: str
+    project_id: Optional[str] = None  # Optional for global root sessions
+    user_project_id: Optional[str] = None
     groups: List[str] = Field(default_factory=list)
     user_type: str = 'consumer'
-    assigned_project_id: Optional[int] = None
+    assigned_project_id: Optional[str] = None
 
 
 class EnhancedUserLogin(BaseModelConfig):
@@ -816,21 +824,21 @@ class EnhancedUserLogin(BaseModelConfig):
     user_project_hash: str = ""
     session_token: str
     session_length: int
-    user_id: int
-    project_id: Optional[int] = None  # Optional for global root sessions
-    user_project_id: Optional[int] = None
+    user_id: str
+    project_id: Optional[str] = None  # Optional for global root sessions
+    user_project_id: Optional[str] = None
     groups: List[str] = Field(default_factory=list)
     permissions: List[str] = Field(default_factory=list)
     available_projects: List[ProjectInfo] = Field(default_factory=list)
     user_type: str = 'consumer'
-    assigned_project_id: Optional[int] = None
+    assigned_project_id: Optional[str] = None
 
 
 # =================== SPECIALIZED MODELS ===================
 
 class ProjectSummary(BaseModelConfig):
     """Summary of projects accessible to user"""
-    id: int
+    id: str
     project_hash: str
     project_name: str
     project_description: Optional[str] = None
@@ -840,10 +848,10 @@ class ProjectSummary(BaseModelConfig):
 
 class UserPermissionSummary(BaseModelConfig):
     """Summary of user's permissions within a project"""
-    user_id: int
+    user_id: str
     user_hash: str
     username: str
-    project_id: int
+    project_id: str
     project_hash: str
     project_name: str
     assigned_roles: List[PermissionGroup] = Field(default_factory=list)
@@ -853,7 +861,7 @@ class UserPermissionSummary(BaseModelConfig):
 
 class ProjectRoleSummary(BaseModelConfig):
     """Summary of roles within a project"""
-    project_id: int
+    project_id: str
     project_hash: str
     project_name: str
     roles: List[PermissionGroup] = Field(default_factory=list)

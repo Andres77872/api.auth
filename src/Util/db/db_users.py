@@ -55,7 +55,7 @@ def generate_user_project_hash() -> str:
 
 # =================== USER TYPE MANAGEMENT ===================
 
-def get_user_type(user_id: int) -> Optional[str]:
+def get_user_type(user_id: str) -> Optional[str]:
     """Get user type for a user"""
     with get_connection() as con:
         cur = con.cursor()
@@ -70,7 +70,7 @@ def get_user_type(user_id: int) -> Optional[str]:
         return result[0] if result else None
 
 
-def get_admin_assigned_project(user_id: int) -> Optional[int]:
+def get_admin_assigned_project(user_id: str) -> Optional[str]:
     """Get assigned project for admin user"""
     with get_connection() as con:
         cur = con.cursor()
@@ -89,7 +89,7 @@ def get_admin_assigned_project(user_id: int) -> Optional[int]:
         return result[0] if result else None
 
 
-def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int = None, updated_by: int = None) -> bool:
+def update_user_type(user_id: str, new_user_type: str, assigned_project_id: str = None, updated_by: str = None) -> bool:
     """Update user type and project assignment"""
     with get_connection() as con:
         cur = con.cursor()
@@ -132,7 +132,7 @@ def update_user_type(user_id: int, new_user_type: str, assigned_project_id: int 
 
 # =================== USER TYPE-SPECIFIC CREATION ===================
 
-def create_root_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
+def create_root_user(username: str, password: str, email: str = None, created_by: str = None) -> User:
     """Create a root (super admin) user"""
     password_hash = hash_password(password)
     user_hash = generate_user_hash()
@@ -165,7 +165,7 @@ def create_root_user(username: str, password: str, email: str = None, created_by
 # Note: create_admin_user has been moved to the bottom of the file to support multi-project assignments
 
 
-def create_consumer_user(username: str, password: str, email: str = None, created_by: int = None) -> User:
+def create_consumer_user(username: str, password: str, email: str = None, created_by: str = None) -> User:
     """Create a consumer (end user) user"""
     password_hash = hash_password(password)
     user_hash = generate_user_hash()
@@ -198,7 +198,7 @@ def create_consumer_user(username: str, password: str, email: str = None, create
 # =================== ENHANCED USER MANAGEMENT ===================
 
 def create_user(username: str, password: str, email: str = None, user_type: str = "consumer",
-                assigned_project_id: int = None) -> User:
+                assigned_project_id: str = None) -> User:
     """Create a user with specified type (enhanced to support all user types)"""
     if user_type == "root":
         return create_root_user(username, password, email)
@@ -280,7 +280,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
         )
 
 
-def get_user_by_id(user_id: int) -> Optional[User]:
+def get_user_by_id(user_id: str) -> Optional[User]:
     """Get user by user ID (enhanced with user type)"""
     with get_connection() as con:
         cur = con.cursor()
@@ -364,8 +364,8 @@ def check_username_email_available(username_or_email: str) -> bool:
         return cur.fetchone()[0] == 0
 
 
-def update_user(user_id: int, username: str = None, email: str = None, password: str = None, user_type: str = None,
-                assigned_project_id: int = None) -> Optional[User]:
+def update_user(user_id: str, username: str = None, email: str = None, password: str = None, user_type: str = None,
+                assigned_project_id: str = None) -> Optional[User]:
     """Update user information (enhanced with user type support)"""
     if not any([username, email, password, user_type]):
         return None
@@ -422,7 +422,7 @@ def update_user(user_id: int, username: str = None, email: str = None, password:
             return None
 
 
-def delete_user(user_id: int, deleted_by: int = None) -> bool:
+def delete_user(user_id: str, deleted_by: str = None) -> bool:
     """Soft delete a user"""
     with get_connection() as con:
         cur = con.cursor()
@@ -452,7 +452,7 @@ def list_users(
         include_inactive: bool = False,
         # legacy parameters retained for backwards-compatibility
         user_type: str = None,
-        project_id: int = None) -> List[User]:
+        project_id: str = None) -> List[User]:
     """List users leveraging the MySQL stored procedure *sp_list_users*.
 
     The signature has been expanded to match the filtering options available in
@@ -596,7 +596,7 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
 
 # =================== USER-PROJECT ACCESS MANAGEMENT (Consumer Users) ===================
 
-def grant_user_project_access(user_id: int, project_id: int, granted_by: int = None) -> UserProject:
+def grant_user_project_access(user_id: str, project_id: str, granted_by: str = None) -> UserProject:
     """Grant a consumer user access to a project"""
     user_project_hash = generate_user_project_hash()
 
@@ -624,7 +624,7 @@ def grant_user_project_access(user_id: int, project_id: int, granted_by: int = N
         )
 
 
-def get_user_project_access(user_id: int, project_id: int) -> Optional[UserProject]:
+def get_user_project_access(user_id: str, project_id: str) -> Optional[UserProject]:
     """Get consumer user's access to a specific project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -650,7 +650,7 @@ def get_user_project_access(user_id: int, project_id: int) -> Optional[UserProje
     return None
 
 
-def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
+def get_user_projects(user_id: str) -> List[Tuple[Project, UserProject]]:
     """Get all projects a consumer user has access to"""
     with get_connection() as con:
         cur = con.cursor()
@@ -704,7 +704,7 @@ def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
         return results
 
 
-def revoke_user_project_access(user_id: int, project_id: int, revoked_by: int = None) -> bool:
+def revoke_user_project_access(user_id: str, project_id: str, revoked_by: str = None) -> bool:
     """Revoke consumer user's access to a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -724,7 +724,7 @@ def revoke_user_project_access(user_id: int, project_id: int, revoked_by: int = 
         return success
 
 
-def assign_user_to_default_group(user_project_id: int, project_id: int):
+def assign_user_to_default_group(user_project_id: str, project_id: str):
     """Assign consumer user to default 'user' group in a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -749,7 +749,7 @@ def assign_user_to_default_group(user_project_id: int, project_id: int):
 
 # =================== USER GROUP MANAGEMENT (Consumer Users) ===================
 
-def get_user_groups_in_project(user_project_id: int) -> List[UserGroup]:
+def get_user_groups_in_project(user_project_id: str) -> List[UserGroup]:
     """Get all groups a consumer user belongs to in a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -778,7 +778,7 @@ def get_user_groups_in_project(user_project_id: int) -> List[UserGroup]:
         return groups
 
 
-def get_user_permissions_in_project(user_id: int, project_id: int) -> List[str]:
+def get_user_permissions_in_project(user_id: str, project_id: str) -> List[str]:
     """Get all permissions a consumer user has in a project"""
     # For consumer users, use the existing RBAC system
     user_project = get_user_project_access(user_id, project_id)
@@ -796,7 +796,7 @@ def get_user_permissions_in_project(user_id: int, project_id: int) -> List[str]:
     return list(permissions)
 
 
-def assign_user_to_group(user_project_id: int, group_id: int, assigned_by: int = None) -> bool:
+def assign_user_to_group(user_project_id: str, group_id: str, assigned_by: str = None) -> bool:
     """Assign consumer user to a group in a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -811,7 +811,7 @@ def assign_user_to_group(user_project_id: int, group_id: int, assigned_by: int =
         return success
 
 
-def remove_user_from_group(user_project_id: int, group_id: int, removed_by: int = None) -> bool:
+def remove_user_from_group(user_project_id: str, group_id: str, removed_by: str = None) -> bool:
     """Remove consumer user from a group in a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -841,7 +841,7 @@ def get_session_data(session_token: str) -> Optional[dict]:
     return None
 
 
-def create_session(user_id: int, project_id: int, user_project_id: int = None, session_length: int = 259200) -> str | None:
+def create_session(user_id: str, project_id: str, user_project_id: str = None, session_length: int = 259200) -> str | None:
     """Create a new session and store in Redis with user type context"""
     session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
 
@@ -962,7 +962,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
 
 # =================== ADMIN MULTI-PROJECT MANAGEMENT ===================
 
-def get_admin_assigned_projects(user_id: int) -> List[int]:
+def get_admin_assigned_projects(user_id: str) -> List[str]:
     """Get all projects assigned to an admin user"""
     with get_connection() as con:
         cur = con.cursor()
@@ -976,7 +976,7 @@ def get_admin_assigned_projects(user_id: int) -> List[int]:
         return [row[0] for row in cur.fetchall()]
 
 
-def assign_admin_to_multiple_projects(user_id: int, project_ids: List[int], assigned_by: int = None) -> bool:
+def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assigned_by: str = None) -> bool:
     """Assign admin user to multiple projects"""
     with get_connection() as con:
         cur = con.cursor()
@@ -1017,7 +1017,7 @@ def assign_admin_to_multiple_projects(user_id: int, project_ids: List[int], assi
             return False
 
 
-def add_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
+def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None) -> bool:
     """Add admin user to an additional project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -1043,7 +1043,7 @@ def add_admin_to_project(user_id: int, project_id: int, assigned_by: int = None)
             return False
 
 
-def remove_admin_from_project(user_id: int, project_id: int, removed_by: int = None) -> bool:
+def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = None) -> bool:
     """Remove admin user from a specific project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -1063,7 +1063,7 @@ def remove_admin_from_project(user_id: int, project_id: int, removed_by: int = N
         return success
 
 
-def check_admin_multi_project_access(user_id: int, project_id: int) -> bool:
+def check_admin_multi_project_access(user_id: str, project_id: str) -> bool:
     """Check if admin user has access to specific project (supports multiple projects)"""
     try:
         user_type = get_user_type(user_id)
@@ -1075,7 +1075,7 @@ def check_admin_multi_project_access(user_id: int, project_id: int) -> bool:
         return False
 
 
-def get_admin_project_assignments_with_details(user_id: int) -> List[dict]:
+def get_admin_project_assignments_with_details(user_id: str) -> List[dict]:
     """Get admin's project assignments with project details"""
     with get_connection() as con:
         cur = con.cursor()
@@ -1110,7 +1110,7 @@ def get_admin_project_assignments_with_details(user_id: int) -> List[dict]:
 
 # =================== UPDATED LEGACY COMPATIBILITY FUNCTIONS ===================
 
-def get_admin_assigned_project(user_id: int) -> Optional[int]:
+def get_admin_assigned_project(user_id: str) -> Optional[str]:
     """
     Get assigned project for admin user (backwards compatibility)
     Returns the first assigned project for legacy compatibility
@@ -1119,20 +1119,20 @@ def get_admin_assigned_project(user_id: int) -> Optional[int]:
     return assigned_projects[0] if assigned_projects else None
 
 
-def check_admin_project_access(user_id: int, project_id: int) -> bool:
+def check_admin_project_access(user_id: str, project_id: str) -> bool:
     """Check if admin user has access to specific project (updated for multi-project)"""
     return check_admin_multi_project_access(user_id, project_id)
 
 
-def assign_admin_to_project(user_id: int, project_id: int, assigned_by: int = None) -> bool:
+def assign_admin_to_project(user_id: str, project_id: str, assigned_by: str = None) -> bool:
     """Assign admin user to a project (updated to preserve existing assignments)"""
     return add_admin_to_project(user_id, project_id, assigned_by)
 
 
 # =================== UPDATED USER TYPE-SPECIFIC CREATION ===================
 
-def create_admin_user(username: str, password: str, email: str, assigned_project_id: int = None,
-                      assigned_project_ids: List[int] = None, created_by: int = None) -> User:
+def create_admin_user(username: str, password: str, email: str, assigned_project_id: str = None,
+                      assigned_project_ids: List[str] = None, created_by: str = None) -> User:
     """Create an admin user assigned to one or multiple projects"""
     password_hash = hash_password(password)
     user_hash = generate_user_hash()

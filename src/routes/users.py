@@ -101,6 +101,7 @@ async def get_user_profile(credentials: HTTPAuthorizationCredentials = Depends(s
             user_type=user_data.user_type,
             user_type_info=user_type_info,  # Include detailed user type information
             created_at=user_data.created_at,
+            updated_at=user_data.updated_at,
             last_login=user_data.last_login,
             is_active=user_data.is_active,
             groups=groups,  # Include group memberships
@@ -164,7 +165,9 @@ async def update_user_profile(
             user_hash=updated_user.user_hash,
             username=updated_user.username,
             email=updated_user.email,
-            user_type=getattr(updated_user, 'user_type', 'consumer')
+            user_type=getattr(updated_user, 'user_type', 'consumer'),
+            created_at=updated_user.created_at,
+            updated_at=updated_user.updated_at
         )
 
         return UpdateProfileResponse(
@@ -574,6 +577,7 @@ async def get_user_details(
             "user_type": target_user.user_type,
             "user_type_info": user_type_info,
             "created_at": target_user.created_at,
+            "updated_at": target_user.updated_at,
             "last_login": target_user.last_login,
             "is_active": target_user.is_active,
             "groups": group_list,

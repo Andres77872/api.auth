@@ -2,6 +2,8 @@
 -- Performance Optimization Script (Updated for Group-Based Access)
 -- MySQL Database
 
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 USE magic_auth;
 
 -- =================== QUERY OPTIMIZATION VIEWS ===================

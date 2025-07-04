@@ -796,7 +796,8 @@ async def get_admin_project_assignments(
             username=target_user.username,
             email=target_user.email,
             user_type="admin",
-            created_at=target_user.created_at
+            created_at=target_user.created_at,
+            updated_at=target_user.updated_at
         )
 
         summary_info = {

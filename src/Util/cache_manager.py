@@ -144,7 +144,7 @@ class CacheManager:
     # ACCESS CHECK CACHING
     # =============================================================================
 
-    def set_access_check(self, user_id: int, project_id: int, access_result: Dict[str, Any]) -> bool:
+    def set_access_check(self, user_id: str, project_id: str, access_result: Dict[str, Any]) -> bool:
         """
         Cache access check result
         
@@ -171,7 +171,7 @@ class CacheManager:
             logger.error(f"Failed to cache access check user_{user_id}_project_{project_id}: {e}")
             return False
 
-    def get_access_check(self, user_id: int, project_id: int) -> Optional[Dict[str, Any]]:
+    def get_access_check(self, user_id: str, project_id: str) -> Optional[Dict[str, Any]]:
         """
         Get cached access check result
         
@@ -202,7 +202,7 @@ class CacheManager:
     # RBAC PERMISSION CACHING
     # =============================================================================
 
-    def set_permission_check(self, user_id: int, project_id: int, permission: str, has_permission: bool) -> bool:
+    def set_permission_check(self, user_id: str, project_id: str, permission: str, has_permission: bool) -> bool:
         """
         Cache RBAC permission check result
         
@@ -238,7 +238,7 @@ class CacheManager:
             logger.error(f"Failed to cache permission check: {e}")
             return False
 
-    def get_permission_check(self, user_id: int, project_id: int, permission: str) -> Optional[bool]:
+    def get_permission_check(self, user_id: str, project_id: str, permission: str) -> Optional[bool]:
         """
         Get cached RBAC permission check result
         
@@ -270,7 +270,7 @@ class CacheManager:
     # USER TYPE CACHING
     # =============================================================================
 
-    def set_user_type(self, user_id: int, user_type: str, additional_data: Dict[str, Any] = None) -> bool:
+    def set_user_type(self, user_id: str, user_type: str, additional_data: Dict[str, Any] = None) -> bool:
         """
         Cache user type information
         
@@ -306,7 +306,7 @@ class CacheManager:
             logger.error(f"Failed to cache user type for user_{user_id}: {e}")
             return False
 
-    def get_user_type(self, user_id: int) -> Optional[Dict[str, Any]]:
+    def get_user_type(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Get cached user type information
         
@@ -336,7 +336,7 @@ class CacheManager:
     # CACHE INVALIDATION
     # =============================================================================
 
-    def invalidate_user_cache(self, user_id: int) -> bool:
+    def invalidate_user_cache(self, user_id: str) -> bool:
         """
         Invalidate all cache entries for a specific user
         
@@ -368,7 +368,7 @@ class CacheManager:
             logger.error(f"Failed to invalidate user cache for user_{user_id}: {e}")
             return False
 
-    def invalidate_project_cache(self, project_id: int) -> bool:
+    def invalidate_project_cache(self, project_id: str) -> bool:
         """
         Invalidate all cache entries for a specific project
         
@@ -430,7 +430,7 @@ class CacheManager:
             logger.error(f"Failed to clear all cache: {e}")
             return False
 
-    def invalidate_rbac_cache(self, project_id: Optional[int] = None) -> bool:
+    def invalidate_rbac_cache(self, project_id: Optional[str] = None) -> bool:
         """
         Invalidate RBAC-related cache entries
         

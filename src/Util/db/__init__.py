@@ -177,7 +177,7 @@ from src.Util.db_config import redis_client as client, get_connection
 
 # =================== USER TYPE HELPER FUNCTIONS ===================
 
-def get_user_type_info(user_id: int) -> dict:
+def get_user_type_info(user_id: str) -> dict:
     """
     Get comprehensive user type information.
     
@@ -232,7 +232,7 @@ def get_user_type_info(user_id: int) -> dict:
         return {"user_type": None, "error": str(e)}
 
 
-def check_user_type_permission(user_id: int, operation: str, project_id: int = None) -> bool:
+def check_user_type_permission(user_id: str, operation: str, project_id: str = None) -> bool:
     """
     Check if user has permission for operation based on their user type.
     
@@ -272,7 +272,7 @@ def check_user_type_permission(user_id: int, operation: str, project_id: int = N
 
 # =================== USER TYPE AWARE SESSION MANAGEMENT ===================
 
-def create_user_type_session(user_id: int, project_id: int, session_length: int = 259200) -> dict:
+def create_user_type_session(user_id: str, project_id: str, session_length: int = 259200) -> dict:
     """
     Create session with user type context.
     

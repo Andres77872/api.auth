@@ -24,7 +24,7 @@ from src.Util.db_config import get_connection
 # =================== PROJECT GROUP MANAGEMENT ===================
 
 def create_project_group(group_name: str, permissions: List[str], group_description: str = None,
-                         created_by: int = None) -> ProjectGroup:
+                         created_by: str = None) -> ProjectGroup:
     """Create a new project group with permissions"""
     group_hash = secrets.token_hex(32).upper()
     permissions_json = json.dumps(permissions)
@@ -50,7 +50,7 @@ def create_project_group(group_name: str, permissions: List[str], group_descript
         )
 
 
-def get_project_group_by_id(group_id: int) -> Optional[ProjectGroup]:
+def get_project_group_by_id(group_id: str) -> Optional[ProjectGroup]:
     """Get project group by ID"""
     with get_connection() as con:
         cur = con.cursor()
@@ -189,7 +189,7 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
         return results
 
 
-def update_project_group(group_id: int, group_name: str = None, group_description: str = None,
+def update_project_group(group_id: str, group_name: str = None, group_description: str = None,
                          permissions: List[str] = None) -> Optional[ProjectGroup]:
     """Update project group information"""
     if not group_name and group_description is None and permissions is None:
@@ -232,7 +232,7 @@ def update_project_group(group_id: int, group_name: str = None, group_descriptio
             return None
 
 
-def delete_project_group(group_id: int, deleted_by: int = None) -> bool:
+def delete_project_group(group_id: str, deleted_by: str = None) -> bool:
     """Soft delete a project group and all related relationships"""
     with get_connection() as con:
         cur = con.cursor()
@@ -275,7 +275,7 @@ def delete_project_group(group_id: int, deleted_by: int = None) -> bool:
 
 # =================== PROJECT GROUP MEMBERSHIP ===================
 
-def assign_project_to_group(project_id: int, project_group_id: int, assigned_by: int = None) -> Optional[
+def assign_project_to_group(project_id: str, project_group_id: str, assigned_by: str = None) -> Optional[
     ProjectGroupMember]:
     """Assign a project to a project group"""
     with get_connection() as con:
@@ -318,7 +318,7 @@ def assign_project_to_group(project_id: int, project_group_id: int, assigned_by:
             return None
 
 
-def remove_project_from_group(project_id: int, project_group_id: int, removed_by: int = None) -> bool:
+def remove_project_from_group(project_id: str, project_group_id: str, removed_by: str = None) -> bool:
     """Remove a project from a project group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -338,7 +338,7 @@ def remove_project_from_group(project_id: int, project_group_id: int, removed_by
         return success
 
 
-def get_project_group_membership(project_id: int, project_group_id: int) -> Optional[ProjectGroupMember]:
+def get_project_group_membership(project_id: str, project_group_id: str) -> Optional[ProjectGroupMember]:
     """Get specific project group membership"""
     with get_connection() as con:
         cur = con.cursor()
@@ -372,7 +372,7 @@ def get_project_group_membership(project_id: int, project_group_id: int) -> Opti
     return None
 
 
-def get_project_groups_for_project(project_id: int) -> List[ProjectGroup]:
+def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
     """Get all project groups a project belongs to"""
     with get_connection() as con:
         cur = con.cursor()
@@ -410,7 +410,7 @@ def get_project_groups_for_project(project_id: int) -> List[ProjectGroup]:
         return groups
 
 
-def get_projects_in_group(project_group_id: int) -> List[Project]:
+def get_projects_in_group(project_group_id: str) -> List[Project]:
     """Get all projects in a project group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -447,7 +447,7 @@ def get_projects_in_group(project_group_id: int) -> List[Project]:
 
 # =================== PERMISSION UTILITIES ===================
 
-def get_project_permissions(project_id: int) -> List[str]:
+def get_project_permissions(project_id: str) -> List[str]:
     """Get all permissions available for a project (from all its project groups)"""
     with get_connection() as con:
         cur = con.cursor()
@@ -468,7 +468,7 @@ def get_project_permissions(project_id: int) -> List[str]:
         return list(all_permissions)
 
 
-def get_user_project_permissions(user_id: int, project_id: int) -> List[str]:
+def get_user_project_permissions(user_id: str, project_id: str) -> List[str]:
     """Get permissions a user has for a specific project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -482,7 +482,7 @@ def get_user_project_permissions(user_id: int, project_id: int) -> List[str]:
         return [row[0] for row in cur.fetchall()]
 
 
-def check_user_project_permission(user_id: int, project_id: int, required_permission: str) -> bool:
+def check_user_project_permission(user_id: str, project_id: str, required_permission: str) -> bool:
     """Check if user has a specific permission for a project"""
     user_permissions = get_user_project_permissions(user_id, project_id)
     return required_permission in user_permissions or 'admin' in user_permissions

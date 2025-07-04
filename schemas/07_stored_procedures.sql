@@ -4,6 +4,8 @@
 
 USE magic_auth;
 
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 DELIMITER $$
 
 -- =====================================================
@@ -44,7 +46,6 @@ BEGIN
                                u.email,
                                u.password_hash,
                                u.user_type,
-                               u.assigned_project_id,
                                u.created_at,
                                u.is_active
                         FROM users u ');
@@ -135,7 +136,7 @@ END$$
 -- =====================================================
 DROP PROCEDURE IF EXISTS sp_get_user_accessible_projects$$
 CREATE PROCEDURE sp_get_user_accessible_projects(
-    IN p_user_id INT
+    IN p_user_id VARCHAR(64)
 )
 BEGIN
     DECLARE v_user_type VARCHAR(20);

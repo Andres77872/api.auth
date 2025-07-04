@@ -8,7 +8,7 @@ USE magic_auth;
 -- Supports 3-tier user types: root, admin, consumer
 -- NO direct project assignments - ALL access through groups
 CREATE TABLE IF NOT EXISTS users (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     user_hash VARCHAR(255) NOT NULL,
     username VARCHAR(100) NOT NULL,
     email VARCHAR(255),
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_type ENUM('root', 'admin', 'consumer') NOT NULL DEFAULT 'consumer',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
-    created_by INT UNSIGNED,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_hash (user_hash),
@@ -26,18 +26,18 @@ CREATE TABLE IF NOT EXISTS users (
 -- =================== PROJECTS TABLE ===================
 -- Applications/systems in the multi-project architecture
 CREATE TABLE IF NOT EXISTS projects (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     project_hash VARCHAR(255) NOT NULL,
     project_name VARCHAR(100) NOT NULL,
     project_description TEXT,
     project_created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
-    created_by INT UNSIGNED,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     archived BOOLEAN DEFAULT FALSE,
-    owner_id INT UNSIGNED,
+    owner_id VARCHAR(64),
     archived_at TIMESTAMP NULL,
-    archived_by INT UNSIGNED NULL,
+    archived_by VARCHAR(64) NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_project_hash (project_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -46,15 +46,15 @@ CREATE TABLE IF NOT EXISTS projects (
 -- Global user groups that can span multiple projects
 -- Can have hierarchical structure (parent-child relationships)
 CREATE TABLE IF NOT EXISTS user_groups (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     group_hash VARCHAR(255) NOT NULL,
     group_name VARCHAR(100) NOT NULL,
     group_description TEXT,
-    parent_group_id INT UNSIGNED NULL, -- For hierarchical groups
+    parent_group_id VARCHAR(64) NULL, -- For hierarchical groups
     group_level INT NOT NULL DEFAULT 0, -- Hierarchy level (0 = root level)
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
-    created_by INT UNSIGNED,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_hash (group_hash),
@@ -64,13 +64,13 @@ CREATE TABLE IF NOT EXISTS user_groups (
 -- =================== USER_GROUP_MEMBERS TABLE ===================
 -- Links users to user groups (many-to-many)
 CREATE TABLE IF NOT EXISTS user_group_members (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id INT UNSIGNED NOT NULL,
-    user_group_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
     assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    assigned_by INT UNSIGNED,
+    assigned_by VARCHAR(64),
     removed_at DATETIME,
-    removed_by INT UNSIGNED,
+    removed_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_group_member (user_id, user_group_id)
@@ -80,13 +80,13 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- Links user groups to projects they have access to (many-to-many)
 -- This is how users get access to projects - through their groups
 CREATE TABLE IF NOT EXISTS user_group_projects (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_group_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
     granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    granted_by INT UNSIGNED,
+    granted_by VARCHAR(64),
     revoked_at DATETIME,
-    revoked_by INT UNSIGNED,
+    revoked_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_project (user_group_id, project_id)
@@ -96,19 +96,19 @@ CREATE TABLE IF NOT EXISTS user_group_projects (
 -- Project-specific permission catalog
 -- Each project has its own set of permissions
 CREATE TABLE IF NOT EXISTS permissions (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     permission_hash VARCHAR(255) NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
     permission_name VARCHAR(100) NOT NULL,
     permission_display_name VARCHAR(255) NOT NULL,
     permission_description TEXT,
     permission_category VARCHAR(50) NOT NULL DEFAULT 'general',
-    parent_permission_id INT UNSIGNED NULL, -- For hierarchical permissions
+    parent_permission_id VARCHAR(64) NULL, -- For hierarchical permissions
     permission_level INT NOT NULL DEFAULT 0, -- Hierarchy level
     is_system_permission BOOLEAN NOT NULL DEFAULT FALSE,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
-    created_by INT UNSIGNED,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_hash (permission_hash),
@@ -120,19 +120,19 @@ CREATE TABLE IF NOT EXISTS permissions (
 -- CANNOT span multiple projects - each is tied to ONE project
 -- Can have hierarchical structure within the project
 CREATE TABLE IF NOT EXISTS permission_groups (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     group_hash VARCHAR(255) NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
     group_name VARCHAR(100) NOT NULL,
     group_display_name VARCHAR(255) NOT NULL,
     group_description TEXT,
-    parent_permission_group_id INT UNSIGNED NULL, -- For hierarchical permission groups
+    parent_permission_group_id VARCHAR(64) NULL, -- For hierarchical permission groups
     group_level INT NOT NULL DEFAULT 0, -- Hierarchy level
     group_priority INT NOT NULL DEFAULT 0,
     is_system_role BOOLEAN NOT NULL DEFAULT FALSE,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
-    created_by INT UNSIGNED,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_group_hash (group_hash),
@@ -142,13 +142,13 @@ CREATE TABLE IF NOT EXISTS permission_groups (
 -- =================== PERMISSION_GROUP_PERMISSIONS TABLE ===================
 -- Links permissions to permission groups within the same project
 CREATE TABLE IF NOT EXISTS permission_group_permissions (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    permission_group_id INT UNSIGNED NOT NULL,
-    permission_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    permission_id VARCHAR(64) NOT NULL,
     granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    granted_by INT UNSIGNED,
+    granted_by VARCHAR(64),
     revoked_at DATETIME,
-    revoked_by INT UNSIGNED,
+    revoked_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_permission (permission_group_id, permission_id)
@@ -158,14 +158,14 @@ CREATE TABLE IF NOT EXISTS permission_group_permissions (
 -- Links user groups to permission groups within projects
 -- This is how users get permissions - through their user groups being assigned permission groups
 CREATE TABLE IF NOT EXISTS user_group_permission_groups (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_group_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
-    permission_group_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
     assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    assigned_by INT UNSIGNED,
+    assigned_by VARCHAR(64),
     removed_at DATETIME,
-    removed_by INT UNSIGNED,
+    removed_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id)
@@ -174,9 +174,9 @@ CREATE TABLE IF NOT EXISTS user_group_permission_groups (
 -- =================== USER_SESSIONS TABLE ===================
 -- Session management - simplified to work with user groups
 CREATE TABLE IF NOT EXISTS user_sessions (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
     session_token VARCHAR(255) NOT NULL,
     expires_at DATETIME NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -188,34 +188,34 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 -- =================== PERMISSION_AUDIT_LOG TABLE ===================
 -- Audit trail for permission-related actions
 CREATE TABLE IF NOT EXISTS permission_audit_log (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     action_type VARCHAR(50) NOT NULL,
-    project_id INT UNSIGNED,
-    target_user_id INT UNSIGNED,
-    user_group_id INT UNSIGNED,
-    permission_id INT UNSIGNED,
-    permission_group_id INT UNSIGNED,
-    performed_by INT UNSIGNED,
+    project_id VARCHAR(64),
+    target_user_id VARCHAR(64),
+    user_group_id VARCHAR(64),
+    permission_id VARCHAR(64),
+    permission_group_id VARCHAR(64),
+    performed_by VARCHAR(64),
     old_values JSON,
     new_values JSON,
     action_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ip_address VARCHAR(45),
     user_agent TEXT,
     table_name VARCHAR(100),
-    record_id INT UNSIGNED,
+    record_id VARCHAR(64),
     PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ACTIVITY_LOGS TABLE ===================
 -- Activity logging for user and system activities
 CREATE TABLE IF NOT EXISTS activity_logs (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id INT UNSIGNED,
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64),
     activity_type VARCHAR(50) NOT NULL,
     details TEXT,
-    project_id INT UNSIGNED,
-    user_group_id INT UNSIGNED,
-    target_user_id INT UNSIGNED,
+    project_id VARCHAR(64),
+    user_group_id VARCHAR(64),
+    target_user_id VARCHAR(64),
     ip_address VARCHAR(45),
     user_agent TEXT,
     metadata JSON NULL,
@@ -227,26 +227,26 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 
 -- =================== USER_PASSWORD_RESETS TABLE ===================
 CREATE TABLE IF NOT EXISTS user_password_resets (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
     reset_token VARCHAR(255) NOT NULL,
     temporary_password_hash VARCHAR(255) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
     used_at TIMESTAMP NULL,
-    created_by INT UNSIGNED NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ROLE_ASSIGNMENT_HISTORY TABLE ===================
 CREATE TABLE IF NOT EXISTS role_assignment_history (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id INT UNSIGNED NOT NULL,
-    user_group_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
-    permission_group_id INT UNSIGNED NOT NULL,
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
     action ENUM('assigned', 'removed', 'modified') NOT NULL,
-    performed_by INT UNSIGNED NOT NULL,
+    performed_by VARCHAR(64) NOT NULL,
     performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     details TEXT NULL,
     is_active BOOLEAN DEFAULT TRUE,
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS role_assignment_history (
 
 -- =================== SYSTEM_METRICS TABLE ===================
 CREATE TABLE IF NOT EXISTS system_metrics (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     metric_name VARCHAR(100) NOT NULL,
     metric_value DECIMAL(15,4) NOT NULL,
     metric_unit VARCHAR(20) NULL,
@@ -265,9 +265,9 @@ CREATE TABLE IF NOT EXISTS system_metrics (
 
 -- =================== BULK_OPERATIONS_LOG TABLE ===================
 CREATE TABLE IF NOT EXISTS bulk_operations_log (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id VARCHAR(64) NOT NULL,
     operation_type ENUM('bulk_update_users', 'bulk_delete_users', 'bulk_assign_roles', 'bulk_assign_groups') NOT NULL,
-    performed_by INT UNSIGNED NOT NULL,
+    performed_by VARCHAR(64) NOT NULL,
     target_count INT NOT NULL,
     success_count INT NOT NULL,
     error_count INT NOT NULL,
@@ -282,8 +282,8 @@ CREATE TABLE IF NOT EXISTS bulk_operations_log (
 
 -- Table for caching expensive permission calculations
 CREATE TABLE IF NOT EXISTS permission_cache (
-    user_id INT UNSIGNED NOT NULL,
-    project_id INT UNSIGNED NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
     permission_name VARCHAR(100) NOT NULL,
     has_permission BOOLEAN NOT NULL,
     cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS permission_cache (
 
 -- Table for query performance tracking
 CREATE TABLE IF NOT EXISTS query_performance_log (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    id VARCHAR(64) NOT NULL PRIMARY KEY,
     query_hash VARCHAR(64),
     query_type VARCHAR(50),
     execution_time_ms INT,

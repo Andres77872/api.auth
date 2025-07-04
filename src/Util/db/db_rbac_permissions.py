@@ -33,14 +33,14 @@ from src.Util.db_config import get_connection
 # =================== PERMISSION MANAGEMENT ===================
 
 def create_permission(
-        project_id: int,
+        project_id: str,
         permission_name: str,
         permission_display_name: str = None,
         permission_description: str = None,
         permission_category: str = 'general',
         category: str = None,  # Compatibility parameter
         is_system_permission: bool = False,
-        created_by: int = None
+        created_by: str = None
 ) -> Permission:
     """Create a new project-specific permission"""
     # Handle compatibility parameters
@@ -84,7 +84,7 @@ def create_permission(
         )
 
 
-def get_project_permissions(project_id: int, category: str = None) -> List[Permission]:
+def get_project_permissions(project_id: str, category: str = None) -> List[Permission]:
     """Get all permissions for a project, optionally filtered by category"""
     with get_connection() as con:
         cur = con.cursor()
@@ -129,7 +129,7 @@ def get_project_permissions(project_id: int, category: str = None) -> List[Permi
         return permissions
 
 
-def check_user_permission(user_id: int, project_id: int, permission_name: str) -> bool:
+def check_user_permission(user_id: str, project_id: str, permission_name: str) -> bool:
     """Check if user has a specific permission within a project (cache-first)"""
     # Try cache first
     cached_result = cache_manager.get_permission_check(user_id, project_id, permission_name)
@@ -165,7 +165,7 @@ def check_user_permission(user_id: int, project_id: int, permission_name: str) -
         return has_permission
 
 
-def create_default_project_permissions(project_id: int, created_by: int = None) -> List[Permission]:
+def create_default_project_permissions(project_id: str, created_by: str = None) -> List[Permission]:
     """Create default system permissions for a new project"""
     default_permissions = [
         # General permissions
@@ -213,7 +213,7 @@ def create_default_project_permissions(project_id: int, created_by: int = None) 
 # =================== PERMISSION GROUP (ROLE) MANAGEMENT ===================
 
 def create_permission_group(
-        project_id: int,
+        project_id: str,
         group_name: str,
         group_display_name: str = None,
         group_description: str = None,
@@ -221,7 +221,7 @@ def create_permission_group(
         priority: int = None,  # Compatibility parameter
         description: str = None,  # Compatibility parameter
         is_system_role: bool = False,
-        created_by: int = None
+        created_by: str = None
 ) -> PermissionGroup:
     """Create a new project-specific permission group (role)"""
     # Handle compatibility parameters
@@ -267,10 +267,10 @@ def create_permission_group(
 
 
 def assign_user_to_permission_group(
-        user_id: int,
-        project_id: int,
-        permission_group_id: int,
-        assigned_by: int = None
+        user_id: str,
+        project_id: str,
+        permission_group_id: str,
+        assigned_by: str = None
 ) -> bool:
     """Assign a user to a permission group within a project through user groups"""
     # Verify permission group belongs to the project
@@ -347,10 +347,10 @@ def assign_user_to_permission_group(
 
 
 def remove_user_from_permission_group(
-        user_id: int,
-        project_id: int,
-        permission_group_id: int,
-        removed_by: int = None
+        user_id: str,
+        project_id: str,
+        permission_group_id: str,
+        removed_by: str = None
 ) -> bool:
     """Remove a user from a permission group within a project through user groups"""
     with get_connection() as con:
@@ -398,7 +398,7 @@ def remove_user_from_permission_group(
         return success
 
 
-def get_project_permission_groups(project_id: int) -> List[PermissionGroup]:
+def get_project_permission_groups(project_id: str) -> List[PermissionGroup]:
     """Get all permission groups (roles) for a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -434,7 +434,7 @@ def get_project_permission_groups(project_id: int) -> List[PermissionGroup]:
         return groups
 
 
-def assign_permission_to_group(permission_group_id: int, permission_id: int, assigned_by: int = None) -> bool:
+def assign_permission_to_group(permission_group_id: str, permission_id: str, assigned_by: str = None) -> bool:
     """Assign a permission to a permission group"""
     with get_connection() as con:
         cur = con.cursor()
@@ -490,7 +490,7 @@ def assign_permission_to_group(permission_group_id: int, permission_id: int, ass
             return False
 
 
-def get_user_permission_groups_in_project(user_id: int, project_id: int) -> List[PermissionGroup]:
+def get_user_permission_groups_in_project(user_id: str, project_id: str) -> List[PermissionGroup]:
     """Get all permission groups assigned to a user in a specific project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
@@ -535,7 +535,7 @@ def get_user_permission_groups_in_project(user_id: int, project_id: int) -> List
         return groups
 
 
-def get_user_effective_permissions(user_id: int, project_id: int) -> List[Permission]:
+def get_user_effective_permissions(user_id: str, project_id: str) -> List[Permission]:
     """Get all effective permissions for a user in a project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
@@ -584,7 +584,7 @@ def get_user_effective_permissions(user_id: int, project_id: int) -> List[Permis
         return permissions
 
 
-def get_project_audit_log(project_id: int, action_type: str = None, limit: int = 50, offset: int = 0) -> List:
+def get_project_audit_log(project_id: str, action_type: str = None, limit: int = 50, offset: int = 0) -> List:
     """Get audit log entries for a project"""
     with get_connection() as con:
         cur = con.cursor()
@@ -634,7 +634,7 @@ def get_project_audit_log(project_id: int, action_type: str = None, limit: int =
         return audit_entries
 
 
-def get_project_user_assignments(project_id: int) -> List:
+def get_project_user_assignments(project_id: str) -> List:
     """Get all user role assignments for a project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
@@ -655,7 +655,7 @@ def get_project_user_assignments(project_id: int) -> List:
         }
 
 
-def create_default_project_roles(project_id: int, created_by: int = None) -> List[PermissionGroup]:
+def create_default_project_roles(project_id: str, created_by: str = None) -> List[PermissionGroup]:
     """Create default roles for a new project"""
     default_roles = [
         ('admin', 'Administrator', 'Full administrative access', 100),
@@ -686,7 +686,7 @@ def create_default_project_roles(project_id: int, created_by: int = None) -> Lis
     return created_roles
 
 
-def assign_default_permissions_to_roles(project_id: int, assigned_by: int = None) -> dict:
+def assign_default_permissions_to_roles(project_id: str, assigned_by: str = None) -> dict:
     """Assign default permissions to default roles"""
     # Get permissions and roles
     permissions = get_project_permissions(project_id)
@@ -724,10 +724,10 @@ def assign_default_permissions_to_roles(project_id: int, assigned_by: int = None
 
 
 def initialize_project_rbac(
-        project_id: int,
+        project_id: str,
         create_defaults: bool = True,
         create_roles: bool = True,
-        created_by: int = None
+        created_by: str = None
 ) -> dict:
     """Initialize RBAC for a new project with default permissions and roles"""
     try:

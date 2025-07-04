@@ -2,6 +2,8 @@
 -- Foreign Keys and Constraints Script (Updated for Group-Based Access)
 -- MySQL Database
 
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 USE magic_auth;
 
 -- =================== USERS TABLE CONSTRAINTS ===================
@@ -165,7 +167,7 @@ BEFORE INSERT ON user_groups
 FOR EACH ROW
 BEGIN
     DECLARE hierarchy_depth INT DEFAULT 0;
-    DECLARE current_parent_id INT;
+    DECLARE current_parent_id VARCHAR(64);
     
     SET current_parent_id = NEW.parent_group_id;
     
@@ -194,7 +196,46 @@ BEGIN
         SET MESSAGE_TEXT = 'User group hierarchy depth cannot exceed 10 levels';
     END IF;
 END$$
-DELIMITER ;
+
+-- Trigger to automatically update updated_at field for users table
+CREATE TRIGGER tr_users_updated_at
+BEFORE UPDATE ON users
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for projects table
+CREATE TRIGGER tr_projects_updated_at
+BEFORE UPDATE ON projects
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for user_groups table
+CREATE TRIGGER tr_user_groups_updated_at
+BEFORE UPDATE ON user_groups
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for permissions table
+CREATE TRIGGER tr_permissions_updated_at
+BEFORE UPDATE ON permissions
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for permission_groups table
+CREATE TRIGGER tr_permission_groups_updated_at
+BEFORE UPDATE ON permission_groups
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
 
 -- Ensure hierarchical permission groups don't create cycles
 DELIMITER $$
@@ -203,7 +244,7 @@ BEFORE INSERT ON permission_groups
 FOR EACH ROW
 BEGIN
     DECLARE hierarchy_depth INT DEFAULT 0;
-    DECLARE current_parent_id INT;
+    DECLARE current_parent_id VARCHAR(64);
     
     SET current_parent_id = NEW.parent_permission_group_id;
     
@@ -238,7 +279,6 @@ BEGIN
         SET MESSAGE_TEXT = 'Permission group hierarchy depth cannot exceed 10 levels';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure hierarchical permissions don't create cycles
 DELIMITER $$
@@ -247,7 +287,7 @@ BEFORE INSERT ON permissions
 FOR EACH ROW
 BEGIN
     DECLARE hierarchy_depth INT DEFAULT 0;
-    DECLARE current_parent_id INT;
+    DECLARE current_parent_id VARCHAR(64);
     
     SET current_parent_id = NEW.parent_permission_id;
     
@@ -282,7 +322,6 @@ BEGIN
         SET MESSAGE_TEXT = 'Permission hierarchy depth cannot exceed 10 levels';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure permission group and permission belong to same project
 DELIMITER $$
@@ -290,8 +329,8 @@ CREATE TRIGGER tr_validate_permission_group_permissions_project
 BEFORE INSERT ON permission_group_permissions
 FOR EACH ROW
 BEGIN
-    DECLARE perm_project_id INT;
-    DECLARE group_project_id INT;
+    DECLARE perm_project_id VARCHAR(64);
+    DECLARE group_project_id VARCHAR(64);
     
     -- Get project IDs
     SELECT project_id INTO perm_project_id
@@ -321,7 +360,7 @@ CREATE TRIGGER tr_validate_user_group_permission_groups
 BEFORE INSERT ON user_group_permission_groups
 FOR EACH ROW
 BEGIN
-    DECLARE group_project_id INT;
+    DECLARE group_project_id VARCHAR(64);
     
     -- Verify permission group belongs to the specified project
     SELECT project_id INTO group_project_id

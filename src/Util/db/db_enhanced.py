@@ -58,7 +58,7 @@ from src.Util.db_config import redis_client as client
 
 # =================== USER TYPE CHECKING FUNCTIONS ===================
 
-def is_root_user(user_id: int) -> bool:
+def is_root_user(user_id: str) -> bool:
     """Check if user is a root user"""
     try:
         return get_user_type(user_id) == "root"
@@ -66,7 +66,7 @@ def is_root_user(user_id: int) -> bool:
         return False
 
 
-def is_admin_user(user_id: int) -> bool:
+def is_admin_user(user_id: str) -> bool:
     """Check if user is an admin user"""
     try:
         return get_user_type(user_id) == "admin"
@@ -74,7 +74,7 @@ def is_admin_user(user_id: int) -> bool:
         return False
 
 
-def is_consumer_user(user_id: int) -> bool:
+def is_consumer_user(user_id: str) -> bool:
     """Check if user is a consumer user"""
     try:
         return get_user_type(user_id) == "consumer"
@@ -82,7 +82,7 @@ def is_consumer_user(user_id: int) -> bool:
         return False
 
 
-def check_admin_project_access(user_id: int, project_id: int) -> bool:
+def check_admin_project_access(user_id: str, project_id: str) -> bool:
     """Check if admin user has access to specific project (supports multiple projects)"""
     try:
         if not is_admin_user(user_id):
@@ -525,7 +525,7 @@ def validate_root_session(session_token: str) -> bool:
         return False
 
 
-def validate_admin_session(session_token: str, project_id: int) -> bool:
+def validate_admin_session(session_token: str, project_id: str) -> bool:
     """Validate if session belongs to admin user with access to project"""
     try:
         session_data = get_session_data(session_token)

@@ -69,7 +69,7 @@ def get_session_statistics() -> Dict[str, Any]:
 
 # =================== USER ANALYTICS ===================
 
-def get_user_status(user_id: int) -> Optional[bool]:
+def get_user_status(user_id: str) -> Optional[bool]:
     """
     Get user's active status
     
@@ -90,7 +90,7 @@ def get_user_status(user_id: int) -> Optional[bool]:
         return None
 
 
-def set_user_status(user_id: int, is_active: bool, updated_by: Optional[int] = None) -> bool:
+def set_user_status(user_id: str, is_active: bool, updated_by: Optional[str] = None) -> bool:
     """
     Set user's active status
     
@@ -252,7 +252,7 @@ def get_recent_projects_count(days: int = 30) -> int:
         return 0
 
 
-def get_project_members(project_id: int) -> List[Dict[str, Any]]:
+def get_project_members(project_id: str) -> List[Dict[str, Any]]:
     """
     Get all members of a project with their access details
     
@@ -317,7 +317,7 @@ def get_project_members(project_id: int) -> List[Dict[str, Any]]:
         return []
 
 
-def add_user_to_project(user_id: int, project_id: int, assigned_by: Optional[int] = None) -> bool:
+def add_user_to_project(user_id: str, project_id: str, assigned_by: Optional[str] = None) -> bool:
     """
     Add a user to a project (for consumer users)
     
