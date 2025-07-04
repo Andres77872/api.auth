@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from src.Util.Models import (
     ListProjectsResponse, CreateProjectResponse, ProjectDetailsResponse,
     UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
-    ProjectInfo, PaginationInfo
+    ProjectInfo, PaginationInfo, ListUserGroupsResponse, GrantGroupProjectAccessResponse, UserGroupInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import log_activity, ActivityType, get_recent_activity
@@ -27,7 +27,10 @@ from src.Util.db import (
     get_project_stats, get_user_accessible_projects,
     get_user_project_permissions, get_user_groups_for_user,
     get_admin_assigned_projects, grant_user_project_access, add_admin_to_project,
-    revoke_user_project_access
+    revoke_user_project_access,
+    # NEW imports for group-project management
+    get_user_group_by_hash, get_user_groups_for_project,
+    grant_group_project_access, revoke_group_project_access
 )
 
 # Configure logging
@@ -1130,3 +1133,119 @@ async def archive_unarchive_project(
     except Exception as e:
         logger.error(f"Archive project error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to archive/unarchive project")
+
+
+# =================== NEW GROUP-PROJECT ENDPOINTS ===================
+
+@router.get("/{project_hash}/groups", response_model=ListUserGroupsResponse)
+async def list_project_user_groups(
+        project_hash: str = Path(..., description="Project identifier"),
+        limit: int = Query(100, ge=1, le=500, description="Max groups to return"),
+        offset: int = Query(0, ge=0, description="Offset for pagination"),
+        credentials: HTTPAuthorizationCredentials = Depends(security)) -> ListUserGroupsResponse:
+    """List all user groups that have access to the specified project (admin only)."""
+
+    try:
+        # Validate session
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+
+        # Admin permission check
+        user_permissions = getattr(session_data, 'permissions', [])
+        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Admin permission required to list project groups")
+
+        # Resolve project
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Fetch groups
+        groups_all = get_user_groups_for_project(project.id)
+        groups_paginated = groups_all[offset:offset + limit]
+
+        user_groups_info = []
+        for grp in groups_paginated:
+            user_groups_info.append(UserGroupInfo(
+                group_hash=grp.group_hash,
+                group_name=grp.group_name,
+                description=grp.group_description,
+                created_at=grp.created_at
+            ))
+
+        pagination = PaginationInfo(
+            limit=limit,
+            offset=offset,
+            total=len(groups_all),
+            has_more=(offset + limit) < len(groups_all)
+        )
+
+        return ListUserGroupsResponse(
+            success=True,
+            user_groups=user_groups_info,
+            pagination=pagination
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List project groups error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list project groups")
+
+
+@router.post("/{project_hash}/groups", response_model=GrantGroupProjectAccessResponse)
+async def assign_group_to_project(
+        project_hash: str = Path(..., description="Project identifier"),
+        group_hash: str = Form(..., description="User group identifier"),
+        credentials: HTTPAuthorizationCredentials = Depends(security)) -> GrantGroupProjectAccessResponse:
+    """Assign an existing user group to a project (admin only)."""
+    try:
+        session_token = credentials.credentials
+        session_data = validate_session(session_token)
+        if not session_data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+
+        # Admin permission check
+        user_permissions = getattr(session_data, 'permissions', [])
+        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+            raise HTTPException(status_code=403, detail="Admin permission required to assign group to project")
+
+        # Resolve entities
+        project = get_project_by_hash(project_hash)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        user_group = get_user_group_by_hash(group_hash)
+        if not user_group:
+            raise HTTPException(status_code=404, detail="User group not found")
+
+        # Current user (for audit trail)
+        current_user = get_user_by_hash(session_data.user_hash)
+
+        # Grant access
+        access = grant_group_project_access(user_group.id, project.id, granted_by=current_user.id)
+        if not access:
+            raise HTTPException(status_code=400, detail="Failed to grant group access to project or already granted")
+
+        access_details = {
+            "group_hash": user_group.group_hash,
+            "group_name": user_group.group_name,
+            "project_hash": project.project_hash,
+            "project_name": project.project_name,
+            "granted_by": current_user.username,
+            "granted_at": access.granted_at.isoformat()
+        }
+
+        return GrantGroupProjectAccessResponse(
+            success=True,
+            message=f"Group '{user_group.group_name}' granted access to project '{project.project_name}'",
+            access_details=access_details
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Assign group to project error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to assign group to project")

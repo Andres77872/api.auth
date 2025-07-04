@@ -77,7 +77,7 @@ sophisticated access control.
 
 ### 🔧 **Developer & Admin Features**
 
-- ✅ **Comprehensive REST API**: 55+ endpoints across 8 major areas
+- ✅ **Comprehensive REST API**: 80+ endpoints across 11 major areas
 - ✅ **System Monitoring**: Health checks, performance metrics, diagnostics
 - ✅ **Complete Documentation**: 150+ pages of detailed API documentation
 - ✅ **SDK Examples**: Python and JavaScript integration examples
@@ -93,28 +93,6 @@ sophisticated access control.
 - ✅ **Docker Deployment**: Complete containerization
 - ✅ **Database Schema**: Comprehensive MySQL schema with relationships
 - ✅ **Monitoring Ready**: Built-in health checks, performance metrics, and cache statistics
-
-## 🚀 Quick Start
-
-Get the complete 3-tier system running in 15 minutes:
-
-```bash
-# 1. Clone the project
-git clone <repository-url>
-cd api.auth
-
-# 2. Start with Docker
-docker-compose up -d
-
-# 3. Initialize with 3-tier system defaults
-python rbac_migration_script.py --initialize-system
-
-# 4. Test the 3-tier system
-curl http://localhost:8000/system/info
-```
-
-**What you get:** Complete 3-tier user system with root admin, sample projects, user groups, and RBAC permissions ready
-to use.
 
 ## 📚 Complete Documentation Suite
 
@@ -147,18 +125,21 @@ to use.
 
 ## 🛠️ Complete API Overview
 
-### **Core APIs (55+ Endpoints)**
+### **Core APIs (80+ Endpoints)**
 
-| API Area                 | Endpoints    | Purpose                                             |
-|--------------------------|--------------|-----------------------------------------------------|
-| **Authentication**       | 6 endpoints  | Login, registration, session management             |
-| **User Type Management** | 12 endpoints | 3-tier user system + multi-project admin management |
-| **RBAC Management**      | 11 endpoints | Permissions, roles, assignments, auditing           |
-| **Project Management**   | 5 endpoints  | Project CRUD with access control                    |
-| **User Groups Admin**    | 8 endpoints  | Global user group management                        |
-| **Project Groups Admin** | 6 endpoints  | Permission group management                         |
-| **System Monitoring**    | 4 endpoints  | Health, stats, performance                          |
-| **User Operations**      | 3 endpoints  | Profile and access management                       |
+| API Area                  | Endpoints     | Purpose                                             |
+|---------------------------|---------------|-----------------------------------------------------|
+| **Authentication**        | 7 endpoints   | Login, registration, session management             |
+| **User Management**       | 8 endpoints   | User profile, status, and access management         |
+| **User Type Management**  | 10 endpoints  | 3-tier user system + multi-project admin management |
+| **Project Management**    | 14 endpoints  | Project CRUD with access control                    |
+| **RBAC Management**       | 15 endpoints  | Permissions, roles, assignments, auditing           |
+| **User Groups Admin**     | 12 endpoints  | Global user group management                        |
+| **Project Groups Admin**  | 7 endpoints   | Permission group management                         |
+| **Admin Dashboard**       | 7 endpoints   | Dashboard statistics and activity feed              |
+| **Analytics**             | 5 endpoints   | System-wide analytics and trends                    |
+| **System Monitoring**     | 7 endpoints   | Health, stats, performance, and cache management    |
+| **Bulk Operations**       | 4 endpoints   | Mass user and permission management                 |
 
 ### **Database Layer (200KB+ of Code)**
 
@@ -269,11 +250,3 @@ This comprehensive 3-tier authentication system with full RBAC is free and open 
 **[Support on Patreon](https://patreon.com/findit_moe)** 🙏
 
 Your support enables continued development of advanced enterprise features.
-
----
-
-**🚀 Ready for enterprise-grade authentication?** Follow the [Quick Start Guide](../docs/quick-start.md) and have your
-3-tier system running in 15 minutes!
-
-**📞 Need advanced features?** Check the [comprehensive documentation](../docs/) covering all 50+ endpoints and advanced
-use cases.
