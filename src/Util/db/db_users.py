@@ -28,6 +28,7 @@ from src.Util.Models import (
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
 from src.Util.password_security import hash_password, verify_password, needs_rehash
+import pymysql
 
 
 # =================== USER HASH UTILITY ===================
@@ -653,26 +654,40 @@ def get_user_projects(user_id: int) -> List[Tuple[Project, UserProject]]:
     """Get all projects a consumer user has access to"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT p.id,
-                           p.project_hash,
-                           p.project_name,
-                           p.project_description,
-                           p.project_created,
-                           p.is_active,
-                           up.id,
-                           up.user_id,
-                           up.project_id,
-                           up.user_project_hash,
-                           up.granted_at,
-                           up.granted_by,
-                           up.is_active
-                    FROM projects p
-                             INNER JOIN user_projects up ON p.id = up.project_id
-                    WHERE up.user_id = %s
-                      AND p.is_active = 1
-                      AND up.is_active = 1
-                    """, [user_id])
+
+        try:
+            cur.execute(
+                """
+                SELECT p.id,
+                       p.project_hash,
+                       p.project_name,
+                       p.project_description,
+                       p.project_created,
+                       p.is_active,
+                       up.id,
+                       up.user_id,
+                       up.project_id,
+                       up.user_project_hash,
+                       up.granted_at,
+                       up.granted_by,
+                       up.is_active
+                FROM projects p
+                         INNER JOIN user_projects up ON p.id = up.project_id
+                WHERE up.user_id = %s
+                  AND p.is_active = 1
+                  AND up.is_active = 1
+                """,
+                [user_id],
+            )
+        except pymysql.err.ProgrammingError as e:
+            # Error code 1146 indicates the table does not exist (likely during
+            # transition to the new group-based access model).  Instead of
+            # raising an exception that breaks the request flow, gracefully
+            # return an empty list so callers can continue.
+            if e.args and e.args[0] == 1146:
+                return []
+            # Re-raise any other programming errors
+            raise
 
         results = []
         for row in cur.fetchall():
