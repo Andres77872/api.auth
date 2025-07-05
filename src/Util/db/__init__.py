@@ -210,21 +210,43 @@ def get_user_type_info(user_id: str) -> dict:
                 "manage_all_projects",
                 "manage_all_users"
             ]
+            # Root users have access to all projects
+            result["accessible_projects"] = []  # Will be populated with all projects
+            result["user_groups"] = []  # Root users don't need groups
+            
         elif user_type == "admin":
             assigned_projects = get_admin_assigned_projects(user_id)
             result["assigned_project_ids"] = assigned_projects
+            result["accessible_projects"] = assigned_projects
             result["capabilities"] = [
                 "project_admin",
                 "manage_project_users",
                 "manage_project_groups",
                 "manage_project_permissions"
             ]
+            # Get user groups for admin users
+            result["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
+            
         elif user_type == "consumer":
+            # Get accessible projects through user groups
+            accessible_projects = get_user_accessible_projects(user_id)
+            result["accessible_projects"] = [p.id for p in accessible_projects]
+            result["accessible_projects_details"] = [
+                {
+                    "project_id": p.id,
+                    "project_hash": p.project_hash,
+                    "project_name": p.project_name,
+                    "project_description": p.project_description
+                }
+                for p in accessible_projects
+            ]
             result["capabilities"] = [
                 "rbac_permissions",
                 "group_based_access",
                 "project_access_via_groups"
             ]
+            # Get user groups for consumer users
+            result["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
 
         return result
 
