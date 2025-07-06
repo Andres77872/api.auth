@@ -18,7 +18,7 @@ from src.Util.Models import (
     User, UserGroup, UserGroupMember, UserGroupProject, ProjectSummary
 )
 from src.Util.db_config import get_connection
-from src.Util.uuid_generator import generate_user_group_id
+from src.Util.uuid_generator import generate_user_group_id, generate_user_group_project_id
 
 
 # =================== USER GROUP MANAGEMENT ===================
@@ -435,14 +435,13 @@ def grant_group_project_access(user_group_id: str, project_id: str, granted_by: 
     """Grant a user group access to a project"""
     with get_connection() as con:
         cur = con.cursor()
-
+        access_id = generate_user_group_project_id()
         try:
             cur.execute("""
-                        INSERT INTO user_group_projects (user_group_id, project_id, granted_at, granted_by)
-                        VALUES (%s, %s, NOW(), %s)
-                        """, [user_group_id, project_id, granted_by])
+                        INSERT INTO user_group_projects (id, user_group_id, project_id, granted_at, granted_by)
+                        VALUES (%s, %s, %s, NOW(), %s)
+                        """, [access_id, user_group_id, project_id, granted_by])
 
-            access_id = con.insert_id()
             con.commit()
 
             return UserGroupProject(
