@@ -8,7 +8,6 @@ hierarchical access control system where:
 - Permissions are defined at the project level through Project Groups
 """
 
-import json
 import secrets
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -19,6 +18,7 @@ from src.Util.Models import (
     User, UserGroup, UserGroupMember, UserGroupProject, ProjectSummary
 )
 from src.Util.db_config import get_connection
+from src.Util.uuid_generator import generate_user_group_id
 
 
 # =================== USER GROUP MANAGEMENT ===================
@@ -26,15 +26,14 @@ from src.Util.db_config import get_connection
 def create_user_group(group_name: str, group_description: str = None, created_by: str = None) -> UserGroup:
     """Create a new global user group"""
     group_hash = secrets.token_hex(32).upper()
-
+    group_id = generate_user_group_id()
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    INSERT INTO user_groups (group_hash, group_name, group_description, created_at)
-                    VALUES (%s, %s, %s, NOW())
-                    """, [group_hash, group_name, group_description])
+                    INSERT INTO user_groups (id, group_hash, group_name, group_description, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    """, [group_id, group_hash, group_name, group_description])
 
-        group_id = con.insert_id()
         con.commit()
 
         return UserGroup(
@@ -122,27 +121,28 @@ def get_user_group_by_name(group_name: str) -> Optional[UserGroup]:
     return None
 
 
-def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'group_name', sort_order: str = 'asc', search: str = None) -> List[UserGroup]:
+def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'group_name', sort_order: str = 'asc',
+                         search: str = None) -> List[UserGroup]:
     """List all active user groups with pagination, sorting and search"""
     # Validate sort parameters to prevent SQL injection
     valid_sort_fields = ['group_name', 'created_at', 'updated_at', 'id']
     if sort_by not in valid_sort_fields:
         sort_by = 'group_name'  # Default to group_name if invalid field
-    
+
     # Validate sort order
     sort_direction = 'DESC' if sort_order.lower() == 'desc' else 'ASC'
-    
+
     with get_connection() as con:
         cur = con.cursor()
-        
+
         # Build the query with optional search
         where_clause = "WHERE is_active = 1"
         params = []
-        
+
         if search:
             where_clause += " AND group_name LIKE %s"
             params.append(f'%{search}%')
-            
+
         query = f"""
                     SELECT id, group_hash, group_name, group_description, created_at, updated_at, is_active
                     FROM user_groups
@@ -151,7 +151,7 @@ def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'grou
                     LIMIT %s
                     OFFSET %s
                     """
-        
+
         params.extend([limit, offset])
         cur.execute(query, params)
 
@@ -622,7 +622,7 @@ def get_total_user_groups_count() -> int:
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    SELECT COUNT(*) 
+                    SELECT COUNT(*)
                     FROM user_groups
                     WHERE is_active = 1
                     """)
@@ -648,12 +648,12 @@ def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]
         cur = con.cursor()
         cur.execute("""
                     SELECT DISTINCT ug.id,
-                           ug.group_hash,
-                           ug.group_name,
-                           ug.group_description,
-                           ug.created_at,
-                           ug.updated_at,
-                           ug.is_active
+                                    ug.group_hash,
+                                    ug.group_name,
+                                    ug.group_description,
+                                    ug.created_at,
+                                    ug.updated_at,
+                                    ug.is_active
                     FROM user_groups ug
                              INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
                              INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
@@ -699,12 +699,12 @@ def get_user_groups_in_project_by_hash(user_id: str, project_hash: str) -> List[
         cur = con.cursor()
         cur.execute("""
                     SELECT DISTINCT ug.id,
-                           ug.group_hash,
-                           ug.group_name,
-                           ug.group_description,
-                           ug.created_at,
-                           ug.updated_at,
-                           ug.is_active
+                                    ug.group_hash,
+                                    ug.group_name,
+                                    ug.group_description,
+                                    ug.created_at,
+                                    ug.updated_at,
+                                    ug.is_active
                     FROM user_groups ug
                              INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
                              INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
