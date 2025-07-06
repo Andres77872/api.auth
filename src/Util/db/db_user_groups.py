@@ -18,7 +18,8 @@ from src.Util.Models import (
     User, UserGroup, UserGroupMember, UserGroupProject, ProjectSummary
 )
 from src.Util.db_config import get_connection
-from src.Util.uuid_generator import generate_user_group_id, generate_user_group_project_id
+from src.Util.uuid_generator import generate_user_group_id, generate_user_group_project_id, \
+    generate_user_group_member_id
 
 
 # =================== USER GROUP MANAGEMENT ===================
@@ -264,14 +265,13 @@ def assign_user_to_group(user_id: str, user_group_id: str, assigned_by: str = No
     """Assign a user to a user group"""
     with get_connection() as con:
         cur = con.cursor()
-
+        member_id = generate_user_group_member_id()
         try:
             cur.execute("""
-                        INSERT INTO user_group_members (user_id, user_group_id, assigned_at, assigned_by)
-                        VALUES (%s, %s, NOW(), %s)
-                        """, [user_id, user_group_id, assigned_by])
+                        INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, assigned_by)
+                        VALUES (%s, %s, %s, NOW(), %s)
+                        """, [member_id, user_id, user_group_id, assigned_by])
 
-            member_id = con.insert_id()
             con.commit()
 
             return UserGroupMember(

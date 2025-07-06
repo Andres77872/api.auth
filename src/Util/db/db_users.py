@@ -21,6 +21,8 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple, Any, Dict
 
+import pymysql
+
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import (
     User, Project, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
@@ -28,7 +30,7 @@ from src.Util.Models import (
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
 from src.Util.password_security import hash_password, verify_password, needs_rehash
-import pymysql
+from src.Util.uuid_generator import generate_user_id
 
 
 # =================== USER HASH UTILITY ===================
@@ -156,16 +158,15 @@ def create_consumer_user(username: str, password: str, email: str = None, create
     """Create a consumer (end user) user"""
     password_hash = hash_password(password)
     user_hash = generate_user_hash()
-
+    user_id = generate_user_id()
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    INSERT INTO users (user_hash, username, email, password_hash, user_type,
+                    INSERT INTO users (id, user_hash, username, email, password_hash, user_type,
                                        created_by, created_at)
-                    VALUES (%s, %s, %s, %s, 'consumer', %s, NOW())
-                    """, [user_hash, username, email, password_hash, created_by])
+                    VALUES (%s, %s, %s, %s, %s, 'consumer', %s, NOW())
+                    """, [user_id, user_hash, username, email, password_hash, created_by])
 
-        user_id = con.insert_id()
         con.commit()
 
         return User(
@@ -488,7 +489,7 @@ def list_users(
                         user_hash=row[1],
                         username=row[2],
                         email=row[3],
-                        password_hash="",   # not provided by the SP – not needed here
+                        password_hash="",  # not provided by the SP – not needed here
                         user_type=row[4],
                         assigned_project_id=None,
                         created_at=row[5],
@@ -828,7 +829,8 @@ def get_session_data(session_token: str) -> Optional[dict]:
     return None
 
 
-def create_session(user_id: str, project_id: str, user_project_id: str = None, session_length: int = 259200) -> str | None:
+def create_session(user_id: str, project_id: str, user_project_id: str = None,
+                   session_length: int = 259200) -> str | None:
     """Create a new session and store in Redis with user type context"""
     session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
 
@@ -953,18 +955,18 @@ def get_admin_assigned_projects(user_id: str) -> List[str]:
     """Get all projects assigned to an admin user through user groups"""
     with get_connection() as con:
         cur = con.cursor()
-        
+
         # Get user type first to ensure this is an admin user
         user_type = get_user_type(user_id)
         if user_type != 'admin':
             return []
-            
+
         cur.execute("""
                     SELECT DISTINCT p.id
                     FROM projects p
-                    INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-                    INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-                    INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                             INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
+                             INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
+                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
                     WHERE ugm.user_id = %s
                       AND p.is_active = 1
                       AND ugp.is_active = 1
@@ -991,17 +993,17 @@ def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assi
             # For now, we'll use the existing user group management functions
             # This is a simplified approach - in a full implementation, you might want
             # to create project-specific admin groups or handle this differently
-            
+
             # Import the user group functions
             from src.Util.db.db_user_groups import (
-                assign_user_to_group, 
+                assign_user_to_group,
                 grant_group_project_access,
                 get_user_groups_for_user
             )
-            
+
             # Get user's current groups
             current_groups = get_user_groups_for_user(user_id)
-            
+
             # For each project, ensure the user has access through an appropriate admin group
             for project_id in project_ids:
                 # Look for an existing admin group for this project
@@ -1009,18 +1011,18 @@ def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assi
                 cur.execute("""
                             SELECT ug.id
                             FROM user_groups ug
-                            INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                                     INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
                             WHERE ugp.project_id = %s
                               AND ug.group_name LIKE '%admin%'
                               AND ug.is_active = 1
                               AND ugp.is_active = 1
                             LIMIT 1
                             """, [project_id])
-                
+
                 admin_group_result = cur.fetchone()
                 if admin_group_result:
                     admin_group_id = admin_group_result[0]
-                    
+
                     # Check if user is already in this group
                     cur.execute("""
                                 SELECT 1
@@ -1029,7 +1031,7 @@ def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assi
                                   AND ugm.user_group_id = %s
                                   AND ugm.is_active = 1
                                 """, [user_id, admin_group_id])
-                    
+
                     if not cur.fetchone():
                         # Add user to admin group
                         assign_user_to_group(user_id, admin_group_id, assigned_by)
@@ -1056,23 +1058,23 @@ def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None)
         try:
             # Import the user group functions
             from src.Util.db.db_user_groups import assign_user_to_group
-            
+
             # Look for an existing admin group for this project
             cur.execute("""
                         SELECT ug.id
                         FROM user_groups ug
-                        INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                                 INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
                         WHERE ugp.project_id = %s
                           AND ug.group_name LIKE '%admin%'
                           AND ug.is_active = 1
                           AND ugp.is_active = 1
                         LIMIT 1
                         """, [project_id])
-            
+
             admin_group_result = cur.fetchone()
             if admin_group_result:
                 admin_group_id = admin_group_result[0]
-                
+
                 # Check if user is already in this group
                 cur.execute("""
                             SELECT 1
@@ -1081,7 +1083,7 @@ def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None)
                               AND ugm.user_group_id = %s
                               AND ugm.is_active = 1
                             """, [user_id, admin_group_id])
-                
+
                 if not cur.fetchone():
                     # Add user to admin group
                     result = assign_user_to_group(user_id, admin_group_id, assigned_by)
@@ -1102,17 +1104,17 @@ def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = N
     """Remove admin user from a specific project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
-        
+
         try:
             # Import the user group functions
             from src.Util.db.db_user_groups import remove_user_from_group
-            
+
             # Find admin groups for this project that the user is a member of
             cur.execute("""
                         SELECT ug.id
                         FROM user_groups ug
-                        INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
-                        INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                                 INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                                 INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
                         WHERE ugp.project_id = %s
                           AND ugm.user_id = %s
                           AND ug.group_name LIKE '%admin%'
@@ -1120,15 +1122,15 @@ def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = N
                           AND ugp.is_active = 1
                           AND ugm.is_active = 1
                         """, [project_id, user_id])
-            
+
             admin_groups = cur.fetchall()
             success = False
-            
+
             for (admin_group_id,) in admin_groups:
                 # Remove user from each admin group for this project
                 if remove_user_from_group(user_id, admin_group_id, removed_by):
                     success = True
-            
+
             return success
 
         except Exception as e:
@@ -1152,24 +1154,24 @@ def get_admin_project_assignments_with_details(user_id: str) -> List[dict]:
     """Get admin's project assignments with project details through user groups"""
     with get_connection() as con:
         cur = con.cursor()
-        
+
         # Get user type first to ensure this is an admin user
         user_type = get_user_type(user_id)
         if user_type != 'admin':
             return []
-            
+
         cur.execute("""
-                    SELECT DISTINCT p.id as project_id,
-                           p.project_hash,
-                           p.project_name,
-                           p.project_description,
-                           ugp.granted_at as assigned_at,
-                           ugp.granted_by as assigned_by,
-                           ug.group_name as access_through_group
+                    SELECT DISTINCT p.id           as project_id,
+                                    p.project_hash,
+                                    p.project_name,
+                                    p.project_description,
+                                    ugp.granted_at as assigned_at,
+                                    ugp.granted_by as assigned_by,
+                                    ug.group_name  as access_through_group
                     FROM projects p
-                    INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-                    INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-                    INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                             INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
+                             INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
+                             INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
                     WHERE ugm.user_id = %s
                       AND p.is_active = 1
                       AND ugp.is_active = 1
@@ -1247,20 +1249,20 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
             if assigned_project_ids:
                 # Import user group functions
                 from src.Util.db.db_user_groups import assign_user_to_group
-                
+
                 for project_id in assigned_project_ids:
                     # Look for an existing admin group for this project
                     cur.execute("""
                                 SELECT ug.id
                                 FROM user_groups ug
-                                INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                                         INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
                                 WHERE ugp.project_id = %s
                                   AND ug.group_name LIKE '%admin%'
                                   AND ug.is_active = 1
                                   AND ugp.is_active = 1
                                 LIMIT 1
                                 """, [project_id])
-                    
+
                     admin_group_result = cur.fetchone()
                     if admin_group_result:
                         admin_group_id = admin_group_result[0]
