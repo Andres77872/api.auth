@@ -14,6 +14,7 @@ from typing import List, Optional
 
 from src.Util.Models import Project, LegacyUserGroup as UserGroup
 from src.Util.db_config import get_connection
+from src.Util.uuid_generator import generate_project_id, generate_user_group_id
 
 
 # =================== PROJECT MANAGEMENT ===================
@@ -21,15 +22,15 @@ from src.Util.db_config import get_connection
 def create_project(project_name: str, project_description: str = None, created_by: str = None) -> Project:
     """Create a new project/application with RBAC initialization"""
     project_hash = secrets.token_hex(32).upper()
-
+    project_id = generate_project_id()
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    INSERT INTO projects (project_hash, project_name, project_description, project_created, created_by)
-                    VALUES (%s, %s, %s, NOW(), %s)
-                    """, [project_hash, project_name, project_description, created_by])
+                    INSERT INTO projects (id, project_hash, project_name, project_description, project_created,
+                                          created_by)
+                    VALUES (%s, %s, %s, %s, NOW(), %s)
+                    """, [project_id, project_hash, project_name, project_description, created_by])
 
-        project_id = con.insert_id()
         con.commit()
 
         # Create default user group for this project (legacy)
@@ -110,8 +111,7 @@ def list_all_projects(limit: int = 100, offset: int = 0) -> List[Project]:
                     FROM projects
                     WHERE is_active = 1
                     ORDER BY project_created DESC
-                        LIMIT %s
-                    OFFSET %s
+                    LIMIT %s OFFSET %s
                     """, [limit, offset])
 
         results = []
@@ -220,18 +220,22 @@ def delete_project(project_id: str, deleted_by: str = None) -> bool:
             cur.execute("""
                         UPDATE user_project_groups upg
                             INNER JOIN user_projects up
-                        ON upg.user_project_id = up.id
-                            SET upg.is_active = 0, upg.removed_at = NOW(), upg.removed_by = %s
-                        WHERE up.project_id = %s AND upg.is_active = 1
+                            ON upg.user_project_id = up.id
+                        SET upg.is_active  = 0,
+                            upg.removed_at = NOW(),
+                            upg.removed_by = %s
+                        WHERE up.project_id = %s
+                          AND upg.is_active = 1
                         """, [deleted_by, project_id])
 
             # Soft delete all sessions for this project
             cur.execute("""
                         UPDATE user_sessions us
                             INNER JOIN user_projects up
-                        ON us.user_project_id = up.id
-                            SET us.is_active = 0
-                        WHERE up.project_id = %s AND us.is_active = 1
+                            ON us.user_project_id = up.id
+                        SET us.is_active = 0
+                        WHERE up.project_id = %s
+                          AND us.is_active = 1
                         """, [project_id])
 
             con.commit()
@@ -255,7 +259,7 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
                     WHERE is_active = 1
                       AND (project_name LIKE %s OR project_description LIKE %s)
                     ORDER BY project_name ASC
-                        LIMIT %s
+                    LIMIT %s
                     """, [search_pattern, search_pattern, limit])
 
         results = []
@@ -286,7 +290,7 @@ def get_project_stats(project_id: str) -> dict:
             FROM user_group_members ugm
                      JOIN user_group_projects ugp
                           ON ugm.user_group_id = ugp.user_group_id
-                         AND ugp.is_active = 1
+                              AND ugp.is_active = 1
             WHERE ugp.project_id = %s
               AND ugm.is_active = 1
             """,
@@ -332,10 +336,10 @@ def get_project_stats(project_id: str) -> dict:
             FROM user_groups ug
                      JOIN user_group_projects ugp
                           ON ug.id = ugp.user_group_id
-                         AND ugp.is_active = 1
+                              AND ugp.is_active = 1
                      LEFT JOIN user_group_members ugm
                                ON ugm.user_group_id = ug.id
-                              AND ugm.is_active = 1
+                                   AND ugm.is_active = 1
             WHERE ugp.project_id = %s
               AND ug.is_active = 1
             GROUP BY ug.id, ug.group_name
@@ -371,14 +375,11 @@ def create_default_groups(project_id: str):
        `user_group_projects` (ON DUPLICATE KEY to handle re-runs).
     """
 
-    import secrets
-
     default_groups = [
         ("admin", "Project administrators", '["admin", "read", "write", "delete", "manage_users"]'),
         ("user", "Regular users", '["read", "write"]'),
         ("readonly", "Read-only users", '["read"]'),
     ]
-
     with get_connection() as con:
         cur = con.cursor()
 
@@ -387,35 +388,29 @@ def create_default_groups(project_id: str):
         for base_name, description, permissions in default_groups:
             # Build a **globally unique** group name while retaining readability
             group_name = f"{base_name}_{project_id}"
-
+            group_id = generate_user_group_id()
             # Try to insert. If the name already exists we update `is_active` and fetch the id.
             cur.execute(
                 """
-                INSERT INTO user_groups (group_hash, group_name, group_description, created_at, is_active)
-                VALUES (%s, %s, %s, NOW(), 1)
-                ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
+                INSERT INTO user_groups (id, group_hash, group_name, group_description, created_at, is_active)
+                VALUES (%s, %s, %s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active  = 1,
+                                        updated_at = NOW()
                 """,
-                [f"UG-{secrets.token_hex(16).upper()}", group_name, description],
+                [group_id, f"UG-{secrets.token_hex(16).upper()}", group_name, description],
             )
-
-            # `lastrowid` is only reliable when a new row was inserted.  When the row already
-            # exists we need to fetch its id.
-            group_id = cur.lastrowid
-            if not group_id:
-                cur.execute("SELECT id FROM user_groups WHERE group_name = %s", [group_name])
-                group_id = cur.fetchone()[0]
-
             created_group_ids.append(group_id)
 
         # Link the (new or existing) groups with the project in user_group_projects
         for gid in created_group_ids:
             cur.execute(
                 """
-                INSERT INTO user_group_projects (user_group_id, project_id, granted_at, is_active)
-                VALUES (%s, %s, NOW(), 1)
-                ON DUPLICATE KEY UPDATE is_active = 1, granted_at = NOW()
+                INSERT INTO user_group_projects (id, user_group_id, project_id, granted_at, is_active)
+                VALUES (%s, %s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active  = 1,
+                                        granted_at = NOW()
                 """,
-                [gid, project_id],
+                [gid, gid, project_id],
             )
 
         con.commit()
