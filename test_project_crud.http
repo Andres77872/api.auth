@@ -1,0 +1,194 @@
+# Group-Based Multi-Project Authentication API Test Suite
+# 
+# This file contains HTTP requests to test the group-based authentication system.
+# All endpoints follow clean RESTful conventions without confusing naming.
+#
+# Architecture: Users → User Groups → Project Access → Project Groups → Permissions
+
+### Variables
+@baseUrl = http://localhost:8000
+@username = testuser
+@password = testpass123
+@email = test@example.com
+@projectHash = test_project_hash
+
+### Health Check
+GET {{baseUrl}}/ping
+
+### System Information
+GET {{baseUrl}}/system/info
+
+### Test User Registration
+POST {{baseUrl}}/auth/register
+Content-Type: application/x-www-form-urlencoded
+
+username={{username}}&password={{password}}&email={{email}}&project_hash={{projectHash}}
+
+### Test User Login (Save the session token from response)
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+username={{username}}&password={{password}}&project_hash={{projectHash}}
+
+### Variables for authenticated requests (replace with actual token)
+@sessionToken = your_session_token_here
+
+### Validate Session
+GET {{baseUrl}}/auth/validate
+Authorization: Bearer {{sessionToken}}
+
+### Get User Profile
+GET {{baseUrl}}/users/profile
+Authorization: Bearer {{sessionToken}}
+
+### Get User Access Summary (Groups and Projects)
+GET {{baseUrl}}/users/access-summary
+Authorization: Bearer {{sessionToken}}
+
+### Create New Project
+POST {{baseUrl}}/projects/
+Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer {{sessionToken}}
+
+project_name=Test Project&project_description=A test project for the group-based system
+
+### List User's Accessible Projects
+GET {{baseUrl}}/projects/?page=1&limit=10
+Authorization: Bearer {{sessionToken}}
+
+### Search Projects
+GET {{baseUrl}}/projects/?search=test&page=1&limit=10
+Authorization: Bearer {{sessionToken}}
+
+### Get Project Details
+GET {{baseUrl}}/projects/{{projectHash}}
+Authorization: Bearer {{sessionToken}}
+
+### Get Project Groups
+GET {{baseUrl}}/projects/{{projectHash}}/groups
+Authorization: Bearer {{sessionToken}}
+
+### Logout
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{sessionToken}}
+
+### 
+### Group-Based System Testing Scenarios
+###
+
+### Scenario 1: Admin User Workflow
+# 1. Register as admin user
+POST {{baseUrl}}/auth/register
+Content-Type: application/x-www-form-urlencoded
+
+username=admin&password=admin123&email=admin@example.com&project_hash={{projectHash}}
+
+# 2. Login as admin
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+username=admin&password=admin123&project_hash={{projectHash}}
+
+# 3. Create project (admin permission required)
+POST {{baseUrl}}/projects/
+Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer {{sessionToken}}
+
+project_name=Admin Created Project&project_description=Project created by admin user
+
+### Scenario 2: Regular User Workflow  
+# 1. Register as regular user
+POST {{baseUrl}}/auth/register
+Content-Type: application/x-www-form-urlencoded
+
+username=regularuser&password=userpass123&email=user@example.com&project_hash={{projectHash}}
+
+# 2. Login as regular user
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+username=regularuser&password=userpass123&project_hash={{projectHash}}
+
+# 3. View accessible projects only
+GET {{baseUrl}}/projects/
+Authorization: Bearer {{sessionToken}}
+
+# 4. Check access to specific project
+GET {{baseUrl}}/projects/{{projectHash}}
+Authorization: Bearer {{sessionToken}}
+
+### Scenario 3: Group Access Testing
+# Test that users can only see projects their groups have access to
+
+# 1. Try to access project without permission (should fail)
+GET {{baseUrl}}/projects/unauthorized_project_hash
+Authorization: Bearer {{sessionToken}}
+
+# 2. View user's group memberships
+GET {{baseUrl}}/users/access-summary
+Authorization: Bearer {{sessionToken}}
+
+### Error Handling Tests
+
+### Test invalid login
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+username=invalid&password=invalid&project_hash=invalid
+
+### Test duplicate registration
+POST {{baseUrl}}/auth/register
+Content-Type: application/x-www-form-urlencoded
+
+username={{username}}&password={{password}}&email={{email}}&project_hash={{projectHash}}
+
+### Test invalid session token
+GET {{baseUrl}}/auth/validate
+Authorization: Bearer invalid_token_here
+
+### Test unauthorized project access
+GET {{baseUrl}}/projects/unauthorized_project
+Authorization: Bearer {{sessionToken}}
+
+###
+### Performance Testing
+###
+
+### Multiple rapid requests
+GET {{baseUrl}}/users/profile
+Authorization: Bearer {{sessionToken}}
+
+###
+GET {{baseUrl}}/users/profile
+Authorization: Bearer {{sessionToken}}
+
+###
+GET {{baseUrl}}/users/profile
+Authorization: Bearer {{sessionToken}}
+
+###
+GET {{baseUrl}}/projects/
+Authorization: Bearer {{sessionToken}}
+
+###
+GET {{baseUrl}}/projects/
+Authorization: Bearer {{sessionToken}}
+
+###
+### Group System Validation
+###
+
+### Check system supports group-based architecture
+GET {{baseUrl}}/system/info
+
+### Verify user groups in profile
+GET {{baseUrl}}/users/profile
+Authorization: Bearer {{sessionToken}}
+
+### Verify project groups in project details
+GET {{baseUrl}}/projects/{{projectHash}}
+Authorization: Bearer {{sessionToken}}
+
+### Test comprehensive access summary
+GET {{baseUrl}}/users/access-summary
+Authorization: Bearer {{sessionToken}} 

@@ -12,10 +12,16 @@ router = APIRouter()
 async def access(response: Response,
                  user: Annotated[UserLogin, Depends(middleware_user_token_validation)]):
     """
-    ## Session token verification
-    Verifies if the session token exists and if its is a valid token, also the permissions of the user for
-    the resource requested.
+    ## JWT Session token verification
+    Verifies if the JWT session token exists and if it is valid, including checking the permissions 
+    of the user for the resource requested.
 
-    Each part has 256 bits with a total of 768 => Token with length of 128 encoded with base64.
+    JWT tokens are industry-standard, cryptographically secure tokens that contain:
+    - session_id: Unique session identifier
+    - user_hash: User identification hash  
+    - collection: Collection identifier
+    - exp: Expiration timestamp
+    - iat: Issued at timestamp
+    - type: Token type
     """
     response.headers['X_user_HASH'] = user.user_hash
