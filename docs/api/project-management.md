@@ -62,20 +62,16 @@ Create new project and assign it to default project group.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
-```json
-{
-  "project_name": "New Project",
-  "project_description": "A new project"
-}
-```
+**Request Body** (Form):
+- `project_name` (required): Name of the project
+- `project_description` (optional): Description of the project
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/projects" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_name": "New Project", "project_description": "A new project"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_name=New Project&project_description=A new project"
 ```
 
 **Response (200):**
@@ -145,20 +141,16 @@ Update project information (admin only).
 **Path Parameters:**
 - `project_hash`: Hash of the project to update
 
-**Request Body** (JSON):
-```json
-{
-  "project_name": "Updated Project Name",
-  "project_description": "Updated description"
-}
-```
+**Request Body** (Form):
+- `project_name` (optional): Updated name of the project
+- `project_description` (optional): Updated description of the project
 
 **Example Request:**
 ```bash
 curl -X PUT "http://localhost:8000/projects/abc123..." \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_name": "Updated Project Name"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_name=Updated Project Name"
 ```
 
 **Response (200):**
@@ -204,6 +196,473 @@ curl -X DELETE "http://localhost:8000/projects/abc123..." \
     "deleted_by": 1
   },
   "warning": "All user group access to this project has been revoked"
+}
+```
+
+---
+
+### PATCH `/projects/{project_hash}/owner`
+
+Transfer project ownership to another user.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `project_hash`: Hash of the project
+
+**Request Body** (Form):
+- `new_owner_hash` (required): User hash of the new owner
+
+**Example Request:**
+```bash
+curl -X PATCH "http://localhost:8000/projects/abc123.../owner" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "new_owner_hash=usr-def456"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Project ownership transferred to new_owner",
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project"
+  },
+  "new_owner": {
+    "user_hash": "usr-def456",
+    "username": "new_owner",
+    "email": "newowner@example.com"
+  },
+  "transferred_by": {
+    "user_hash": "usr-abc123",
+    "username": "admin"
+  },
+  "transferred_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### PATCH `/projects/{project_hash}/archive`
+
+Archive or unarchive a project.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `project_hash`: Hash of the project
+
+**Request Body** (Form):
+- `archived` (required): `true` to archive, `false` to unarchive
+
+**Example Request - Archive:**
+```bash
+curl -X PATCH "http://localhost:8000/projects/abc123.../archive" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "archived=true"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Project My Project archived successfully",
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "archived": true
+  },
+  "action_details": {
+    "action": "archive",
+    "performed_by": "admin",
+    "performed_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+**Example Request - Unarchive:**
+```bash
+curl -X PATCH "http://localhost:8000/projects/abc123.../archive" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "archived=false"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Project My Project unarchived successfully",
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "archived": false
+  },
+  "action_details": {
+    "action": "unarchive",
+    "performed_by": "admin",
+    "performed_at": "2024-01-15T10:35:00Z"
+  }
+}
+```
+
+---
+
+### GET `/projects/{project_hash}/activity`
+
+Get recent activity log for a project.
+
+**Authentication:** Required (project access)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Query Parameters:**
+- `limit` (optional, default: 50, max: 100): Number of activities to return
+- `offset` (optional, default: 0): Number of activities to skip
+- `activity_type` (optional): Filter by activity type
+- `days` (optional, default: 30, max: 365): Days to look back
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/projects/abc123.../activity?limit=20&days=7" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project"
+  },
+  "activities": [
+    {
+      "id": 1523,
+      "activity_type": "member_added",
+      "details": "User 'john_doe' added to project",
+      "performed_by": {
+        "user_hash": "usr-admin",
+        "username": "admin"
+      },
+      "target_user": {
+        "user_hash": "usr-john",
+        "username": "john_doe"
+      },
+      "created_at": "2024-01-15T10:25:00Z",
+      "ip_address": "192.168.1.100"
+    },
+    {
+      "id": 1522,
+      "activity_type": "project_updated",
+      "details": "Project name updated",
+      "performed_by": {
+        "user_hash": "usr-admin",
+        "username": "admin"
+      },
+      "created_at": "2024-01-15T09:15:00Z",
+      "ip_address": "192.168.1.100"
+    }
+  ],
+  "pagination": {
+    "total": 145,
+    "limit": 20,
+    "offset": 0
+  },
+  "filters": {
+    "activity_type": null,
+    "days": 7
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/projects/{project_hash}/stats`
+
+Get detailed statistics for a project.
+
+**Authentication:** Required (project access)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/projects/abc123.../stats" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "project_description": "Main application project"
+  },
+  "statistics": {
+    "members": {
+      "total": 15,
+      "active": 12,
+      "by_role": {
+        "admin": 2,
+        "editor": 5,
+        "viewer": 8
+      }
+    },
+    "activity": {
+      "total_sessions_30d": 523,
+      "total_activities_30d": 1247,
+      "avg_sessions_per_user": 34.8,
+      "most_active_user": {
+        "user_hash": "usr-john",
+        "username": "john_doe",
+        "session_count": 85
+      }
+    },
+    "groups": {
+      "user_groups_with_access": 3,
+      "permission_groups": 2
+    },
+    "health": {
+      "status": "healthy",
+      "last_activity": "2024-01-15T10:25:00Z",
+      "activity_score": 92.5
+    }
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/projects/{project_hash}/members`
+
+Get paginated list of project members with their roles and permissions.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Query Parameters:**
+- `limit` (optional, default: 50, max: 100): Number of members to return
+- `offset` (optional, default: 0): Number of members to skip
+- `user_type` (optional): Filter by user type (admin, consumer)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/projects/abc123.../members?limit=50&offset=0&user_type=consumer" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "project_description": "Main application project"
+  },
+  "members": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "email": "john@example.com",
+      "user_type": "consumer",
+      "is_active": true,
+      "permissions": ["read", "write"],
+      "groups": ["developers"],
+      "access_level": "read-write",
+      "joined_at": "2024-01-10T12:00:00Z",
+      "granted_by": null,
+      "created_at": "2024-01-01T08:00:00Z"
+    }
+  ],
+  "pagination": {
+    "total": 15,
+    "limit": 50,
+    "offset": 0,
+    "has_more": false
+  },
+  "statistics": {
+    "total_members": 15,
+    "root_users": 1,
+    "admin_users": 2,
+    "consumer_users": 12,
+    "active_members": 14
+  }
+}
+```
+
+---
+
+### POST `/projects/{project_hash}/members`
+
+Add a user as a member to a project.
+
+**Authentication:** Required (project admin)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Request Body** (Form):
+- `user_hash` (required): Hash of the user to add
+- `role` (optional, default: "consumer"): Role to assign ("consumer" or "admin")
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/projects/abc123.../members" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_hash=usr-def456&role=consumer"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User 'jane_smith' added to project 'My Project' as consumer",
+  "member": {
+    "user_hash": "usr-def456",
+    "username": "jane_smith",
+    "email": "jane@example.com",
+    "user_type": "consumer",
+    "role": "consumer",
+    "permissions": ["read", "write"],
+    "groups": ["developers"],
+    "access_type": "consumer_access",
+    "added_by": "admin",
+    "added_at": "2024-01-15T10:30:00Z"
+  },
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "project_description": "Main application project"
+  }
+}
+```
+
+---
+
+### DELETE `/projects/{project_hash}/members/{user_hash}`
+
+Remove a user from a project.
+
+**Authentication:** Required (project admin)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+- `user_hash`: Hash of the user to remove
+
+**Example Request:**
+```bash
+curl -X DELETE "http://localhost:8000/projects/abc123.../members/usr-def456" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User jane_smith removed from project My Project",
+  "project": {
+    "project_hash": "abc123...",
+    "project_name": "My Project"
+  },
+  "removed_member": {
+    "user_hash": "usr-def456",
+    "username": "jane_smith",
+    "email": "jane@example.com"
+  }
+}
+```
+
+---
+
+### GET `/projects/{project_hash}/groups`
+
+List all user groups that have access to a project.
+
+**Authentication:** Required (project access)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Query Parameters:**
+- `limit` (optional, default: 100, max: 500): Number of groups to return
+- `offset` (optional, default: 0): Number of groups to skip
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/projects/abc123.../groups" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "user_groups": [
+    {
+      "group_hash": "grp-xyz789",
+      "group_name": "developers",
+      "description": "Development team",
+      "created_at": "2024-01-01T12:00:00Z"
+    }
+  ],
+  "pagination": {
+    "total": 3,
+    "limit": 100,
+    "offset": 0,
+    "has_more": false
+  }
+}
+```
+
+---
+
+### POST `/projects/{project_hash}/groups`
+
+Grant a user group access to a project.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `project_hash`: Project identifier
+
+**Request Body** (Form):
+- `group_hash` (required): User group hash
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/projects/abc123.../groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_hash=grp-xyz789"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "User group 'developers' granted access to project 'My Project'",
+  "access_details": {
+    "group_hash": "grp-xyz789",
+    "group_name": "developers",
+    "project_hash": "abc123...",
+    "project_name": "My Project",
+    "granted_by": "admin",
+    "granted_at": "2024-01-15T10:30:00Z"
+  }
 }
 ```
 
@@ -256,8 +715,8 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
 echo "1. Creating new project..."
 CREATE_RESPONSE=$(curl -s -X POST "http://localhost:8000/projects" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_name": "Test Project", "project_description": "A test project"}')
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_name=Test Project&project_description=A test project")
 
 echo "Create Response: $CREATE_RESPONSE"
 
@@ -271,8 +730,8 @@ curl -X GET "http://localhost:8000/projects/$PROJECT_HASH" \
 echo -e "\n3. Updating project..."
 curl -X PUT "http://localhost:8000/projects/$PROJECT_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_name": "Updated Test Project"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_name=Updated Test Project"
 
 echo -e "\n4. Listing all projects..."
 curl -X GET "http://localhost:8000/projects" \
@@ -312,287 +771,6 @@ curl -X POST "http://localhost:8000/projects" \
   -H "Authorization: Bearer $USER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"project_name": "Unauthorized Project"}'
-```
-
----
-
-## 📚 SDK Examples
-
-### Python SDK for Project Management
-
-```python
-import requests
-
-class ProjectAPI:
-    def __init__(self, base_url, session_token):
-        self.base_url = base_url
-        self.session_token = session_token
-        self.headers = {"Authorization": f"Bearer {session_token}"}
-    
-    def list_projects(self, limit=10, offset=0, search=None):
-        """List projects with pagination and search"""
-        params = {"limit": limit, "offset": offset}
-        if search:
-            params["search"] = search
-        
-        response = requests.get(
-            f"{self.base_url}/projects",
-            headers=self.headers,
-            params=params
-        )
-        return response.json()
-    
-    def get_project(self, project_hash):
-        """Get detailed project information"""
-        response = requests.get(
-            f"{self.base_url}/projects/{project_hash}",
-            headers=self.headers
-        )
-        return response.json()
-    
-    def create_project(self, project_name, project_description):
-        """Create a new project"""
-        response = requests.post(
-            f"{self.base_url}/projects",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json={
-                "project_name": project_name,
-                "project_description": project_description
-            }
-        )
-        return response.json()
-    
-    def update_project(self, project_hash, **updates):
-        """Update project information"""
-        response = requests.put(
-            f"{self.base_url}/projects/{project_hash}",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json=updates
-        )
-        return response.json()
-    
-    def delete_project(self, project_hash):
-        """Delete a project"""
-        response = requests.delete(
-            f"{self.base_url}/projects/{project_hash}",
-            headers=self.headers
-        )
-        return response.json()
-    
-    def search_projects(self, search_term):
-        """Search for projects by name or description"""
-        return self.list_projects(search=search_term)
-
-# Usage
-project_api = ProjectAPI("http://localhost:8000", "your_session_token")
-
-# List all accessible projects
-projects = project_api.list_projects()
-print(f"Total projects: {projects['pagination']['total_count']}")
-
-# Create a new project
-new_project = project_api.create_project(
-    "My New Project",
-    "Description of my new project"
-)
-print(f"Created project: {new_project['project']['project_name']}")
-
-# Get project details
-project_details = project_api.get_project(new_project['project']['project_hash'])
-print(f"Project permissions: {project_details['user_access']['permissions']}")
-
-# Update project
-updated = project_api.update_project(
-    new_project['project']['project_hash'],
-    project_name="Updated Project Name"
-)
-
-# Search projects
-results = project_api.search_projects("Updated")
-print(f"Search results: {len(results['projects'])} projects found")
-```
-
-### JavaScript SDK for Project Management
-
-```javascript
-class ProjectAPI {
-    constructor(baseUrl, sessionToken) {
-        this.baseUrl = baseUrl;
-        this.sessionToken = sessionToken;
-        this.headers = {
-            'Authorization': `Bearer ${sessionToken}`
-        };
-    }
-    
-    async listProjects(limit = 10, offset = 0, search = null) {
-        const params = new URLSearchParams({ limit, offset });
-        if (search) params.append('search', search);
-        
-        const response = await fetch(`${this.baseUrl}/projects?${params}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async getProject(projectHash) {
-        const response = await fetch(`${this.baseUrl}/projects/${projectHash}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async createProject(projectName, projectDescription) {
-        const response = await fetch(`${this.baseUrl}/projects`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                project_name: projectName,
-                project_description: projectDescription
-            })
-        });
-        return await response.json();
-    }
-    
-    async updateProject(projectHash, updates) {
-        const response = await fetch(`${this.baseUrl}/projects/${projectHash}`, {
-            method: 'PUT',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(updates)
-        });
-        return await response.json();
-    }
-    
-    async deleteProject(projectHash) {
-        const response = await fetch(`${this.baseUrl}/projects/${projectHash}`, {
-            method: 'DELETE',
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async searchProjects(searchTerm) {
-        return await this.listProjects(10, 0, searchTerm);
-    }
-}
-
-// Usage
-const projectAPI = new ProjectAPI('http://localhost:8000', 'your_session_token');
-
-// List all accessible projects
-const projects = await projectAPI.listProjects();
-console.log(`Total projects: ${projects.pagination.total_count}`);
-
-// Create a new project
-const newProject = await projectAPI.createProject(
-    'My New Project',
-    'Description of my new project'
-);
-console.log(`Created project: ${newProject.project.project_name}`);
-
-// Get project details
-const projectDetails = await projectAPI.getProject(newProject.project.project_hash);
-console.log(`Project permissions: ${projectDetails.user_access.permissions}`);
-
-// Update project
-const updated = await projectAPI.updateProject(
-    newProject.project.project_hash,
-    { project_name: 'Updated Project Name' }
-);
-
-// Search projects
-const results = await projectAPI.searchProjects('Updated');
-console.log(`Search results: ${results.projects.length} projects found`);
-```
-
----
-
-## 🔧 Common Use Cases
-
-### 1. Project Dashboard
-
-```python
-def create_project_dashboard(project_api):
-    """Create a project dashboard with statistics"""
-    projects = project_api.list_projects(limit=100)
-    
-    dashboard = {
-        "total_projects": projects["pagination"]["total_count"],
-        "projects": [],
-        "user_access_level": projects["user_access_level"]
-    }
-    
-    for project in projects["projects"]:
-        project_details = project_api.get_project(project["project_hash"])
-        dashboard["projects"].append({
-            "name": project["project_name"],
-            "description": project["project_description"],
-            "access_level": project["access_level"],
-            "users": project_details["statistics"]["total_users"],
-            "active_sessions": project_details["statistics"]["active_sessions"]
-        })
-    
-    return dashboard
-```
-
-### 2. Project Search and Filter
-
-```javascript
-async function searchAndFilterProjects(projectAPI, filters) {
-    const { searchTerm, limit = 20, offset = 0 } = filters;
-    
-    try {
-        const results = await projectAPI.listProjects(limit, offset, searchTerm);
-        
-        return {
-            projects: results.projects.map(project => ({
-                hash: project.project_hash,
-                name: project.project_name,
-                description: project.project_description,
-                accessLevel: project.access_level,
-                accessThrough: project.access_through
-            })),
-            pagination: results.pagination,
-            totalFound: results.pagination.total_count
-        };
-    } catch (error) {
-        console.error('Search failed:', error);
-        return { projects: [], pagination: {}, totalFound: 0 };
-    }
-}
-```
-
-### 3. Project Permissions Checker
-
-```python
-def check_project_permissions(project_api, project_hash):
-    """Check user's permissions for a specific project"""
-    try:
-        project_details = project_api.get_project(project_hash)
-        
-        permissions = project_details["user_access"]["permissions"]
-        
-        return {
-            "can_read": "read" in permissions,
-            "can_write": "write" in permissions,
-            "can_delete": "delete" in permissions,
-            "can_admin": "admin" in permissions,
-            "access_level": project_details["user_access"]["access_level"],
-            "user_groups": project_details["user_access"]["user_groups"]
-        }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "can_read": False,
-            "can_write": False,
-            "can_delete": False,
-            "can_admin": False
-        }
 ```
 
 ---

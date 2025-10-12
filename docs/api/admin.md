@@ -410,12 +410,15 @@ List all global user groups with member counts and statistics.
 **Authentication:** Required (admin permission)
 
 **Query Parameters:**
-- `limit` (optional, default: 50): Number of groups to return
+- `limit` (optional, default: 50, max: 100): Number of groups to return
 - `offset` (optional, default: 0): Number of groups to skip
+- `sort_by` (optional, default: 'group_name'): Field to sort by (group_name, created_at, updated_at, id)
+- `sort_order` (optional, default: 'asc'): Sort direction (asc or desc)
+- `search` (optional): Search term to filter group names
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/admin/user-groups?limit=50&offset=0" \
+curl -X GET "http://localhost:8000/admin/user-groups?limit=50&offset=0&sort_by=group_name&sort_order=asc&search=dev" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -449,20 +452,16 @@ Create a new global user group.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
-```json
-{
-  "group_name": "developers",
-  "description": "Software development team"
-}
-```
+**Request Body** (Form):
+- `group_name` (required): Name of the user group
+- `description` (optional): Description of the user group
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"group_name": "developers", "description": "Software development team"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=developers&description=Software development team"
 ```
 
 **Response (200):**
@@ -539,12 +538,16 @@ Update a user group's name or description.
 **Path Parameters:**
 - `group_hash`: User group identifier
 
-**Request Body** (JSON):
-```json
-{
-  "group_name": "updated_developers",
-  "description": "Updated software development team"
-}
+**Request Body** (Form):
+- `group_name` (optional): Updated name of the user group
+- `description` (optional): Updated description of the user group
+
+**Example Request:**
+```bash
+curl -X PUT "http://localhost:8000/admin/user-groups/group123..." \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=updated_developers&description=Updated software development team"
 ```
 
 **Response (200):**
@@ -638,6 +641,178 @@ Remove a user from a user group.
 {
   "success": true,
   "message": "User \"john_doe\" removed from group \"developers\""
+}
+```
+
+---
+
+### GET `/admin/user-groups/{group_hash}/members`
+
+Get paginated list of members in a user group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+
+**Query Parameters:**
+- `limit` (optional, default: 50, max: 100): Number of members to return
+- `offset` (optional, default: 0): Number of members to skip
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups/group123.../members?limit=50&offset=0" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "user_group": {
+    "group_hash": "group123...",
+    "group_name": "developers",
+    "description": "Software development team"
+  },
+  "members": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "email": "john@example.com",
+      "user_type": "consumer",
+      "joined_group_at": "2024-01-10T12:00:00Z",
+      "is_active": true
+    },
+    {
+      "user_hash": "usr-def456",
+      "username": "jane_smith",
+      "email": "jane@example.com",
+      "user_type": "consumer",
+      "joined_group_at": "2024-01-11T14:30:00Z",
+      "is_active": true
+    }
+  ],
+  "pagination": {
+    "total": 15,
+    "limit": 50,
+    "offset": 0,
+    "has_more": false
+  },
+  "statistics": {
+    "total_members": 15,
+    "members_shown": 2
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### POST `/admin/user-groups/{group_hash}/members/bulk`
+
+Bulk add multiple users to a user group.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `group_hash`: User group identifier
+
+**Request Body** (Form):
+- `user_hashes` (required): List of user hashes to add
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/admin/user-groups/group123.../members/bulk" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_hashes=usr-abc123&user_hashes=usr-def456&user_hashes=usr-ghi789"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Bulk assignment completed: 3 succeeded, 0 failed",
+  "user_group": {
+    "group_hash": "group123...",
+    "group_name": "developers"
+  },
+  "summary": {
+    "total_requested": 3,
+    "success_count": 3,
+    "error_count": 0
+  },
+  "results": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "status": "success",
+      "message": "Added to group successfully"
+    },
+    {
+      "user_hash": "usr-def456",
+      "username": "jane_smith",
+      "status": "success",
+      "message": "Added to group successfully"
+    },
+    {
+      "user_hash": "usr-ghi789",
+      "username": "bob_johnson",
+      "status": "success",
+      "message": "Added to group successfully"
+    }
+  ],
+  "errors": [],
+  "performed_by": "admin",
+  "performed_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/user-groups/users/{user_hash}/groups`
+
+Get all user groups that a specific user belongs to.
+
+**Authentication:** Required (admin permission)
+
+**Path Parameters:**
+- `user_hash`: User identifier
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups/users/usr-abc123/groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "user": {
+    "user_hash": "usr-abc123",
+    "username": "john_doe",
+    "email": "john@example.com",
+    "user_type": "consumer"
+  },
+  "groups": [
+    {
+      "group_hash": "group123...",
+      "group_name": "developers",
+      "description": "Software development team",
+      "joined_at": "2024-01-10T12:00:00Z"
+    },
+    {
+      "group_hash": "group456...",
+      "group_name": "api_users",
+      "description": "API access users",
+      "joined_at": "2024-01-12T09:00:00Z"
+    }
+  ],
+  "statistics": {
+    "total_groups": 2
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
 }
 ```
 
@@ -792,21 +967,17 @@ Create a new project permission group with specific permissions.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
-```json
-{
-  "group_name": "api-access",
-  "permissions": ["read", "write", "api_access"],
-  "description": "API access permissions"
-}
-```
+**Request Body** (Form):
+- `group_name` (required): Name of the project group
+- `permissions` (optional): List of permissions to assign to the group
+- `description` (optional): Description of the project group
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"group_name": "api-access", "permissions": ["read", "write", "api_access"], "description": "API access permissions"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=api-access&permissions=read&permissions=write&permissions=api_access&description=API access permissions"
 ```
 
 **Response (200):**
@@ -835,13 +1006,17 @@ Update a project group's information.
 **Path Parameters:**
 - `group_hash`: Project group identifier
 
-**Request Body** (JSON):
-```json
-{
-  "group_name": "api-access-updated",
-  "permissions": ["read", "write", "api_access", "export_data"],
-  "description": "Updated API access permissions"
-}
+**Request Body** (Form):
+- `group_name` (optional): Updated name of the project group
+- `permissions` (optional): Updated list of permissions
+- `description` (optional): Updated description
+
+**Example Request:**
+```bash
+curl -X PUT "http://localhost:8000/admin/project-groups/projgroup123..." \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=api-access-updated&permissions=read&permissions=write&permissions=api_access&permissions=export_data&description=Updated API access permissions"
 ```
 
 **Response (200):**
@@ -985,24 +1160,24 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
 echo "1. Creating user group..."
 USER_GROUP_RESPONSE=$(curl -s -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"group_name": "test_developers", "description": "Test development team"}')
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=test_developers&description=Test development team")
 
 USER_GROUP_HASH=$(echo $USER_GROUP_RESPONSE | jq -r '.user_group.group_hash')
 
 echo "2. Creating project group..."
 PROJECT_GROUP_RESPONSE=$(curl -s -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"group_name": "test_api_access", "permissions": ["read", "write", "api_access"], "description": "Test API access"}')
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=test_api_access&permissions=read&permissions=write&permissions=api_access&description=Test API access")
 
 PROJECT_GROUP_HASH=$(echo $PROJECT_GROUP_RESPONSE | jq -r '.project_group.group_hash')
 
 echo "3. Creating project..."
 PROJECT_RESPONSE=$(curl -s -X POST "http://localhost:8000/projects" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_name": "Test API Project", "project_description": "Test project for API access"}')
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_name=Test API Project&project_description=Test project for API access")
 
 PROJECT_HASH=$(echo $PROJECT_RESPONSE | jq -r '.project.project_hash')
 
@@ -1021,324 +1196,6 @@ curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/projects"
 echo "6. Getting user group details..."
 curl -X GET "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
----
-
-## 📚 SDK Examples
-
-### Python Admin SDK
-
-```python
-import requests
-
-class AdminAPI:
-    def __init__(self, base_url, admin_session_token):
-        self.base_url = base_url
-        self.session_token = admin_session_token
-        self.headers = {"Authorization": f"Bearer {admin_session_token}"}
-    
-    # User Group Management
-    def list_user_groups(self, limit=50, offset=0):
-        """List all user groups"""
-        response = requests.get(
-            f"{self.base_url}/admin/user-groups",
-            headers=self.headers,
-            params={"limit": limit, "offset": offset}
-        )
-        return response.json()
-    
-    def create_user_group(self, group_name, description):
-        """Create a new user group"""
-        response = requests.post(
-            f"{self.base_url}/admin/user-groups",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json={"group_name": group_name, "description": description}
-        )
-        return response.json()
-    
-    def get_user_group(self, group_hash):
-        """Get detailed user group information"""
-        response = requests.get(
-            f"{self.base_url}/admin/user-groups/{group_hash}",
-            headers=self.headers
-        )
-        return response.json()
-    
-    def assign_user_to_group(self, group_hash, user_hash):
-        """Assign a user to a user group"""
-        response = requests.post(
-            f"{self.base_url}/admin/user-groups/{group_hash}/members",
-            headers=self.headers,
-            data={"user_hash": user_hash}
-        )
-        return response.json()
-    
-    def grant_group_project_access(self, group_hash, project_hash):
-        """Grant user group access to a project"""
-        response = requests.post(
-            f"{self.base_url}/admin/user-groups/{group_hash}/projects",
-            headers=self.headers,
-            data={"project_hash": project_hash}
-        )
-        return response.json()
-    
-    # Project Group Management
-    def list_project_groups(self, limit=50, offset=0):
-        """List all project groups"""
-        response = requests.get(
-            f"{self.base_url}/admin/project-groups",
-            headers=self.headers,
-            params={"limit": limit, "offset": offset}
-        )
-        return response.json()
-    
-    def create_project_group(self, group_name, permissions, description):
-        """Create a new project group"""
-        response = requests.post(
-            f"{self.base_url}/admin/project-groups",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json={
-                "group_name": group_name,
-                "permissions": permissions,
-                "description": description
-            }
-        )
-        return response.json()
-    
-    def assign_project_to_group(self, group_hash, project_hash):
-        """Assign a project to a project group"""
-        response = requests.post(
-            f"{self.base_url}/admin/project-groups/{group_hash}/projects",
-            headers=self.headers,
-            data={"project_hash": project_hash}
-        )
-        return response.json()
-
-# Usage
-admin_api = AdminAPI("http://localhost:8000", "admin_session_token")
-
-# Create complete group setup
-user_group = admin_api.create_user_group("api_users", "API access users")
-project_group = admin_api.create_project_group(
-    "api_permissions", 
-    ["read", "write", "api_access"], 
-    "Standard API permissions"
-)
-
-# Grant access
-admin_api.grant_group_project_access(
-    user_group["user_group"]["group_hash"],
-    "project_hash"
-)
-```
-
-### JavaScript Admin SDK
-
-```javascript
-class AdminAPI {
-    constructor(baseUrl, adminSessionToken) {
-        this.baseUrl = baseUrl;
-        this.sessionToken = adminSessionToken;
-        this.headers = {
-            'Authorization': `Bearer ${adminSessionToken}`
-        };
-    }
-    
-    // User Group Management
-    async listUserGroups(limit = 50, offset = 0) {
-        const params = new URLSearchParams({ limit, offset });
-        const response = await fetch(`${this.baseUrl}/admin/user-groups?${params}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async createUserGroup(groupName, description) {
-        const response = await fetch(`${this.baseUrl}/admin/user-groups`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                group_name: groupName,
-                description: description
-            })
-        });
-        return await response.json();
-    }
-    
-    async getUserGroup(groupHash) {
-        const response = await fetch(`${this.baseUrl}/admin/user-groups/${groupHash}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async assignUserToGroup(groupHash, userHash) {
-        const response = await fetch(`${this.baseUrl}/admin/user-groups/${groupHash}/members`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ user_hash: userHash })
-        });
-        return await response.json();
-    }
-    
-    async grantGroupProjectAccess(groupHash, projectHash) {
-        const response = await fetch(`${this.baseUrl}/admin/user-groups/${groupHash}/projects`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ project_hash: projectHash })
-        });
-        return await response.json();
-    }
-    
-    // Project Group Management
-    async listProjectGroups(limit = 50, offset = 0) {
-        const params = new URLSearchParams({ limit, offset });
-        const response = await fetch(`${this.baseUrl}/admin/project-groups?${params}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async createProjectGroup(groupName, permissions, description) {
-        const response = await fetch(`${this.baseUrl}/admin/project-groups`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                group_name: groupName,
-                permissions: permissions,
-                description: description
-            })
-        });
-        return await response.json();
-    }
-    
-    async assignProjectToGroup(groupHash, projectHash) {
-        const response = await fetch(`${this.baseUrl}/admin/project-groups/${groupHash}/projects`, {
-            method: 'POST',
-            headers: {
-                ...this.headers,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ project_hash: projectHash })
-        });
-        return await response.json();
-    }
-}
-
-// Usage
-const adminAPI = new AdminAPI('http://localhost:8000', 'admin_session_token');
-
-// Create complete group setup
-const userGroup = await adminAPI.createUserGroup('api_users', 'API access users');
-const projectGroup = await adminAPI.createProjectGroup(
-    'api_permissions',
-    ['read', 'write', 'api_access'],
-    'Standard API permissions'
-);
-
-// Grant access
-await adminAPI.grantGroupProjectAccess(
-    userGroup.user_group.group_hash,
-    'project_hash'
-);
-```
-
----
-
-## 🔧 Common Admin Use Cases
-
-### 1. Complete User Onboarding
-
-```python
-def onboard_new_user(admin_api, username, email, user_group_name, project_hashes):
-    """Complete user onboarding process"""
-    # This would typically involve:
-    # 1. User registration (handled by auth endpoints)
-    # 2. Group assignment (admin operation)
-    # 3. Project access verification
-    
-    # Get user group
-    user_groups = admin_api.list_user_groups()
-    target_group = next(
-        (g for g in user_groups["user_groups"] if g["group_name"] == user_group_name),
-        None
-    )
-    
-    if not target_group:
-        return {"error": f"User group {user_group_name} not found"}
-    
-    # Note: User hash would come from user creation
-    # admin_api.assign_user_to_group(target_group["group_hash"], user_hash)
-    
-    # Verify project access
-    group_details = admin_api.get_user_group(target_group["group_hash"])
-    accessible_projects = [p["project_hash"] for p in group_details["accessible_projects"]]
-    
-    return {
-        "user_group": target_group["group_name"],
-        "accessible_projects": accessible_projects,
-        "missing_projects": [p for p in project_hashes if p not in accessible_projects]
-    }
-```
-
-### 2. Permission Audit
-
-```javascript
-async function auditGroupPermissions(adminAPI) {
-    const userGroups = await adminAPI.listUserGroups(100);
-    const projectGroups = await adminAPI.listProjectGroups(100);
-    
-    const audit = {
-        userGroups: [],
-        projectGroups: [],
-        recommendations: []
-    };
-    
-    // Audit user groups
-    for (const group of userGroups.user_groups) {
-        const details = await adminAPI.getUserGroup(group.group_hash);
-        audit.userGroups.push({
-            name: group.group_name,
-            members: details.statistics.total_members,
-            projects: details.statistics.total_projects,
-            lastActivity: group.created_at
-        });
-        
-        // Flag groups with no members
-        if (details.statistics.total_members === 0) {
-            audit.recommendations.push(`User group "${group.group_name}" has no members`);
-        }
-    }
-    
-    // Audit project groups
-    for (const group of projectGroups.project_groups) {
-        audit.projectGroups.push({
-            name: group.group_name,
-            permissions: group.permissions,
-            projects: group.project_count
-        });
-        
-        // Flag groups with no projects
-        if (group.project_count === 0) {
-            audit.recommendations.push(`Project group "${group.group_name}" has no projects assigned`);
-        }
-    }
-    
-    return audit;
-}
 ```
 
 ---
@@ -1365,4 +1222,13 @@ async function auditGroupPermissions(adminAPI) {
 
 ---
 
-**Next:** Explore [System API](system.md) for monitoring and health checks, or [Error Handling](errors-and-responses.md) for comprehensive error reference.
+## 🚀 Related Documentation
+
+For efficient batch operations and analytics:
+
+- **[Bulk Operations API](bulk-operations.md)** - Manage multiple users, roles, and groups simultaneously
+- **[Analytics API](analytics.md)** - Monitor system usage, user activity, and project metrics
+
+---
+
+**Next:** Explore [Bulk Operations API](bulk-operations.md) for batch management, [Analytics API](analytics.md) for insights, [System API](system.md) for health checks, or [Error Handling](errors-and-responses.md) for error reference.

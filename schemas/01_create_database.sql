@@ -1,7 +1,7 @@
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
 -- Database Creation Script
 -- MySQL Database
-
+CREATE SCHEMA IF NOT EXISTS magic_auth;
 -- Create database
 CREATE DATABASE IF NOT EXISTS magic_auth DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE magic_auth;

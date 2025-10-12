@@ -33,25 +33,17 @@ Create a new root (super admin) user.
 
 **Authentication:** Root users only
 
-**Request Body** (JSON):
-```json
-{
-  "username": "new_root_admin",
-  "password": "secure_password_123",
-  "email": "root@company.com"
-}
-```
+**Request Body** (Form):
+- `username` (required): Username for the root user
+- `password` (required): Password for the root user
+- `email` (optional): Email address for the root user
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user-types/root" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "new_root_admin",
-    "password": "secure_password_123",
-    "email": "root@company.com"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=new_root_admin&password=secure_password_123&email=root@company.com"
 ```
 
 **Response (200):**
@@ -83,27 +75,21 @@ Create a new admin user assigned to one or multiple projects.
 
 **Authentication:** Root users only
 
-**Request Body** (JSON):
-```json
-{
-  "username": "project_admin",
-  "password": "admin_password_123",
-  "email": "admin@company.com",
-  "assigned_project_ids": [5, 8]
-}
-```
+**Request Body** (Form):
+- `username` (required): Username for the admin user
+- `password` (required): Password for the admin user
+- `email` (required): Email address for the admin user
+- `assigned_project_id` (optional): Single project ID for backwards compatibility
+- `assigned_project_ids` (optional): List of project IDs to assign (use this for multiple projects)
+
+**Note:** Either `assigned_project_id` or `assigned_project_ids` must be provided.
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user-types/admin" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "project_admin",
-    "password": "admin_password_123", 
-    "email": "admin@company.com",
-    "assigned_project_ids": [5, 8]
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=project_admin&password=admin_password_123&email=admin@company.com&assigned_project_ids=5&assigned_project_ids=8"
 ```
 
 **Response (200):**
@@ -244,33 +230,24 @@ Update user type (promote/demote users).
 **Path Parameters:**
 - `user_hash`: Hash of the user to update
 
-**Request Body** (JSON):
-```json
-{
-  "user_type": "admin",
-  "assigned_project_id": 5
-}
-```
+**Request Body** (Form):
+- `user_type` (required): New user type ('root', 'admin', or 'consumer')
+- `assigned_project_id` (optional): Project ID (required when changing to 'admin')
 
 **Example Request - Promote to Admin:**
 ```bash
 curl -X PUT "http://localhost:8000/user-types/USER123.../type" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_type": "admin",
-    "assigned_project_id": 5
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_type=admin&assigned_project_id=5"
 ```
 
 **Example Request - Demote to Consumer:**
 ```bash
 curl -X PUT "http://localhost:8000/user-types/USER123.../type" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_type": "consumer"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_type=consumer"
 ```
 
 **Response (200):**
@@ -301,52 +278,9 @@ curl -X PUT "http://localhost:8000/user-types/USER123.../type" \
 
 ---
 
-### PUT `/user-types/admin/{user_hash}/project`
-
-Update an admin user's primary project assignment. This is a legacy endpoint for single-project assignment. For multi-project assignments, use the `/user-types/admin/{user_hash}/projects` endpoint.
-
-**Authentication:** Root users only
-
-**Path Parameters:**
-- `user_hash`: Hash of the admin user to update
-
-**Request Body** (JSON):
-```json
-{
-  "assigned_project_id": 10
-}
-```
-
-**Example Request:**
-```bash
-curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../project" \
-  -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"assigned_project_id": 10}'
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "message": "Admin user 'project_admin' reassigned to project 'New Project Name'",
-  "assignment": {
-    "user_hash": "ADMIN123...",
-    "username": "project_admin",
-    "previous_project": "Old Project Name",
-    "new_project": "New Project Name",
-    "new_project_id": 10,
-    "new_project_hash": "PROJXYZ...",
-    "assigned_by": "root_admin"
-  }
-}
-```
-
----
-
 ## 📂 Admin Multi-Project Management
 
-Manage project assignments for admin users.
+Admin users can be assigned to multiple projects simultaneously. These endpoints manage multi-project assignments for admin users.
 
 ### GET `/user-types/admin/{user_hash}/projects`
 
@@ -403,19 +337,15 @@ Set or replace all project assignments for an admin user.
 **Path Parameters:**
 - `user_hash`: Hash of the admin user
 
-**Request Body** (JSON):
-```json
-{
-  "assigned_project_ids": [5, 10]
-}
-```
+**Request Body** (Form):
+- `assigned_project_ids` (required): List of project IDs to assign
 
 **Example Request:**
 ```bash
 curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"assigned_project_ids": [5, 10]}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "assigned_project_ids=5&assigned_project_ids=10"
 ```
 
 **Response (200):**
@@ -439,26 +369,22 @@ curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
 
 ### POST `/user-types/admin/{user_hash}/projects/add`
 
-Add an admin user to an additional project.
+Add an admin user to an additional project without removing existing assignments.
 
 **Authentication:** Root users only
 
 **Path Parameters:**
 - `user_hash`: Hash of the admin user
 
-**Request Body** (JSON):
-```json
-{
-  "project_id": 12
-}
-```
+**Request Body** (Form):
+- `project_id` (required): ID of the project to add
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/user-types/admin/ADMIN123.../projects/add" \
   -H "Authorization: Bearer ROOT_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_id": 12}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_id=12"
 ```
 
 **Response (200):**
@@ -655,13 +581,8 @@ ROOT_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
 echo "1. Creating admin user..."
 ADMIN_RESPONSE=$(curl -s -X POST "http://localhost:8000/user-types/admin" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "test_admin",
-    "password": "admin123",
-    "email": "test_admin@company.com",
-    "assigned_project_ids": [1]
-  }')
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=test_admin&password=admin123&email=test_admin@company.com&assigned_project_ids=1")
 
 echo "Admin Creation Response: $ADMIN_RESPONSE"
 
@@ -674,12 +595,8 @@ curl -X GET "http://localhost:8000/user-types/$ADMIN_HASH/info" \
 echo "3. Creating root user..."
 curl -X POST "http://localhost:8000/user-types/root" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "test_root",
-    "password": "root123", 
-    "email": "test_root@company.com"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=test_root&password=root123&email=test_root@company.com"
 
 echo "4. Listing admin users..."
 curl -X GET "http://localhost:8000/user-types/users/admin" \
@@ -688,202 +605,8 @@ curl -X GET "http://localhost:8000/user-types/users/admin" \
 echo "5. Converting user type..."
 curl -X PUT "http://localhost:8000/user-types/$ADMIN_HASH/type" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_type": "consumer"
-  }'
-```
-
----
-
-## 📚 SDK Examples
-
-### Python SDK for User Type Management
-
-```python
-import requests
-
-class UserTypeAPI:
-    def __init__(self, base_url, root_session_token):
-        self.base_url = base_url
-        self.session_token = root_session_token
-        self.headers = {"Authorization": f"Bearer {session_token}"}
-    
-    def create_root_user(self, username, password, email=None):
-        """Create a new root user (root users only)"""
-        response = requests.post(
-            f"{self.base_url}/user-types/root",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json={
-                "username": username,
-                "password": password,
-                "email": email
-            }
-        )
-        return response.json()
-    
-    def create_admin_user(self, username, password, email, assigned_project_ids):
-        """Create a new admin user assigned to multiple projects (root users only)"""
-        response = requests.post(
-            f"{self.base_url}/user-types/admin",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json={
-                "username": username,
-                "password": password,
-                "email": email,
-                "assigned_project_ids": assigned_project_ids
-            }
-        )
-        return response.json()
-    
-    def get_user_type_info(self, user_hash):
-        """Get comprehensive user type information"""
-        response = requests.get(
-            f"{self.base_url}/user-types/{user_hash}/info",
-            headers=self.headers
-        )
-        return response.json()
-    
-    def update_user_type(self, user_hash, new_user_type, assigned_project_id=None):
-        """Update user type (promote/demote users)"""
-        payload = {"user_type": new_user_type}
-        if assigned_project_id:
-            payload["assigned_project_id"] = assigned_project_id
-        
-        response = requests.put(
-            f"{self.base_url}/user-types/{user_hash}/type",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json=payload
-        )
-        return response.json()
-    
-    def list_users_by_type(self, user_type, limit=50, offset=0):
-        """List users by user type"""
-        response = requests.get(
-            f"{self.base_url}/user-types/users/{user_type}",
-            headers=self.headers,
-            params={"limit": limit, "offset": offset}
-        )
-        return response.json()
-
-# Usage
-user_type_api = UserTypeAPI("http://localhost:8000", "root_session_token")
-
-# Create admin user
-admin_user = user_type_api.create_admin_user(
-    "project_admin",
-    "secure_password",
-    "admin@company.com",
-    [5, 8]  # project_ids
-)
-
-# Get user type info
-user_info = user_type_api.get_user_type_info(admin_user["user"]["user_hash"])
-
-# Promote consumer to admin
-user_type_api.update_user_type(
-    "CONSUMER_USER_HASH",
-    "admin",
-    assigned_project_id=5
-)
-
-# List all admin users
-admin_users = user_type_api.list_users_by_type("admin")
-```
-
-### JavaScript SDK for User Type Management
-
-```javascript
-class UserTypeAPI {
-    constructor(baseUrl, rootSessionToken) {
-        this.baseUrl = baseUrl;
-        this.sessionToken = rootSessionToken;
-        this.headers = {
-            'Authorization': `Bearer ${rootSessionToken}`,
-            'Content-Type': 'application/json'
-        };
-    }
-    
-    async createRootUser(username, password, email = null) {
-        const response = await fetch(`${this.baseUrl}/user-types/root`, {
-            method: 'POST',
-            headers: this.headers,
-            body: JSON.stringify({
-                username,
-                password,
-                email
-            })
-        });
-        return await response.json();
-    }
-    
-    async createAdminUser(username, password, email, assignedProjectIds) {
-        const response = await fetch(`${this.baseUrl}/user-types/admin`, {
-            method: 'POST',
-            headers: this.headers,
-            body: JSON.stringify({
-                username,
-                password,
-                email,
-                assigned_project_ids: assignedProjectIds
-            })
-        });
-        return await response.json();
-    }
-    
-    async getUserTypeInfo(userHash) {
-        const response = await fetch(`${this.baseUrl}/user-types/${userHash}/info`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-    
-    async updateUserType(userHash, newUserType, assignedProjectId = null) {
-        const payload = { user_type: newUserType };
-        if (assignedProjectId) {
-            payload.assigned_project_id = assignedProjectId;
-        }
-        
-        const response = await fetch(`${this.baseUrl}/user-types/${userHash}/type`, {
-            method: 'PUT',
-            headers: this.headers,
-            body: JSON.stringify(payload)
-        });
-        return await response.json();
-    }
-    
-    async listUsersByType(userType, limit = 50, offset = 0) {
-        const params = new URLSearchParams({ limit, offset });
-        const response = await fetch(`${this.baseUrl}/user-types/users/${userType}?${params}`, {
-            headers: this.headers
-        });
-        return await response.json();
-    }
-}
-
-// Usage
-const userTypeAPI = new UserTypeAPI('http://localhost:8000', 'root_session_token');
-
-// Create admin user
-const adminUser = await userTypeAPI.createAdminUser(
-    'project_admin',
-    'secure_password',
-    'admin@company.com',
-    [5, 8]  // project_ids
-);
-
-// Get user type info
-const userInfo = await userTypeAPI.getUserTypeInfo(adminUser.user.user_hash);
-
-// Promote consumer to admin
-await userTypeAPI.updateUserType(
-    'CONSUMER_USER_HASH',
-    'admin',
-    5  // assigned_project_id
-);
-
-// List all admin users
-const adminUsers = await userTypeAPI.listUsersByType('admin');
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_type=consumer"
 ```
 
 ---
