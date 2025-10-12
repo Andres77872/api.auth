@@ -92,6 +92,39 @@ CREATE TABLE IF NOT EXISTS user_group_projects (
     UNIQUE KEY uk_group_project (user_group_id, project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =================== PROJECT_GROUPS TABLE ===================
+-- Project groups that define sets of permissions
+-- Used for organizing projects with similar permission sets
+CREATE TABLE IF NOT EXISTS project_groups (
+    id VARCHAR(64) NOT NULL,
+    group_hash VARCHAR(255) NOT NULL,
+    group_name VARCHAR(100) NOT NULL,
+    group_description TEXT,
+    permissions JSON,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_project_group_hash (group_hash),
+    UNIQUE KEY uk_project_group_name (group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PROJECT_GROUP_MEMBERS TABLE ===================
+-- Links projects to project groups (many-to-many)
+-- Projects can belong to multiple groups to inherit different permission sets
+CREATE TABLE IF NOT EXISTS project_group_members (
+    id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    project_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_project_group_member (project_id, project_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =================== PERMISSIONS TABLE ===================
 -- Project-specific permission catalog
 -- Each project has its own set of permissions
@@ -112,7 +145,12 @@ CREATE TABLE IF NOT EXISTS permissions (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_hash (permission_hash),
-    UNIQUE KEY uk_project_permission (project_id, permission_name)
+    UNIQUE KEY uk_project_permission (project_id, permission_name),
+    INDEX idx_project_category (project_id, permission_category),
+    INDEX idx_permission_name (permission_name),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_permission_id) REFERENCES permissions(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSION_GROUPS TABLE ===================
@@ -136,7 +174,12 @@ CREATE TABLE IF NOT EXISTS permission_groups (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_group_hash (group_hash),
-    UNIQUE KEY uk_project_role (project_id, group_name)
+    UNIQUE KEY uk_project_role (project_id, group_name),
+    INDEX idx_project_priority (project_id, group_priority),
+    INDEX idx_group_name (group_name),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_permission_group_id) REFERENCES permission_groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PERMISSION_GROUP_PERMISSIONS TABLE ===================
@@ -151,7 +194,13 @@ CREATE TABLE IF NOT EXISTS permission_group_permissions (
     revoked_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_group_permission (permission_group_id, permission_id)
+    UNIQUE KEY uk_group_permission (permission_group_id, permission_id),
+    INDEX idx_permission_group (permission_group_id),
+    INDEX idx_permission (permission_id),
+    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE,
+    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (revoked_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUP_PERMISSION_GROUPS TABLE ===================
@@ -168,7 +217,14 @@ CREATE TABLE IF NOT EXISTS user_group_permission_groups (
     removed_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id)
+    UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id),
+    INDEX idx_user_group_project (user_group_id, project_id),
+    INDEX idx_permission_group (permission_group_id),
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_SESSIONS TABLE ===================
@@ -199,11 +255,21 @@ CREATE TABLE IF NOT EXISTS permission_audit_log (
     old_values JSON,
     new_values JSON,
     action_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    performed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ip_address VARCHAR(45),
     user_agent TEXT,
     table_name VARCHAR(100),
     record_id VARCHAR(64),
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    INDEX idx_project_action (project_id, action_type),
+    INDEX idx_performed_by (performed_by),
+    INDEX idx_timestamp (action_timestamp),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE SET NULL,
+    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ACTIVITY_LOGS TABLE ===================

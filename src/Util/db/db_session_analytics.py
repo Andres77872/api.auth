@@ -253,8 +253,7 @@ def get_recent_projects_count(days: int = 30) -> int:
 
 
 def get_project_members(project_id: str) -> List[Dict[str, Any]]:
-    """
-    Get all members of a project with their access details
+    """Get all members of a project with their access details
     
     Args:
         project_id: Project ID
@@ -266,7 +265,7 @@ def get_project_members(project_id: str) -> List[Dict[str, Any]]:
         with get_connection() as con:
             cur = con.cursor()
 
-            # Query to get all users with access to this project
+            # Query to get all users with access to this project through user groups
             cur.execute("""
                         SELECT DISTINCT u.id,
                                         u.user_hash,
@@ -275,22 +274,20 @@ def get_project_members(project_id: str) -> List[Dict[str, Any]]:
                                         u.user_type,
                                         u.is_active,
                                         u.created_at,
-                                        up.granted_at,
-                                        up.granted_by,
-                                        apa.assigned_at as admin_assigned_at
+                                        ugp.granted_at,
+                                        ugp.granted_by,
+                                        ug.group_name
                         FROM users u
-                                 LEFT JOIN user_projects up
-                                           ON u.id = up.user_id AND up.project_id = %s AND up.is_active = 1
-                                 LEFT JOIN admin_project_assignments apa
-                                           ON u.id = apa.user_id AND apa.project_id = %s AND apa.is_active = 1
+                        LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
+                        LEFT JOIN user_group_projects ugp ON ugm.user_group_id = ugp.user_group_id AND ugp.project_id = %s AND ugp.is_active = 1
+                        LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
                         WHERE u.is_active = 1
                           AND (
                             u.user_type = 'root' OR
-                            (u.user_type = 'admin' AND apa.user_id IS NOT NULL) OR
-                            (u.user_type = 'consumer' AND up.user_id IS NOT NULL)
-                            )
+                            ugp.user_group_id IS NOT NULL
+                          )
                         ORDER BY u.user_type, u.username
-                        """, [project_id, project_id])
+                        """, [project_id])
 
             results = cur.fetchall()
 
@@ -304,9 +301,10 @@ def get_project_members(project_id: str) -> List[Dict[str, Any]]:
                     "user_type": row[4],
                     "is_active": bool(row[5]),
                     "created_at": row[6],
-                    "granted_at": row[7] or row[9],  # Use appropriate date based on user type
+                    "granted_at": row[7],
                     "granted_by": row[8],
-                    "access_type": "admin" if row[4] == "admin" else ("root" if row[4] == "root" else "consumer")
+                    "access_through_group": row[9],
+                    "access_type": "root" if row[4] == "root" else ("admin" if row[4] == "admin" else "consumer")
                 }
                 members.append(member)
 
@@ -476,93 +474,17 @@ def get_recent_activity_count(days: int = 7) -> int:
 
 
 def initialize_activity_logs_table() -> bool:
-    """
-    Initialize the activity_logs table if it doesn't exist
+    """Initialize the activity_logs table if it doesn't exist
+    
+    Note: This function is deprecated as the table is now created in the schema files.
     
     Returns:
         Success status
     """
     try:
-        with get_connection() as con:
-            cur = con.cursor()
-
-            # Create activity_logs table
-            cur.execute("""
-                        CREATE TABLE IF NOT EXISTS activity_logs
-                        (
-                            id
-                            BIGINT
-                            UNSIGNED
-                            AUTO_INCREMENT
-                            PRIMARY
-                            KEY,
-                            user_id
-                            INT
-                            UNSIGNED,
-                            activity_type
-                            VARCHAR
-                        (
-                            50
-                        ) NOT NULL,
-                            details TEXT,
-                            project_id INT UNSIGNED,
-                            target_user_id INT UNSIGNED,
-                            ip_address VARCHAR
-                        (
-                            45
-                        ),
-                            user_agent TEXT,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            INDEX idx_user_id
-                        (
-                            user_id
-                        ),
-                            INDEX idx_activity_type
-                        (
-                            activity_type
-                        ),
-                            INDEX idx_project_id
-                        (
-                            project_id
-                        ),
-                            INDEX idx_created_at
-                        (
-                            created_at
-                        ),
-                            INDEX idx_target_user_id
-                        (
-                            target_user_id
-                        ),
-                            FOREIGN KEY
-                        (
-                            user_id
-                        ) REFERENCES users
-                        (
-                            id
-                        ) ON DELETE SET NULL,
-                            FOREIGN KEY
-                        (
-                            project_id
-                        ) REFERENCES projects
-                        (
-                            id
-                        )
-                          ON DELETE SET NULL,
-                            FOREIGN KEY
-                        (
-                            target_user_id
-                        ) REFERENCES users
-                        (
-                            id
-                        )
-                          ON DELETE SET NULL
-                            )
-                        """)
-
-            con.commit()
-            logger.info("Activity logs table initialized successfully")
-            return True
+        logger.info("Activity logs table should be created via schema files (02_create_tables.sql)")
+        return True
 
     except Exception as e:
-        logger.error(f"Failed to initialize activity logs table: {str(e)}")
+        logger.error(f"Note: {str(e)}")
         return False

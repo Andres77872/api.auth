@@ -172,7 +172,6 @@ api.auth/
 │   ├── api-reference.md
 │   ├── database-schema.md
 │   ├── architecture.md (this file)
-│   └── migration-guide.md
 │
 ├── README.md                   # Main project documentation
 ├── requirements.txt            # Python dependencies

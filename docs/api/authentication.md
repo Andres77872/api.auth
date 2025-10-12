@@ -33,54 +33,127 @@ The authentication system supports three distinct user types:
 
 ### POST `/auth/login`
 
-Group-based login to a specific project.
+Authenticate user and login to a specific project or automatically select project context.
+
+**How it works:**
+- **Root users**: Get global session with no project binding, can access all projects
+- **With project_hash**: Login to the specified project (if user has access)
+- **Without project_hash**: Admin/Consumer users are automatically placed in first accessible project
+- All users receive a list of accessible projects for project switching
 
 **Request Body** (form-data):
-- `username` (required): User's username
+- `username` (required): User's username or email
 - `password` (required): User's password
-- `project_hash` (required): Project hash to login to
+- `project_hash` (optional): Specific project hash to login to
 
-**Example Request:**
+**Example Request - Login to Specific Project:**
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin&password=admin123&project_hash=abc123..."
+  -d "username=john_doe&password=SecurePass123&project_hash=proj_xyz789abc"
 ```
 
-**Success Response (200):**
+**Example Request - Auto-select Project:**
+```bash
+curl -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=john_doe&password=SecurePass123"
+```
+
+**Success Response (200) - Root User:**
+```json
+{
+  "success": true,
+  "message": "Root user login successful - global access granted",
+  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "user_hash": "root_a1b2c3d4e5f6",
+    "username": "root_admin",
+    "email": "root@example.com",
+    "user_type": "root"
+  },
+  "project": null,
+  "accessible_projects": [
+    {
+      "project_hash": "proj_xyz789abc",
+      "project_name": "Main Project",
+      "project_description": "Primary application project"
+    },
+    {
+      "project_hash": "proj_def456ghi",
+      "project_name": "Analytics Dashboard",
+      "project_description": "Analytics and reporting system"
+    }
+  ]
+}
+```
+
+**Success Response (200) - Admin/Consumer User:**
 ```json
 {
   "success": true,
   "message": "Login successful",
-  "session_token": "def456...",
+  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
-    "user_hash": "ghi789...",
-    "username": "admin",
-    "email": "admin@example.com",
-    "user_type": "root",
-    "user_groups": ["administrators"]
+    "user_hash": "user_f6e5d4c3b2a1",
+    "username": "john_doe",
+    "email": "john@example.com",
+    "user_type": "consumer"
   },
   "project": {
-    "project_hash": "abc123...",
-    "project_name": "My Project",
-    "permissions": ["admin", "read", "write", "delete", "manage_users"]
+    "project_hash": "proj_xyz789abc",
+    "project_name": "Main Project",
+    "project_description": "Primary application project"
   },
   "accessible_projects": [
     {
-      "project_hash": "abc123...",
-      "project_name": "My Project",
-      "project_description": "Project description"
+      "project_hash": "proj_xyz789abc",
+      "project_name": "Main Project",
+      "project_description": "Primary application project"
+    },
+    {
+      "project_hash": "proj_abc123def",
+      "project_name": "Mobile App",
+      "project_description": "Mobile application backend"
     }
-  ],
-  "expires_at": "2024-01-04T12:00:00Z"
+  ]
 }
 ```
 
-**Error Response (401):**
+**Error Responses:**
+
+**401 - Invalid Credentials:**
 ```json
 {
-  "success": false,
   "detail": "Invalid credentials"
+}
+```
+
+**403 - No Project Access:**
+```json
+{
+  "detail": "User has no access to any project"
+}
+```
+
+**403 - Unauthorized Project Access:**
+```json
+{
+  "detail": "Access denied to project. User has access to 3 project(s)."
+}
+```
+
+**404 - Project Not Found:**
+```json
+{
+  "detail": "Specified project not found"
+}
+```
+
+**400 - Missing Parameters:**
+```json
+{
+  "detail": "Username and password are required"
 }
 ```
 
@@ -88,19 +161,19 @@ curl -X POST "http://localhost:8000/auth/login" \
 
 ### POST `/auth/register`
 
-Register a new user and assign them to a user group.
+Register a new user and assign them to a user group with automatic project access.
 
 **Request Body** (form-data):
-- `username` (required): Desired username
-- `password` (required): User's password
-- `email` (required): User's email address
-- `project_hash` (required): Project hash to register for
+- `username` (required): Desired username (minimum 3 characters)
+- `password` (required): User's password (minimum 8 characters recommended)
+- `email` (optional): User's email address
+- `user_group_hash` (required): User group hash to assign the new user to
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/auth/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=password123&email=john@example.com&project_hash=abc123..."
+  -d "username=john_doe&password=SecurePass123&email=john@example.com&user_group_hash=group_abc123def"
 ```
 
 **Success Response (200):**
@@ -109,16 +182,38 @@ curl -X POST "http://localhost:8000/auth/register" \
   "success": true,
   "message": "User registered successfully",
   "user": {
-    "user_hash": "new_user_hash...",
+    "user_hash": "user_new9876543",
     "username": "john_doe",
     "email": "john@example.com",
-    "user_type": "consumer",
-    "user_groups": []
+    "user_type": "consumer"
   },
   "project": {
-    "project_hash": "abc123...",
-    "project_name": "My Project"
+    "project_hash": "proj_xyz789abc",
+    "project_name": "Main Project"
   }
+}
+```
+
+**Error Responses:**
+
+**409 - Username Already Exists:**
+```json
+{
+  "detail": "Username already exists"
+}
+```
+
+**409 - Email Already Exists:**
+```json
+{
+  "detail": "Email already exists"
+}
+```
+
+**400 - Invalid Group:**
+```json
+{
+  "detail": "User group not found"
 }
 ```
 
@@ -136,26 +231,46 @@ curl -X GET "http://localhost:8000/auth/validate" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
-**Response (200):**
+**Response (200) - Consumer User:**
 ```json
 {
   "success": true,
   "valid": true,
   "user": {
-    "user_hash": "ghi789...",
-    "username": "admin",
-    "email": "admin@example.com",
-    "user_type": "root",
-    "user_groups": ["administrators"]
+    "user_hash": "user_f6e5d4c3b2a1",
+    "username": "john_doe",
+    "user_type": "consumer"
   },
   "project": {
-    "project_hash": "abc123...",
-    "project_name": "My Project",
-    "permissions": ["admin", "read", "write", "delete"]
+    "project_hash": "proj_xyz789abc",
+    "project_name": "Main Project",
+    "project_description": "Primary application project"
   },
   "session": {
-    "expires_at": "2024-01-04T12:00:00Z",
-    "created_at": "2024-01-01T12:00:00Z"
+    "created_at": null,
+    "is_global_session": false
+  }
+}
+```
+
+**Response (200) - Root User (Global Session):**
+```json
+{
+  "success": true,
+  "valid": true,
+  "user": {
+    "user_hash": "root_a1b2c3d4e5f6",
+    "username": "root_admin",
+    "user_type": "root"
+  },
+  "project": {
+    "project_hash": "",
+    "project_name": "Global Root Access",
+    "project_description": "Unrestricted global access for root user"
+  },
+  "session": {
+    "created_at": null,
+    "is_global_session": true
   }
 }
 ```
@@ -164,7 +279,7 @@ curl -X GET "http://localhost:8000/auth/validate" \
 
 ### POST `/auth/logout`
 
-Logout user and invalidate session.
+Logout user and invalidate session. Clears session cookie and removes session from Redis.
 
 **Authentication:** Required
 
@@ -174,7 +289,7 @@ curl -X POST "http://localhost:8000/auth/logout" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
-**Response (200):**
+**Success Response (200):**
 ```json
 {
   "success": true,
@@ -182,11 +297,13 @@ curl -X POST "http://localhost:8000/auth/logout" \
 }
 ```
 
+**Note:** After logout, the session token becomes invalid and cannot be used for subsequent requests.
+
 ---
 
 ### POST `/auth/switch-project`
 
-Switch to a different project that the user's group has access to.
+Switch to a different project that the user's group has access to. Creates a new session token with updated project context.
 
 **Authentication:** Required
 
@@ -198,21 +315,37 @@ Switch to a different project that the user's group has access to.
 curl -X POST "http://localhost:8000/auth/switch-project" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=xyz789..."
+  -d "project_hash=proj_def456ghi"
 ```
 
-**Response (200):**
+**Success Response (200):**
 ```json
 {
   "success": true,
-  "message": "Successfully switched to project: New Project",
-  "session_token": "new_session_token...",
+  "message": "Successfully switched to project: Analytics Dashboard",
+  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.NEW_TOKEN...",
   "project": {
-    "project_hash": "xyz789...",
-    "project_name": "New Project",
-    "permissions": ["read", "write"]
+    "project_hash": "proj_def456ghi",
+    "project_name": "Analytics Dashboard",
+    "project_description": "Analytics and reporting system"
   },
-  "user_groups": ["users"]
+  "user_groups": []
+}
+```
+
+**Error Responses:**
+
+**404 - Project Not Found:**
+```json
+{
+  "detail": "Project not found"
+}
+```
+
+**403 - Access Denied:**
+```json
+{
+  "detail": "Access denied to requested project"
 }
 ```
 
@@ -220,11 +353,13 @@ curl -X POST "http://localhost:8000/auth/switch-project" \
 
 ### POST `/auth/check-availability`
 
-Check if username or email is available globally.
+Check if username or email is available globally before registration.
 
 **Request Body** (form-data):
 - `username` (optional): Username to check
 - `email` (optional): Email to check
+
+**Note:** At least one parameter (username or email) must be provided.
 
 **Example Request:**
 ```bash
@@ -233,7 +368,7 @@ curl -X POST "http://localhost:8000/auth/check-availability" \
   -d "username=new_user&email=new@example.com"
 ```
 
-**Response (200):**
+**Success Response (200):**
 ```json
 {
   "success": true,
@@ -242,26 +377,98 @@ curl -X POST "http://localhost:8000/auth/check-availability" \
 }
 ```
 
+**Example - Username Only:**
+```bash
+curl -X POST "http://localhost:8000/auth/check-availability" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=john_doe"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "username_available": false,
+  "email_available": null
+}
+```
+
+**Error Response (400):**
+```json
+{
+  "detail": "Username or email required"
+}
+```
+
 ---
 
 ## 🔧 Authentication Middleware
 
+### POST `/auth/refresh`
+
+Refresh JWT token and extend session while maintaining the same session context.
+
+**Authentication:** Required
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Token refreshed successfully",
+  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.REFRESHED_TOKEN...",
+  "user": {
+    "user_hash": "user_f6e5d4c3b2a1",
+    "username": "john_doe",
+    "email": "john@example.com",
+    "user_type": "consumer"
+  },
+  "project": {
+    "project_hash": "proj_xyz789abc",
+    "project_name": "Main Project",
+    "project_description": "Primary application project"
+  },
+  "accessible_projects": []
+}
+```
+
+**Use Cases:**
+- Extend session before it expires
+- Update session after user profile changes
+- Maintain authentication for long-running applications
+
+---
+
 ### HEAD `/access`
 
-Validate session token and check permissions (middleware endpoint).
+Validate session token and check permissions (middleware endpoint). Returns user hash in response header.
 
 **Authentication:** Required
 
 **Example Request:**
 ```bash
 curl -X HEAD "http://localhost:8000/access" \
-  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -I
 ```
 
 **Response:**
-- **204**: Token is valid and has required permissions
+- **204**: Token is valid
+  - **Header**: `X_user_HASH: user_f6e5d4c3b2a1`
 - **401**: Token is invalid or expired
 - **403**: Token valid but insufficient permissions
+
+**Example Success Response:**
+```
+HTTP/1.1 204 No Content
+X_user_HASH: user_f6e5d4c3b2a1
+Content-Length: 0
+```
 
 ---
 
@@ -327,32 +534,79 @@ graph TD
 
 ## 🧪 Testing Authentication
 
-### Basic Authentication Test
+### Complete Login Flow Test
 
 ```bash
 #!/bin/bash
 
-# Test authentication flow
+# Step 1: Get list of available projects (if you have admin access)
+echo "1. Getting available projects..."
+PROJECTS=$(curl -s -X GET "http://localhost:8000/projects" \
+  -H "Authorization: Bearer ADMIN_TOKEN")
+echo "Available projects: $PROJECTS"
+
+# Step 2: Login to specific project
+echo -e "\n2. Testing login to specific project..."
+LOGIN_RESPONSE=$(curl -s -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=john_doe&password=SecurePass123&project_hash=proj_xyz789abc")
+
+echo "Login Response: $LOGIN_RESPONSE"
+
+# Extract token and project info
+TOKEN=$(echo $LOGIN_RESPONSE | jq -r '.session_token')
+PROJECT_NAME=$(echo $LOGIN_RESPONSE | jq -r '.project.project_name')
+echo "Logged into project: $PROJECT_NAME"
+
+# Step 3: Validate session
+echo -e "\n3. Testing token validation..."
+VALIDATE_RESPONSE=$(curl -s -X GET "http://localhost:8000/auth/validate" \
+  -H "Authorization: Bearer $TOKEN")
+echo "Session validation: $VALIDATE_RESPONSE"
+
+# Step 4: Switch to another project
+echo -e "\n4. Testing project switch..."
+SWITCH_RESPONSE=$(curl -s -X POST "http://localhost:8000/auth/switch-project" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_hash=proj_abc123def")
+echo "Project switch response: $SWITCH_RESPONSE"
+
+# Update token after switch
+NEW_TOKEN=$(echo $SWITCH_RESPONSE | jq -r '.session_token')
+
+# Step 5: Logout
+echo -e "\n5. Testing logout..."
+curl -X POST "http://localhost:8000/auth/logout" \
+  -H "Authorization: Bearer $NEW_TOKEN"
+```
+
+### Basic Authentication Test (Auto-select Project)
+
+```bash
+#!/bin/bash
+
+# Test authentication flow with auto project selection
 echo "1. Testing registration..."
 curl -X POST "http://localhost:8000/auth/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=testuser&password=testpass&email=test@example.com&project_hash=YOUR_PROJECT_HASH"
+  -d "username=testuser&password=testpass&email=test@example.com&user_group_hash=group_abc123"
 
-echo "2. Testing login..."
+echo -e "\n2. Testing login (auto-select project)..."
 LOGIN_RESPONSE=$(curl -s -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=testuser&password=testpass&project_hash=YOUR_PROJECT_HASH")
+  -d "username=testuser&password=testpass")
 
 echo "Login Response: $LOGIN_RESPONSE"
 
 # Extract token
 TOKEN=$(echo $LOGIN_RESPONSE | jq -r '.session_token')
 
-echo "3. Testing token validation..."
+echo -e "\n3. Testing token validation..."
 curl -X GET "http://localhost:8000/auth/validate" \
   -H "Authorization: Bearer $TOKEN"
 
-echo "4. Testing logout..."
+echo -e "\n4. Testing logout..."
 curl -X POST "http://localhost:8000/auth/logout" \
   -H "Authorization: Bearer $TOKEN"
 ```
@@ -400,18 +654,33 @@ class AuthAPI:
         self.base_url = base_url
         self.session_token = None
     
-    def login(self, username, password, project_hash):
-        """Login and store session token"""
-        response = requests.post(f"{self.base_url}/auth/login", data={
+    def login(self, username, password, project_hash=None):
+        """
+        Login and store session token
+        
+        Args:
+            username: User's username or email
+            password: User's password
+            project_hash: Optional project hash to login to specific project
+        
+        Returns:
+            Login response with session token and user info
+        """
+        data = {
             "username": username,
-            "password": password,
-            "project_hash": project_hash
-        })
+            "password": password
+        }
+        
+        # Add project_hash only if provided
+        if project_hash:
+            data["project_hash"] = project_hash
+        
+        response = requests.post(f"{self.base_url}/auth/login", data=data)
         
         if response.status_code == 200:
-            data = response.json()
-            self.session_token = data["session_token"]
-            return data
+            result = response.json()
+            self.session_token = result["session_token"]
+            return result
         else:
             raise Exception(f"Login failed: {response.text}")
     
@@ -457,11 +726,26 @@ class AuthAPI:
         
         self.session_token = None
 
-# Usage
+# Usage Examples
+
+# Example 1: Login to specific project
 auth = AuthAPI("http://localhost:8000")
-login_result = auth.login("admin", "admin123", "project_hash")
+login_result = auth.login("john_doe", "SecurePass123", project_hash="proj_xyz789abc")
+print(f"Logged into: {login_result['project']['project_name']}")
+
+# Example 2: Auto-select first accessible project
+auth2 = AuthAPI("http://localhost:8000")
+login_result2 = auth2.login("jane_doe", "AnotherPass456")
+print(f"Auto-selected project: {login_result2['project']['project_name']}")
+
+# Validate and use session
 session_info = auth.validate_session()
-auth.switch_project("another_project_hash")
+print(f"Current project: {session_info['project']['project_name']}")
+
+# Switch to another project
+auth.switch_project("proj_abc123def")
+
+# Logout when done
 auth.logout()
 ```
 
@@ -474,17 +758,31 @@ class AuthAPI {
         this.sessionToken = null;
     }
     
-    async login(username, password, projectHash) {
+    async login(username, password, projectHash = null) {
+        /**
+         * Login and store session token
+         * 
+         * @param {string} username - User's username or email
+         * @param {string} password - User's password
+         * @param {string|null} projectHash - Optional project hash to login to specific project
+         * @returns {Promise<object>} Login response with session token and user info
+         */
+        const params = new URLSearchParams({
+            username,
+            password
+        });
+        
+        // Add project_hash only if provided
+        if (projectHash) {
+            params.append('project_hash', projectHash);
+        }
+        
         const response = await fetch(`${this.baseUrl}/auth/login`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
             },
-            body: new URLSearchParams({
-                username,
-                password,
-                project_hash: projectHash
-            })
+            body: params
         });
         
         if (response.ok) {
@@ -551,11 +849,29 @@ class AuthAPI {
     }
 }
 
-// Usage
+// Usage Examples
+
+// Example 1: Login to specific project
 const auth = new AuthAPI('http://localhost:8000');
-const loginResult = await auth.login('admin', 'admin123', 'project_hash');
+const loginResult = await auth.login('john_doe', 'SecurePass123', 'proj_xyz789abc');
+console.log(`Logged into: ${loginResult.project.project_name}`);
+
+// Example 2: Auto-select first accessible project
+const auth2 = new AuthAPI('http://localhost:8000');
+const loginResult2 = await auth2.login('jane_doe', 'AnotherPass456');
+console.log(`Auto-selected project: ${loginResult2.project.project_name}`);
+
+// List accessible projects
+console.log('Accessible projects:', loginResult.accessible_projects);
+
+// Validate and use session
 const sessionInfo = await auth.validateSession();
-await auth.switchProject('another_project_hash');
+console.log(`Current project: ${sessionInfo.project.project_name}`);
+
+// Switch to another project
+await auth.switchProject('proj_abc123def');
+
+// Logout when done
 await auth.logout();
 ```
 

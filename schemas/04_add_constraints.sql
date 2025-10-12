@@ -49,6 +49,17 @@ ALTER TABLE user_group_projects
     ADD CONSTRAINT fk_user_group_projects_revoked_by FOREIGN KEY (revoked_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- =================== PROJECT_GROUP_MEMBERS TABLE CONSTRAINTS ===================
+ALTER TABLE project_group_members
+    ADD CONSTRAINT fk_project_group_members_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_project_group_members_group FOREIGN KEY (project_group_id) 
+        REFERENCES project_groups(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_project_group_members_assigned_by FOREIGN KEY (assigned_by) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_project_group_members_removed_by FOREIGN KEY (removed_by) 
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
+
 -- =================== PERMISSIONS TABLE CONSTRAINTS ===================
 ALTER TABLE permissions
     ADD CONSTRAINT fk_permissions_project FOREIGN KEY (project_id) 
@@ -216,6 +227,14 @@ END$$
 -- Trigger to automatically update updated_at field for user_groups table
 CREATE TRIGGER tr_user_groups_updated_at
 BEFORE UPDATE ON user_groups
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for project_groups table
+CREATE TRIGGER tr_project_groups_updated_at
+BEFORE UPDATE ON project_groups
 FOR EACH ROW
 BEGIN
     SET NEW.updated_at = NOW();

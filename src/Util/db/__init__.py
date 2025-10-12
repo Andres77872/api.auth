@@ -92,7 +92,12 @@ from src.Util.db.db_rbac_permissions import (
     get_project_user_assignments,
     create_default_project_roles,
     assign_default_permissions_to_roles,
-    assign_permission_to_group
+    assign_permission_to_group,
+    get_group_permissions,
+    get_group_users,
+    get_project_users_with_permissions,
+    get_user_role_assignment_history,
+    count_user_role_assignment_history
 )
 # Import session analytics functions
 from src.Util.db.db_session_analytics import (
@@ -169,7 +174,8 @@ from src.Util.db.db_users import (
     assign_user_to_group,
     remove_user_from_group,
     create_session,
-    invalidate_session
+    invalidate_session,
+    invalidate_user_sessions
 )
 # Import core database connection
 from src.Util.db_config import redis_client as client, get_connection
@@ -474,6 +480,7 @@ __all__ = [
     # Session management
     'create_session',
     'invalidate_session',
+    'invalidate_user_sessions',
     'set_session',
     'get_session',
     'db_validate_session',
@@ -542,6 +549,11 @@ __all__ = [
     'create_default_project_roles',
     'assign_default_permissions_to_roles',
     'assign_permission_to_group',
+    'get_group_permissions',
+    'get_group_users',
+    'get_project_users_with_permissions',
+    'get_user_role_assignment_history',
+    'count_user_role_assignment_history',
 
     # Session Analytics
     'count_active_sessions',

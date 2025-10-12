@@ -197,9 +197,9 @@ def delete_project(project_id: str, deleted_by: str = None) -> bool:
                 con.rollback()
                 return False
 
-            # Soft delete all user-project relationships
+            # Soft delete all user group project access
             cur.execute("""
-                        UPDATE user_projects
+                        UPDATE user_group_projects
                         SET is_active  = 0,
                             revoked_at = NOW(),
                             revoked_by = %s
@@ -207,35 +207,40 @@ def delete_project(project_id: str, deleted_by: str = None) -> bool:
                           AND is_active = 1
                         """, [deleted_by, project_id])
 
-            # Soft delete all project groups
+            # Soft delete all user group permission group assignments for this project
             cur.execute("""
-                        UPDATE user_groups
+                        UPDATE user_group_permission_groups
+                        SET is_active  = 0,
+                            removed_at = NOW(),
+                            removed_by = %s
+                        WHERE project_id = %s
+                          AND is_active = 1
+                        """, [deleted_by, project_id])
+
+            # Soft delete all sessions for this project
+            cur.execute("""
+                        UPDATE user_sessions
+                        SET is_active = 0
+                        WHERE project_id = %s
+                          AND is_active = 1
+                        """, [project_id])
+
+            # Soft delete permission groups for this project
+            cur.execute("""
+                        UPDATE permission_groups
                         SET is_active  = 0,
                             updated_at = NOW()
                         WHERE project_id = %s
                           AND is_active = 1
                         """, [project_id])
 
-            # Soft delete all user-project-group relationships for this project
+            # Soft delete permissions for this project
             cur.execute("""
-                        UPDATE user_project_groups upg
-                            INNER JOIN user_projects up
-                            ON upg.user_project_id = up.id
-                        SET upg.is_active  = 0,
-                            upg.removed_at = NOW(),
-                            upg.removed_by = %s
-                        WHERE up.project_id = %s
-                          AND upg.is_active = 1
-                        """, [deleted_by, project_id])
-
-            # Soft delete all sessions for this project
-            cur.execute("""
-                        UPDATE user_sessions us
-                            INNER JOIN user_projects up
-                            ON us.user_project_id = up.id
-                        SET us.is_active = 0
-                        WHERE up.project_id = %s
-                          AND us.is_active = 1
+                        UPDATE permissions
+                        SET is_active  = 0,
+                            updated_at = NOW()
+                        WHERE project_id = %s
+                          AND is_active = 1
                         """, [project_id])
 
             con.commit()
@@ -417,27 +422,6 @@ def create_default_groups(project_id: str):
 
 
 def get_project_groups(project_id: str) -> List[UserGroup]:
-    """Get all groups for a project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    SELECT id, project_id, group_name, group_description, permissions, created_at, is_active
-                    FROM user_groups
-                    WHERE project_id = %s
-                      AND is_active = 1
-                    ORDER BY group_name ASC
-                    """, [project_id])
-
-        groups = []
-        for row in cur.fetchall():
-            groups.append(UserGroup(
-                id=row[0],
-                project_id=row[1],
-                group_name=row[2],
-                group_description=row[3],
-                permissions=row[4],
-                created_at=row[5],
-                is_active=bool(row[6])
-            ))
-
-        return groups
+    """Get all user groups that have access to a project"""
+    from src.Util.db.db_user_groups import get_user_groups_for_project
+    return get_user_groups_for_project(project_id)

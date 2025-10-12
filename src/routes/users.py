@@ -365,8 +365,8 @@ async def list_all_users(
 
         # Total count (basic, does not yet include group/project filters)
         total_count = count_users(
+            user_type=user_type_filter,
             search=search,
-            user_type_filter=user_type_filter,
             include_inactive=include_inactive
         )
 
@@ -441,8 +441,10 @@ async def list_all_users(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         logger.error(f"List users error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list users")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to list users: {str(e)}")
 
 
 @router.get("/{user_hash}", response_model=GetUserDetailsResponse)

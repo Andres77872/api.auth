@@ -42,79 +42,52 @@ def create_permission(
         is_system_permission: bool = False,
         created_by: str = None
 ) -> Permission:
-    """Create a new project-specific permission"""
+    """Create a new project-specific permission using stored procedure"""
     # Handle compatibility parameters
     if category:
         permission_category = category
     if not permission_display_name:
         permission_display_name = permission_name.replace('_', ' ').title()
 
+    permission_id = secrets.token_hex(32)
     permission_hash = secrets.token_hex(32).upper()
 
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    INSERT INTO permissions (permission_hash, project_id, permission_name, permission_display_name,
-                                             permission_description, permission_category, is_system_permission,
-                                             created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, [
-                        permission_hash, project_id, permission_name, permission_display_name,
-                        permission_description, permission_category, is_system_permission, created_by
-                    ])
-
-        permission_id = con.insert_id()
+        cur.callproc('sp_rbac_create_permission', [
+            permission_id, permission_hash, project_id, permission_name,
+            permission_display_name, permission_description,
+            permission_category, is_system_permission, created_by
+        ])
+        
+        # Fetch result
+        row = cur.fetchone()
+        result = None
+        if row:
+            result = Permission(
+                id=row[0], permission_hash=row[1], project_id=row[2],
+                permission_name=row[3], permission_display_name=row[4],
+                permission_description=row[5], permission_category=row[6],
+                is_system_permission=bool(row[7]), created_at=row[8],
+                updated_at=row[9], created_by=row[10], is_active=bool(row[11])
+            )
+        
+        while cur.nextset():
+            pass
+        
         con.commit()
 
         # Invalidate RBAC cache for this project
         cache_manager.invalidate_rbac_cache(project_id)
 
-        return Permission(
-            id=permission_id,
-            permission_hash=permission_hash,
-            project_id=project_id,
-            permission_name=permission_name,
-            permission_display_name=permission_display_name,
-            permission_description=permission_description,
-            permission_category=permission_category,
-            is_system_permission=is_system_permission,
-            created_at=datetime.now(),
-            created_by=created_by,
-            is_active=True
-        )
+        return result
 
 
 def get_project_permissions(project_id: str, category: str = None) -> List[Permission]:
-    """Get all permissions for a project, optionally filtered by category"""
+    """Get all permissions for a project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-
-        query = """
-                SELECT id,
-                       permission_hash,
-                       project_id,
-                       permission_name,
-                       permission_display_name,
-                       permission_description,
-                       permission_category,
-                       is_system_permission,
-                       created_at,
-                       updated_at,
-                       created_by,
-                       is_active
-                FROM permissions
-                WHERE project_id = %s
-                  AND is_active = 1 \
-                """
-        params = [project_id]
-
-        if category:
-            query += " AND permission_category = %s"
-            params.append(category)
-
-        query += " ORDER BY permission_category, permission_name"
-
-        cur.execute(query, params)
+        cur.callproc('sp_rbac_get_project_permissions', [project_id, category])
 
         permissions = []
         for row in cur.fetchall():
@@ -125,39 +98,30 @@ def get_project_permissions(project_id: str, category: str = None) -> List[Permi
                 is_system_permission=bool(row[7]), created_at=row[8],
                 updated_at=row[9], created_by=row[10], is_active=bool(row[11])
             ))
+        
+        while cur.nextset():
+            pass
 
         return permissions
 
 
 def check_user_permission(user_id: str, project_id: str, permission_name: str) -> bool:
-    """Check if user has a specific permission within a project (cache-first)"""
+    """Check if user has a specific permission within a project (cache-first) using stored procedure"""
     # Try cache first
     cached_result = cache_manager.get_permission_check(user_id, project_id, permission_name)
     if cached_result is not None:
         return cached_result
 
-    # If not in cache, check database using group-based access model
+    # If not in cache, check database using stored procedure
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT COUNT(*) > 0
-                    FROM permissions p
-                             JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
-                             JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND ugpg.project_id = %s
-                      AND p.permission_name = %s
-                      AND p.is_active = 1
-                      AND pgp.is_active = 1
-                      AND pg.is_active = 1
-                      AND ugpg.is_active = 1
-                      AND ugm.is_active = 1
-                    """, [user_id, project_id, permission_name])
+        cur.callproc('sp_rbac_check_user_permission', [user_id, project_id, permission_name])
 
-        result = cur.fetchone()
-        has_permission = bool(result[0]) if result else False
+        row = cur.fetchone()
+        has_permission = bool(row[0]) if row else False
+        
+        while cur.nextset():
+            pass
 
         # Cache the result
         cache_manager.set_permission_check(user_id, project_id, permission_name, has_permission)
@@ -223,7 +187,7 @@ def create_permission_group(
         is_system_role: bool = False,
         created_by: str = None
 ) -> PermissionGroup:
-    """Create a new project-specific permission group (role)"""
+    """Create a new project-specific permission group (role) using stored procedure"""
     # Handle compatibility parameters
     if priority is not None:
         group_priority = priority
@@ -232,38 +196,37 @@ def create_permission_group(
     if not group_display_name:
         group_display_name = group_name.replace('_', ' ').title()
 
+    group_id = secrets.token_hex(32)
     group_hash = secrets.token_hex(32).upper()
 
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    INSERT INTO permission_groups (group_hash, project_id, group_name, group_display_name,
-                                                   group_description, group_priority, is_system_role, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, [
-                        group_hash, project_id, group_name, group_display_name,
-                        group_description, group_priority, is_system_role, created_by
-                    ])
+        cur.callproc('sp_rbac_create_permission_group', [
+            group_id, group_hash, project_id, group_name,
+            group_display_name, group_description,
+            group_priority, is_system_role, created_by
+        ])
 
-        group_id = con.insert_id()
+        row = cur.fetchone()
+        result = None
+        if row:
+            result = PermissionGroup(
+                id=row[0], group_hash=row[1], project_id=row[2],
+                group_name=row[3], group_display_name=row[4],
+                group_description=row[5], group_priority=row[6],
+                is_system_role=bool(row[7]), created_at=row[8],
+                updated_at=row[9], created_by=row[10], is_active=bool(row[11])
+            )
+        
+        while cur.nextset():
+            pass
+
         con.commit()
 
         # Invalidate RBAC cache for this project when new role is created
         cache_manager.invalidate_rbac_cache(project_id)
 
-        return PermissionGroup(
-            id=group_id,
-            group_hash=group_hash,
-            project_id=project_id,
-            group_name=group_name,
-            group_display_name=group_display_name,
-            group_description=group_description,
-            group_priority=group_priority,
-            is_system_role=is_system_role,
-            created_at=datetime.now(),
-            created_by=created_by,
-            is_active=True
-        )
+        return result
 
 
 def assign_user_to_permission_group(
@@ -272,78 +235,31 @@ def assign_user_to_permission_group(
         permission_group_id: str,
         assigned_by: str = None
 ) -> bool:
-    """Assign a user to a permission group within a project through user groups"""
-    # Verify permission group belongs to the project
+    """Assign a user to a permission group within a project through user groups using stored procedure"""
+    assignment_id = secrets.token_hex(32)
+    
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT project_id
-                    FROM permission_groups
-                    WHERE id = %s
-                      AND is_active = 1
-                    """, [permission_group_id])
-
+        # Call stored procedure with OUT parameters
+        args = [assignment_id, user_id, project_id, permission_group_id, assigned_by, 0, '']
+        cur.callproc('sp_rbac_assign_user_to_permission_group', args)
+        
+        # Get OUT parameters
+        cur.execute('SELECT @_sp_rbac_assign_user_to_permission_group_5, @_sp_rbac_assign_user_to_permission_group_6')
         result = cur.fetchone()
-        if not result or result[0] != project_id:
-            raise ValueError("Permission group does not belong to the specified project")
+        success = bool(result[0]) if result else False
+        error_message = result[1] if result and result[1] else None
+        
+        if not success:
+            raise ValueError(error_message or "Failed to assign user to permission group")
+        
+        con.commit()
 
-        # Get user's user groups that have access to this project
-        cur.execute("""
-                    SELECT DISTINCT ug.id
-                    FROM user_groups ug
-                    JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-                    JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND ugp.project_id = %s
-                      AND ugm.is_active = 1
-                      AND ug.is_active = 1
-                      AND ugp.is_active = 1
-                    LIMIT 1
-                    """, [user_id, project_id])
+        # Invalidate user cache and RBAC cache for this project
+        cache_manager.invalidate_user_cache(user_id)
+        cache_manager.invalidate_rbac_cache(project_id)
 
-        user_group_result = cur.fetchone()
-        if not user_group_result:
-            raise ValueError("User does not belong to any user group with access to this project")
-
-        user_group_id = user_group_result[0]
-
-        try:
-            cur.execute("""
-                        INSERT INTO user_group_permission_groups (user_group_id, project_id, permission_group_id, assigned_by)
-                        VALUES (%s, %s, %s, %s)
-                        """, [user_group_id, project_id, permission_group_id, assigned_by])
-
-            con.commit()
-
-            # Invalidate user cache and RBAC cache for this project
-            cache_manager.invalidate_user_cache(user_id)
-            cache_manager.invalidate_rbac_cache(project_id)
-
-            return True
-
-        except pymysql.IntegrityError:
-            # Assignment already exists, reactivate if needed
-            cur.execute("""
-                        UPDATE user_group_permission_groups
-                        SET is_active   = 1,
-                            removed_at  = NULL,
-                            removed_by  = NULL,
-                            assigned_by = %s
-                        WHERE user_group_id = %s
-                          AND project_id = %s
-                          AND permission_group_id = %s
-                        """, [assigned_by, user_group_id, project_id, permission_group_id])
-
-            if cur.rowcount > 0:
-                con.commit()
-
-                # Invalidate user cache and RBAC cache for this project
-                cache_manager.invalidate_user_cache(user_id)
-                cache_manager.invalidate_rbac_cache(project_id)
-
-                return True
-
-            return False
+        return success
 
 
 def remove_user_from_permission_group(
@@ -352,42 +268,21 @@ def remove_user_from_permission_group(
         permission_group_id: str,
         removed_by: str = None
 ) -> bool:
-    """Remove a user from a permission group within a project through user groups"""
+    """Remove a user from a permission group within a project through user groups using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
         
-        # Get user's user groups that are assigned to this permission group
-        cur.execute("""
-                    SELECT DISTINCT ugpg.user_group_id
-                    FROM user_group_permission_groups ugpg
-                    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND ugpg.project_id = %s
-                      AND ugpg.permission_group_id = %s
-                      AND ugpg.is_active = 1
-                      AND ugm.is_active = 1
-                    """, [user_id, project_id, permission_group_id])
-
-        user_group_assignments = cur.fetchall()
-        if not user_group_assignments:
-            return False
-
-        success = False
-        for (user_group_id,) in user_group_assignments:
-            cur.execute("""
-                        UPDATE user_group_permission_groups
-                        SET is_active  = 0,
-                            removed_at = NOW(),
-                            removed_by = %s
-                        WHERE user_group_id = %s
-                          AND project_id = %s
-                          AND permission_group_id = %s
-                          AND is_active = 1
-                        """, [removed_by, user_group_id, project_id, permission_group_id])
-            
-            if cur.rowcount > 0:
-                success = True
-
+        # Call stored procedure with OUT parameter
+        args = [user_id, project_id, permission_group_id, removed_by, 0]
+        cur.callproc('sp_rbac_remove_user_from_permission_group', args)
+        
+        # Get OUT parameter
+        cur.execute('SELECT @_sp_rbac_remove_user_from_permission_group_4')
+        result = cur.fetchone()
+        rows_affected = result[0] if result else 0
+        
+        success = rows_affected > 0
+        
         if success:
             con.commit()
 
@@ -399,27 +294,10 @@ def remove_user_from_permission_group(
 
 
 def get_project_permission_groups(project_id: str) -> List[PermissionGroup]:
-    """Get all permission groups (roles) for a project"""
+    """Get all permission groups (roles) for a project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           project_id,
-                           group_name,
-                           group_display_name,
-                           group_description,
-                           group_priority,
-                           is_system_role,
-                           created_at,
-                           updated_at,
-                           created_by,
-                           is_active
-                    FROM permission_groups
-                    WHERE project_id = %s
-                      AND is_active = 1
-                    ORDER BY group_priority DESC, group_name
-                    """, [project_id])
+        cur.callproc('sp_rbac_get_project_permission_groups', [project_id])
 
         groups = []
         for row in cur.fetchall():
@@ -430,94 +308,48 @@ def get_project_permission_groups(project_id: str) -> List[PermissionGroup]:
                 is_system_role=bool(row[7]), created_at=row[8],
                 updated_at=row[9], created_by=row[10], is_active=bool(row[11])
             ))
+        
+        while cur.nextset():
+            pass
 
         return groups
 
 
 def assign_permission_to_group(permission_group_id: str, permission_id: str, assigned_by: str = None) -> bool:
-    """Assign a permission to a permission group"""
+    """Assign a permission to a permission group using stored procedure"""
+    link_id = secrets.token_hex(32)
+    
     with get_connection() as con:
         cur = con.cursor()
-
-        # Verify both belong to the same project
-        cur.execute("""
-                    SELECT pg.project_id, p.project_id
-                    FROM permission_groups pg,
-                         permissions p
-                    WHERE pg.id = %s
-                      AND p.id = %s
-                    """, [permission_group_id, permission_id])
-
+        
+        # Call stored procedure with OUT parameter
+        args = [link_id, permission_group_id, permission_id, assigned_by, 0]
+        cur.callproc('sp_rbac_assign_permission_to_group', args)
+        
+        # Get OUT parameter
+        cur.execute('SELECT @_sp_rbac_assign_permission_to_group_4')
         result = cur.fetchone()
-        if not result or result[0] != result[1]:
+        success = bool(result[0]) if result else False
+        
+        if not success:
             raise ValueError("Permission and permission group must belong to the same project")
+        
+        con.commit()
 
-        try:
-            cur.execute("""
-                        INSERT INTO permission_group_permissions (permission_group_id, permission_id, assigned_by)
-                        VALUES (%s, %s, %s)
-                        """, [permission_group_id, permission_id, assigned_by])
+        # Get project_id for cache invalidation
+        cur.execute('SELECT project_id FROM permission_groups WHERE id = %s', [permission_group_id])
+        pg_result = cur.fetchone()
+        if pg_result:
+            cache_manager.invalidate_rbac_cache(pg_result[0])
 
-            con.commit()
-
-            # Invalidate RBAC cache when permission is assigned to role
-            project_id = result[0]
-            cache_manager.invalidate_rbac_cache(project_id)
-
-            return True
-
-        except pymysql.IntegrityError:
-            # Already assigned, reactivate if needed
-            cur.execute("""
-                        UPDATE permission_group_permissions
-                        SET is_active   = 1,
-                            removed_at  = NULL,
-                            removed_by  = NULL,
-                            assigned_by = %s
-                        WHERE permission_group_id = %s
-                          AND permission_id = %s
-                        """, [assigned_by, permission_group_id, permission_id])
-
-            if cur.rowcount > 0:
-                con.commit()
-
-                # Invalidate RBAC cache when permission is assigned to role
-                project_id = result[0]
-                cache_manager.invalidate_rbac_cache(project_id)
-
-                return True
-
-            return False
+        return success
 
 
 def get_user_permission_groups_in_project(user_id: str, project_id: str) -> List[PermissionGroup]:
-    """Get all permission groups assigned to a user in a specific project through user groups"""
+    """Get all permission groups assigned to a user in a specific project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT pg.id,
-                           pg.group_hash,
-                           pg.project_id,
-                           pg.group_name,
-                           pg.group_display_name,
-                           pg.group_description,
-                           pg.group_priority,
-                           pg.is_system_role,
-                           pg.created_at,
-                           pg.updated_at,
-                           pg.created_by,
-                           pg.is_active,
-                           ugpg.assigned_at
-                    FROM permission_groups pg
-                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND ugpg.project_id = %s
-                      AND pg.is_active = 1
-                      AND ugpg.is_active = 1
-                      AND ugm.is_active = 1
-                    ORDER BY pg.group_priority DESC, pg.group_name
-                    """, [user_id, project_id])
+        cur.callproc('sp_rbac_get_user_permission_groups_in_project', [user_id, project_id])
 
         groups = []
         for row in cur.fetchall():
@@ -531,42 +363,18 @@ def get_user_permission_groups_in_project(user_id: str, project_id: str) -> List
             # Add assignment date for audit purposes
             group.assigned_at = row[12]
             groups.append(group)
+        
+        while cur.nextset():
+            pass
 
         return groups
 
 
 def get_user_effective_permissions(user_id: str, project_id: str) -> List[Permission]:
-    """Get all effective permissions for a user in a project through user groups"""
+    """Get all effective permissions for a user in a project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT DISTINCT p.id,
-                                    p.permission_hash,
-                                    p.project_id,
-                                    p.permission_name,
-                                    p.permission_display_name,
-                                    p.permission_description,
-                                    p.permission_category,
-                                    p.is_system_permission,
-                                    p.created_at,
-                                    p.updated_at,
-                                    p.created_by,
-                                    p.is_active,
-                                    pg.group_name as granted_through_role
-                    FROM permissions p
-                             JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
-                             JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-                             JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-                             JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-                    WHERE ugm.user_id = %s
-                      AND ugpg.project_id = %s
-                      AND p.is_active = 1
-                      AND pgp.is_active = 1
-                      AND pg.is_active = 1
-                      AND ugpg.is_active = 1
-                      AND ugm.is_active = 1
-                    ORDER BY p.permission_category, p.permission_name
-                    """, [user_id, project_id])
+        cur.callproc('sp_rbac_get_user_effective_permissions', [user_id, project_id])
 
         permissions = []
         for row in cur.fetchall():
@@ -580,40 +388,18 @@ def get_user_effective_permissions(user_id: str, project_id: str) -> List[Permis
             # Add role information for audit purposes
             permission.granted_through_role = row[12]
             permissions.append(permission)
+        
+        while cur.nextset():
+            pass
 
         return permissions
 
 
 def get_project_audit_log(project_id: str, action_type: str = None, limit: int = 50, offset: int = 0) -> List:
-    """Get audit log entries for a project"""
+    """Get audit log entries for a project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-
-        query = """
-                SELECT id,
-                       action_type,
-                       table_name,
-                       record_id,
-                       old_values,
-                       new_values,
-                       performed_by,
-                       performed_at,
-                       ip_address,
-                       user_agent,
-                       project_id
-                FROM permission_audit_log
-                WHERE project_id = %s \
-                """
-        params = [project_id]
-
-        if action_type:
-            query += " AND action_type = %s"
-            params.append(action_type)
-
-        query += " ORDER BY performed_at DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cur.execute(query, params)
+        cur.callproc('sp_rbac_get_project_audit_log', [project_id, action_type, limit, offset])
 
         audit_entries = []
         for row in cur.fetchall():
@@ -630,29 +416,29 @@ def get_project_audit_log(project_id: str, action_type: str = None, limit: int =
                 'user_agent': row[9],
                 'project_id': row[10]
             })
+        
+        while cur.nextset():
+            pass
 
         return audit_entries
 
 
 def get_project_user_assignments(project_id: str) -> List:
-    """Get all user role assignments for a project through user groups"""
+    """Get all user role assignments for a project using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT COUNT(DISTINCT ugm.user_id) as total_users,
-                           COUNT(*)                     as total_assignments
-                    FROM user_group_permission_groups ugpg
-                    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-                    WHERE ugpg.project_id = %s
-                      AND ugpg.is_active = 1
-                      AND ugm.is_active = 1
-                    """, [project_id])
+        cur.callproc('sp_rbac_get_project_user_assignments', [project_id])
 
-        result = cur.fetchone()
-        return {
-            'total_users': result[0] if result else 0,
-            'total_assignments': result[1] if result else 0
+        row = cur.fetchone()
+        result_data = {
+            'total_users': row[0] if row and row[0] else 0,
+            'total_assignments': row[1] if row and row[1] else 0
         }
+        
+        while cur.nextset():
+            pass
+
+        return result_data
 
 
 def create_default_project_roles(project_id: str, created_by: str = None) -> List[PermissionGroup]:
@@ -764,3 +550,135 @@ def initialize_project_rbac(
             'success': False,
             'error': str(e)
         }
+
+
+# =================== ADDITIONAL HELPER FUNCTIONS ===================
+
+def get_group_permissions(permission_group_id: str) -> List[Permission]:
+    """
+    Get all permissions assigned to a permission group using stored procedure.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.callproc('sp_rbac_get_group_permissions', [permission_group_id])
+
+        permissions = []
+        for row in cur.fetchall():
+            permissions.append(Permission(
+                id=row[0], permission_hash=row[1], project_id=row[2],
+                permission_name=row[3], permission_display_name=row[4],
+                permission_description=row[5], permission_category=row[6],
+                is_system_permission=bool(row[7]), created_at=row[8],
+                updated_at=row[9], created_by=row[10], is_active=bool(row[11])
+            ))
+        
+        while cur.nextset():
+            pass
+
+        return permissions
+
+
+def get_group_users(permission_group_id: str) -> List[dict]:
+    """
+    Get all users assigned to a permission group using stored procedure.
+    Returns list of users with their assignment details.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.callproc('sp_rbac_get_group_users', [permission_group_id])
+
+        users = []
+        for row in cur.fetchall():
+            users.append({
+                'id': row[0],
+                'user_hash': row[1],
+                'username': row[2],
+                'email': row[3],
+                'user_type': row[4],
+                'user_group_name': row[5],
+                'assigned_at': row[6]
+            })
+        
+        while cur.nextset():
+            pass
+
+        return users
+
+
+def get_project_users_with_permissions(project_id: str) -> List[dict]:
+    """
+    Get all users who have permissions in a project using stored procedure.
+    Returns list of users with permission counts and roles.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.callproc('sp_rbac_get_project_users_with_permissions', [project_id])
+
+        users = []
+        for row in cur.fetchall():
+            users.append({
+                'id': row[0],
+                'user_hash': row[1],
+                'username': row[2],
+                'email': row[3],
+                'user_type': row[4],
+                'permission_count': row[5],
+                'role_count': row[6],
+                'roles': row[7]
+            })
+        
+        while cur.nextset():
+            pass
+
+        return users
+
+
+def get_user_role_assignment_history(user_id: str, project_id: str, limit: int = 50, offset: int = 0) -> List[dict]:
+    """
+    Get role assignment history for a user in a project using stored procedure.
+    Returns historical data from permission_audit_log.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.callproc('sp_rbac_get_user_role_assignment_history', [user_id, project_id, limit, offset])
+
+        history = []
+        for row in cur.fetchall():
+            history.append({
+                'id': row[0],
+                'action': 'assigned' if row[1] == 'ASSIGN_ROLE' else 'removed',
+                'role_id': row[2],
+                'role_name': row[3],
+                'role_description': row[4],
+                'performed_by': row[5],
+                'performed_by_username': row[6],
+                'performed_by_hash': row[7],
+                'performed_at': row[8],
+                'old_values': json.loads(row[9]) if row[9] else None,
+                'new_values': json.loads(row[10]) if row[10] else None,
+                'ip_address': row[11],
+                'is_active': row[1] == 'ASSIGN_ROLE',
+                'details': f"Role {row[3]} {'assigned to' if row[1] == 'ASSIGN_ROLE' else 'removed from'} user"
+            })
+        
+        while cur.nextset():
+            pass
+
+        return history
+
+
+def count_user_role_assignment_history(user_id: str, project_id: str) -> int:
+    """
+    Count total role assignment history entries for a user in a project using stored procedure.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.callproc('sp_rbac_count_user_role_assignment_history', [user_id, project_id])
+
+        row = cur.fetchone()
+        total_count = row[0] if row else 0
+        
+        while cur.nextset():
+            pass
+
+        return total_count

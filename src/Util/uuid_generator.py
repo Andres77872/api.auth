@@ -33,6 +33,16 @@ def generate_permission_group_id() -> str:
     return f"pg-{str(uuid.uuid4())}"
 
 
+def generate_project_group_id() -> str:
+    """Generate a unique project group ID with 'projg-' prefix."""
+    return f"projg-{str(uuid.uuid4())}"
+
+
+def generate_project_group_member_id() -> str:
+    """Generate a unique project group member ID."""
+    return f"pgm-{str(uuid.uuid4()).replace('-', '')}"
+
+
 def generate_user_group_member_id() -> str:
     """Generate a unique user group member ID."""
     return f"ugm-{str(uuid.uuid4()).replace('-', '')}"

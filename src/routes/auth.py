@@ -100,20 +100,23 @@ def _create_session(user: "User", project: Optional["Project"] = None) -> tuple[
 async def login(
         response: Response,
         username: str = Form(...),
-        password: str = Form(...)
+        password: str = Form(...),
+        project_hash: Optional[str] = Form(None)
 ) -> LoginResponse:
     """
     Authenticate user and return session token.
 
-    The project context is now determined automatically:
-    • Root users receive a global session (no project binding).
-    • Admin / consumer users are automatically placed in the first
-      project they have access to. The complete list of accessible
-      projects is always returned so clients may switch context later
-      with the `/auth/switch-project` endpoint.
+    The project context can be specified or auto-selected:
+    • Root users receive a global session (no project binding required).
+    • If project_hash is provided: Login to that specific project (if user has access).
+    • If project_hash is NOT provided: Admin/consumer users are automatically placed 
+      in the first accessible project.
+    • The complete list of accessible projects is always returned so clients may 
+      switch context later with the `/auth/switch-project` endpoint.
     """
     auth_username = username
     auth_password = password
+    auth_project_hash = project_hash
     try:
 
         if not auth_username or not auth_password:
@@ -169,18 +172,32 @@ async def login(
             )
 
         # ------------------------------------------------------------------
-        # Non-root users → choose default project
+        # Non-root users → choose specific or default project
         # ------------------------------------------------------------------
         accessible = get_user_accessible_projects(user_record.id)
         if not accessible:
             logger.warning("User %s has no project access", auth_username)
             raise HTTPException(status_code=403, detail="User has no access to any project")
 
-        # Select the first accessible project as the default context
-        default_project_hash = accessible[0].project_hash
-        target_project = get_project_by_hash(default_project_hash)
-        if not target_project:
-            raise HTTPException(status_code=500, detail="Failed to resolve default project context")
+        # Determine which project to use
+        if auth_project_hash:
+            # User specified a project - verify they have access to it
+            accessible_hashes = [p.project_hash for p in accessible]
+            if auth_project_hash not in accessible_hashes:
+                logger.warning("User %s attempted to access unauthorized project: %s", auth_username, auth_project_hash)
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Access denied to project. User has access to {len(accessible)} project(s)."
+                )
+            target_project = get_project_by_hash(auth_project_hash)
+            if not target_project:
+                raise HTTPException(status_code=404, detail="Specified project not found")
+        else:
+            # No project specified - use first accessible project as default
+            default_project_hash = accessible[0].project_hash
+            target_project = get_project_by_hash(default_project_hash)
+            if not target_project:
+                raise HTTPException(status_code=500, detail="Failed to resolve default project context")
 
         # Build session & response
         session_token, _ = _create_session(user_record, target_project)

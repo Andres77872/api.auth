@@ -37,6 +37,16 @@ CREATE INDEX idx_group_projects ON user_group_projects (user_group_id, is_active
 CREATE INDEX idx_project_groups ON user_group_projects (project_id, is_active);
 CREATE INDEX idx_user_group_projects_access ON user_group_projects (user_group_id, project_id, is_active);
 
+-- =================== PROJECT_GROUPS TABLE INDEXES ===================
+CREATE INDEX idx_project_group_name ON project_groups (group_name);
+CREATE INDEX idx_active_project_groups ON project_groups (is_active);
+CREATE INDEX idx_project_groups_lookup ON project_groups (group_name, is_active);
+
+-- =================== PROJECT_GROUP_MEMBERS TABLE INDEXES ===================
+CREATE INDEX idx_project_in_groups ON project_group_members (project_id, is_active);
+CREATE INDEX idx_group_projects_list ON project_group_members (project_group_id, is_active);
+CREATE INDEX idx_project_group_members_access ON project_group_members (project_id, project_group_id, is_active);
+
 -- =================== PERMISSIONS TABLE INDEXES ===================
 CREATE INDEX idx_project_permissions ON permissions (project_id, is_active);
 CREATE INDEX idx_permission_category ON permissions (permission_category);

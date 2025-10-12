@@ -19,6 +19,7 @@ from src.Util.Models import (
     Project, ProjectGroup, ProjectGroupMember
 )
 from src.Util.db_config import get_connection
+from src.Util.uuid_generator import generate_project_group_id, generate_project_group_member_id
 
 
 # =================== PROJECT GROUP MANAGEMENT ===================
@@ -26,17 +27,17 @@ from src.Util.db_config import get_connection
 def create_project_group(group_name: str, permissions: List[str], group_description: str = None,
                          created_by: str = None) -> ProjectGroup:
     """Create a new project group with permissions"""
+    group_id = generate_project_group_id()
     group_hash = secrets.token_hex(32).upper()
     permissions_json = json.dumps(permissions)
 
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    INSERT INTO project_groups (group_hash, group_name, group_description, permissions, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
-                    """, [group_hash, group_name, group_description, permissions_json])
+                    INSERT INTO project_groups (id, group_hash, group_name, group_description, permissions, created_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    """, [group_id, group_hash, group_name, group_description, permissions_json])
 
-        group_id = con.insert_id()
         con.commit()
 
         return ProjectGroup(
@@ -282,12 +283,12 @@ def assign_project_to_group(project_id: str, project_group_id: str, assigned_by:
         cur = con.cursor()
 
         try:
+            member_id = generate_project_group_member_id()
             cur.execute("""
-                        INSERT INTO project_group_members (project_id, project_group_id, assigned_at, assigned_by)
-                        VALUES (%s, %s, NOW(), %s)
-                        """, [project_id, project_group_id, assigned_by])
+                        INSERT INTO project_group_members (id, project_id, project_group_id, assigned_at, assigned_by)
+                        VALUES (%s, %s, %s, NOW(), %s)
+                        """, [member_id, project_id, project_group_id, assigned_by])
 
-            member_id = con.insert_id()
             con.commit()
 
             return ProjectGroupMember(

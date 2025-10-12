@@ -582,241 +582,153 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
         return results
 
 
-# =================== USER-PROJECT ACCESS MANAGEMENT (Consumer Users) ===================
+# =================== USER-PROJECT ACCESS MANAGEMENT (Via User Groups) ===================
+# Note: In the new schema, users access projects through user_groups → user_group_projects
+# The old user_projects table no longer exists
 
-def grant_user_project_access(user_id: str, project_id: str, granted_by: str = None) -> UserProject:
-    """Grant a consumer user access to a project"""
-    user_project_hash = generate_user_project_hash()
+def grant_user_project_access(user_id: str, project_id: str, granted_by: str = None) -> bool:
+    """Grant a user access to a project through a user group"""
+    from src.Util.db.db_user_groups import (
+        assign_user_to_group,
+        grant_group_project_access,
+        get_user_groups_for_user
+    )
+    
+    with get_connection() as con:
+        cur = con.cursor()
+        
+        # Find or create a default user group for this project
+        cur.execute("""
+                    SELECT ug.id
+                    FROM user_groups ug
+                    INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                    WHERE ugp.project_id = %s
+                      AND ug.group_name LIKE '%user%'
+                      AND ug.is_active = 1
+                      AND ugp.is_active = 1
+                    LIMIT 1
+                    """, [project_id])
+        
+        group_result = cur.fetchone()
+        if group_result:
+            user_group_id = group_result[0]
+            # Add user to this group
+            result = assign_user_to_group(user_id, user_group_id, granted_by)
+            return result is not None
+        else:
+            print(f"Warning: No default user group found for project {project_id}")
+            return False
 
+
+def get_user_project_access(user_id: str, project_id: str) -> Optional[bool]:
+    """Check if user has access to a specific project through user groups"""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-                    INSERT INTO user_projects (user_id, project_id, user_project_hash, granted_at, granted_by)
-                    VALUES (%s, %s, %s, NOW(), %s)
-                    """, [user_id, project_id, user_project_hash, granted_by])
-
-        user_project_id = con.insert_id()
-        con.commit()
-
-        # Assign to default 'user' group for consumer users
-        assign_user_to_default_group(user_project_id, project_id)
-
-        return UserProject(
-            id=user_project_id,
-            user_id=user_id,
-            project_id=project_id,
-            user_project_hash=user_project_hash,
-            granted_at=datetime.now(),
-            granted_by=granted_by,
-            is_active=True
-        )
-
-
-def get_user_project_access(user_id: str, project_id: str) -> Optional[UserProject]:
-    """Get consumer user's access to a specific project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    SELECT id, user_id, project_id, user_project_hash, granted_at, granted_by, is_active
-                    FROM user_projects
-                    WHERE user_id = %s
-                      AND project_id = %s
-                      AND is_active = 1
+                    SELECT COUNT(*)
+                    FROM user_group_members ugm
+                    INNER JOIN user_group_projects ugp ON ugm.user_group_id = ugp.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugp.project_id = %s
+                      AND ugm.is_active = 1
+                      AND ugp.is_active = 1
                     """, [user_id, project_id])
-
+        
         result = cur.fetchone()
-        if result:
-            return UserProject(
-                id=result[0],
-                user_id=result[1],
-                project_id=result[2],
-                user_project_hash=result[3],
-                granted_at=result[4],
-                granted_by=result[5],
-                is_active=bool(result[6])
-            )
-    return None
+        return result[0] > 0 if result else False
 
 
-def get_user_projects(user_id: str) -> List[Tuple[Project, UserProject]]:
-    """Get all projects a consumer user has access to"""
+def get_user_projects(user_id: str) -> List[Tuple[Project, Any]]:
+    """Get all projects a user has access to through user groups"""
     with get_connection() as con:
         cur = con.cursor()
-
-        try:
-            cur.execute(
-                """
-                SELECT p.id,
-                       p.project_hash,
-                       p.project_name,
-                       p.project_description,
-                       p.project_created,
-                       p.is_active,
-                       up.id,
-                       up.user_id,
-                       up.project_id,
-                       up.user_project_hash,
-                       up.granted_at,
-                       up.granted_by,
-                       up.is_active
-                FROM projects p
-                         INNER JOIN user_projects up ON p.id = up.project_id
-                WHERE up.user_id = %s
-                  AND p.is_active = 1
-                  AND up.is_active = 1
-                """,
-                [user_id],
-            )
-        except pymysql.err.ProgrammingError as e:
-            # Error code 1146 indicates the table does not exist (likely during
-            # transition to the new group-based access model).  Instead of
-            # raising an exception that breaks the request flow, gracefully
-            # return an empty list so callers can continue.
-            if e.args and e.args[0] == 1146:
-                return []
-            # Re-raise any other programming errors
-            raise
-
+        cur.execute("""
+                    SELECT DISTINCT p.id,
+                           p.project_hash,
+                           p.project_name,
+                           p.project_description,
+                           p.project_created,
+                           p.is_active
+                    FROM projects p
+                    INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
+                    INNER JOIN user_group_members ugm ON ugp.user_group_id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND p.is_active = 1
+                      AND ugp.is_active = 1
+                      AND ugm.is_active = 1
+                    ORDER BY p.project_name
+                    """, [user_id])
+        
         results = []
         for row in cur.fetchall():
             project = Project(
                 id=row[0], project_hash=row[1], project_name=row[2],
                 project_description=row[3], project_created=row[4], is_active=bool(row[5])
             )
-            user_project = UserProject(
-                id=row[6], user_id=row[7], project_id=row[8],
-                user_project_hash=row[9], granted_at=row[10], granted_by=row[11], is_active=bool(row[12])
-            )
-            results.append((project, user_project))
-
+            # Return project with None for the second tuple element (compatibility)
+            results.append((project, None))
+        
         return results
 
 
 def revoke_user_project_access(user_id: str, project_id: str, revoked_by: str = None) -> bool:
-    """Revoke consumer user's access to a project"""
+    """Revoke user's access to a project by removing them from all groups with access"""
+    from src.Util.db.db_user_groups import remove_user_from_group
+    
     with get_connection() as con:
         cur = con.cursor()
+        
+        # Find all user groups that give access to this project
         cur.execute("""
-                    UPDATE user_projects
-                    SET is_active  = 0,
-                        revoked_at = NOW(),
-                        revoked_by = %s
-                    WHERE user_id = %s
-                      AND project_id = %s
-                      AND is_active = 1
-                    """, [revoked_by, user_id, project_id])
-
-        success = cur.rowcount > 0
-        if success:
-            con.commit()
+                    SELECT DISTINCT ug.id
+                    FROM user_groups ug
+                    INNER JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
+                    INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
+                    WHERE ugm.user_id = %s
+                      AND ugp.project_id = %s
+                      AND ugm.is_active = 1
+                      AND ugp.is_active = 1
+                    """, [user_id, project_id])
+        
+        groups = cur.fetchall()
+        success = False
+        
+        for (group_id,) in groups:
+            if remove_user_from_group(user_id, group_id, revoked_by):
+                success = True
+        
         return success
 
 
-def assign_user_to_default_group(user_project_id: str, project_id: str):
-    """Assign consumer user to default 'user' group in a project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        # Get default 'user' group ID
-        cur.execute("""
-                    SELECT id
-                    FROM user_groups
-                    WHERE project_id = %s
-                      AND group_name = 'user'
-                      AND is_active = 1
-                    """, [project_id])
+# =================== USER GROUP MANAGEMENT (Updated for New Schema) ===================
 
-        group_result = cur.fetchone()
-        if group_result:
-            group_id = group_result[0]
-            cur.execute("""
-                        INSERT INTO user_project_groups (user_project_id, group_id, assigned_at)
-                        VALUES (%s, %s, NOW())
-                        """, [user_project_id, group_id])
-            con.commit()
-
-
-# =================== USER GROUP MANAGEMENT (Consumer Users) ===================
-
-def get_user_groups_in_project(user_project_id: str) -> List[UserGroup]:
-    """Get all groups a consumer user belongs to in a project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    SELECT ug.id,
-                           ug.project_id,
-                           ug.group_name,
-                           ug.group_description,
-                           ug.permissions,
-                           ug.created_at,
-                           ug.is_active
-                    FROM user_groups ug
-                             INNER JOIN user_project_groups upg ON ug.id = upg.group_id
-                    WHERE upg.user_project_id = %s
-                      AND ug.is_active = 1
-                      AND upg.is_active = 1
-                    """, [user_project_id])
-
-        groups = []
-        for row in cur.fetchall():
-            groups.append(UserGroup(
-                id=row[0], project_id=row[1], group_name=row[2],
-                group_description=row[3], permissions=row[4], created_at=row[5], is_active=bool(row[6])
-            ))
-
-        return groups
+def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]:
+    """Get all groups a user belongs to that have access to a specific project"""
+    # Use the new function from db_user_groups module
+    from src.Util.db.db_user_groups import get_user_groups_in_project as get_groups
+    return get_groups(user_id, project_id)
 
 
 def get_user_permissions_in_project(user_id: str, project_id: str) -> List[str]:
-    """Get all permissions a consumer user has in a project"""
-    # For consumer users, use the existing RBAC system
-    user_project = get_user_project_access(user_id, project_id)
-    if not user_project:
-        return []
-
-    groups = get_user_groups_in_project(user_project.id)
-    permissions = set()
-
-    for group in groups:
-        if group.permissions:
-            group_permissions = json.loads(group.permissions)
-            permissions.update(group_permissions)
-
-    return list(permissions)
+    """Get all permissions a user has in a project through RBAC"""
+    # Use the RBAC system to get effective permissions
+    from src.Util.db.db_rbac_permissions import get_user_effective_permissions
+    
+    permissions_objs = get_user_effective_permissions(user_id, project_id)
+    return [p.permission_name for p in permissions_objs]
 
 
-def assign_user_to_group(user_project_id: str, group_id: str, assigned_by: str = None) -> bool:
-    """Assign consumer user to a group in a project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    INSERT INTO user_project_groups (user_project_id, group_id, assigned_at, assigned_by)
-                    VALUES (%s, %s, NOW(), %s)
-                    """, [user_project_id, group_id, assigned_by])
-
-        success = cur.rowcount > 0
-        if success:
-            con.commit()
-        return success
+def assign_user_to_group(user_id: str, group_id: str, assigned_by: str = None) -> bool:
+    """Assign user to a user group"""
+    from src.Util.db.db_user_groups import assign_user_to_group as assign_to_group
+    result = assign_to_group(user_id, group_id, assigned_by)
+    return result is not None
 
 
-def remove_user_from_group(user_project_id: str, group_id: str, removed_by: str = None) -> bool:
-    """Remove consumer user from a group in a project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    UPDATE user_project_groups
-                    SET is_active  = 0,
-                        removed_at = NOW(),
-                        removed_by = %s
-                    WHERE user_project_id = %s
-                      AND group_id = %s
-                      AND is_active = 1
-                    """, [removed_by, user_project_id, group_id])
-
-        success = cur.rowcount > 0
-        if success:
-            con.commit()
-        return success
+def remove_user_from_group(user_id: str, group_id: str, removed_by: str = None) -> bool:
+    """Remove user from a user group"""
+    from src.Util.db.db_user_groups import remove_user_from_group as remove_from_group
+    return remove_from_group(user_id, group_id, removed_by)
 
 
 # =================== USER SESSION MANAGEMENT WITH USER TYPES ===================
@@ -867,21 +779,15 @@ def create_session(user_id: str, project_id: str, user_project_id: str = None,
         session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
         session_data['groups'] = ['root_users']
     elif user.user_type == 'admin':
-        session_data['assigned_project_id'] = user.assigned_project_id
+        # Admin users have permissions through admin groups
         session_data['permissions'] = ['admin', 'project_admin', 'manage_users', 'manage_groups']
         session_data['groups'] = ['project_admins']
     elif user.user_type == 'consumer':
-        if user_project_id:
-            user_project = get_user_project_access(user_id, project_id)
-            if user_project:
-                session_data['user_project_id'] = user_project.id
-                session_data['user_project_hash'] = user_project.user_project_hash
-
-                # Get user's groups and permissions
-                groups = get_user_groups_in_project(user_project.id)
-                permissions = get_user_permissions_in_project(user_id, project_id)
-                session_data['groups'] = [g.group_name for g in groups]
-                session_data['permissions'] = permissions
+        # Get user's groups and permissions through new RBAC system
+        groups = get_user_groups_in_project(user_id, project_id)
+        permissions = get_user_permissions_in_project(user_id, project_id)
+        session_data['groups'] = [g.group_name for g in groups]
+        session_data['permissions'] = permissions
 
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
 
@@ -893,6 +799,29 @@ def invalidate_session(session_token: str) -> bool:
     try:
         result = client.delete(f"session:{session_token}")
         return result > 0
+    except Exception:
+        return False
+
+
+def invalidate_user_sessions(user_id: str) -> bool:
+    """Invalidate all sessions for a specific user"""
+    try:
+        # Get all session keys
+        session_keys = client.keys("session:*")
+        invalidated_count = 0
+        
+        for key in session_keys:
+            try:
+                session_data = client.get(key)
+                if session_data:
+                    data = json.loads(session_data)
+                    if data.get('user_id') == user_id:
+                        client.delete(key)
+                        invalidated_count += 1
+            except Exception:
+                continue
+        
+        return invalidated_count > 0
     except Exception:
         return False
 
@@ -919,12 +848,10 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     elif user_type == 'admin':
         groups = ['project_admins']
         permissions = ['admin', 'project_admin', 'manage_users', 'manage_groups']
-        available_projects = [project]  # Admin users see only their project
+        available_projects = [project]  # Admin users see their assigned projects
     elif user_type == 'consumer':
         # Get fresh user groups and permissions for consumer users
-        if 'user_project_id' not in session_data:
-            return None
-        groups = get_user_groups_in_project(session_data['user_project_id'])
+        groups = get_user_groups_in_project(session_data['user_id'], project.id)
         permissions = get_user_permissions_in_project(session_data['user_id'], project.id)
         available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
         groups = [g.group_name for g in groups]
@@ -935,17 +862,17 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         user_hash=session_data['user_hash'],
         project_hash=session_data['project_hash'],
         project_name=project.project_name,
-        user_project_hash=session_data.get('user_project_hash', ''),
+        user_project_hash='',  # Deprecated field
         session_token=session_token,
         session_length=0,  # We don't track remaining time
         user_id=session_data['user_id'],
         project_id=session_data['project_id'],
-        user_project_id=session_data.get('user_project_id'),
+        user_project_id=None,  # Deprecated field
         groups=groups,
         permissions=permissions,
         available_projects=available_projects,
         user_type=user_type,
-        assigned_project_id=session_data.get('assigned_project_id')
+        assigned_project_id=None  # Deprecated field
     )
 
 

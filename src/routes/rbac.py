@@ -1158,8 +1158,13 @@ async def get_permission_matrix(
         permissions = get_project_permissions(project.id)
 
         # Get project roles
-        from src.Util.db.db_rbac_permissions import get_project_permission_groups, get_group_permissions, \
-            get_group_users
+        from src.Util.db.db_rbac_permissions import (
+            get_project_permission_groups, 
+            get_group_permissions,
+            get_group_users,
+            get_project_users_with_permissions,
+            get_user_permission_groups_in_project
+        )
         roles = get_project_permission_groups(project.id)
 
         # Build permission matrix
@@ -1182,59 +1187,66 @@ async def get_permission_matrix(
 
         # Build roles with their permissions and users
         for role in roles:
-            # TODO: Implement get_group_permissions and get_group_users functions
-            role_permissions = []  # get_group_permissions(role.id)
-            role_users = []  # get_group_users(role.id)
+            role_permissions = get_group_permissions(role.id)
+            role_users = get_group_users(role.id)
 
             role_data = {
                 "id": role.id,
                 "name": role.group_name,
                 "description": role.group_description,
                 "priority": role.group_priority,
-                "permissions": [],  # Placeholder
-                "users": []  # Placeholder
+                "permissions": [
+                    {
+                        "id": perm.id,
+                        "name": perm.permission_name,
+                        "category": perm.permission_category
+                    } for perm in role_permissions
+                ],
+                "users": [
+                    {
+                        "user_hash": user['user_hash'],
+                        "username": user['username'],
+                        "email": user['email']
+                    } for user in role_users
+                ]
             }
             matrix["roles"].append(role_data)
 
         # Get all users with permissions in this project
-        # TODO: Implement get_project_users_with_permissions function
-        project_users = []  # get_project_users_with_permissions(project.id)
+        project_users = get_project_users_with_permissions(project.id)
 
-        for user in project_users:
-            user_permissions = []
-            user_roles = []
-
+        for user_data in project_users:
             # Get user's effective permissions
-            # TODO: Implement get_user_permissions_in_project function
-            user_perms = []  # get_user_permissions_in_project(user.id, project.id)
+            user_perms = get_user_effective_permissions(user_data['id'], project.id)
 
-            for perm in user_perms:
-                user_permissions.append({
+            # Get user's roles
+            user_role_assignments = get_user_permission_groups_in_project(user_data['id'], project.id)
+
+            user_permissions = [
+                {
                     "id": perm.id,
                     "name": perm.permission_name,
                     "category": perm.permission_category
-                })
+                } for perm in user_perms
+            ]
 
-            # Get user's roles
-            # TODO: Implement get_user_roles_in_project function
-            user_role_assignments = []  # get_user_roles_in_project(user.id, project.id)
+            user_roles = [
+                {
+                    "id": role.id,
+                    "name": role.group_name,
+                    "assigned_at": role.assigned_at
+                } for role in user_role_assignments
+            ]
 
-            for role_assignment in user_role_assignments:
-                user_roles.append({
-                    "id": role_assignment.id,
-                    "name": role_assignment.group_name,
-                    "assigned_at": role_assignment.assigned_at
-                })
-
-            user_data = {
-                "user_hash": user.user_hash,
-                "username": user.username,
-                "email": user.email,
-                "user_type": getattr(user, 'user_type', 'consumer'),
+            user_info = {
+                "user_hash": user_data['user_hash'],
+                "username": user_data['username'],
+                "email": user_data['email'],
+                "user_type": user_data['user_type'],
                 "roles": user_roles,
                 "permissions": user_permissions
             }
-            matrix["users"].append(user_data)
+            matrix["users"].append(user_info)
 
         return {
             "success": True,
@@ -1295,33 +1307,32 @@ async def get_role_assignment_history(
             raise HTTPException(status_code=403, detail="Permission denied")
 
         # Get role assignment history
-        # TODO: Implement get_user_role_assignment_history function
-        history = []  # get_user_role_assignment_history(target_user.id, project.id, limit, offset)
+        from src.Util.db.db_rbac_permissions import get_user_role_assignment_history, count_user_role_assignment_history
+        history = get_user_role_assignment_history(target_user.id, project.id, limit, offset)
 
         # Format history data
         history_data = []
         for entry in history:
             history_entry = {
-                "id": entry.id,
-                "action": entry.action,  # 'assigned', 'removed', 'modified'
+                "id": entry['id'],
+                "action": entry['action'],  # 'assigned', 'removed'
                 "role": {
-                    "id": entry.role_id,
-                    "name": entry.role_name,
-                    "description": entry.role_description
+                    "id": entry['role_id'],
+                    "name": entry['role_name'],
+                    "description": entry['role_description']
                 },
                 "performed_by": {
-                    "user_hash": entry.performed_by_hash,
-                    "username": entry.performed_by_username
+                    "user_hash": entry['performed_by_hash'],
+                    "username": entry['performed_by_username']
                 },
-                "performed_at": entry.performed_at,
-                "details": entry.details,
-                "is_active": entry.is_active
+                "performed_at": entry['performed_at'],
+                "details": entry['details'],
+                "is_active": entry['is_active']
             }
             history_data.append(history_entry)
 
         # Get total count for pagination
-        # TODO: Implement count_user_role_assignment_history function
-        total_count = 0  # count_user_role_assignment_history(target_user.id, project.id)
+        total_count = count_user_role_assignment_history(target_user.id, project.id)
 
         return {
             "success": True,

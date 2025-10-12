@@ -1,6 +1,6 @@
  # Admin API
 
-Complete admin endpoint documentation for user group and project group management. Requires administrator privileges.
+Complete admin endpoint documentation for dashboard statistics, user group management, and project group management. Requires administrator privileges.
 
 ## 🔐 Admin Authentication Required
 
@@ -8,6 +8,393 @@ All admin endpoints require authentication with admin privileges:
 
 ```
 Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN
+```
+
+---
+
+## 📊 Admin Dashboard Endpoints
+
+### GET `/admin/dashboard/stats`
+
+Get comprehensive dashboard statistics including user counts, project metrics, and system health.
+
+**Authentication:** Required (admin permission)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/dashboard/stats" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "totals": {
+    "users": 150,
+    "projects": 25,
+    "active_sessions": 42,
+    "recent_activities": 327
+  },
+  "recent_activity": {
+    "new_users_7d": 12,
+    "new_projects_7d": 3,
+    "total_activities_7d": 327
+  },
+  "user_breakdown": {
+    "root_users": 2,
+    "admin_users": 8,
+    "consumer_users": 140
+  },
+  "growth": {
+    "user_growth_7d": 12,
+    "project_growth_7d": 3
+  },
+  "system_health": {
+    "database": {
+      "status": "healthy",
+      "response_time_ms": 15
+    },
+    "redis": {
+      "status": "healthy",
+      "response_time_ms": 3
+    },
+    "overall_status": "healthy"
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/activity`
+
+Get paginated activity feed with filtering options for the admin dashboard.
+
+**Authentication:** Required (admin permission)
+
+**Query Parameters:**
+- `limit` (optional, default: 50, max: 100): Number of activities to return
+- `offset` (optional, default: 0): Number of activities to skip
+- `activity_type` (optional): Filter by activity type
+- `user_id` (optional): Filter by user ID
+- `project_id` (optional): Filter by project ID
+- `days` (optional, default: 30, max: 365): Days to look back
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/activity?limit=20&days=7&activity_type=user_login" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "activities": [
+    {
+      "id": 1523,
+      "activity_type": "user_login",
+      "details": "User logged in successfully",
+      "created_at": "2024-01-15T10:25:00Z",
+      "user": {
+        "id": 42,
+        "username": "john_doe",
+        "user_hash": "user_abc123"
+      },
+      "project": {
+        "id": 5,
+        "name": "Main Project",
+        "hash": "proj_xyz789"
+      },
+      "target_user": null,
+      "ip_address": "192.168.1.100"
+    },
+    {
+      "id": 1522,
+      "activity_type": "user_created",
+      "details": "New user registered",
+      "created_at": "2024-01-15T09:15:00Z",
+      "user": null,
+      "project": {
+        "id": 5,
+        "name": "Main Project",
+        "hash": "proj_xyz789"
+      },
+      "target_user": {
+        "id": 150,
+        "username": "new_user",
+        "user_hash": "user_def456"
+      },
+      "ip_address": "192.168.1.101"
+    }
+  ],
+  "pagination": {
+    "total": 327,
+    "limit": 20,
+    "offset": 0,
+    "has_more": true,
+    "next_offset": 20
+  },
+  "filters": {
+    "activity_type": "user_login",
+    "user_id": null,
+    "project_id": null,
+    "days": 7
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/health`
+
+Get detailed system health information including database, Redis, and performance metrics.
+
+**Authentication:** Required (admin permission)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/health" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "overall_status": "healthy",
+  "health_score": 100,
+  "components": {
+    "database": {
+      "status": "healthy",
+      "response_time_ms": 15,
+      "connections": {
+        "active": 5,
+        "idle": 10
+      }
+    },
+    "redis": {
+      "status": "healthy",
+      "response_time_ms": 3,
+      "memory_usage_mb": 45.2,
+      "connected_clients": 8
+    }
+  },
+  "metrics": {
+    "total_users": 150,
+    "total_projects": 25,
+    "active_sessions": 42
+  },
+  "checked_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Health Scores:**
+- **100**: All systems healthy
+- **70-99**: Degraded (some components have issues)
+- **<70**: Unhealthy (critical issues detected)
+
+---
+
+### GET `/admin/activity/types`
+
+Get list of available activity types for filtering.
+
+**Authentication:** Required (admin permission)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/activity/types" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "activity_types": [
+    "user_login",
+    "user_logout",
+    "user_created",
+    "user_updated",
+    "user_deleted",
+    "user_activated",
+    "user_deactivated",
+    "user_password_reset",
+    "project_created",
+    "project_updated",
+    "project_deleted",
+    "project_member_added",
+    "project_member_removed",
+    "group_created",
+    "group_updated",
+    "group_deleted",
+    "user_assigned_to_group",
+    "user_removed_from_group",
+    "permission_granted",
+    "permission_revoked",
+    "role_assigned",
+    "role_revoked",
+    "bulk_user_update",
+    "bulk_user_delete",
+    "bulk_role_assignment",
+    "bulk_group_assignment"
+  ],
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/users/statistics`
+
+Get detailed user statistics with breakdown and growth rates.
+
+**Authentication:** Required (admin permission)
+
+**Query Parameters:**
+- `days` (optional, default: 30, max: 365): Days to look back for statistics
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/users/statistics?days=30" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "statistics": {
+    "total_users": 150,
+    "active_users": 142,
+    "inactive_users": 8,
+    "new_users_period": 12,
+    "user_type_breakdown": {
+      "root": 2,
+      "admin": 8,
+      "consumer": 140
+    },
+    "growth_rate": 8.7,
+    "avg_users_per_day": 0.4,
+    "most_active_day": "2024-01-10",
+    "registration_trend": [
+      {"date": "2024-01-08", "count": 2},
+      {"date": "2024-01-09", "count": 1},
+      {"date": "2024-01-10", "count": 5},
+      {"date": "2024-01-11", "count": 0},
+      {"date": "2024-01-12", "count": 3},
+      {"date": "2024-01-13", "count": 1},
+      {"date": "2024-01-14", "count": 0}
+    ]
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/projects/statistics`
+
+Get detailed project statistics and health metrics.
+
+**Authentication:** Required (admin permission)
+
+**Query Parameters:**
+- `days` (optional, default: 30, max: 365): Days to look back for analytics
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/projects/statistics?days=30" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "statistics": {
+    "total_projects": 25,
+    "active_projects": 23,
+    "new_projects_period": 3,
+    "avg_members_per_project": 6.2,
+    "total_project_members": 155,
+    "project_growth_rate": 13.6,
+    "most_active_projects": [
+      {
+        "project_hash": "proj_xyz789",
+        "project_name": "Main Project",
+        "member_count": 45,
+        "activity_count": 523
+      },
+      {
+        "project_hash": "proj_abc123",
+        "project_name": "Mobile App",
+        "member_count": 28,
+        "activity_count": 412
+      },
+      {
+        "project_hash": "proj_def456",
+        "project_name": "Analytics Dashboard",
+        "member_count": 15,
+        "activity_count": 287
+      }
+    ],
+    "creation_trend": [
+      {"date": "2024-01-05", "count": 1},
+      {"date": "2024-01-12", "count": 2}
+    ]
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+### GET `/admin/system/overview`
+
+Get comprehensive system health and performance overview.
+
+**Authentication:** Required (admin permission)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:8000/admin/system/overview" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "system_overview": {
+    "uptime": "15 days, 3 hours, 42 minutes",
+    "version": "2.0.0",
+    "environment": "production",
+    "health_status": "healthy",
+    "performance": {
+      "avg_response_time_ms": 125,
+      "requests_per_minute": 450,
+      "error_rate": 0.02
+    },
+    "database": {
+      "status": "healthy",
+      "total_connections": 15,
+      "slow_queries": 0,
+      "database_size_mb": 2048
+    },
+    "cache": {
+      "status": "healthy",
+      "hit_rate": 94.5,
+      "memory_usage_mb": 256,
+      "keys_count": 15420
+    },
+    "resources": {
+      "cpu_usage_percent": 35,
+      "memory_usage_percent": 62,
+      "disk_usage_percent": 45
+    }
+  },
+  "generated_at": "2024-01-15T10:30:00Z"
+}
 ```
 
 ---
