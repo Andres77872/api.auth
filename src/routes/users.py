@@ -19,7 +19,7 @@ from src.Util.Models import (
     ChangeUserTypeResponse, UserInfo, ProjectInfo, PaginationInfo, UserGroup, UserGroupMember
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
@@ -673,19 +673,11 @@ async def update_user_status(
             invalidate_user_sessions(target_user.id)
 
         # Log the activity with enhanced details for audit trail
-        activity_type = ActivityType.USER_ACTIVATED if is_active else ActivityType.USER_DEACTIVATED
-        log_activity(
-            user_id=current_user.id,
-            activity_type=activity_type,
-            target_id=target_user.id,
-            project_id=session_data.project_id if hasattr(session_data, 'project_id') else None,
-            details={
-                "action": "user_status_change",
-                "username": target_user.username,
-                "new_status": "active" if is_active else "inactive",
-                "changed_by": current_user.username,
-                "user_type": target_user.user_type
-            }
+        ActivityLogger.log_user_status_change(
+            current_user.id,
+            target_user.id,
+            new_status="active" if is_active else "inactive",
+            project_id=session_data.project_id if hasattr(session_data, 'project_id') else None
         )
 
         return UpdateUserStatusResponse(
@@ -753,11 +745,9 @@ async def reset_user_password(
             raise HTTPException(status_code=500, detail="Failed to reset password")
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.USER_PASSWORD_RESET,
-            details=f"Password reset for user {target_user.username}",
-            target_user_id=target_user.id,
+        ActivityLogger.log_user_password_reset(
+            current_user.id,
+            target_user.id,
             project_id=getattr(session_data, 'project_id', None)
         )
 
@@ -874,15 +864,10 @@ async def change_user_type(
             
             # Log specific group removals for audit purposes
             for group in removed_groups:
-                log_activity(
-                    user_id=current_user.id,
-                    activity_type=ActivityType.USER_REMOVED_FROM_GROUP,
-                    target_id=target_user.id,
-                    details={
-                        "action": "removed_from_group",
-                        "group_name": group.group_name,
-                        "reason": "user_type_change_to_root"
-                    }
+                ActivityLogger.log_user_group_remove(
+                    current_user.id,
+                    target_user.id,
+                    group.id
                 )
         
         # If changing to admin, assign to project admin group if it exists
@@ -902,31 +887,20 @@ async def change_user_type(
                     affected_projects.append(project)
                     
                     # Log admin group assignment
-                    log_activity(
-                        user_id=current_user.id,
-                        activity_type=ActivityType.USER_ADDED_TO_GROUP,
-                        target_id=target_user.id,
-                        project_id=project.id,
-                        details={
-                            "action": "added_to_admin_group",
-                            "group_name": admin_group.group_name,
-                            "project_name": project.project_name
-                        }
+                    ActivityLogger.log_user_group_assign(
+                        current_user.id,
+                        target_user.id,
+                        admin_group.id,
+                        project_id=project.id
                     )
 
         # Log the user type change activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.USER_TYPE_CHANGED,
-            target_id=target_user.id,
-            project_id=project.id if project else None,
-            details={
-                "action": "user_type_changed",
-                "username": target_user.username,
-                "previous_type": previous_type,
-                "new_type": user_type,
-                "project_assignment": project.project_name if project else None
-            }
+        ActivityLogger.log_user_type_changed(
+            current_user.id,
+            target_user.id,
+            old_type=previous_type,
+            new_type=user_type,
+            project_id=project.id if project else None
         )
 
         logger.info(f"User type changed by ROOT {current_user.username}: {target_user.username} from {previous_type} to {user_type}")

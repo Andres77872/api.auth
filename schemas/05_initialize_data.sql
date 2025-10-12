@@ -282,6 +282,70 @@ VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @tester_group_id, @default_proj
 INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
 VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @viewer_group_id, @default_project_id, @viewer_role_id, NOW(), @root_user_id, TRUE);
 
+-- =================== INITIALIZE ACTIVITY CATALOG ===================
+-- Create activity type catalog entries
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active)
+VALUES 
+    -- User Authentication Activities
+    ('act-cat-001', 'user_login', 'User Login', 'User successfully logged into the system', 'authentication', 'info', TRUE, TRUE),
+    ('act-cat-002', 'user_logout', 'User Logout', 'User logged out of the system', 'authentication', 'info', TRUE, TRUE),
+    ('act-cat-003', 'user_login_failed', 'Login Failed', 'Failed login attempt', 'authentication', 'warning', TRUE, TRUE),
+    ('act-cat-004', 'user_password_reset', 'Password Reset', 'User password was reset', 'authentication', 'warning', TRUE, TRUE),
+    
+    -- User Management Activities
+    ('act-cat-005', 'user_registration', 'User Registration', 'New user account created', 'user_management', 'info', TRUE, TRUE),
+    ('act-cat-006', 'user_update', 'User Update', 'User account information updated', 'user_management', 'info', TRUE, TRUE),
+    ('act-cat-007', 'user_status_change', 'User Status Change', 'User account status changed (activated/deactivated)', 'user_management', 'warning', TRUE, TRUE),
+    ('act-cat-008', 'user_type_changed', 'User Type Changed', 'User type modified (root/admin/consumer)', 'user_management', 'critical', TRUE, TRUE),
+    ('act-cat-009', 'user_deleted', 'User Deleted', 'User account deleted', 'user_management', 'critical', TRUE, TRUE),
+    
+    -- Project Management Activities
+    ('act-cat-010', 'project_creation', 'Project Created', 'New project created', 'project_management', 'info', TRUE, TRUE),
+    ('act-cat-011', 'project_update', 'Project Updated', 'Project information updated', 'project_management', 'info', TRUE, TRUE),
+    ('act-cat-012', 'project_delete', 'Project Deleted', 'Project deleted', 'project_management', 'critical', TRUE, TRUE),
+    ('act-cat-013', 'project_archived', 'Project Archived', 'Project archived', 'project_management', 'warning', TRUE, TRUE),
+    ('act-cat-014', 'project_unarchived', 'Project Unarchived', 'Project unarchived', 'project_management', 'info', TRUE, TRUE),
+    ('act-cat-015', 'project_ownership_transferred', 'Project Ownership Transferred', 'Project ownership transferred to another user', 'project_management', 'critical', TRUE, TRUE),
+    
+    -- Project Member Activities
+    ('act-cat-016', 'project_member_add', 'Project Member Added', 'User added to project', 'project_members', 'info', TRUE, TRUE),
+    ('act-cat-017', 'project_member_remove', 'Project Member Removed', 'User removed from project', 'project_members', 'warning', TRUE, TRUE),
+    ('act-cat-018', 'project_member_removed', 'Project Member Was Removed', 'User was removed from project', 'project_members', 'warning', TRUE, TRUE),
+    
+    -- Group Management Activities
+    ('act-cat-019', 'group_creation', 'Group Created', 'New user group created', 'group_management', 'info', TRUE, TRUE),
+    ('act-cat-020', 'group_update', 'Group Updated', 'User group information updated', 'group_management', 'info', TRUE, TRUE),
+    ('act-cat-021', 'group_delete', 'Group Deleted', 'User group deleted', 'group_management', 'critical', TRUE, TRUE),
+    ('act-cat-022', 'user_group_assign', 'User Assigned to Group', 'User assigned to a group', 'group_management', 'info', TRUE, TRUE),
+    ('act-cat-023', 'user_group_remove', 'User Removed from Group', 'User removed from a group', 'group_management', 'warning', TRUE, TRUE),
+    
+    -- Permission Management Activities
+    ('act-cat-024', 'permission_grant', 'Permission Granted', 'Permission granted to user or group', 'permission_management', 'warning', TRUE, TRUE),
+    ('act-cat-025', 'permission_revoke', 'Permission Revoked', 'Permission revoked from user or group', 'permission_management', 'warning', TRUE, TRUE),
+    ('act-cat-026', 'role_assigned', 'Role Assigned', 'Role assigned to user or group', 'permission_management', 'info', TRUE, TRUE),
+    ('act-cat-027', 'role_removed', 'Role Removed', 'Role removed from user or group', 'permission_management', 'warning', TRUE, TRUE),
+    
+    -- Bulk Operations
+    ('act-cat-028', 'bulk_role_assignment', 'Bulk Role Assignment', 'Roles assigned to multiple users', 'bulk_operations', 'warning', TRUE, TRUE),
+    ('act-cat-029', 'bulk_group_assignment', 'Bulk Group Assignment', 'Groups assigned to multiple users', 'bulk_operations', 'warning', TRUE, TRUE),
+    ('act-cat-030', 'bulk_user_update', 'Bulk User Update', 'Multiple users updated', 'bulk_operations', 'warning', TRUE, TRUE),
+    ('act-cat-031', 'bulk_user_delete', 'Bulk User Delete', 'Multiple users deleted', 'bulk_operations', 'critical', TRUE, TRUE),
+    
+    -- Administrative Actions
+    ('act-cat-032', 'admin_action', 'Administrative Action', 'General administrative action performed', 'admin', 'warning', TRUE, TRUE),
+    ('act-cat-033', 'system_event', 'System Event', 'System-level event occurred', 'system', 'info', TRUE, TRUE),
+    ('act-cat-034', 'system_config_change', 'System Configuration Changed', 'System configuration modified', 'system', 'critical', TRUE, TRUE),
+    
+    -- API and Integration Activities
+    ('act-cat-035', 'api_access', 'API Access', 'API endpoint accessed', 'api', 'info', FALSE, TRUE),
+    ('act-cat-036', 'api_error', 'API Error', 'API error occurred', 'api', 'warning', TRUE, TRUE),
+    ('act-cat-037', 'integration_sync', 'Integration Sync', 'External integration synchronized', 'integration', 'info', FALSE, TRUE),
+    
+    -- Security Activities
+    ('act-cat-038', 'security_alert', 'Security Alert', 'Security-related alert triggered', 'security', 'critical', TRUE, TRUE),
+    ('act-cat-039', 'suspicious_activity', 'Suspicious Activity', 'Suspicious activity detected', 'security', 'critical', TRUE, TRUE),
+    ('act-cat-040', 'session_expired', 'Session Expired', 'User session expired', 'security', 'info', FALSE, TRUE);
+
 -- =================== CREATE AUDIT LOG ENTRIES ===================
 -- Log the initial setup actions
 INSERT INTO permission_audit_log (id, action_type, project_id, performed_by, new_values, action_timestamp)

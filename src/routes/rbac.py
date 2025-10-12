@@ -21,7 +21,7 @@ from src.Util.Models import (
     UserInfo, ProjectInfo, PermissionInfo, RoleInfo, PaginationInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash, get_project_by_hash,
     # RBAC Permission functions
@@ -963,11 +963,10 @@ async def remove_user_from_role(
             raise HTTPException(status_code=400, detail="Failed to remove user from role")
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.ROLE_REMOVED,
-            details=f"Removed user {target_user.username} from role {role_id} in project {project.project_name}",
-            target_user_id=target_user.id,
+        ActivityLogger.log_role_removed(
+            current_user.id,
+            target_user.id,
+            role=str(role_id),
             project_id=project.id
         )
 
@@ -1090,10 +1089,9 @@ async def bulk_assign_roles(
                 error_count += 1
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_ROLE_ASSIGNMENT,
-            details=f"Bulk assigned roles to {success_count} users in project {project.project_name}",
+        ActivityLogger.log_bulk_role_assignment(
+            current_user.id,
+            count=success_count,
             project_id=project.id
         )
 

@@ -272,12 +272,32 @@ CREATE TABLE IF NOT EXISTS permission_audit_log (
     FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =================== ACTIVITY_CATALOG TABLE ===================
+-- Catalog of all possible activity types
+CREATE TABLE IF NOT EXISTS activity_catalog (
+    id VARCHAR(64) NOT NULL,
+    activity_code VARCHAR(50) NOT NULL,
+    activity_name VARCHAR(100) NOT NULL,
+    activity_description TEXT,
+    activity_category VARCHAR(50) NOT NULL DEFAULT 'general',
+    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
+    requires_audit BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_activity_code (activity_code),
+    INDEX idx_activity_category (activity_category),
+    INDEX idx_activity_code (activity_code, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =================== ACTIVITY_LOGS TABLE ===================
 -- Activity logging for user and system activities
 CREATE TABLE IF NOT EXISTS activity_logs (
     id VARCHAR(64) NOT NULL,
     user_id VARCHAR(64),
     activity_type VARCHAR(50) NOT NULL,
+    activity_catalog_id VARCHAR(64),
     details TEXT,
     project_id VARCHAR(64),
     user_group_id VARCHAR(64),
@@ -285,8 +305,11 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     ip_address VARCHAR(45),
     user_agent TEXT,
     metadata JSON NULL,
+    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    INDEX idx_activity_catalog (activity_catalog_id),
+    FOREIGN KEY (activity_catalog_id) REFERENCES activity_catalog(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ADDITIONAL ENHANCEMENT TABLES ===================

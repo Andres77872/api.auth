@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.bulk_operations import (
     bulk_update_users, bulk_delete_users,
     bulk_assign_roles, bulk_add_users_to_group
@@ -115,10 +115,9 @@ async def bulk_update_users_endpoint(
         result = bulk_update_users(user_hashes, updates, current_user.id)
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_USER_UPDATE,
-            details=f"Bulk updated {result['success_count']} users. Updates: {updates}",
+        ActivityLogger.log_bulk_user_update(
+            current_user.id,
+            count=result['success_count'],
             project_id=getattr(session_data, 'project_id', None)
         )
 
@@ -195,10 +194,9 @@ async def bulk_delete_users_endpoint(
         result = bulk_delete_users(user_hashes, current_user.id)
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_USER_DELETE,
-            details=f"Bulk deleted {result['success_count']} users",
+        ActivityLogger.log_bulk_user_delete(
+            current_user.id,
+            count=result['success_count'],
             project_id=getattr(session_data, 'project_id', None)
         )
 
@@ -282,10 +280,9 @@ async def bulk_assign_roles_to_project_users(
         result = bulk_assign_roles(project.project_hash, role_assignments, current_user.id)
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_ROLE_ASSIGNMENT,
-            details=f"Bulk assigned roles {role_names} to {result['success_count']} users in project {project.project_name}",
+        ActivityLogger.log_bulk_role_assignment(
+            current_user.id,
+            count=result['success_count'],
             project_id=project.id
         )
 
@@ -369,10 +366,9 @@ async def bulk_assign_users_to_groups(
                 result['error_count'] += group_result.get('error_count', 0)
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_GROUP_ASSIGNMENT,
-            details=f"Bulk assigned {result['success_count']} users to groups {group_names}",
+        ActivityLogger.log_bulk_group_assignment(
+            current_user.id,
+            count=result['success_count'],
             project_id=getattr(session_data, 'project_id', None)
         )
 

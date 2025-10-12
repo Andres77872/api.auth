@@ -19,7 +19,7 @@ from src.Util.Models import (
     ProjectInfo, PaginationInfo, ListUserGroupsResponse, GrantGroupProjectAccessResponse, UserGroupInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType, get_recent_activity
+from src.Util.activity_logger import ActivityLogger, ActivityType, get_recent_activity
 from src.Util.db import (
     validate_session, get_user_by_hash,
     create_project, get_project_by_hash, list_all_projects,
@@ -796,12 +796,8 @@ async def remove_member_from_project(
             raise HTTPException(status_code=400, detail="Failed to remove user from project")
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.PROJECT_MEMBER_REMOVED,
-            details=f"Removed user {target_user.username} from project {project.project_name}",
-            target_user_id=target_user.id,
-            project_id=project.id
+        ActivityLogger.log_project_member_removed(
+            current_user.id, project.id, target_user.id
         )
 
         logger.info(
@@ -1020,12 +1016,8 @@ async def transfer_project_ownership(
             raise HTTPException(status_code=500, detail="Failed to transfer project ownership")
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.PROJECT_OWNERSHIP_TRANSFERRED,
-            details=f"Transferred ownership of project {project.project_name} to {new_owner.username}",
-            target_user_id=new_owner.id,
-            project_id=project.id
+        ActivityLogger.log_project_ownership_transferred(
+            current_user.id, project.id, new_owner.id
         )
 
         logger.info(
@@ -1104,12 +1096,10 @@ async def archive_unarchive_project(
 
         # Log the activity
         action = "archived" if archived else "unarchived"
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.PROJECT_ARCHIVED if archived else ActivityType.PROJECT_UNARCHIVED,
-            details=f"Project {project.project_name} {action}",
-            project_id=project.id
-        )
+        if archived:
+            ActivityLogger.log_project_archived(current_user.id, project.id)
+        else:
+            ActivityLogger.log_project_unarchived(current_user.id, project.id)
 
         logger.info(f"Project {action}: {project.project_name} by {current_user.username}")
 

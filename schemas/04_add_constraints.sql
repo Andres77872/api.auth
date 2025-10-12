@@ -126,6 +126,8 @@ ALTER TABLE permission_audit_log
 
 -- =================== ACTIVITY_LOGS TABLE CONSTRAINTS ===================
 ALTER TABLE activity_logs
+    ADD CONSTRAINT fk_activity_logs_catalog FOREIGN KEY (activity_catalog_id) 
+        REFERENCES activity_catalog(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_activity_logs_user FOREIGN KEY (user_id) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
     ADD CONSTRAINT fk_activity_logs_project FOREIGN KEY (project_id) 
@@ -251,6 +253,14 @@ END$$
 -- Trigger to automatically update updated_at field for permission_groups table
 CREATE TRIGGER tr_permission_groups_updated_at
 BEFORE UPDATE ON permission_groups
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for activity_catalog table
+CREATE TRIGGER tr_activity_catalog_updated_at
+BEFORE UPDATE ON activity_catalog
 FOR EACH ROW
 BEGIN
     SET NEW.updated_at = NOW();

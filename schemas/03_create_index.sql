@@ -93,6 +93,12 @@ CREATE INDEX idx_audit_log_project_time ON permission_audit_log (project_id, act
 CREATE INDEX idx_audit_log_user_time ON permission_audit_log (target_user_id, action_timestamp);
 CREATE INDEX idx_audit_log_action_type ON permission_audit_log (action_type, action_timestamp);
 
+-- =================== ACTIVITY_CATALOG TABLE INDEXES ===================
+CREATE INDEX idx_activity_catalog_code ON activity_catalog (activity_code);
+CREATE INDEX idx_activity_catalog_category ON activity_catalog (activity_category);
+CREATE INDEX idx_activity_catalog_active ON activity_catalog (is_active);
+CREATE INDEX idx_activity_catalog_severity ON activity_catalog (severity_level);
+
 -- =================== ACTIVITY_LOGS TABLE INDEXES ===================
 CREATE INDEX idx_activity_user_id ON activity_logs (user_id);
 CREATE INDEX idx_activity_type ON activity_logs (activity_type);
@@ -101,6 +107,7 @@ CREATE INDEX idx_activity_created_at ON activity_logs (created_at DESC);
 CREATE INDEX idx_activity_target_user_id ON activity_logs (target_user_id);
 CREATE INDEX idx_activity_user_group_id ON activity_logs (user_group_id);
 CREATE INDEX idx_activity_ip_address ON activity_logs (ip_address);
+CREATE INDEX idx_activity_severity ON activity_logs (severity_level);
 CREATE INDEX idx_activity_compound ON activity_logs (user_id, project_id, activity_type);
 CREATE INDEX idx_activity_recent ON activity_logs (created_at DESC, activity_type);
 CREATE INDEX idx_activity_log_user_type_time ON activity_logs (user_id, activity_type, created_at);

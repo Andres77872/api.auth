@@ -6,6 +6,7 @@ from starlette.responses import RedirectResponse
 
 from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
 from src.Util.logger_ws import logger
+from src.Util.activity_logger import set_request_context, clear_request_context
 from src.routes import (
     Access, auth, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, rbac, bulk_operations
@@ -76,32 +77,46 @@ async def add_process_time_header(request: Request, call_next):
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
 
-    response = await call_next(request)
-
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
-
-    data = {
-        'path': request.url.path,
-        'host': request.url.hostname,
-        'query': str(request.query_params),
-        'method': request.method,
-        'cl': request.headers['content-length'] if 'content-length' in request.headers else None,
-        'ua': request.headers.get('user-agent'),
-        'status': response.status_code,
-        'time': process_time
-    }
+    # Extract IP address for activity logging
+    ip_address = None
+    try:
+        ip_address = request.headers.get('x-forwarded-for').split(',')[0]
+    except Exception:
+        ip_address = request.client.host if request.client else 'localhost'
+    
+    # Extract user agent for activity logging
+    user_agent = request.headers.get('user-agent')
+    
+    # Set activity logging context
+    set_request_context(ip_address=ip_address, user_agent=user_agent)
 
     try:
-        data['ip'] = request.headers.get('x-forwarded-for').split(',')[0]
-    except Exception:
-        data['ip'] = 'localhost'
+        response = await call_next(request)
 
-    background_task = BackgroundTasks()
-    background_task.add_task(logger, data, 'auth', 'access')
-    response.background = background_task
+        process_time = time.time() - start_time
+        response.headers["X-Process-Time"] = str(process_time)
 
-    return response
+        data = {
+            'path': request.url.path,
+            'host': request.url.hostname,
+            'query': str(request.query_params),
+            'method': request.method,
+            'cl': request.headers['content-length'] if 'content-length' in request.headers else None,
+            'ua': user_agent,
+            'status': response.status_code,
+            'time': process_time
+        }
+
+        data['ip'] = ip_address if ip_address else 'localhost'
+
+        background_task = BackgroundTasks()
+        background_task.add_task(logger, data, 'auth', 'access')
+        response.background = background_task
+
+        return response
+    finally:
+        # Clean up activity logging context
+        clear_request_context()
 
 
 @app.get('/ping', status_code=204)

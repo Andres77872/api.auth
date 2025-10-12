@@ -21,7 +21,7 @@ from src.Util.Models import (
     BulkAddUsersToGroupResponse, UserGroupsForUserResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash,
     create_user_group, get_user_group_by_hash,
@@ -743,11 +743,10 @@ async def bulk_add_users_to_group(
                 error_count += 1
 
         # Log the activity
-        log_activity(
-            user_id=current_user.id,
-            activity_type=ActivityType.BULK_GROUP_ASSIGNMENT,
-            details=f"Bulk added {success_count} users to group {user_group.group_name}",
-            project_id=None
+        ActivityLogger.log_bulk_group_assignment(
+            current_user.id,
+            count=success_count,
+            user_group_id=user_group.id
         )
 
         logger.info(
