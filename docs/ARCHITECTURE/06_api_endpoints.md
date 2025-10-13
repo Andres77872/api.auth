@@ -158,29 +158,34 @@ The API provides **95+ REST endpoints** organized into **11 functional modules**
 
 ---
 
-## Module 9: RBAC Management (15 endpoints)
+## Module 9: Global Roles System (22 endpoints)
 
-**Base Path:** `/rbac`
+**Base Path:** `/roles`
 
 | Method | Endpoint | Auth Required | Purpose |
-|--------|----------|---------------|---------|
-| GET | `/rbac/projects/{project_hash}/permissions` | Yes | List project permissions |
-| POST | `/rbac/projects/{project_hash}/permissions` | Admin | Create permission |
-| GET | `/rbac/projects/{project_hash}/roles` | Yes | List project roles |
-| POST | `/rbac/projects/{project_hash}/roles` | Admin | Create role |
-| POST | `/rbac/users/{user_hash}/projects/{project_hash}/roles` | Admin | Assign user to role |
-| GET | `/rbac/users/{user_hash}/projects/{project_hash}/roles` | Yes* | Get user's roles |
-| DELETE | `/rbac/users/{user_hash}/projects/{project_hash}/roles/{role_id}` | Admin | Remove user from role |
-| GET | `/rbac/users/{user_hash}/projects/{project_hash}/permissions` | Yes* | Get user permissions |
-| GET | `/rbac/users/{user_hash}/projects/{project_hash}/check/{permission}` | Yes | Check specific permission |
-| POST | `/rbac/projects/{project_hash}/initialize` | Admin | Initialize RBAC for project |
-| POST | `/rbac/projects/{project_hash}/bulk-assign` | Admin | Bulk assign roles |
-| GET | `/rbac/projects/{project_hash}/matrix` | Admin | Get permission matrix |
-| GET | `/rbac/users/{user_hash}/projects/{project_hash}/history` | Yes* | Get role assignment history |
-| GET | `/rbac/projects/{project_hash}/audit` | Admin | Get RBAC audit log |
-| GET | `/rbac/projects/{project_hash}/summary` | Yes | Get RBAC summary |
-
-*Self or admin access
+|--------|----------|---------------|---------|  
+| POST | `/roles/roles` | Admin | Create global role |
+| GET | `/roles/roles` | Yes | List all global roles |
+| GET | `/roles/roles/{role_hash}` | Yes | Get role details |
+| PUT | `/roles/roles/{role_hash}` | Admin | Update role |
+| DELETE | `/roles/roles/{role_hash}` | Admin | Delete role |
+| POST | `/roles/permission-groups` | Admin | Create permission group |
+| GET | `/roles/permission-groups` | Yes | List permission groups |
+| GET | `/roles/permission-groups/{group_hash}` | Yes | Get permission group details |
+| POST | `/roles/permissions` | Admin | Create global permission |
+| GET | `/roles/permissions` | Yes | List all permissions |
+| GET | `/roles/permissions/{permission_hash}` | Yes | Get permission details |
+| POST | `/roles/roles/{role_hash}/permission-groups/{group_hash}` | Admin | Assign permission group to role |
+| GET | `/roles/roles/{role_hash}/permission-groups` | Yes | Get role's permission groups |
+| POST | `/roles/permission-groups/{group_hash}/permissions/{permission_hash}` | Admin | Assign permission to group |
+| GET | `/roles/permission-groups/{group_hash}/permissions` | Yes | Get group's permissions |
+| PUT | `/roles/users/{user_hash}/role` | Admin | Assign role to user |
+| GET | `/roles/users/{user_hash}/role` | Yes | Get user's role |
+| GET | `/roles/users/me/role` | Yes | Get current user's role |
+| GET | `/roles/users/me/permissions` | Yes | Get current user's permissions |
+| GET | `/roles/users/me/permissions/check/{permission_name}` | Yes | Check specific permission |
+| POST | `/roles/projects/{project_hash}/catalog/roles/{role_hash}` | Admin | Add role to project catalog (metadata) |
+| GET | `/roles/projects/{project_hash}/catalog/roles` | Yes | Get project cataloged roles |
 
 ---
 
@@ -382,7 +387,7 @@ X-API-Version: 2.2.0
 - **Root Only**: 4 endpoints (4%)
 
 ### By Module Size
-1. RBAC Management: 15 endpoints
+1. Global Roles System: 22 endpoints
 2. Project Management: 14 endpoints
 3. Admin User Groups: 12 endpoints
 4. User Type Management: 10 endpoints
@@ -439,5 +444,5 @@ All deprecated endpoints will have direct replacements with migration guides pro
 **Related Documentation:**
 - [Authentication API](../api/authentication.md)
 - [User Management API](../api/user-management.md)
-- [RBAC Management API](../api/rbac-management.md)
+- [Global Roles System API](../api/global_roles.md)
 - [Error Responses](../api/errors-and-responses.md)

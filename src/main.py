@@ -20,7 +20,7 @@ with open('./src/README.md', 'r', encoding='utf-8') as f:
 app = FastAPI(
     title='3-Tier User Type Multi-Project Authentication API',
     description=description,
-    version='1.0.0',
+    version='2.2.0',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",

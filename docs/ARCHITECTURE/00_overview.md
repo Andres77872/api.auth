@@ -76,20 +76,20 @@ The system implements a **clear separation of concerns** through:
 - **Centralized Management**: Single place to control user access
 - **Bulk Operations**: Mass user group assignments
 
-### 🎭 Role-Based Access Control (15 endpoints)
-- **Project-Specific Roles**: Fine-grained permissions per project
-- **Custom Permissions**: Define unlimited custom permissions
-- **Permission Categories**: Organize permissions (admin, data, api, general)
-- **Role Hierarchy**: Priority-based role system (0-100)
+### 🎭 Global Roles System (22 endpoints)
+- **Global Roles**: Each user has ONE role that works everywhere
+- **Global Permissions**: Permissions work across all projects (not project-scoped)
+- **Permission Groups**: Reusable collections of permissions
+- **Role Priority**: Priority-based role system (0-100)
 - **Role CRUD**: Create, read, update, delete roles
-- **User-Role Assignment**: Assign users to roles within projects
-- **Permission Checks**: Verify user has specific permission
-- **Bulk Assignments**: Assign multiple users to multiple roles
-- **Permission Matrix**: Visual representation of who has what
-- **Role History**: Track all role assignment changes
-- **RBAC Initialization**: Auto-setup with 13 default permissions and 6 roles
-- **Audit Trail**: Complete logging of all RBAC changes
-- **Permission Inheritance**: Users inherit all role permissions
+- **Permission CRUD**: Create, read, list permissions
+- **User-Role Assignment**: Assign global role to users
+- **Permission Checks**: Verify user has specific permission globally
+- **Permission Group Management**: Create and manage permission groups
+- **Role-Permission Group Assignment**: Assign permission groups to roles
+- **Project Catalog**: Metadata-only system for UI role suggestions per project
+- **Root User Wildcard**: Root users automatically have all permissions (*)
+- **Permission Inheritance**: Users inherit all permissions from their role's permission groups
 
 ### 📊 Admin Dashboard & Analytics (11 endpoints)
 - **Real-Time Dashboard**: Live system statistics and metrics
@@ -311,11 +311,11 @@ User → User Groups → Project Access → Project Groups → Permissions
 6. **Admin Project Groups** (8 endpoints)
 7. **Admin Dashboard** (6 endpoints)
 8. **Analytics** (5 endpoints)
-9. **RBAC Management** (15 endpoints)
+9. **Global Roles System** (22 endpoints)
 10. **System Information** (6 endpoints)
 11. **Bulk Operations** (4 endpoints)
 
-**Total:** 95+ REST endpoints
+**Total:** 102+ REST endpoints
 
 ---
 
@@ -350,11 +350,11 @@ For detailed information about specific components, see:
 - **[Group System](02_group_system.md)** - Group-based access control
 - **[Caching Strategy](04_caching_strategy.md)** - Performance optimization  
 - **[Security Model](05_security_model.md)** - 6-layer security architecture
-- **[API Endpoints](06_api_endpoints.md)** - Complete endpoint reference (95+)
+- **[API Endpoints](06_api_endpoints.md)** - Complete endpoint reference (102+)
 - **[Data Model](07_data_model.md)** - Database schema *(coming soon)*
 - **[Deployment](08_deployment.md)** - Deployment architecture *(coming soon)*
 
-**Note:** For RBAC details, see the comprehensive [RBAC Management API](../api/rbac-management.md) documentation.
+**Note:** For Global Roles System details, see the comprehensive [Global Roles System API](../api/global_roles.md) documentation.
 
 ---
 

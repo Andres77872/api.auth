@@ -1,10 +1,12 @@
-# Global Roles System v1 API
+# Global Roles System API
 
-Complete documentation for the **Global Roles System v1** - a new global role-based access control system where:
+Complete documentation for the **Global Roles System** - a global role-based access control system where:
 - **Roles are GLOBAL** (not project-specific)
 - **Permissions are GLOBAL** (work everywhere)
 - **Each user has ONE role** assigned globally
 - **Catalog system** for project-role suggestions (metadata only)
+
+**Base Path:** `/roles`
 
 ## 🔐 Authentication Required
 
@@ -22,7 +24,7 @@ Authorization: Bearer YOUR_SESSION_TOKEN
 
 ## 🎭 Role Management
 
-### POST `/v1/roles/roles`
+### POST `/roles/roles`
 
 Create a new global role.
 
@@ -36,7 +38,7 @@ Create a new global role.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/roles" \
+curl -X POST "http://localhost:8000/roles/roles" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -67,7 +69,7 @@ curl -X POST "http://localhost:8000/v1/roles/roles" \
 
 ---
 
-### GET `/v1/roles/roles`
+### GET `/roles/roles`
 
 List all global roles.
 
@@ -79,7 +81,7 @@ List all global roles.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/roles?limit=20&offset=0" \
+curl -X GET "http://localhost:8000/roles/roles?limit=20&offset=0" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -119,7 +121,7 @@ curl -X GET "http://localhost:8000/v1/roles/roles?limit=20&offset=0" \
 
 ---
 
-### GET `/v1/roles/roles/{role_hash}`
+### GET `/roles/roles/{role_hash}`
 
 Get detailed information about a specific role.
 
@@ -130,7 +132,7 @@ Get detailed information about a specific role.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/roles/role_abc123..." \
+curl -X GET "http://localhost:8000/roles/roles/role_abc123..." \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -159,7 +161,7 @@ curl -X GET "http://localhost:8000/v1/roles/roles/role_abc123..." \
 
 ---
 
-### PUT `/v1/roles/roles/{role_hash}`
+### PUT `/roles/roles/{role_hash}`
 
 Update a role's information.
 
@@ -175,7 +177,7 @@ Update a role's information.
 
 **Example Request:**
 ```bash
-curl -X PUT "http://localhost:8000/v1/roles/roles/role_abc123..." \
+curl -X PUT "http://localhost:8000/roles/roles/role_abc123..." \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -200,7 +202,7 @@ curl -X PUT "http://localhost:8000/v1/roles/roles/role_abc123..." \
 
 ---
 
-### DELETE `/v1/roles/roles/{role_hash}`
+### DELETE `/roles/roles/{role_hash}`
 
 Soft delete a role (system roles cannot be deleted).
 
@@ -211,7 +213,7 @@ Soft delete a role (system roles cannot be deleted).
 
 **Example Request:**
 ```bash
-curl -X DELETE "http://localhost:8000/v1/roles/roles/role_abc123..." \
+curl -X DELETE "http://localhost:8000/roles/roles/role_abc123..." \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -229,7 +231,7 @@ curl -X DELETE "http://localhost:8000/v1/roles/roles/role_abc123..." \
 
 Permission groups are collections of permissions that can be assigned to roles.
 
-### POST `/v1/roles/permission-groups`
+### POST `/roles/permission-groups`
 
 Create a new global permission group.
 
@@ -243,7 +245,7 @@ Create a new global permission group.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/permission-groups" \
+curl -X POST "http://localhost:8000/roles/permission-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -273,7 +275,7 @@ curl -X POST "http://localhost:8000/v1/roles/permission-groups" \
 
 ---
 
-### GET `/v1/roles/permission-groups`
+### GET `/roles/permission-groups`
 
 List all global permission groups.
 
@@ -286,7 +288,7 @@ List all global permission groups.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/permission-groups?category=admin&limit=20" \
+curl -X GET "http://localhost:8000/roles/permission-groups?category=admin&limit=20" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -324,7 +326,7 @@ curl -X GET "http://localhost:8000/v1/roles/permission-groups?category=admin&lim
 
 ---
 
-### GET `/v1/roles/permission-groups/{group_hash}`
+### GET `/roles/permission-groups/{group_hash}`
 
 Get detailed information about a permission group.
 
@@ -335,7 +337,7 @@ Get detailed information about a permission group.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789" \
+curl -X GET "http://localhost:8000/roles/permission-groups/pgrp_xyz789" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -370,7 +372,7 @@ curl -X GET "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789" \
 
 ## 🔗 Role-Permission Group Assignment
 
-### POST `/v1/roles/roles/{role_hash}/permission-groups/{group_hash}`
+### POST `/roles/roles/{role_hash}/permission-groups/{group_hash}`
 
 Assign a permission group to a role.
 
@@ -382,7 +384,7 @@ Assign a permission group to a role.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/roles/role_abc123.../permission-groups/pgrp_xyz789" \
+curl -X POST "http://localhost:8000/roles/roles/role_abc123.../permission-groups/pgrp_xyz789" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -396,7 +398,7 @@ curl -X POST "http://localhost:8000/v1/roles/roles/role_abc123.../permission-gro
 
 ---
 
-### GET `/v1/roles/roles/{role_hash}/permission-groups`
+### GET `/roles/roles/{role_hash}/permission-groups`
 
 Get all permission groups assigned to a role.
 
@@ -407,7 +409,7 @@ Get all permission groups assigned to a role.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/roles/role_abc123.../permission-groups" \
+curl -X GET "http://localhost:8000/roles/roles/role_abc123.../permission-groups" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -434,7 +436,7 @@ curl -X GET "http://localhost:8000/v1/roles/roles/role_abc123.../permission-grou
 
 ## 🔑 Permission Management
 
-### POST `/v1/roles/permissions`
+### POST `/roles/permissions`
 
 Create a new global permission.
 
@@ -448,7 +450,7 @@ Create a new global permission.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/permissions" \
+curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -478,7 +480,7 @@ curl -X POST "http://localhost:8000/v1/roles/permissions" \
 
 ---
 
-### GET `/v1/roles/permissions`
+### GET `/roles/permissions`
 
 List all global permissions.
 
@@ -491,7 +493,7 @@ List all global permissions.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/permissions?category=admin&limit=20" \
+curl -X GET "http://localhost:8000/roles/permissions?category=admin&limit=20" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -523,7 +525,7 @@ curl -X GET "http://localhost:8000/v1/roles/permissions?category=admin&limit=20"
 
 ---
 
-### GET `/v1/roles/permissions/{permission_hash}`
+### GET `/roles/permissions/{permission_hash}`
 
 Get detailed information about a specific permission.
 
@@ -534,7 +536,7 @@ Get detailed information about a specific permission.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/permissions/perm_pub123" \
+curl -X GET "http://localhost:8000/roles/permissions/perm_pub123" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -555,7 +557,7 @@ curl -X GET "http://localhost:8000/v1/roles/permissions/perm_pub123" \
 
 ---
 
-### POST `/v1/roles/permission-groups/{group_hash}/permissions/{permission_hash}`
+### POST `/roles/permission-groups/{group_hash}/permissions/{permission_hash}`
 
 Assign a permission to a permission group.
 
@@ -567,7 +569,7 @@ Assign a permission to a permission group.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789/permissions/perm_pub123" \
+curl -X POST "http://localhost:8000/roles/permission-groups/pgrp_xyz789/permissions/perm_pub123" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -581,7 +583,7 @@ curl -X POST "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789/permi
 
 ---
 
-### GET `/v1/roles/permission-groups/{group_hash}/permissions`
+### GET `/roles/permission-groups/{group_hash}/permissions`
 
 Get all permissions in a permission group.
 
@@ -592,7 +594,7 @@ Get all permissions in a permission group.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789/permissions" \
+curl -X GET "http://localhost:8000/roles/permission-groups/pgrp_xyz789/permissions" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -628,7 +630,7 @@ curl -X GET "http://localhost:8000/v1/roles/permission-groups/pgrp_xyz789/permis
 
 ## 👥 User Role Assignment
 
-### PUT `/v1/roles/users/{user_hash}/role`
+### PUT `/roles/users/{user_hash}/role`
 
 Assign a role to a user (replaces any existing role).
 
@@ -642,7 +644,7 @@ Assign a role to a user (replaces any existing role).
 
 **Example Request:**
 ```bash
-curl -X PUT "http://localhost:8000/v1/roles/users/user123.../role" \
+curl -X PUT "http://localhost:8000/roles/users/user123.../role" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"role_hash": "role_abc123..."}'
@@ -666,7 +668,7 @@ curl -X PUT "http://localhost:8000/v1/roles/users/user123.../role" \
 
 ---
 
-### GET `/v1/roles/users/{user_hash}/role`
+### GET `/roles/users/{user_hash}/role`
 
 Get a user's assigned role.
 
@@ -677,7 +679,7 @@ Get a user's assigned role.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/users/user123.../role" \
+curl -X GET "http://localhost:8000/roles/users/user123.../role" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -700,7 +702,7 @@ curl -X GET "http://localhost:8000/v1/roles/users/user123.../role" \
 
 ---
 
-### GET `/v1/roles/users/me/role`
+### GET `/roles/users/me/role`
 
 Get current user's assigned role.
 
@@ -708,7 +710,7 @@ Get current user's assigned role.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/users/me/role" \
+curl -X GET "http://localhost:8000/roles/users/me/role" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -732,7 +734,7 @@ curl -X GET "http://localhost:8000/v1/roles/users/me/role" \
 
 ## 🔍 Permission Checking
 
-### GET `/v1/roles/users/me/permissions`
+### GET `/roles/users/me/permissions`
 
 Get all permissions for the current user (GLOBAL - works everywhere).
 
@@ -740,7 +742,7 @@ Get all permissions for the current user (GLOBAL - works everywhere).
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/users/me/permissions" \
+curl -X GET "http://localhost:8000/roles/users/me/permissions" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -777,7 +779,7 @@ curl -X GET "http://localhost:8000/v1/roles/users/me/permissions" \
 
 ---
 
-### GET `/v1/roles/users/me/permissions/check/{permission_name}`
+### GET `/roles/users/me/permissions/check/{permission_name}`
 
 Check if current user has a specific permission.
 
@@ -788,7 +790,7 @@ Check if current user has a specific permission.
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/users/me/permissions/check/publish_content" \
+curl -X GET "http://localhost:8000/roles/users/me/permissions/check/publish_content" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -829,7 +831,7 @@ curl -X GET "http://localhost:8000/v1/roles/users/me/permissions/check/publish_c
 
 The catalog system allows associating roles with projects for UI suggestions. This is **metadata only** and does not affect permissions.
 
-### POST `/v1/roles/projects/{project_hash}/catalog/roles/{role_hash}`
+### POST `/roles/projects/{project_hash}/catalog/roles/{role_hash}`
 
 Add a role to a project's catalog for UI suggestions.
 
@@ -845,7 +847,7 @@ Add a role to a project's catalog for UI suggestions.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/v1/roles/projects/proj_abc123/catalog/roles/role_xyz789" \
+curl -X POST "http://localhost:8000/roles/projects/proj_abc123/catalog/roles/role_xyz789" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -865,7 +867,7 @@ curl -X POST "http://localhost:8000/v1/roles/projects/proj_abc123/catalog/roles/
 
 ---
 
-### GET `/v1/roles/projects/{project_hash}/catalog/roles`
+### GET `/roles/projects/{project_hash}/catalog/roles`
 
 Get roles cataloged for a project (metadata for UI suggestions).
 
@@ -876,7 +878,7 @@ Get roles cataloged for a project (metadata for UI suggestions).
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/v1/roles/projects/proj_abc123/catalog/roles" \
+curl -X GET "http://localhost:8000/roles/projects/proj_abc123/catalog/roles" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN"
 ```
 
@@ -918,7 +920,7 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
   jq -r '.session_token')
 
 echo "1. Creating a new role..."
-curl -X POST "http://localhost:8000/v1/roles/roles" \
+curl -X POST "http://localhost:8000/roles/roles" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -929,7 +931,7 @@ curl -X POST "http://localhost:8000/v1/roles/roles" \
   }'
 
 echo -e "\n\n2. Creating a permission group..."
-curl -X POST "http://localhost:8000/v1/roles/permission-groups" \
+curl -X POST "http://localhost:8000/roles/permission-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -940,7 +942,7 @@ curl -X POST "http://localhost:8000/v1/roles/permission-groups" \
   }'
 
 echo -e "\n\n3. Creating permissions..."
-curl -X POST "http://localhost:8000/v1/roles/permissions" \
+curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -950,25 +952,25 @@ curl -X POST "http://localhost:8000/v1/roles/permissions" \
   }'
 
 echo -e "\n\n4. Assigning permission to group..."
-curl -X POST "http://localhost:8000/v1/roles/permission-groups/GROUP_HASH/permissions/PERM_HASH" \
+curl -X POST "http://localhost:8000/roles/permission-groups/GROUP_HASH/permissions/PERM_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 echo -e "\n\n5. Assigning permission group to role..."
-curl -X POST "http://localhost:8000/v1/roles/roles/ROLE_HASH/permission-groups/GROUP_HASH" \
+curl -X POST "http://localhost:8000/roles/roles/ROLE_HASH/permission-groups/GROUP_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 echo -e "\n\n6. Assigning role to user..."
-curl -X PUT "http://localhost:8000/v1/roles/users/USER_HASH/role" \
+curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"role_hash": "ROLE_HASH"}'
 
 echo -e "\n\n7. Checking user permissions..."
-curl -X GET "http://localhost:8000/v1/roles/users/me/permissions" \
+curl -X GET "http://localhost:8000/roles/users/me/permissions" \
   -H "Authorization: Bearer $USER_TOKEN"
 
 echo -e "\n\n8. Checking specific permission..."
-curl -X GET "http://localhost:8000/v1/roles/users/me/permissions/check/moderate_content" \
+curl -X GET "http://localhost:8000/roles/users/me/permissions/check/moderate_content" \
   -H "Authorization: Bearer $USER_TOKEN"
 ```
 
@@ -1010,7 +1012,7 @@ curl -X GET "http://localhost:8000/v1/roles/users/me/permissions/check/moderate_
 ### Key Changes
 1. **Global vs Project-Specific**
    - Old: Roles and permissions were project-specific (`/rbac/projects/{project_hash}/...`)
-   - New: Roles and permissions are global (`/v1/roles/...`)
+   - New: Roles and permissions are global (`/roles/...`)
 
 2. **User Assignment**
    - Old: Users could have different roles in different projects

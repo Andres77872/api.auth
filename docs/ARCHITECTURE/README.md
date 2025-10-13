@@ -48,16 +48,12 @@ This folder contains **comprehensive architecture documentation** for the **3-Ti
 
 ---
 
-### [03_rbac_system.md](03_rbac_system.md) *(Future)*
+### [03_rbac_system.md](03_rbac_system.md) *(Deprecated)*
 **Role-Based Access Control Deep Dive**
 
-- Detailed RBAC implementation
-- Permission inheritance
-- Role priority system
-- Custom permission creation
-- RBAC best practices
+⚠️ **DEPRECATED**: The project-specific RBAC system has been replaced by the Global Roles System.
 
-**Note:** Core RBAC concepts are covered in the API documentation. See [RBAC Management API](../api/rbac-management.md) for complete details.
+**See instead:** [Global Roles System API](../api/global_roles.md) for the current implementation.
 
 ---
 
@@ -173,7 +169,7 @@ This folder contains **comprehensive architecture documentation** for the **3-Ti
 - [User Type System](01_user_type_system.md)
 - [Group System](02_group_system.md)
 - [Security Model](05_security_model.md)
-- RBAC System (see API docs)
+- Global Roles System (see [API docs](../api/global_roles.md))
 
 **Performance:**
 - [Caching Strategy](04_caching_strategy.md)
@@ -193,7 +189,7 @@ This folder contains **comprehensive architecture documentation** for the **3-Ti
 
 ### Code & API
 - **11 Functional Modules**
-- **95+ REST Endpoints**
+- **102+ REST Endpoints**
 - **5 Cache Layers**
 - **3 User Types**
 - **2 Group Types**
@@ -216,11 +212,11 @@ This folder contains **comprehensive architecture documentation** for the **3-Ti
 - ✅ **3-Tier User Type Hierarchy**: Root (global) → Admin (project-scoped) → Consumer (RBAC)
 - ✅ **Group-Based Access Control**: User Groups (organization) + Project Groups (permissions)
 - ✅ **Multi-Project Architecture**: Unlimited projects with cross-project access
-- ✅ **Project-Specific RBAC**: 15 endpoints for fine-grained role management
+- ✅ **Global Roles System**: 22 endpoints for global role-based permissions
 - ✅ **Multi-Admin Support**: Admins can manage multiple projects simultaneously
 
 **API & Operations:**
-- ✅ **95+ REST Endpoints**: Across 11 functional modules
+- ✅ **102+ REST Endpoints**: Across 11 functional modules
 - ✅ **Comprehensive CRUD**: Users, projects, groups, roles, permissions
 - ✅ **Bulk Operations**: Batch updates for users, roles, and groups
 - ✅ **Advanced Filtering**: Search, sort, paginate across all resources
@@ -506,7 +502,7 @@ Located in `/docs/api/`:
 - [Project Management API](../api/project-management.md)
 - [Admin API](../api/admin.md)
 - [Analytics API](../api/analytics.md)
-- [RBAC Management API](../api/rbac-management.md)
+- [Global Roles System API](../api/global_roles.md)
 - [System API](../api/system.md)
 - [Bulk Operations API](../api/bulk-operations.md)
 - [Errors and Responses](../api/errors-and-responses.md)
