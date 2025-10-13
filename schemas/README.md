@@ -8,11 +8,21 @@ This folder contains the MySQL database schema for the enhanced authentication s
 
 ## Files Overview
 
+### Core Schema Files (Execute in Order)
+
 1. **01_create_database.sql** - Creates the database and sets proper character encoding
-2. **02_create_tables.sql** - Creates all tables without foreign keys to avoid dependency issues
-3. **03_add_constraints.sql** - Adds all foreign key constraints and relationships
-4. **04_initialize_data.sql** - Inserts initial data including default users and permissions
-5. **05_performance_optimization.sql** - Adds performance indexes, views, and stored procedures
+2. **02_create_tables.sql** - Creates all tables (Rev1 + Rev2 permission assignment tables)
+3. **03_create_index.sql** - Creates performance indexes for all tables
+4. **04_add_constraints.sql** - Adds foreign key constraints, relationships, and triggers
+5. **05_initialize_data.sql** - Inserts initial data including default users and permissions
+6. **06_performance_optimization.sql** - Additional performance optimizations
+7. **07_stored_procedures.sql** - Core stored procedures for application logic
+8. **08_permission_assignment_procedures.sql** - Rev2 permission assignment stored procedures
+
+### Deprecated Files (Do Not Use)
+
+- ~~**08_permission_assignments.sql**~~ - DEPRECATED: Content moved to 02, 03, 04
+- ~~**09_permission_assignment_procedures.sql**~~ - DEPRECATED: Renamed to 08_permission_assignment_procedures.sql
 
 ## Installation Instructions
 
@@ -24,17 +34,26 @@ Execute each SQL file in order:
 # Create database
 mysql -u root -p < 01_create_database.sql
 
-# Create tables
+# Create tables (includes Rev2 permission assignment tables)
 mysql -u root -p magic_auth < 02_create_tables.sql
 
-# Add constraints
-mysql -u root -p magic_auth < 03_add_constraints.sql
+# Create indexes
+mysql -u root -p magic_auth < 03_create_index.sql
+
+# Add constraints and triggers
+mysql -u root -p magic_auth < 04_add_constraints.sql
 
 # Initialize data (optional but recommended)
-mysql -u root -p magic_auth < 04_initialize_data.sql
+mysql -u root -p magic_auth < 05_initialize_data.sql
 
 # Add performance optimizations (recommended)
-mysql -u root -p magic_auth < 05_performance_optimization.sql
+mysql -u root -p magic_auth < 06_performance_optimization.sql
+
+# Add core stored procedures
+mysql -u root -p magic_auth < 07_stored_procedures.sql
+
+# Add Rev2 permission assignment procedures
+mysql -u root -p magic_auth < 08_permission_assignment_procedures.sql
 ```
 
 ### Method 2: Single Command
@@ -43,7 +62,15 @@ Execute all files at once:
 
 ```bash
 # Concatenate and execute all files
-cat 01_create_database.sql 02_create_tables.sql 03_add_constraints.sql 04_initialize_data.sql 05_performance_optimization.sql | mysql -u root -p
+cat 01_create_database.sql \
+    02_create_tables.sql \
+    03_create_index.sql \
+    04_add_constraints.sql \
+    05_initialize_data.sql \
+    06_performance_optimization.sql \
+    07_stored_procedures.sql \
+    08_permission_assignment_procedures.sql \
+    | mysql -u root -p
 ```
 
 ### Method 3: Using MySQL Workbench or phpMyAdmin
@@ -124,6 +151,32 @@ After running the initialization script, you'll have these users:
 - Users can have different roles in different projects
 - Admin users can be assigned to multiple projects
 - Consumer users access projects through group memberships
+
+### Rev2: Permission Assignment System (NEW)
+
+The Rev2 system adds flexible permission group assignments:
+
+1. **User Group Assignments (Primary)**
+   - Assign permission groups to entire user groups
+   - All group members inherit the permissions
+   - Scalable for organizational management
+
+2. **Direct User Assignments (Secondary)**
+   - Assign permission groups directly to individual users
+   - For special cases and overrides
+   - Documented with notes field
+
+3. **Permission Group Project Catalog (Metadata)**
+   - Optional metadata for UI organization
+   - Suggests which permission groups are relevant per project
+   - NOT used in authorization logic
+
+**Tables Added:**
+- `user_group_permission_groups` - Links user groups to permission groups
+- `user_permission_groups` - Links users directly to permission groups
+- `permission_group_project_catalog` - Organizational metadata (UI only)
+
+**See:** `/docs/rev2/` for complete Rev2 documentation
 
 ## Troubleshooting
 

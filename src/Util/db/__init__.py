@@ -155,6 +155,24 @@ from src.Util.db.db_users import (
     invalidate_session,
     invalidate_user_sessions
 )
+# Import permission assignment functions
+from src.Util.db.db_permission_assignments import (
+    assign_permission_group_to_user_group,
+    remove_permission_group_from_user_group,
+    get_user_group_permission_groups,
+    get_user_groups_with_permission_group,
+    assign_permission_group_to_user,
+    remove_permission_group_from_user,
+    get_user_permission_groups,
+    get_users_with_permission_group,
+    add_permission_group_to_project_catalog,
+    remove_permission_group_from_project_catalog,
+    get_project_cataloged_permission_groups,
+    get_permission_group_cataloged_projects,
+    get_user_all_permissions,
+    check_user_has_permission_extended,
+    get_user_permission_sources
+)
 # Import core database connection
 from src.Util.db_config import redis_client as client, get_connection
 
@@ -534,5 +552,22 @@ __all__ = [
     'check_database_health',
     'check_redis_health',
     'get_recent_activity_count',
-    'initialize_activity_logs_table'
+    'initialize_activity_logs_table',
+    
+    # Permission Assignment System
+    'assign_permission_group_to_user_group',
+    'remove_permission_group_from_user_group',
+    'get_user_group_permission_groups',
+    'get_user_groups_with_permission_group',
+    'assign_permission_group_to_user',
+    'remove_permission_group_from_user',
+    'get_user_permission_groups',
+    'get_users_with_permission_group',
+    'add_permission_group_to_project_catalog',
+    'remove_permission_group_from_project_catalog',
+    'get_project_cataloged_permission_groups',
+    'get_permission_group_cataloged_projects',
+    'get_user_all_permissions',
+    'check_user_has_permission_extended',
+    'get_user_permission_sources'
 ]

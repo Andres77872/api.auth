@@ -10,7 +10,7 @@ from src.Util.activity_logger import set_request_context, clear_request_context
 from src.middleware.error_handler import register_exception_handlers
 from src.routes import (
     Access, auth, users, user_types_auth, projects,
-    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, bulk_operations, global_roles
+    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, bulk_operations, global_roles, permission_assignments
 )
 
 # Read description from README file
@@ -43,6 +43,7 @@ app.include_router(analytics.router, tags=['Analytics'])
 app.include_router(system.router, tags=['System Information'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
+app.include_router(permission_assignments.router, tags=['Permission Assignments'])
 
 # ACCESS CONTROL (Legacy compatibility)
 app.include_router(

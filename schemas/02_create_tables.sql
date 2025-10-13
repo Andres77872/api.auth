@@ -445,3 +445,76 @@ CREATE TABLE IF NOT EXISTS permission_project_catalog (
     FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== REV2: PERMISSION ASSIGNMENT SYSTEM TABLES ===================
+-- Direct assignment of permission groups to users and user groups
+-- ==================================================================================
+
+-- =================== USER GROUP PERMISSION GROUPS TABLE ===================
+-- Links user groups to permission groups (many-to-many) - PRIMARY assignment model
+-- This allows entire user groups to receive permission groups
+CREATE TABLE IF NOT EXISTS user_group_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_usergroup_permgroup (user_group_id, permission_group_id),
+    INDEX idx_user_group (user_group_id),
+    INDEX idx_perm_group (permission_group_id),
+    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== USER PERMISSION GROUPS TABLE ===================
+-- Links users directly to permission groups (many-to-many) - SECONDARY assignment model
+-- This allows individual users to receive specific permission groups
+CREATE TABLE IF NOT EXISTS user_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    notes TEXT,  -- Why this user needs direct assignment
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_permgroup (user_id, permission_group_id),
+    INDEX idx_user (user_id),
+    INDEX idx_perm_group (permission_group_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PERMISSION GROUP PROJECT CATALOG TABLE ===================
+-- METADATA ONLY - Organizational metadata for UI suggestions
+-- NEVER used for permission validation or authorization logic
+CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
+    id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    catalog_purpose VARCHAR(255),  -- Why this group is relevant to this project
+    notes TEXT,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    added_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_permgroup_project (permission_group_id, project_id),
+    INDEX idx_project_permgroups (project_id),
+    INDEX idx_permgroup_projects (permission_group_id),
+    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

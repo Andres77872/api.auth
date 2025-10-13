@@ -315,4 +315,30 @@ FOR EACH ROW
 BEGIN
     SET NEW.updated_at = NOW();
 END$$
-DELIMITER ; 
+DELIMITER ;
+
+-- =================== REV2: PERMISSION ASSIGNMENT SYSTEM CONSTRAINTS ===================
+-- Foreign key constraints for user group and direct user permission assignments
+-- Note: Most constraints are defined inline in CREATE TABLE statements in 02_create_tables.sql
+-- This section documents the constraint architecture for reference
+
+-- USER_GROUP_PERMISSION_GROUPS TABLE CONSTRAINTS (defined inline):
+-- - fk: user_group_id → user_groups(id) ON DELETE CASCADE
+-- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
+-- - fk: assigned_by → users(id) ON DELETE SET NULL
+-- - fk: removed_by → users(id) ON DELETE SET NULL
+
+-- USER_PERMISSION_GROUPS TABLE CONSTRAINTS (defined inline):
+-- - fk: user_id → users(id) ON DELETE CASCADE
+-- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
+-- - fk: assigned_by → users(id) ON DELETE SET NULL
+-- - fk: removed_by → users(id) ON DELETE SET NULL
+
+-- PERMISSION_GROUP_PROJECT_CATALOG TABLE CONSTRAINTS (defined inline):
+-- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
+-- - fk: project_id → projects(id) ON DELETE CASCADE
+-- - fk: added_by → users(id) ON DELETE SET NULL
+-- - fk: removed_by → users(id) ON DELETE SET NULL
+
+-- Note: All Rev2 permission assignment constraints are implemented inline
+-- in the table definitions for clarity and immediate validation during table creation. 

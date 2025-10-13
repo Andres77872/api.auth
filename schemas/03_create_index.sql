@@ -151,5 +151,20 @@ CREATE INDEX idx_permission_check ON users(id, role_id, is_active);
 CREATE INDEX idx_role_catalog_active ON role_project_catalog(role_id, project_id, is_active);
 CREATE INDEX idx_permission_catalog_active ON permission_project_catalog(permission_id, project_id, is_active);
 
+-- =================== REV2: PERMISSION ASSIGNMENT SYSTEM INDEXES ===================
+-- Performance indexes for user group and direct user permission assignments
+
+-- User permission group lookups
+CREATE INDEX idx_user_permgroups ON user_permission_groups(user_id, is_active);
+CREATE INDEX idx_permgroup_users ON user_permission_groups(permission_group_id, is_active);
+
+-- User group permission group lookups
+CREATE INDEX idx_usergroup_permgroups ON user_group_permission_groups(user_group_id, is_active);
+CREATE INDEX idx_permgroup_usergroups ON user_group_permission_groups(permission_group_id, is_active);
+
+-- Permission group project catalog lookups (for UI only)
+CREATE INDEX idx_project_catalog ON permission_group_project_catalog(project_id, is_active);
+CREATE INDEX idx_permgroup_catalog ON permission_group_project_catalog(permission_group_id, is_active);
+
 -- =================== INDEX CREATION COMPLETE ===================
 SELECT 'All indexes created successfully!' as status;
