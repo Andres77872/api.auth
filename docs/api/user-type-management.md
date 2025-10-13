@@ -116,7 +116,8 @@ curl -X POST "http://localhost:8000/user-types/admin" \
       }
     ],
     "primary_project_id": 5,
-    "created_at": "2024-01-01T12:00:00Z"
+    "created_at": "2024-01-01T12:00:00Z",
+    "created_by": "root_admin"
   }
 }
 ```
@@ -134,7 +135,7 @@ curl -X POST "http://localhost:8000/user-types/admin" \
 
 Get comprehensive user type information and capabilities.
 
-**Authentication:** Authenticated (with access controls)
+**Authentication:** Root or Admin access (with access controls)
 
 **Path Parameters:**
 - `user_hash`: Hash of the user to get information for
@@ -321,7 +322,13 @@ curl -X GET "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
     }
   ],
   "summary": {
-    "total_projects": 2
+    "total_projects": 2,
+    "primary_project": {
+      "project_id": 5,
+      "project_hash": "PROJ123...",
+      "project_name": "API Project",
+      "assigned_at": "2024-01-01T12:00:00Z"
+    }
   }
 }
 ```
@@ -356,11 +363,13 @@ curl -X PUT "http://localhost:8000/user-types/admin/ADMIN123.../projects" \
   "assignment": {
     "user_hash": "ADMIN123...",
     "username": "project_admin",
+    "previous_projects": ["API Project", "Mobile App"],
     "new_projects": [
       {"project_id": 5, "project_hash": "PROJ123...", "project_name": "API Project"},
       {"project_id": 10, "project_hash": "PROJ789...", "project_name": "Data Analytics"}
     ],
-    "total_projects": 2
+    "total_projects": 2,
+    "assigned_by": "root_admin"
   }
 }
 ```
@@ -400,7 +409,8 @@ curl -X POST "http://localhost:8000/user-types/admin/ADMIN123.../projects/add" \
       "project_hash": "PROJABC...",
       "project_name": "New Website"
     },
-    "total_projects": 3
+    "total_projects": 3,
+    "assigned_by": "root_admin"
   }
 }
 ```
@@ -436,7 +446,8 @@ curl -X DELETE "http://localhost:8000/user-types/admin/ADMIN123.../projects/8" \
       "project_hash": "PROJ456...",
       "project_name": "Mobile App"
     },
-    "remaining_projects": 2
+    "remaining_projects": 2,
+    "removed_by": "root_admin"
   }
 }
 ```
@@ -502,7 +513,7 @@ curl -X GET "http://localhost:8000/user-types/stats" \
 
 List users by user type with pagination.
 
-**Authentication:** Authenticated
+**Authentication:** Root or Admin access
 
 **Path Parameters:**
 - `user_type`: Type of users to list (`'root'`, `'admin'`, `'consumer'`)
@@ -554,6 +565,10 @@ curl -X GET "http://localhost:8000/user-types/users/admin?limit=20&offset=0" \
     "offset": 0,
     "total": 5,
     "has_more": false
+  },
+  "filter": {
+    "user_type": "admin",
+    "project_filter": null
   }
 }
 ```

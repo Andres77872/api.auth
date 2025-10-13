@@ -75,14 +75,14 @@ Get paginated activity feed with filtering options for the admin dashboard.
 **Query Parameters:**
 - `limit` (optional, default: 50, max: 100): Number of activities to return
 - `offset` (optional, default: 0): Number of activities to skip
-- `activity_type` (optional): Filter by activity type
+- `activity_type_filter` (optional): Filter by activity type
 - `user_id` (optional): Filter by user ID
 - `project_id` (optional): Filter by project ID
 - `days` (optional, default: 30, max: 365): Days to look back
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:8000/admin/activity?limit=20&days=7&activity_type=user_login" \
+curl -X GET "http://localhost:8000/admin/activity?limit=20&days=7&activity_type_filter=user_login" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
@@ -432,8 +432,7 @@ curl -X GET "http://localhost:8000/admin/user-groups?limit=50&offset=0&sort_by=g
       "group_name": "administrators",
       "description": "System administrators with full access",
       "member_count": 2,
-      "created_at": "2024-01-01T00:00:00Z",
-      "is_active": true
+      "created_at": "2024-01-01T00:00:00Z"
     }
   ],
   "pagination": {
@@ -503,8 +502,7 @@ curl -X GET "http://localhost:8000/admin/user-groups/group123..." \
     "group_hash": "group123...",
     "group_name": "administrators",
     "description": "System administrators with full access",
-    "created_at": "2024-01-01T00:00:00Z",
-    "is_active": true
+    "created_at": "2024-01-01T00:00:00Z"
   },
   "members": [
     {
@@ -515,7 +513,6 @@ curl -X GET "http://localhost:8000/admin/user-groups/group123..." \
   ],
   "accessible_projects": [
     {
-      "project_id": 1,
       "project_hash": "proj123...",
       "project_name": "Main Project"
     }
@@ -910,8 +907,7 @@ curl -X GET "http://localhost:8000/admin/project-groups?limit=50&offset=0" \
       "description": "Complete project control",
       "permissions": ["admin", "read", "write", "delete", "manage_users"],
       "project_count": 3,
-      "created_at": "2024-01-01T00:00:00Z",
-      "is_active": true
+      "created_at": "2024-01-01T00:00:00Z"
     }
   ],
   "pagination": {
@@ -942,8 +938,7 @@ Get detailed project group information.
     "group_name": "full-access",
     "description": "Complete project control",
     "permissions": ["admin", "read", "write", "delete", "manage_users"],
-    "created_at": "2024-01-01T00:00:00Z",
-    "is_active": true
+    "created_at": "2024-01-01T00:00:00Z"
   },
   "assigned_projects": [
       {

@@ -141,16 +141,24 @@ curl -X GET "http://localhost:8000/v1/admin/user-groups/grp-abc123/permission-gr
   },
   "permission_groups": [
     {
+      "id": "pg_internal_id_1",
       "group_hash": "pgrp-xyz789",
       "group_name": "content_management",
       "group_display_name": "Content Management",
-      "permissions_count": 5
+      "group_description": "Permissions for content management",
+      "group_category": "content",
+      "assigned_at": "2024-01-10T09:00:00Z",
+      "assigned_by": "admin_user_id"
     },
     {
+      "id": "pg_internal_id_2",
       "group_hash": "pgrp-def456",
       "group_name": "api_access",
       "group_display_name": "API Access",
-      "permissions_count": 3
+      "group_description": "API access permissions",
+      "group_category": "api",
+      "assigned_at": "2024-01-12T10:00:00Z",
+      "assigned_by": "admin_user_id"
     }
   ],
   "count": 2
@@ -169,16 +177,14 @@ Bulk assign multiple permission groups to a user group.
 - `group_hash`: User group identifier
 
 **Request Body** (JSON):
-- `permission_group_hashes` (required): List of permission group hashes
+- Raw JSON array of permission group hashes (required)
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/v1/admin/user-groups/grp-abc123/permission-groups/bulk" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "permission_group_hashes": ["pgrp-xyz789", "pgrp-def456", "pgrp-ghi012"]
-  }'
+  -d '["pgrp-xyz789", "pgrp-def456", "pgrp-ghi012"]'
 ```
 
 **Response (200):**
@@ -314,10 +320,14 @@ curl -X GET "http://localhost:8000/v1/users/usr-abc123/permission-groups" \
   },
   "direct_permission_groups": [
     {
+      "id": "pg_internal_id_1",
       "group_hash": "pgrp-xyz789",
       "group_name": "content_management",
       "group_display_name": "Content Management",
+      "group_description": "Permissions for content management",
+      "group_category": "content",
       "assigned_at": "2024-01-15T10:30:00Z",
+      "assigned_by": "admin_user_id",
       "notes": "Temporary elevated access"
     }
   ],
@@ -411,10 +421,15 @@ curl -X GET "http://localhost:8000/v1/users/me/permission-groups" \
   },
   "direct_permission_groups": [
     {
+      "id": "pg_internal_id_1",
       "group_hash": "pgrp-xyz789",
       "group_name": "content_management",
       "group_display_name": "Content Management",
-      "assigned_at": "2024-01-15T10:30:00Z"
+      "group_description": "Permissions for content management",
+      "group_category": "content",
+      "assigned_at": "2024-01-15T10:30:00Z",
+      "assigned_by": "admin_user_id",
+      "notes": null
     }
   ],
   "count": 1
@@ -584,11 +599,16 @@ curl -X GET "http://localhost:8000/v1/projects/proj-abc123/permission-group-cata
   },
   "cataloged_permission_groups": [
     {
+      "id": "pg_internal_id_1",
       "group_hash": "pgrp-xyz789",
       "group_name": "content_management",
       "group_display_name": "Content Management",
+      "group_description": "Permissions for content management",
+      "group_category": "content",
       "catalog_purpose": "Recommended for content editors",
-      "cataloged_at": "2024-01-15T10:30:00Z"
+      "notes": "Provides standard content management capabilities",
+      "added_at": "2024-01-15T10:30:00Z",
+      "added_by": "admin_user_id"
     }
   ],
   "count": 1,
@@ -622,14 +642,24 @@ curl -X GET "http://localhost:8000/v1/permissions/groups/pgrp-xyz789/project-cat
   },
   "cataloged_in_projects": [
     {
+      "id": "proj_internal_id_1",
       "project_hash": "proj-abc123",
       "project_name": "My Project",
-      "catalog_purpose": "Recommended for content editors"
+      "project_description": "Main project",
+      "catalog_purpose": "Recommended for content editors",
+      "notes": "Primary use case",
+      "added_at": "2024-01-10T09:00:00Z",
+      "added_by": "admin_user_id"
     },
     {
+      "id": "proj_internal_id_2",
       "project_hash": "proj-def456",
       "project_name": "Blog Platform",
-      "catalog_purpose": "Core editing permissions"
+      "project_description": "Blog management system",
+      "catalog_purpose": "Core editing permissions",
+      "notes": "Standard blog operations",
+      "added_at": "2024-01-12T10:00:00Z",
+      "added_by": "admin_user_id"
     }
   ],
   "count": 2,
@@ -665,16 +695,20 @@ curl -X GET "http://localhost:8000/v1/permissions/groups/pgrp-xyz789/user-groups
   },
   "user_groups": [
     {
+      "id": "ug_internal_id_1",
       "group_hash": "grp-abc123",
       "group_name": "developers",
-      "member_count": 15,
-      "assigned_at": "2024-01-10T09:00:00Z"
+      "group_description": "Developer team members",
+      "assigned_at": "2024-01-10T09:00:00Z",
+      "assigned_by": "admin_user_id"
     },
     {
+      "id": "ug_internal_id_2",
       "group_hash": "grp-def456",
       "group_name": "editors",
-      "member_count": 8,
-      "assigned_at": "2024-01-12T14:30:00Z"
+      "group_description": "Content editor team",
+      "assigned_at": "2024-01-12T14:30:00Z",
+      "assigned_by": "admin_user_id"
     }
   ],
   "count": 2
@@ -707,10 +741,12 @@ curl -X GET "http://localhost:8000/v1/permissions/groups/pgrp-xyz789/users" \
   },
   "users_with_direct_assignment": [
     {
+      "id": "user_internal_id_1",
       "user_hash": "usr-abc123",
       "username": "john_doe",
       "email": "john@example.com",
       "assigned_at": "2024-01-15T10:30:00Z",
+      "assigned_by": "admin_user_id",
       "notes": "Temporary elevated access"
     }
   ],

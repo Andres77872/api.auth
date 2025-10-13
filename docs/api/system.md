@@ -352,7 +352,7 @@ curl -X POST "http://localhost:8000/system/cache/invalidate/project/5" \
 
 ## 🧪 Testing Cache Operations
 
-### Cache Performance Test
+### Cache Management Test
 
 ```bash
 #!/bin/bash
@@ -367,17 +367,21 @@ echo "1. Getting cache statistics..."
 curl -X GET "http://localhost:8000/system/cache/stats" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
-echo -e "\n2. Testing cache warm-up..."
-curl -X POST "http://localhost:8000/system/cache/warm" \
+echo -e "\n2. Testing user-specific cache invalidation..."
+USER_HASH="usr-example-hash-12345"
+curl -X POST "http://localhost:8000/system/cache/invalidate/user/$USER_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
-echo -e "\n3. Testing selective cache invalidation..."
-curl -X POST "http://localhost:8000/system/cache/invalidate" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_type": "sessions"}'
+echo -e "\n3. Testing project-specific cache invalidation..."
+PROJECT_ID="5"
+curl -X POST "http://localhost:8000/system/cache/invalidate/project/$PROJECT_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
-echo -e "\n4. Checking cache stats after invalidation..."
+echo -e "\n4. Clearing entire cache (use with caution)..."
+curl -X POST "http://localhost:8000/system/cache/clear" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+echo -e "\n5. Checking cache stats after operations..."
 curl -X GET "http://localhost:8000/system/cache/stats" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```

@@ -4,11 +4,64 @@ Complete authentication endpoint documentation for the **3-Tier User Type Multi-
 
 ## 🔐 Overview
 
-All authenticated endpoints require a session token in the Authorization header:
+### Authentication Methods
 
+All authenticated endpoints support **two authentication methods**:
+
+**1. Bearer Token (Header):**
 ```
 Authorization: Bearer YOUR_SESSION_TOKEN
 ```
+
+**2. HTTP-Only Cookie (Automatic):**
+- Cookie name: `session_token`
+- Set automatically on login/register
+- Preferred for web applications
+- More secure (httponly, secure, samesite flags)
+
+> **Note:** The API automatically sets a secure HTTP-only cookie on successful login/register. Web applications can rely on this cookie for automatic authentication without managing tokens manually.
+
+### Response Format
+
+All responses follow a standardized format:
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "message": "Operation description",
+  "...": "Endpoint-specific data"
+}
+```
+
+**Error Response:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERROR_CODE",
+    "category": "error_category",
+    "message": "Human-readable error message",
+    "details": {
+      "additional": "context information"
+    }
+  }
+}
+```
+
+### Error Code Categories
+
+| Category | Codes | Description |
+|----------|-------|-------------|
+| **Authentication** | AUTH_1xxx | Login, session, and credential errors |
+| **Authorization** | AUTHZ_2xxx | Permission and access control errors |
+| **Validation** | VAL_3xxx | Input validation and format errors |
+| **Not Found** | NF_4xxx | Resource not found errors |
+| **Conflict** | CONF_5xxx | Duplicate resources and conflicts |
+| **Database** | DB_6xxx | Database operation errors |
+| **Internal** | INT_7xxx | Internal server errors |
+
+**Note:** UUID values in error messages are automatically masked for security (e.g., `[proj]...[c789]`).
 
 ## 🏗️ 3-Tier User Type System
 
@@ -26,6 +79,63 @@ The authentication system supports three distinct user types:
 3. Switch projects → Get new token for different project (if allowed by user type)
 4. Logout → Invalidate session
 ```
+
+---
+
+## 🚨 Common Error Codes
+
+The following error codes are used across authentication endpoints:
+
+### Authentication Errors (AUTH_1xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **AUTH_1001** | 401 | Invalid credentials (username or password) |
+| **AUTH_1002** | 401 | Session expired or invalid |
+| **AUTH_1003** | 401 | Session invalid (malformed) |
+| **AUTH_1004** | 401 | Token invalid or malformed |
+| **AUTH_1005** | 401 | Account inactive or disabled |
+
+### Authorization Errors (AUTHZ_2xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **AUTHZ_2001** | 403 | Access denied - general |
+| **AUTHZ_2002** | 403 | Insufficient permissions for operation |
+| **AUTHZ_2003** | 403 | Project access denied |
+| **AUTHZ_2004** | 403 | Group access denied |
+
+### Validation Errors (VAL_3xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **VAL_3001** | 400 | Invalid input data |
+| **VAL_3002** | 400 | Missing required field(s) |
+| **VAL_3003** | 400 | Invalid format |
+| **VAL_3004** | 400 | Invalid UUID format |
+
+### Not Found Errors (NF_4xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **NF_4001** | 404 | User not found |
+| **NF_4002** | 404 | Project not found |
+| **NF_4003** | 404 | User group not found |
+
+### Conflict Errors (CONF_5xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **CONF_5001** | 409 | Username already exists |
+| **CONF_5002** | 409 | Email already exists |
+| **CONF_5003** | 409 | Resource already exists |
+
+### Internal Errors (INT_7xxx)
+
+| Code | Status | Description |
+|------|--------|-------------|
+| **INT_7001** | 500 | Internal server error |
+| **INT_7002** | 500 | Configuration error |
 
 ---
 
@@ -125,35 +235,73 @@ curl -X POST "http://localhost:8000/auth/login" \
 **401 - Invalid Credentials:**
 ```json
 {
-  "detail": "Invalid credentials"
+  "success": false,
+  "error": {
+    "code": "AUTH_1001",
+    "category": "authentication",
+    "message": "Invalid username or password",
+    "details": {
+      "username": "john_doe"
+    }
+  }
 }
 ```
 
 **403 - No Project Access:**
 ```json
 {
-  "detail": "User has no access to any project"
+  "success": false,
+  "error": {
+    "code": "AUTHZ_2001",
+    "category": "authorization",
+    "message": "User has no access to any project",
+    "details": {
+      "username": "john_doe"
+    }
+  }
 }
 ```
 
-**403 - Unauthorized Project Access:**
+**403 - Project Access Denied:**
 ```json
 {
-  "detail": "Access denied to project. User has access to 3 project(s)."
+  "success": false,
+  "error": {
+    "code": "AUTHZ_2003",
+    "category": "authorization",
+    "message": "Access denied to project [proj]...[c789]. User has access to 3 project(s)",
+    "details": {
+      "requested_project": "[proj]...[c789]",
+      "accessible_projects_count": 3
+    }
+  }
 }
 ```
 
 **404 - Project Not Found:**
 ```json
 {
-  "detail": "Specified project not found"
+  "success": false,
+  "error": {
+    "code": "NF_4002",
+    "category": "not_found",
+    "message": "Project not found: [proj]...[c789]"
+  }
 }
 ```
 
 **400 - Missing Parameters:**
 ```json
 {
-  "detail": "Username and password are required"
+  "success": false,
+  "error": {
+    "code": "VAL_3002",
+    "category": "validation",
+    "message": "Username and password are required",
+    "details": {
+      "missing_fields": ["username", "password"]
+    }
+  }
 }
 ```
 
@@ -194,26 +342,64 @@ curl -X POST "http://localhost:8000/auth/register" \
 }
 ```
 
+> **Note:** While the register endpoint sets a secure HTTP-only cookie with the session token, the `session_token` field is not returned in the JSON response body. Web applications should rely on the cookie for subsequent authenticated requests. If you need the token value, use the `/auth/login` endpoint instead.
+
 **Error Responses:**
 
 **409 - Username Already Exists:**
 ```json
 {
-  "detail": "Username already exists"
+  "success": false,
+  "error": {
+    "code": "CONF_5001",
+    "category": "conflict",
+    "message": "Username already exists",
+    "details": {
+      "username": "john_doe"
+    }
+  }
 }
 ```
 
 **409 - Email Already Exists:**
 ```json
 {
-  "detail": "Email already exists"
+  "success": false,
+  "error": {
+    "code": "CONF_5002",
+    "category": "conflict",
+    "message": "Email already exists",
+    "details": {
+      "email": "john@example.com"
+    }
+  }
 }
 ```
 
-**400 - Invalid Group:**
+**404 - Invalid Group:**
 ```json
 {
-  "detail": "User group not found"
+  "success": false,
+  "error": {
+    "code": "NF_4003",
+    "category": "not_found",
+    "message": "User group not found"
+  }
+}
+```
+
+**400 - Missing Required Fields:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VAL_3002",
+    "category": "validation",
+    "message": "Required fields are missing",
+    "details": {
+      "missing_fields": ["username", "password", "user_group_hash"]
+    }
+  }
 }
 ```
 
@@ -249,6 +435,23 @@ curl -X GET "http://localhost:8000/auth/validate" \
   "session": {
     "created_at": null,
     "is_global_session": false
+  }
+}
+```
+
+**Error Responses:**
+
+**401 - Invalid or Expired Session:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AUTH_1002",
+    "category": "authentication",
+    "message": "Invalid or expired session",
+    "details": {
+      "hint": "Please log in again"
+    }
   }
 }
 ```
@@ -297,6 +500,20 @@ curl -X POST "http://localhost:8000/auth/logout" \
 }
 ```
 
+**Error Responses:**
+
+**401 - Invalid Session:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AUTH_1002",
+    "category": "authentication",
+    "message": "Invalid or expired session"
+  }
+}
+```
+
 **Note:** After logout, the session token becomes invalid and cannot be used for subsequent requests.
 
 ---
@@ -335,17 +552,54 @@ curl -X POST "http://localhost:8000/auth/switch-project" \
 
 **Error Responses:**
 
+**401 - Invalid Session:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AUTH_1003",
+    "category": "authentication",
+    "message": "Invalid session"
+  }
+}
+```
+
 **404 - Project Not Found:**
 ```json
 {
-  "detail": "Project not found"
+  "success": false,
+  "error": {
+    "code": "NF_4002",
+    "category": "not_found",
+    "message": "Project not found: [proj]...[c789]"
+  }
+}
+```
+
+**404 - User Not Found:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "NF_4001",
+    "category": "not_found",
+    "message": "User not found"
+  }
 }
 ```
 
 **403 - Access Denied:**
 ```json
 {
-  "detail": "Access denied to requested project"
+  "success": false,
+  "error": {
+    "code": "AUTHZ_2003",
+    "category": "authorization",
+    "message": "Access denied to requested project",
+    "details": {
+      "project_hash": "[proj]...[c789]"
+    }
+  }
 }
 ```
 
@@ -393,10 +647,29 @@ curl -X POST "http://localhost:8000/auth/check-availability" \
 }
 ```
 
-**Error Response (400):**
+**Error Responses:**
+
+**400 - Missing Parameters:**
 ```json
 {
-  "detail": "Username or email required"
+  "success": false,
+  "error": {
+    "code": "VAL_3001",
+    "category": "validation",
+    "message": "Username or email required"
+  }
+}
+```
+
+**500 - Internal Error:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INT_7001",
+    "category": "internal",
+    "message": "Availability check error"
+  }
 }
 ```
 
@@ -437,6 +710,44 @@ curl -X POST "http://localhost:8000/auth/refresh" \
 }
 ```
 
+**Error Responses:**
+
+**401 - Invalid or Expired Session:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AUTH_1002",
+    "category": "authentication",
+    "message": "Invalid or expired session"
+  }
+}
+```
+
+**404 - User Not Found:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "NF_4001",
+    "category": "not_found",
+    "message": "User not found"
+  }
+}
+```
+
+**404 - Project Not Found:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "NF_4002",
+    "category": "not_found",
+    "message": "Project not found"
+  }
+}
+```
+
 **Use Cases:**
 - Extend session before it expires
 - Update session after user profile changes
@@ -445,6 +756,8 @@ curl -X POST "http://localhost:8000/auth/refresh" \
 ---
 
 ### HEAD `/access`
+
+> **Note:** This endpoint is defined in `/routes/Access.py`, not in the auth module, but is documented here for reference as it's commonly used for authentication validation.
 
 Validate session token and check permissions (middleware endpoint). Returns user hash in response header.
 
@@ -513,22 +826,46 @@ graph TD
 ## 🔐 Security Features
 
 ### Session Security
-- **3-day default expiration**
-- **Automatic cleanup of expired sessions**
+- **3-day default expiration** (72 hours = 259,200 seconds)
+- **Automatic cleanup of expired sessions** via Redis TTL
 - **Group context included in sessions**
-- **Redis-based session storage for performance**
+- **Redis-based session storage** for performance and scalability
+- **HTTP-only cookies** set automatically on login/register
+- **Cookie settings:**
+  - `httponly=True` - Prevents JavaScript access
+  - `secure=True` - HTTPS only
+  - `samesite="strict"` - CSRF protection
+  - `max_age=259200` - 72 hours
+
+**Session Storage Format:**
+Each session is stored in Redis as `session:{token}` containing:
+```json
+{
+  "session_id": 123456789,
+  "user_id": "internal_id",
+  "user_hash": "user_abc123",
+  "user_type": "consumer",
+  "project_id": "internal_id",
+  "project_hash": "proj_xyz789",
+  "project_name": "Project Name"
+}
+```
 
 ### Group-Based Security
 - **Users only see projects their groups access**
 - **Permissions determined by project groups**
 - **Cross-project switching through user groups**
 - **Complete audit trail of group assignments**
+- **Automatic group resolution** on authentication
 
 ### Token Security
-- **JWT-style session tokens**
-- **Cryptographic signing**
-- **Group information embedded**
+- **JWT-style session tokens** with embedded context
+- **Cryptographic signing** prevents tampering
+- **Session ID included** for server-side validation
+- **Group information embedded** in token payload
 - **Automatic refresh on project switch**
+- **Old tokens invalidated** on refresh/logout
+- **UUID masking** in error messages for security
 
 ---
 
@@ -639,6 +976,86 @@ echo "4. Test limited access..."
 curl -X GET "http://localhost:8000/users/profile" \
   -H "Authorization: Bearer $USER_TOKEN"
 ```
+
+---
+
+## 📝 Implementation Notes
+
+### Key Differences from Standard REST APIs
+
+1. **Dual Authentication Support**
+   - All authenticated endpoints accept both Bearer tokens and HTTP-only cookies
+   - Cookies are set automatically on login/register
+   - Web applications can omit Authorization headers if cookies are enabled
+
+2. **Error Response Format**
+   - Uses structured error responses with `success: false` and nested `error` object
+   - Includes error codes for programmatic handling
+   - UUIDs are automatically masked in error messages (e.g., `[proj]...[c789]`)
+
+3. **Session Management**
+   - Sessions stored in Redis with 72-hour TTL
+   - Session includes user context, project context, and group information
+   - JWT tokens contain session_id for server-side validation
+   - Logout invalidates both token and cookie
+
+4. **Project Context**
+   - Root users have global access (no project context required)
+   - Admin/Consumer users must have project context in their session
+   - Auto-selection of first accessible project if none specified
+   - Project switching creates new token and invalidates old one
+
+5. **Group-Based Access**
+   - User access to projects is determined by user group membership
+   - Permissions within projects are determined by project group assignments
+   - Login returns list of all accessible projects for UI convenience
+
+### Security Considerations
+
+1. **Token Handling**
+   - Never log or expose full tokens in error messages
+   - Tokens should be treated as sensitive credentials
+   - Implement token rotation via `/auth/refresh` for long-running sessions
+
+2. **Cookie Security**
+   - Cookies require HTTPS in production (`secure=True`)
+   - JavaScript cannot access tokens (`httponly=True`)
+   - CSRF protection via `samesite="strict"`
+
+3. **UUID Masking**
+   - All UUIDs in error responses are masked for security
+   - Only first 4 and last 4 characters shown
+   - Example: `proj_123e4567-e89b-12d3-a456-426614174000` → `proj-[123e]...[4000]`
+
+4. **Session Expiration**
+   - Default 72-hour expiration
+   - No automatic token refresh (client must call `/auth/refresh`)
+   - Expired sessions return AUTH_1002 error code
+
+### Best Practices for Client Implementation
+
+1. **Web Applications**
+   - Rely on HTTP-only cookies for authentication
+   - No need to manage tokens manually
+   - Handle 401 errors by redirecting to login
+
+2. **Mobile/Desktop Applications**
+   - Use Bearer token authentication
+   - Store tokens securely (encrypted storage)
+   - Implement automatic token refresh before expiration
+   - Handle 401 errors by prompting for re-authentication
+
+3. **Error Handling**
+   - Check `success` field in all responses
+   - Use `error.code` for programmatic error handling
+   - Display `error.message` to users (already sanitized)
+   - Log `error.details` for debugging (does not contain sensitive data)
+
+4. **Project Switching**
+   - Store list of accessible projects from login response
+   - Allow users to switch projects via UI
+   - Update stored token after successful switch
+   - Handle ACCESS_DENIED errors gracefully
 
 ---
 

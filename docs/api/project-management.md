@@ -47,7 +47,7 @@ curl -X GET "http://localhost:8000/projects?limit=10&offset=0" \
   "pagination": {
     "limit": 10,
     "offset": 0,
-    "total_count": 25,
+    "total": 25,
     "has_more": true
   },
   "user_access_level": "admin"
@@ -110,12 +110,10 @@ curl -X GET "http://localhost:8000/projects/abc123..." \
 {
   "success": true,
   "project": {
-    "project_id": 1,
     "project_hash": "abc123...",
     "project_name": "Main Project",
     "project_description": "Main application project",
-    "created_at": "2024-01-01T00:00:00Z",
-    "is_active": true
+    "created_at": "2024-01-01T00:00:00Z"
   },
   "user_access": {
     "permissions": ["admin", "read", "write", "delete"],
@@ -159,11 +157,9 @@ curl -X PUT "http://localhost:8000/projects/abc123..." \
   "success": true,
   "message": "Project updated successfully",
   "project": {
-    "project_id": 1,
     "project_hash": "abc123...",
     "project_name": "Updated Project Name",
-    "project_description": "Updated description",
-    "updated_by": 1
+    "project_description": "Updated description"
   }
 }
 ```
@@ -193,7 +189,7 @@ curl -X DELETE "http://localhost:8000/projects/abc123..." \
   "deleted_project": {
     "project_hash": "abc123...",
     "project_name": "My Project",
-    "deleted_by": 1
+    "project_description": null
   },
   "warning": "All user group access to this project has been revoked"
 }
@@ -369,9 +365,9 @@ curl -X GET "http://localhost:8000/projects/abc123.../activity?limit=20&days=7" 
     }
   ],
   "pagination": {
-    "total": 145,
     "limit": 20,
-    "offset": 0
+    "offset": 0,
+    "total": 145
   },
   "filters": {
     "activity_type": null,
@@ -488,9 +484,9 @@ curl -X GET "http://localhost:8000/projects/abc123.../members?limit=50&offset=0&
     }
   ],
   "pagination": {
-    "total": 15,
     "limit": 50,
     "offset": 0,
+    "total": 15,
     "has_more": false
   },
   "statistics": {
@@ -547,7 +543,7 @@ curl -X POST "http://localhost:8000/projects/{project_hash}/groups" \
 
 List all user groups that have access to a project.
 
-**Authentication:** Required (project access)
+**Authentication:** Required (admin permission)
 
 **Path Parameters:**
 - `project_hash`: Project identifier
@@ -575,9 +571,9 @@ curl -X GET "http://localhost:8000/projects/abc123.../groups" \
     }
   ],
   "pagination": {
-    "total": 3,
     "limit": 100,
     "offset": 0,
+    "total": 3,
     "has_more": false
   }
 }

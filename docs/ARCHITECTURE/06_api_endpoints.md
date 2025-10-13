@@ -2,7 +2,7 @@
 
 ## Overview
 
-The API provides **95+ REST endpoints** organized into **11 functional modules**. This document catalogs all endpoints with their HTTP methods, authentication requirements, and primary purposes.
+The API provides **118+ REST endpoints** organized into **11 functional modules**. This document catalogs all endpoints with their HTTP methods, authentication requirements, and primary purposes.
 
 ---
 
@@ -129,7 +129,7 @@ The API provides **95+ REST endpoints** organized into **11 functional modules**
 
 ---
 
-## Module 7: Admin Dashboard (6 endpoints)
+## Module 7: Admin Dashboard (7 endpoints)
 
 **Base Path:** `/admin`
 
@@ -141,6 +141,7 @@ The API provides **95+ REST endpoints** organized into **11 functional modules**
 | GET | `/admin/activity/types` | Admin | List activity types |
 | GET | `/admin/users/statistics` | Admin | Get user statistics |
 | GET | `/admin/projects/statistics` | Admin | Get project statistics |
+| GET | `/admin/system/overview` | Admin | Get comprehensive system overview |
 
 ---
 
@@ -189,7 +190,7 @@ The API provides **95+ REST endpoints** organized into **11 functional modules**
 
 ---
 
-## Module 10: System Information (6 endpoints)
+## Module 10: System Information (7 endpoints)
 
 **Base Path:** `/system`
 
@@ -201,6 +202,7 @@ The API provides **95+ REST endpoints** organized into **11 functional modules**
 | GET | `/system/cache/stats` | Yes | Get cache statistics |
 | POST | `/system/cache/clear` | Admin | Clear entire cache |
 | POST | `/system/cache/invalidate/user/{user_hash}` | Admin | Invalidate user cache |
+| POST | `/system/cache/invalidate/project/{project_id}` | Admin | Invalidate project cache |
 
 ---
 
@@ -373,8 +375,8 @@ X-API-Version: 2.2.0
 ## Endpoint Statistics
 
 ### By HTTP Method
-- **GET**: 48 endpoints (51%)
-- **POST**: 30 endpoints (32%)
+- **GET**: 48 endpoints (50%)
+- **POST**: 31 endpoints (33%)
 - **PUT**: 5 endpoints (5%)
 - **PATCH**: 2 endpoints (2%)
 - **DELETE**: 9 endpoints (9%)
@@ -382,8 +384,8 @@ X-API-Version: 2.2.0
 
 ### By Authentication Level
 - **Public**: 6 endpoints (6%)
-- **User**: 35 endpoints (37%)
-- **Admin**: 51 endpoints (54%)
+- **User**: 35 endpoints (36%)
+- **Admin**: 52 endpoints (54%)
 - **Root Only**: 4 endpoints (4%)
 
 ### By Module Size

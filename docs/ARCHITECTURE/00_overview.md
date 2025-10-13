@@ -309,13 +309,13 @@ User → User Groups → Project Access → Project Groups → Permissions
 4. **Project Management** (14 endpoints)
 5. **Admin User Groups** (12 endpoints)
 6. **Admin Project Groups** (8 endpoints)
-7. **Admin Dashboard** (6 endpoints)
+7. **Admin Dashboard** (7 endpoints)
 8. **Analytics** (5 endpoints)
 9. **Global Roles System** (22 endpoints)
-10. **System Information** (6 endpoints)
+10. **System Information** (7 endpoints)
 11. **Bulk Operations** (4 endpoints)
 
-**Total:** 102+ REST endpoints
+**Total:** 118+ REST endpoints
 
 ---
 

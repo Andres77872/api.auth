@@ -330,15 +330,13 @@ Update a user's active status (activate/deactivate user).
 **Path Parameters:**
 - `user_hash`: User identifier
 
-**Request Body** (Form):
-- `is_active` (required): Boolean to set user active status
+**Query Parameters:**
+- `is_active` (required): Boolean to set user active status (true or false)
 
 **Example Request:**
 ```bash
-curl -X PUT "http://localhost:8000/users/usr-abc123/status" \
-  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "is_active=false"
+curl -X PUT "http://localhost:8000/users/usr-abc123/status?is_active=false" \
+  -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN"
 ```
 
 **Response (200):**
@@ -407,7 +405,7 @@ Change a user's type (root, admin, or consumer). Root users only.
 curl -X PATCH "http://localhost:8000/users/usr-abc123/type" \
   -H "Authorization: Bearer YOUR_ROOT_SESSION_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_type=admin&project_hash=proj-abc123"
+  -d "user_type=admin&project_hash=proj_xyz789abc"
 ```
 
 **Response (200):**
