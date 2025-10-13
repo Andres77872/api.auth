@@ -27,7 +27,7 @@ curl -X GET "http://localhost:8000/system/info"
   "success": true,
   "system": {
     "name": "Group-Based Multi-Project Authentication API",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "architecture": "hierarchical-group-based",
     "status": "operational"
   },

@@ -14,13 +14,15 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255),
     password_hash VARCHAR(255) NOT NULL,
     user_type ENUM('root', 'admin', 'consumer') NOT NULL DEFAULT 'consumer',
+    role_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
     created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_hash (user_hash),
-    UNIQUE KEY uk_username (username)
+    UNIQUE KEY uk_username (username),
+    INDEX idx_user_role (role_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PROJECTS TABLE ===================
@@ -125,107 +127,6 @@ CREATE TABLE IF NOT EXISTS project_group_members (
     UNIQUE KEY uk_project_group_member (project_id, project_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== PERMISSIONS TABLE ===================
--- Project-specific permission catalog
--- Each project has its own set of permissions
-CREATE TABLE IF NOT EXISTS permissions (
-    id VARCHAR(64) NOT NULL,
-    permission_hash VARCHAR(255) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    permission_name VARCHAR(100) NOT NULL,
-    permission_display_name VARCHAR(255) NOT NULL,
-    permission_description TEXT,
-    permission_category VARCHAR(50) NOT NULL DEFAULT 'general',
-    parent_permission_id VARCHAR(64) NULL, -- For hierarchical permissions
-    permission_level INT NOT NULL DEFAULT 0, -- Hierarchy level
-    is_system_permission BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME,
-    created_by VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_permission_hash (permission_hash),
-    UNIQUE KEY uk_project_permission (project_id, permission_name),
-    INDEX idx_project_category (project_id, permission_category),
-    INDEX idx_permission_name (permission_name),
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_permission_id) REFERENCES permissions(id) ON DELETE SET NULL,
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== PERMISSION_GROUPS TABLE ===================
--- Project-specific permission groups (roles)
--- CANNOT span multiple projects - each is tied to ONE project
--- Can have hierarchical structure within the project
-CREATE TABLE IF NOT EXISTS permission_groups (
-    id VARCHAR(64) NOT NULL,
-    group_hash VARCHAR(255) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    group_name VARCHAR(100) NOT NULL,
-    group_display_name VARCHAR(255) NOT NULL,
-    group_description TEXT,
-    parent_permission_group_id VARCHAR(64) NULL, -- For hierarchical permission groups
-    group_level INT NOT NULL DEFAULT 0, -- Hierarchy level
-    group_priority INT NOT NULL DEFAULT 0,
-    is_system_role BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME,
-    created_by VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_permission_group_hash (group_hash),
-    UNIQUE KEY uk_project_role (project_id, group_name),
-    INDEX idx_project_priority (project_id, group_priority),
-    INDEX idx_group_name (group_name),
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_permission_group_id) REFERENCES permission_groups(id) ON DELETE SET NULL,
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== PERMISSION_GROUP_PERMISSIONS TABLE ===================
--- Links permissions to permission groups within the same project
-CREATE TABLE IF NOT EXISTS permission_group_permissions (
-    id VARCHAR(64) NOT NULL,
-    permission_group_id VARCHAR(64) NOT NULL,
-    permission_id VARCHAR(64) NOT NULL,
-    granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    granted_by VARCHAR(64),
-    revoked_at DATETIME,
-    revoked_by VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_group_permission (permission_group_id, permission_id),
-    INDEX idx_permission_group (permission_group_id),
-    INDEX idx_permission (permission_id),
-    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE,
-    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (revoked_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== USER_GROUP_PERMISSION_GROUPS TABLE ===================
--- Links user groups to permission groups within projects
--- This is how users get permissions - through their user groups being assigned permission groups
-CREATE TABLE IF NOT EXISTS user_group_permission_groups (
-    id VARCHAR(64) NOT NULL,
-    user_group_id VARCHAR(64) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    permission_group_id VARCHAR(64) NOT NULL,
-    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    assigned_by VARCHAR(64),
-    removed_at DATETIME,
-    removed_by VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_user_group_project_perm_group (user_group_id, project_id, permission_group_id),
-    INDEX idx_user_group_project (user_group_id, project_id),
-    INDEX idx_permission_group (permission_group_id),
-    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_SESSIONS TABLE ===================
 -- Session management - simplified to work with user groups
@@ -267,8 +168,6 @@ CREATE TABLE IF NOT EXISTS permission_audit_log (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE SET NULL,
-    FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE SET NULL,
-    FOREIGN KEY (permission_group_id) REFERENCES permission_groups(id) ON DELETE SET NULL,
     FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -389,4 +288,160 @@ CREATE TABLE IF NOT EXISTS query_performance_log (
     rows_examined INT,
     rows_returned INT,
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci; 
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== GLOBAL ROLE SYSTEM TABLES ===================
+-- Global roles, permissions, and permission groups that work across all projects
+-- ==================================================================================
+
+-- =================== GLOBAL ROLES TABLE ===================
+-- Global roles - each user has ONE role that works everywhere
+CREATE TABLE IF NOT EXISTS roles (
+    id VARCHAR(64) NOT NULL,
+    role_hash VARCHAR(255) NOT NULL,
+    role_name VARCHAR(100) NOT NULL,
+    role_display_name VARCHAR(255) NOT NULL,
+    role_description TEXT,
+    role_priority INT NOT NULL DEFAULT 50,
+    is_system_role BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    created_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_role_hash (role_hash),
+    UNIQUE KEY uk_role_name (role_name),
+    INDEX idx_role_priority (role_priority),
+    INDEX idx_role_name (role_name, is_active),
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== GLOBAL PERMISSION GROUPS TABLE ===================
+-- Global permission groups - reusable containers of permissions
+CREATE TABLE IF NOT EXISTS global_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    group_hash VARCHAR(255) NOT NULL,
+    group_name VARCHAR(100) NOT NULL,
+    group_display_name VARCHAR(255) NOT NULL,
+    group_description TEXT,
+    group_category VARCHAR(50) NOT NULL DEFAULT 'general',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    created_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_perm_group_hash (group_hash),
+    UNIQUE KEY uk_perm_group_name (group_name),
+    INDEX idx_category (group_category),
+    INDEX idx_group_name (group_name, is_active),
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== GLOBAL PERMISSIONS TABLE ===================
+-- Global permission definitions - defined once, used everywhere
+CREATE TABLE IF NOT EXISTS global_permissions (
+    id VARCHAR(64) NOT NULL,
+    permission_hash VARCHAR(255) NOT NULL,
+    permission_name VARCHAR(100) NOT NULL,
+    permission_display_name VARCHAR(255) NOT NULL,
+    permission_description TEXT,
+    permission_category VARCHAR(50) NOT NULL DEFAULT 'general',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    created_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_permission_hash (permission_hash),
+    UNIQUE KEY uk_permission_name (permission_name),
+    INDEX idx_category (permission_category),
+    INDEX idx_permission_name (permission_name, is_active),
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== ROLE PERMISSION GROUPS LINK TABLE ===================
+-- Links roles to permission groups - defines role composition
+CREATE TABLE IF NOT EXISTS role_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    role_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_role_perm_group (role_id, permission_group_id),
+    INDEX idx_role (role_id),
+    INDEX idx_perm_group (permission_group_id),
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PERMISSION GROUP PERMISSIONS LINK TABLE ===================
+-- Links permission groups to permissions - defines permission group content
+CREATE TABLE IF NOT EXISTS global_permission_group_permissions (
+    id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    permission_id VARCHAR(64) NOT NULL,
+    granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    granted_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_group_permission (permission_group_id, permission_id),
+    INDEX idx_perm_group (permission_group_id),
+    INDEX idx_permission (permission_id),
+    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_id) REFERENCES global_permissions(id) ON DELETE CASCADE,
+    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== ROLE PROJECT CATALOG TABLE (METADATA ONLY) ===================
+-- METADATA ONLY - Suggests which roles are relevant to projects (NOT used for authorization)
+CREATE TABLE IF NOT EXISTS role_project_catalog (
+    id VARCHAR(64) NOT NULL,
+    role_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    catalog_purpose VARCHAR(255),
+    notes TEXT,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    added_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_role_project (role_id, project_id),
+    INDEX idx_project_roles (project_id),
+    INDEX idx_role_projects (role_id),
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PERMISSION PROJECT CATALOG TABLE (METADATA ONLY) ===================
+-- METADATA ONLY - Shows which permissions are relevant to projects (NOT used for authorization)
+CREATE TABLE IF NOT EXISTS permission_project_catalog (
+    id VARCHAR(64) NOT NULL,
+    permission_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    catalog_purpose VARCHAR(255),
+    notes TEXT,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    added_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_permission_project (permission_id, project_id),
+    INDEX idx_project_permissions (project_id),
+    INDEX idx_permission_projects (permission_id),
+    FOREIGN KEY (permission_id) REFERENCES global_permissions(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

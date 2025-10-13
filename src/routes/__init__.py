@@ -10,7 +10,7 @@ This package contains all API route definitions organized by functional area:
 - admin_project_groups: Admin endpoints for project group management
 - admin_dashboard: Admin dashboard endpoints (statistics, activity feed)
 - analytics: Analytics endpoints (dashboard stats, basic metrics)
-- rbac: RBAC (Role-Based Access Control) management endpoints
+- global_roles: Global Role System (roles, permissions, permission groups)
 - system: System information and health check endpoints
 - Access: Legacy access control endpoint
 """
@@ -22,10 +22,10 @@ from . import admin_user_groups
 from . import analytics
 from . import auth
 from . import projects
-from . import rbac
 from . import system
 from . import user_types_auth
 from . import users
+from . import global_roles
 
 __all__ = [
     'Access',
@@ -37,6 +37,6 @@ __all__ = [
     'admin_project_groups',
     'admin_dashboard',
     'analytics',
-    'rbac',
-    'system'
+    'system',
+    'global_roles'
 ]

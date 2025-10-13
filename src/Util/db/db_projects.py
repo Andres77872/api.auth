@@ -36,13 +36,7 @@ def create_project(project_name: str, project_description: str = None, created_b
         # Create default user group for this project (legacy)
         create_default_groups(project_id)
 
-        # NEW: Initialize RBAC for this project
-        try:
-            from src.Util.db.db_rbac_permissions import initialize_project_rbac
-            rbac_result = initialize_project_rbac(project_id, created_by)
-            print(f"RBAC initialized for project {project_name}: {rbac_result}")
-        except Exception as e:
-            print(f"Warning: Could not initialize RBAC for project {project_name}: {e}")
+        # Note: Global role system is used - no per-project RBAC initialization needed
 
         return Project(
             id=project_id,
@@ -207,9 +201,9 @@ def delete_project(project_id: str, deleted_by: str = None) -> bool:
                           AND is_active = 1
                         """, [deleted_by, project_id])
 
-            # Soft delete all user group permission group assignments for this project
+            # Soft delete all project group memberships
             cur.execute("""
-                        UPDATE user_group_permission_groups
+                        UPDATE project_group_members
                         SET is_active  = 0,
                             removed_at = NOW(),
                             removed_by = %s
@@ -225,23 +219,9 @@ def delete_project(project_id: str, deleted_by: str = None) -> bool:
                           AND is_active = 1
                         """, [project_id])
 
-            # Soft delete permission groups for this project
-            cur.execute("""
-                        UPDATE permission_groups
-                        SET is_active  = 0,
-                            updated_at = NOW()
-                        WHERE project_id = %s
-                          AND is_active = 1
-                        """, [project_id])
-
-            # Soft delete permissions for this project
-            cur.execute("""
-                        UPDATE permissions
-                        SET is_active  = 0,
-                            updated_at = NOW()
-                        WHERE project_id = %s
-                          AND is_active = 1
-                        """, [project_id])
+            # Note: Global role system is used - no per-project permissions to delete
+            # Deprecated tables (permissions, permission_groups, user_group_permission_groups) 
+            # have been removed in the new schema
 
             con.commit()
             return True

@@ -7,9 +7,10 @@ from starlette.responses import RedirectResponse
 from src.Util.Seccurity import returnJson_422, returnJson_413, x_token_user, x_token_collection
 from src.Util.logger_ws import logger
 from src.Util.activity_logger import set_request_context, clear_request_context
+from src.middleware.error_handler import register_exception_handlers
 from src.routes import (
     Access, auth, users, user_types_auth, projects,
-    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, rbac, bulk_operations
+    admin_user_groups, admin_project_groups, admin_dashboard, analytics, system, bulk_operations, global_roles
 )
 
 # Read description from README file
@@ -19,13 +20,16 @@ with open('./src/README.md', 'r', encoding='utf-8') as f:
 app = FastAPI(
     title='3-Tier User Type Multi-Project Authentication API',
     description=description,
-    version='2.2.0',
+    version='1.0.0',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",
         "email": "andres@arz.ai",
     }
 )
+
+# Register exception handlers for enhanced error handling
+register_exception_handlers(app)
 
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
@@ -36,9 +40,9 @@ app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
 app.include_router(analytics.router, tags=['Analytics'])
-app.include_router(rbac.router, tags=['RBAC Management'])
 app.include_router(system.router, tags=['System Information'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
+app.include_router(global_roles.router, tags=['Global Role System'])
 
 # ACCESS CONTROL (Legacy compatibility)
 app.include_router(

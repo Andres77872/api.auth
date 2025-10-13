@@ -48,8 +48,7 @@ from src.Util.db.db_user_groups import (
     get_user_groups_in_project_by_hash,
 )
 
-# NEW: RBAC permission resolver that works through user groups --------------
-from src.Util.db.db_rbac_permissions import get_user_effective_permissions
+# Global role system permission resolver
 from src.Util.db_config import redis_client as client
 
 
@@ -177,12 +176,15 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         if not groups:
             return None  # user not part of any group that grants project access
 
-        # Resolve effective permissions via group->role mapping
-        perms = get_user_effective_permissions(user.id, project.id)
+        # Resolve effective permissions via global role system
+        try:
+            from src.Util.db.db_global_roles import get_user_permissions
+            permission_names = get_user_permissions(user.id)
+        except Exception:
+            permission_names = []
 
         # Prepare convenience collections ----------------------------------
         group_names = [g.group_name for g in groups]
-        permission_names = [p.permission_name for p in perms]
 
         available_projects = [proj for proj, _ in get_user_projects(user.id)]
 
@@ -334,10 +336,13 @@ def enhanced_register(
     available_projects = []
 
     if user_type == "consumer":
-        # For new consumer, we know their group and can get permissions
+        # For new consumer, we know their group and can get permissions from global role system
         groups = [user_group.group_name]
-        perms_objs = get_user_effective_permissions(user.id, default_project_id)
-        permissions = [p.permission_name for p in perms_objs]
+        try:
+            from src.Util.db.db_global_roles import get_user_permissions
+            permissions = get_user_permissions(user.id)
+        except Exception:
+            permissions = []
         session_data.update({'groups': groups, 'permissions': permissions})
         # Get all projects accessible to the user
         available_projects = [proj for proj, _ in get_user_projects(user.id)]
@@ -447,8 +452,12 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
             return None
 
         groups = [g.group_name for g in groups_objs]
-        perms_objs = get_user_effective_permissions(session_data['user_id'], project.id)
-        permissions = [p.permission_name for p in perms_objs]
+        # Get permissions from global role system
+        try:
+            from src.Util.db.db_global_roles import get_user_permissions
+            permissions = get_user_permissions(session_data['user_id'])
+        except Exception:
+            permissions = []
         available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
     else:
         return None

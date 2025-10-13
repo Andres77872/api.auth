@@ -8,31 +8,9 @@ USE magic_auth;
 
 -- =================== QUERY OPTIMIZATION VIEWS ===================
 
--- View for quick user permission checks through group hierarchy
-CREATE OR REPLACE VIEW v_user_effective_permissions AS
-SELECT DISTINCT 
-    ugm.user_id,
-    ugpg.project_id,
-    p.permission_name,
-    p.permission_display_name,
-    p.permission_category,
-    pg.group_name as granted_through_role,
-    ug.group_name as granted_through_user_group,
-    p.permission_level,
-    pg.group_level as role_level,
-    ug.group_level as user_group_level
-FROM user_group_members ugm
-JOIN user_groups ug ON ugm.user_group_id = ug.id
-JOIN user_group_permission_groups ugpg ON ug.id = ugpg.user_group_id
-JOIN permission_groups pg ON ugpg.permission_group_id = pg.id
-JOIN permission_group_permissions pgp ON pg.id = pgp.permission_group_id
-JOIN permissions p ON pgp.permission_id = p.id
-WHERE ugm.is_active = 1 
-  AND ug.is_active = 1
-  AND ugpg.is_active = 1
-  AND pg.is_active = 1 
-  AND pgp.is_active = 1 
-  AND p.is_active = 1;
+-- =================== DEPRECATED VIEW REMOVED ===================
+-- v_user_effective_permissions - Removed due to refactor to global role system
+-- Use global_permissions, roles, and role_permission_groups instead
 
 -- View for user project access through groups
 CREATE OR REPLACE VIEW v_user_project_access AS
@@ -149,8 +127,6 @@ SELECT
     p.archived,
     p.owner_id,
     COUNT(DISTINCT vupa.user_id) as member_count,
-    COUNT(DISTINCT pg.id) as role_count,
-    COUNT(DISTINCT perm.id) as permission_count,
     COUNT(DISTINCT ug.id) as user_groups_with_access,
     MAX(al.created_at) as last_activity,
     CASE 
@@ -161,8 +137,6 @@ SELECT
     END as activity_level
 FROM projects p
 LEFT JOIN v_user_project_access vupa ON p.id = vupa.project_id
-LEFT JOIN permission_groups pg ON p.id = pg.project_id AND pg.is_active = 1
-LEFT JOIN permissions perm ON p.id = perm.project_id AND perm.is_active = 1
 LEFT JOIN user_group_projects ugp ON p.id = ugp.project_id AND ugp.is_active = 1
 LEFT JOIN user_groups ug ON ugp.user_group_id = ug.id AND ug.is_active = 1
 LEFT JOIN activity_logs al ON p.id = al.project_id
@@ -203,81 +177,22 @@ WITH RECURSIVE group_hierarchy AS (
 )
 SELECT * FROM group_hierarchy;
 
--- View for hierarchical permission structure
-CREATE OR REPLACE VIEW v_permission_hierarchy AS
-WITH RECURSIVE permission_hierarchy AS (
-    -- Base case: root level permissions
-    SELECT 
-        id,
-        permission_hash,
-        project_id,
-        permission_name,
-        permission_display_name,
-        permission_description,
-        permission_category,
-        parent_permission_id,
-        permission_level,
-        CAST(permission_name AS CHAR(1000)) as hierarchy_path,
-        0 as calculated_level
-    FROM permissions 
-    WHERE parent_permission_id IS NULL AND is_active = 1
-    
-    UNION ALL
-    
-    -- Recursive case: child permissions
-    SELECT 
-        p.id,
-        p.permission_hash,
-        p.project_id,
-        p.permission_name,
-        p.permission_display_name,
-        p.permission_description,
-        p.permission_category,
-        p.parent_permission_id,
-        p.permission_level,
-        CONCAT(ph.hierarchy_path, ' > ', p.permission_name),
-        ph.calculated_level + 1
-    FROM permissions p
-    JOIN permission_hierarchy ph ON p.parent_permission_id = ph.id
-    WHERE p.is_active = 1
-)
-SELECT * FROM permission_hierarchy;
+-- =================== DEPRECATED VIEW REMOVED ===================
+-- v_permission_hierarchy - Removed due to refactor to global role system
+-- Use global_permissions for permission management
 
 -- =================== ENHANCED STORED PROCEDURES ===================
 
 DELIMITER $$
 
--- Check user permission efficiently through group hierarchy
-CREATE PROCEDURE sp_check_user_permission(
-    IN p_user_id INT,
-    IN p_project_id INT,
-    IN p_permission_name VARCHAR(100),
-    OUT p_has_permission BOOLEAN
-)
-BEGIN
-    DECLARE v_user_type VARCHAR(20);
-    
-    -- Get user type
-    SELECT user_type INTO v_user_type
-    FROM users
-    WHERE id = p_user_id AND is_active = 1;
-    
-    -- Root users always have permission
-    IF v_user_type = 'root' THEN
-        SET p_has_permission = TRUE;
-    ELSE
-        -- Check through group-based permissions
-        SELECT COUNT(*) > 0 INTO p_has_permission
-        FROM v_user_effective_permissions
-        WHERE user_id = p_user_id 
-          AND project_id = p_project_id 
-          AND permission_name = p_permission_name;
-    END IF;
-END$$
+-- =================== DEPRECATED PROCEDURE REMOVED ===================
+-- sp_check_user_permission - Removed due to refactor to global role system
+-- Use global_permissions and role-based checks instead
+-- $$
 
 -- Get user's accessible projects through groups
 CREATE PROCEDURE sp_get_user_projects(
-    IN p_user_id INT
+    IN p_user_id VARCHAR(64)
 )
 BEGIN
     DECLARE v_user_type VARCHAR(20);
@@ -302,7 +217,7 @@ END$$
 
 -- Get user groups hierarchy for a user
 CREATE PROCEDURE sp_get_user_group_hierarchy(
-    IN p_user_id INT
+    IN p_user_id VARCHAR(64)
 )
 BEGIN
     SELECT 
@@ -318,21 +233,9 @@ BEGIN
     ORDER BY ugh.calculated_level, ugh.group_name;
 END$$
 
--- Get permission hierarchy for a project
-CREATE PROCEDURE sp_get_project_permission_hierarchy(
-    IN p_project_id INT
-)
-BEGIN
-    SELECT 
-        ph.*,
-        CASE WHEN pgp.permission_id IS NOT NULL THEN TRUE ELSE FALSE END as is_assigned_to_group,
-        COUNT(DISTINCT pgp.permission_group_id) as assigned_to_groups_count
-    FROM v_permission_hierarchy ph
-    LEFT JOIN permission_group_permissions pgp ON ph.id = pgp.permission_id AND pgp.is_active = 1
-    WHERE ph.project_id = p_project_id
-    GROUP BY ph.id
-    ORDER BY ph.calculated_level, ph.permission_name;
-END$$
+-- =================== DEPRECATED PROCEDURE REMOVED ===================
+-- sp_get_project_permission_hierarchy - Removed due to refactor to global role system
+-- $$
 
 -- Clean up orphaned records with group awareness
 CREATE PROCEDURE sp_cleanup_orphaned_records()
@@ -350,15 +253,7 @@ BEGIN
     SET ugp.is_active = 0, ugp.revoked_at = NOW()
     WHERE ug.id IS NULL OR ug.is_active = 0 OR p.id IS NULL OR p.is_active = 0;
     
-    -- Remove user group permission group assignments for deleted items
-    UPDATE user_group_permission_groups ugpg
-    LEFT JOIN user_groups ug ON ugpg.user_group_id = ug.id
-    LEFT JOIN projects p ON ugpg.project_id = p.id
-    LEFT JOIN permission_groups pg ON ugpg.permission_group_id = pg.id
-    SET ugpg.is_active = 0, ugpg.removed_at = NOW()
-    WHERE ug.id IS NULL OR ug.is_active = 0 
-       OR p.id IS NULL OR p.is_active = 0
-       OR pg.id IS NULL OR pg.is_active = 0;
+    -- Deprecated: user_group_permission_groups table no longer exists
     
     -- Report cleanup results
     SELECT 
@@ -387,7 +282,7 @@ END$$
 
 -- Get comprehensive user access summary
 CREATE PROCEDURE sp_get_user_access_summary(
-    IN p_user_id INT
+    IN p_user_id VARCHAR(64)
 )
 BEGIN
     DECLARE v_user_type VARCHAR(20);
@@ -428,14 +323,8 @@ BEGIN
     ORDER BY p.project_name;
     
     -- Effective permissions summary
-    SELECT 
-        project_id,
-        COUNT(DISTINCT permission_name) as total_permissions,
-        COUNT(DISTINCT granted_through_role) as granted_through_roles,
-        COUNT(DISTINCT granted_through_user_group) as granted_through_user_groups
-    FROM v_user_effective_permissions
-    WHERE user_id = p_user_id
-    GROUP BY project_id;
+    -- Note: This section needs to be updated to use global role system
+    SELECT 'Global role system - permissions summary needs implementation' as note;
 END$$
 
 DELIMITER ;
@@ -490,12 +379,12 @@ BEGIN
     JOIN user_groups ug2 ON ug1.parent_group_id = ug2.id
     WHERE ug2.parent_group_id = ug1.id AND ug1.is_active = 1 AND ug2.is_active = 1;
     
-    -- Check for permission groups without any permissions
+    -- Check for global permission groups without any permissions
     SELECT COUNT(*) as empty_permission_groups,
-           'Permission groups without any assigned permissions' as issue_description
-    FROM permission_groups pg
-    LEFT JOIN permission_group_permissions pgp ON pg.id = pgp.permission_group_id AND pgp.is_active = 1
-    WHERE pg.is_active = 1 AND pgp.id IS NULL;
+           'Global permission groups without any assigned permissions' as issue_description
+    FROM global_permission_groups gpg
+    LEFT JOIN global_permission_group_permissions gpgp ON gpg.id = gpgp.permission_group_id AND gpgp.is_active = 1
+    WHERE gpg.is_active = 1 AND gpgp.id IS NULL;
     
     -- Check for user groups without any users
     SELECT COUNT(*) as empty_user_groups,

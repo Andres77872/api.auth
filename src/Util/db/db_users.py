@@ -710,12 +710,13 @@ def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]
 
 
 def get_user_permissions_in_project(user_id: str, project_id: str) -> List[str]:
-    """Get all permissions a user has in a project through RBAC"""
-    # Use the RBAC system to get effective permissions
-    from src.Util.db.db_rbac_permissions import get_user_effective_permissions
-    
-    permissions_objs = get_user_effective_permissions(user_id, project_id)
-    return [p.permission_name for p in permissions_objs]
+    """Get all permissions a user has (global role system - project_id parameter kept for compatibility)"""
+    # Use the global role system to get permissions
+    try:
+        from src.Util.db.db_global_roles import get_user_permissions
+        return get_user_permissions(user_id)
+    except Exception:
+        return []
 
 
 def assign_user_to_group(user_id: str, group_id: str, assigned_by: str = None) -> bool:

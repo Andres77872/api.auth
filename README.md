@@ -313,7 +313,7 @@ services:
 ### 📖 **Getting Started** (45 min total)
 - [Quick Start Guide](docs/quick-start.md) - 15 minutes to running system
 - [Setup Guide](docs/setup-guide.md) - Complete installation and configuration
-- [Architecture Guide](docs/architecture.md) - Understanding the 3-tier system
+- [Architecture Documentation](docs/ARCHITECTURE/README.md) - Comprehensive system architecture
 
 ### 📡 **API Documentation** (150+ pages)
 - [Authentication API](docs/api/authentication.md) - Login, logout, session management

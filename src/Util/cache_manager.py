@@ -1,15 +1,15 @@
 """
-Enhanced Cache Manager for Authentication System
+Enhanced Cache Manager for 3-Tier User Type Multi-Project Authentication
 
 This module provides comprehensive caching for:
 - User sessions (1 hour TTL)
 - Access check results
-- RBAC permission checks
+- Global role permission checks
 - User type information
 
 Features:
 - Cache-first access checks
-- Automatic cache invalidation on user/RBAC changes
+- Automatic cache invalidation on user/role changes
 - Redis-based storage with proper TTL management
 """
 
@@ -28,13 +28,13 @@ logging.basicConfig(level=logging.DEBUG)
 # Cache TTL settings (in seconds)
 SESSION_TTL = 3600  # 1 hour for sessions
 ACCESS_CHECK_TTL = 1800  # 30 minutes for access checks
-RBAC_CHECK_TTL = 1800  # 30 minutes for RBAC checks
+PERMISSION_CHECK_TTL = 1800  # 30 minutes for permission checks
 USER_INFO_TTL = 3600  # 1 hour for user info
 
 # Cache key prefixes
 SESSION_PREFIX = "session:"
 ACCESS_PREFIX = "access:"
-RBAC_PREFIX = "rbac:"
+ROLE_PREFIX = "role:"
 USER_INFO_PREFIX = "user_info:"
 PERMISSION_PREFIX = "permission:"
 USER_TYPE_PREFIX = "user_type:"
@@ -199,16 +199,15 @@ class CacheManager:
             return None
 
     # =============================================================================
-    # RBAC PERMISSION CACHING
+    # GLOBAL ROLE PERMISSION CACHING
     # =============================================================================
 
-    def set_permission_check(self, user_id: str, project_id: str, permission: str, has_permission: bool) -> bool:
+    def set_permission_check(self, user_id: str, permission: str, has_permission: bool) -> bool:
         """
-        Cache RBAC permission check result
+        Cache global role permission check result
         
         Args:
             user_id: User ID
-            project_id: Project ID
             permission: Permission name
             has_permission: Whether user has permission
             
@@ -216,21 +215,20 @@ class CacheManager:
             Success status
         """
         try:
-            cache_key = self._generate_cache_key(PERMISSION_PREFIX, user_id, project_id, permission)
+            cache_key = f"{PERMISSION_PREFIX}{user_id}_{permission}"
 
             permission_data = {
                 "has_permission": has_permission,
                 "checked_at": datetime.utcnow().isoformat(),
                 "user_id": user_id,
-                "project_id": project_id,
                 "permission": permission
             }
 
             result_json = json.dumps(permission_data)
-            result = self.redis.setex(cache_key, RBAC_CHECK_TTL, result_json)
+            result = self.redis.setex(cache_key, PERMISSION_CHECK_TTL, result_json)
 
             if result:
-                logger.debug(f"Permission check cached: user_{user_id}_project_{project_id}_{permission}")
+                logger.debug(f"Permission check cached: user_{user_id}_{permission}")
 
             return bool(result)
 
@@ -238,28 +236,27 @@ class CacheManager:
             logger.error(f"Failed to cache permission check: {e}")
             return False
 
-    def get_permission_check(self, user_id: str, project_id: str, permission: str) -> Optional[bool]:
+    def get_permission_check(self, user_id: str, permission: str) -> Optional[bool]:
         """
-        Get cached RBAC permission check result
+        Get cached global role permission check result
         
         Args:
             user_id: User ID
-            project_id: Project ID
             permission: Permission name
             
         Returns:
             Cached permission result or None
         """
         try:
-            cache_key = self._generate_cache_key(PERMISSION_PREFIX, user_id, project_id, permission)
+            cache_key = f"{PERMISSION_PREFIX}{user_id}_{permission}"
             cached_data = self.redis.get(cache_key)
 
             if cached_data:
                 permission_data = json.loads(cached_data)
-                logger.debug(f"Permission check cache hit: user_{user_id}_project_{project_id}_{permission}")
+                logger.debug(f"Permission check cache hit: user_{user_id}_{permission}")
                 return permission_data.get("has_permission")
 
-            logger.debug(f"Permission check cache miss: user_{user_id}_project_{project_id}_{permission}")
+            logger.debug(f"Permission check cache miss: user_{user_id}_{permission}")
             return None
 
         except Exception as e:
@@ -383,7 +380,7 @@ class CacheManager:
             patterns = [
                 f"{ACCESS_PREFIX}*_{project_id}",
                 f"{PERMISSION_PREFIX}*_{project_id}_*",
-                f"{RBAC_PREFIX}*_{project_id}_*"
+                f"{ROLE_PREFIX}*_{project_id}_*"
             ]
 
             deleted_count = 0
@@ -411,7 +408,7 @@ class CacheManager:
             patterns = [
                 f"{SESSION_PREFIX}*",
                 f"{ACCESS_PREFIX}*",
-                f"{RBAC_PREFIX}*",
+                f"{ROLE_PREFIX}*",
                 f"{PERMISSION_PREFIX}*",
                 f"{USER_INFO_PREFIX}*",
                 f"{USER_TYPE_PREFIX}*"
@@ -430,28 +427,28 @@ class CacheManager:
             logger.error(f"Failed to clear all cache: {e}")
             return False
 
-    def invalidate_rbac_cache(self, project_id: Optional[str] = None) -> bool:
+    def invalidate_role_cache(self, user_id: Optional[str] = None) -> bool:
         """
-        Invalidate RBAC-related cache entries
+        Invalidate global role-related cache entries
         
         Args:
-            project_id: Optional project ID to limit scope
+            user_id: Optional user ID to limit scope
             
         Returns:
-            Success status
+            True if invalidated successfully
         """
         try:
-            if project_id:
-                # Invalidate RBAC cache for specific project
+            if user_id:
+                # Invalidate role cache for specific user
                 patterns = [
-                    f"{PERMISSION_PREFIX}*_{project_id}_*",
-                    f"{RBAC_PREFIX}*_{project_id}_*"
+                    f"{PERMISSION_PREFIX}{user_id}_*",
+                    f"{ROLE_PREFIX}{user_id}_*"
                 ]
             else:
-                # Invalidate all RBAC cache
+                # Invalidate all role cache
                 patterns = [
                     f"{PERMISSION_PREFIX}*",
-                    f"{RBAC_PREFIX}*"
+                    f"{ROLE_PREFIX}*"
                 ]
 
             deleted_count = 0
@@ -460,12 +457,12 @@ class CacheManager:
                 if keys:
                     deleted_count += self.redis.delete(*keys)
 
-            scope = f"project_{project_id}" if project_id else "all_projects"
-            logger.info(f"Invalidated {deleted_count} RBAC cache entries for {scope}")
+            scope = f"user_{user_id}" if user_id else "all_users"
+            logger.info(f"Invalidated {deleted_count} role cache entries for {scope}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to invalidate RBAC cache: {e}")
+            logger.error(f"Failed to invalidate role cache: {e}")
             return False
 
     # =============================================================================
@@ -485,7 +482,7 @@ class CacheManager:
                 "access_checks": len(self.redis.keys(f"{ACCESS_PREFIX}*")),
                 "permission_checks": len(self.redis.keys(f"{PERMISSION_PREFIX}*")),
                 "user_types": len(self.redis.keys(f"{USER_TYPE_PREFIX}*")),
-                "rbac_checks": len(self.redis.keys(f"{RBAC_PREFIX}*")),
+                "role_checks": len(self.redis.keys(f"{ROLE_PREFIX}*")),
                 "total_keys": len(self.redis.keys("*"))
             }
 

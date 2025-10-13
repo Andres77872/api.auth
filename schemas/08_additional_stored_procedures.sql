@@ -3,6 +3,13 @@
 
 USE magic_auth;
 
+-- Force collation for stored procedure creation in MySQL 8/9
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET character_set_client = utf8mb4;
+SET character_set_connection = utf8mb4;
+SET character_set_results = utf8mb4;
+SET collation_connection = utf8mb4_unicode_ci;
+
 DELIMITER $$
 
 -- =====================================================
@@ -508,33 +515,14 @@ BEGIN
     WHERE project_id = p_project_id
       AND is_active = 1;
     
-    -- Soft delete all user group permission group assignments
-    UPDATE user_group_permission_groups
-    SET is_active = 0,
-        removed_at = NOW(),
-        removed_by = p_deleted_by
-    WHERE project_id = p_project_id
-      AND is_active = 1;
-    
     -- Soft delete all sessions
     UPDATE user_sessions
     SET is_active = 0
     WHERE project_id = p_project_id
       AND is_active = 1;
     
-    -- Soft delete permission groups
-    UPDATE permission_groups
-    SET is_active = 0,
-        updated_at = NOW()
-    WHERE project_id = p_project_id
-      AND is_active = 1;
-    
-    -- Soft delete permissions
-    UPDATE permissions
-    SET is_active = 0,
-        updated_at = NOW()
-    WHERE project_id = p_project_id
-      AND is_active = 1;
+    -- Note: Deprecated tables removed (user_group_permission_groups, permission_groups, permissions)
+    -- These were replaced by the global role system
       
     SELECT ROW_COUNT() as rows_affected;
 END$$

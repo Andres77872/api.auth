@@ -62,7 +62,10 @@ VALUES
     (CONCAT('ugp-', REPLACE(UUID(),'-','')), @viewer_group_id, @default_project_id, NOW(), @root_user_id, TRUE);
 
 -- =================== CREATE DEFAULT PERMISSIONS ===================
+-- ⚠️ DEPRECATED SECTION - Old project-specific permission system
+-- This section is commented out - use global role system instead
 -- Set permission IDs for reference
+/*
 SET @read_perm_id = 'perm-550e8400-e29b-41d4-a716-446655440011';
 SET @write_perm_id = 'perm-550e8400-e29b-41d4-a716-446655440012';
 SET @delete_perm_id = 'perm-550e8400-e29b-41d4-a716-446655440013';
@@ -119,9 +122,13 @@ VALUES
      'Can create new content', 'general', @write_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE),
     ('perm-550e8400-e29b-41d4-a716-446655440023', CONCAT('PERM-', REPLACE(UUID(),'-','')), @default_project_id, 'update_content', 'Update Content', 
      'Can modify existing content', 'general', @write_perm_id, 1, TRUE, @root_user_id, NOW(), TRUE);
+*/
 
 -- =================== CREATE DEFAULT PERMISSION GROUPS (ROLES) ===================
+-- ⚠️ DEPRECATED SECTION - Old project-specific permission group system
+-- This section is commented out - use global role system instead
 -- Get permission group IDs
+/*
 SET @full_admin_role_id = 'pg-550e8400-e29b-41d4-a716-446655440024';
 SET @project_admin_role_id = 'pg-550e8400-e29b-41d4-a716-446655440025';
 SET @manager_role_id = 'pg-550e8400-e29b-41d4-a716-446655440026';
@@ -160,9 +167,13 @@ VALUES
      'Senior development access with additional privileges', @developer_role_id, 1, 65, TRUE, @root_user_id, NOW(), TRUE),
     ('pg-550e8400-e29b-41d4-a716-446655440032', CONCAT('ROLE-', REPLACE(UUID(),'-','')), @default_project_id, 'junior_developer', 'Junior Developer', 
      'Limited development access for junior staff', @developer_role_id, 1, 55, TRUE, @root_user_id, NOW(), TRUE);
+*/
 
 -- =================== ASSIGN PERMISSIONS TO PERMISSION GROUPS ===================
+-- ⚠️ DEPRECATED SECTION - Old project-specific permission assignments
+-- This section is commented out - use global role system instead
 -- Full Admin gets all permissions
+/*
 INSERT INTO permission_group_permissions (id, permission_group_id, permission_id, granted_at, granted_by, is_active)
 SELECT CONCAT('pgp-', REPLACE(UUID(),'-','')), @full_admin_role_id, p.id, NOW(), @root_user_id, TRUE
 FROM permissions p
@@ -211,76 +222,60 @@ SELECT CONCAT('pgp-', REPLACE(UUID(),'-','')), @api_user_role_id, p.id, NOW(), @
 FROM permissions p
 WHERE p.project_id = @default_project_id
   AND p.permission_name IN ('api_access', 'read');
+*/
 
 -- =================== CREATE SAMPLE ADMIN USER ===================
 -- Create a sample admin user (password: admin123)
 -- Note: Admin users get project access through user groups, not direct assignment
+-- ⚠️ UPDATED - Now uses global role system
 SET @admin_user_id = 'usr-550e8400-e29b-41d4-a716-446655440033';
-INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+INSERT INTO users (id, user_hash, username, email, password_hash, user_type, role_id, created_by, created_at, is_active)
 VALUES (@admin_user_id, CONCAT('usr-', UUID()), 'admin', 'admin@example.com', 
         '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_admin123', 
-        'admin', @root_user_id, NOW(), TRUE);
+        'admin', 'role_admin', @root_user_id, NOW(), TRUE);
 
 -- Add admin user to administrators user group
 INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, assigned_by, is_active)
 VALUES (CONCAT('ugm-', REPLACE(UUID(),'-','')), @admin_user_id, @admin_group_id, NOW(), @root_user_id, TRUE);
 
--- Link administrators user group to project_admin permission group
-INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @admin_group_id, @default_project_id, @project_admin_role_id, NOW(), @root_user_id, TRUE);
-
 -- =================== CREATE SAMPLE CONSUMER USER ===================
 -- Create a sample consumer user (password: user123)
 -- Password hash for 'user123': $argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_user123
+-- ⚠️ UPDATED - Now uses global role system
 SET @consumer_user_id = 'usr-550e8400-e29b-41d4-a716-446655440034';
-INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+INSERT INTO users (id, user_hash, username, email, password_hash, user_type, role_id, created_by, created_at, is_active)
 VALUES (@consumer_user_id, CONCAT('usr-', UUID()), 'user', 'user@example.com', 
         '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_user123', 
-        'consumer', @root_user_id, NOW(), TRUE);
+        'consumer', 'role_editor', @root_user_id, NOW(), TRUE);
 
 -- Add consumer user to developers user group
 INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, assigned_by, is_active)
 VALUES (CONCAT('ugm-', REPLACE(UUID(),'-','')), @consumer_user_id, @developer_group_id, NOW(), @root_user_id, TRUE);
 
--- Link developers user group to developer permission group
-INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @developer_group_id, @default_project_id, @developer_role_id, NOW(), @root_user_id, TRUE);
-
 -- =================== CREATE ADDITIONAL SAMPLE USERS ===================
 -- Create a sample manager user
+-- ⚠️ UPDATED - Now uses global role system
 SET @manager_user_id = 'usr-550e8400-e29b-41d4-a716-446655440035';
-INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+INSERT INTO users (id, user_hash, username, email, password_hash, user_type, role_id, created_by, created_at, is_active)
 VALUES (@manager_user_id, CONCAT('usr-', UUID()), 'manager', 'manager@example.com', 
         '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_manager123', 
-        'consumer', @root_user_id, NOW(), TRUE);
+        'consumer', 'role_manager', @root_user_id, NOW(), TRUE);
 
 -- Add manager to project_managers user group
 INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, assigned_by, is_active)
 VALUES (CONCAT('ugm-', REPLACE(UUID(),'-','')), @manager_user_id, @manager_group_id, NOW(), @root_user_id, TRUE);
 
--- Link project_managers user group to manager permission group
-INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @manager_group_id, @default_project_id, @manager_role_id, NOW(), @root_user_id, TRUE);
-
 -- Create a sample tester user
+-- ⚠️ UPDATED - Now uses global role system
 SET @tester_user_id = 'usr-550e8400-e29b-41d4-a716-446655440036';
-INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at, is_active)
+INSERT INTO users (id, user_hash, username, email, password_hash, user_type, role_id, created_by, created_at, is_active)
 VALUES (@tester_user_id, CONCAT('usr-', UUID()), 'tester', 'tester@example.com', 
         '$argon2id$v=19$m=65536,t=3,p=4$hash_placeholder_for_tester123', 
-        'consumer', @root_user_id, NOW(), TRUE);
+        'consumer', 'role_viewer', @root_user_id, NOW(), TRUE);
 
 -- Add tester to testers user group
 INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, assigned_by, is_active)
 VALUES (CONCAT('ugm-', REPLACE(UUID(),'-','')), @tester_user_id, @tester_group_id, NOW(), @root_user_id, TRUE);
-
--- Link testers user group to tester permission group
-INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @tester_group_id, @default_project_id, @tester_role_id, NOW(), @root_user_id, TRUE);
-
--- =================== LINK ADDITIONAL USER GROUPS TO PERMISSION GROUPS ===================
--- Link viewers user group to viewer permission group
-INSERT INTO user_group_permission_groups (id, user_group_id, project_id, permission_group_id, assigned_at, assigned_by, is_active)
-VALUES (CONCAT('ugpg-', REPLACE(UUID(),'-','')), @viewer_group_id, @default_project_id, @viewer_role_id, NOW(), @root_user_id, TRUE);
 
 -- =================== INITIALIZE ACTIVITY CATALOG ===================
 -- Create activity type catalog entries
@@ -365,9 +360,9 @@ SELECT CONCAT('Created ', COUNT(*), ' users') as 'User Summary' FROM users WHERE
 UNION ALL
 SELECT CONCAT('Created ', COUNT(*), ' user groups') FROM user_groups WHERE is_active = TRUE
 UNION ALL
-SELECT CONCAT('Created ', COUNT(*), ' permission groups') FROM permission_groups WHERE project_id = @default_project_id AND is_active = TRUE
+SELECT CONCAT('Created ', COUNT(*), ' global roles') FROM roles WHERE is_active = TRUE
 UNION ALL
-SELECT CONCAT('Created ', COUNT(*), ' permissions') FROM permissions WHERE project_id = @default_project_id AND is_active = TRUE;
+SELECT CONCAT('Created ', COUNT(*), ' global permissions') FROM global_permissions WHERE is_active = TRUE;
 
 -- Output user login information
 SELECT 'User Login Information:' as '';
@@ -395,4 +390,88 @@ SELECT
 FROM user_groups ug
 LEFT JOIN user_groups pug ON ug.parent_group_id = pug.id
 WHERE ug.is_active = TRUE
-ORDER BY ug.group_level, ug.group_name; 
+ORDER BY ug.group_level, ug.group_name;
+
+-- =================== GLOBAL ROLE SYSTEM INITIALIZATION ===================
+
+-- Insert default global roles
+INSERT IGNORE INTO roles (id, role_hash, role_name, role_display_name, role_description, role_priority, is_system_role) VALUES
+('role_admin', 'role-hash-admin-sys', 'admin', 'Administrator', 'Full administrative access to all features and projects', 100, TRUE),
+('role_manager', 'role-hash-manager-sys', 'manager', 'Manager', 'Management and team oversight capabilities', 80, TRUE),
+('role_editor', 'role-hash-editor-sys', 'editor', 'Editor', 'Content editing and management access', 60, TRUE),
+('role_contributor', 'role-hash-contributor-sys', 'contributor', 'Contributor', 'Content contribution access', 40, TRUE),
+('role_viewer', 'role-hash-viewer-sys', 'viewer', 'Viewer', 'Read-only access to content', 20, TRUE),
+('role_api_user', 'role-hash-api-user-sys', 'api_user', 'API User', 'API access with limited permissions', 30, TRUE);
+
+-- Insert default global permission groups
+INSERT IGNORE INTO global_permission_groups (id, group_hash, group_name, group_display_name, group_description, group_category) VALUES
+('pg_admin_ops', 'pg-hash-admin-ops', 'admin_operations', 'Administrative Operations', 'Full administrative capabilities', 'admin'),
+('pg_user_mgmt', 'pg-hash-user-mgmt', 'user_management', 'User Management', 'User and role management permissions', 'admin'),
+('pg_read_write', 'pg-hash-read-write', 'read_write_access', 'Read/Write Access', 'Standard read and write permissions', 'data'),
+('pg_read_only', 'pg-hash-read-only', 'read_only_access', 'Read Only Access', 'View-only permissions', 'data'),
+('pg_api_access', 'pg-hash-api-access', 'api_access', 'API Access', 'API usage permissions', 'api');
+
+-- Insert default global permissions
+INSERT IGNORE INTO global_permissions (id, permission_hash, permission_name, permission_display_name, permission_description, permission_category) VALUES
+('perm_read', 'perm-hash-read', 'read', 'Read', 'View content and data', 'general'),
+('perm_write', 'perm-hash-write', 'write', 'Write', 'Create and modify content', 'general'),
+('perm_create', 'perm-hash-create', 'create', 'Create', 'Create new records', 'general'),
+('perm_update', 'perm-hash-update', 'update', 'Update', 'Update existing records', 'general'),
+('perm_delete', 'perm-hash-delete', 'delete', 'Delete', 'Delete records', 'general'),
+('perm_admin', 'perm-hash-admin', 'admin', 'Admin', 'Full administrative access', 'admin'),
+('perm_manage_users', 'perm-hash-manage-users', 'manage_users', 'Manage Users', 'Manage user accounts and roles', 'admin'),
+('perm_manage_roles', 'perm-hash-manage-roles', 'manage_roles', 'Manage Roles', 'Manage roles and permissions', 'admin'),
+('perm_api_access', 'perm-hash-api-access', 'api_access', 'API Access', 'Use API endpoints', 'api'),
+('perm_export', 'perm-hash-export-data', 'export_data', 'Export Data', 'Export system data', 'data'),
+('perm_import', 'perm-hash-import-data', 'import_data', 'Import Data', 'Import system data', 'data');
+
+-- Link permissions to permission groups
+INSERT IGNORE INTO global_permission_group_permissions (id, permission_group_id, permission_id) VALUES
+-- admin_operations group (all permissions)
+('pgp_admin_all_1', 'pg_admin_ops', 'perm_read'),
+('pgp_admin_all_2', 'pg_admin_ops', 'perm_write'),
+('pgp_admin_all_3', 'pg_admin_ops', 'perm_create'),
+('pgp_admin_all_4', 'pg_admin_ops', 'perm_update'),
+('pgp_admin_all_5', 'pg_admin_ops', 'perm_delete'),
+('pgp_admin_all_6', 'pg_admin_ops', 'perm_admin'),
+('pgp_admin_all_7', 'pg_admin_ops', 'perm_manage_users'),
+('pgp_admin_all_8', 'pg_admin_ops', 'perm_manage_roles'),
+('pgp_admin_all_9', 'pg_admin_ops', 'perm_api_access'),
+('pgp_admin_all_10', 'pg_admin_ops', 'perm_export'),
+('pgp_admin_all_11', 'pg_admin_ops', 'perm_import'),
+-- user_management group
+('pgp_user_mgmt_1', 'pg_user_mgmt', 'perm_manage_users'),
+('pgp_user_mgmt_2', 'pg_user_mgmt', 'perm_read'),
+('pgp_user_mgmt_3', 'pg_user_mgmt', 'perm_write'),
+-- read_write_access group
+('pgp_rw_1', 'pg_read_write', 'perm_read'),
+('pgp_rw_2', 'pg_read_write', 'perm_write'),
+('pgp_rw_3', 'pg_read_write', 'perm_create'),
+('pgp_rw_4', 'pg_read_write', 'perm_update'),
+-- read_only_access group
+('pgp_ro_1', 'pg_read_only', 'perm_read'),
+-- api_access group
+('pgp_api_1', 'pg_api_access', 'perm_api_access'),
+('pgp_api_2', 'pg_api_access', 'perm_read');
+
+-- Link permission groups to roles
+INSERT IGNORE INTO role_permission_groups (id, role_id, permission_group_id) VALUES
+-- admin role (all groups)
+('rpg_admin_1', 'role_admin', 'pg_admin_ops'),
+('rpg_admin_2', 'role_admin', 'pg_user_mgmt'),
+('rpg_admin_3', 'role_admin', 'pg_read_write'),
+('rpg_admin_4', 'role_admin', 'pg_api_access'),
+-- manager role
+('rpg_manager_1', 'role_manager', 'pg_user_mgmt'),
+('rpg_manager_2', 'role_manager', 'pg_read_write'),
+('rpg_manager_3', 'role_manager', 'pg_api_access'),
+-- editor role
+('rpg_editor_1', 'role_editor', 'pg_read_write'),
+-- contributor role
+('rpg_contributor_1', 'role_contributor', 'pg_read_write'),
+-- viewer role
+('rpg_viewer_1', 'role_viewer', 'pg_read_only'),
+-- api_user role
+('rpg_api_1', 'role_api_user', 'pg_api_access');
+
+SELECT 'Global role system initialized successfully!' as ''; 

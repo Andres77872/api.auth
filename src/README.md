@@ -100,7 +100,7 @@ sophisticated access control.
 
 - [Quick Start Guide](../docs/quick-start.md) - 15 minutes to running system
 - [Setup Guide](../docs/setup-guide.md) - Complete installation and configuration
-- [Architecture Guide](../docs/architecture.md) - Understanding the 3-tier system
+- [Architecture Documentation](../docs/ARCHITECTURE/README.md) - Comprehensive system architecture
 
 ### 📡 **API Documentation** (150+ pages)
 
@@ -115,8 +115,12 @@ sophisticated access control.
 
 ### 🏗️ **System Architecture**
 
-- [Database Schema](../docs/database-schema.md) - Complete data model
-- [Architecture Guide](../docs/architecture.md) - System design and patterns
+- [Architecture Documentation](../docs/ARCHITECTURE/README.md) - Complete architecture guide
+- [User Type System](../docs/ARCHITECTURE/01_user_type_system.md) - 3-tier hierarchy
+- [Group System](../docs/ARCHITECTURE/02_group_system.md) - Access control
+- [Caching Strategy](../docs/ARCHITECTURE/04_caching_strategy.md) - Performance optimization
+- [Security Model](../docs/ARCHITECTURE/05_security_model.md) - Security architecture
+- [API Endpoints](../docs/ARCHITECTURE/06_api_endpoints.md) - Complete endpoint reference
 
 ### 🆕 **Multi-Project Admin Features**
 
@@ -198,7 +202,7 @@ sophisticated access control.
 - **👑 ROOT USERS**: Start with [User Type Management API](../docs/api/user-type-management.md)
 - **🛡️ ADMIN USERS**: Focus on [Admin API](../docs/api/admin.md) and [RBAC Management](../docs/api/rbac-management.md)
 - **👤 CONSUMER USERS**: Review [Authentication API](../docs/api/authentication.md)
-- **🔧 DEVELOPERS**: Begin with [Architecture Guide](../docs/architecture.md)
+- **🔧 DEVELOPERS**: Begin with [Architecture Documentation](../docs/ARCHITECTURE/README.md)
 
 ### 🔧 **Quick Troubleshooting**
 
@@ -212,10 +216,10 @@ sophisticated access control.
 
 ### 💡 **Getting Advanced Support**
 
-1. **System Architecture Questions**: Review [Architecture Guide](../docs/architecture.md)
+1. **System Architecture Questions**: Review [Architecture Documentation](../docs/ARCHITECTURE/README.md)
 2. **RBAC Implementation**: Check [RBAC Management API](../docs/api/rbac-management.md)
 3. **User Type Management**: See [User Type API](../docs/api/user-type-management.md)
-4. **Performance Issues**: Review [System API](../docs/api/system.md) monitoring
+4. **Performance Issues**: Review [System API](../docs/api/system.md) and [Caching Strategy](../docs/ARCHITECTURE/04_caching_strategy.md)
 
 ## 🎉 Why Choose This 3-Tier System?
 

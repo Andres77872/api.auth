@@ -16,10 +16,15 @@ from src.Util.Models import (
     CacheStatsResponse, ClearCacheResponse, InvalidateCacheResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.decorators import log_and_handle_errors
+from src.Util.log_context_models import LogContext
+from src.Util.activity_logger import ActivityType
+from src.Util.error_handler import AuthorizationError, ErrorCode, mask_uuid
+from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.cache_manager import cache_manager
 from src.Util.db import (
     count_users, count_projects, count_user_groups,
-    count_project_permission_groups, validate_session
+    count_project_permission_groups, validate_session, is_root_user, get_user_type
 )
 
 # Configure logging
@@ -62,7 +67,7 @@ async def get_system_info() -> SystemInfoResponse:
 
         system_info = {
             "name": "Group-Based Multi-Project Authentication API",
-            "version": "2.0.0",
+            "version": "1.0.0",
             "architecture": "hierarchical-group-based",
             "status": "operational"
         }
@@ -99,7 +104,7 @@ async def get_system_info() -> SystemInfoResponse:
             message="System information temporarily unavailable",
             system={
                 "name": "Group-Based Multi-Project Authentication API",
-                "version": "2.0.0",
+                "version": "1.0.0",
                 "architecture": "hierarchical-group-based",
                 "status": "operational"
             }
@@ -181,7 +186,15 @@ async def ping() -> PingResponse:
 
 
 @router.get("/cache/stats", response_model=CacheStatsResponse)
-async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depends(security)) -> CacheStatsResponse:
+@log_and_handle_errors(
+    operation_name="get_cache_stats",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=False
+)
+async def get_cache_statistics(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    log_context: LogContext = None
+) -> CacheStatsResponse:
     """
     Get cache statistics and performance metrics.
     Requires valid session token.
@@ -189,38 +202,34 @@ async def get_cache_statistics(credentials: HTTPAuthorizationCredentials = Depen
     Returns:
         Cache statistics including hit rates and storage info
     """
-    try:
-        # Validate session (any authenticated user can see cache stats)
-        session_data = validate_session(credentials.credentials)
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
+    # Get cache statistics
+    cache_stats = cache_manager.get_cache_stats()
 
-        # Get cache statistics
-        cache_stats = cache_manager.get_cache_stats()
+    cache_config = {
+        "session_ttl": "3600 seconds (1 hour)",
+        "access_check_ttl": "1800 seconds (30 minutes)",
+        "rbac_check_ttl": "1800 seconds (30 minutes)",
+        "user_info_ttl": "3600 seconds (1 hour)"
+    }
 
-        cache_config = {
-            "session_ttl": "3600 seconds (1 hour)",
-            "access_check_ttl": "1800 seconds (30 minutes)",
-            "rbac_check_ttl": "1800 seconds (30 minutes)",
-            "user_info_ttl": "3600 seconds (1 hour)"
-        }
-
-        return CacheStatsResponse(
-            success=True,
-            cache_statistics=cache_stats,
-            cache_configuration=cache_config,
-            timestamp=datetime.now().isoformat()
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Cache statistics error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get cache statistics")
+    return CacheStatsResponse(
+        success=True,
+        cache_statistics=cache_stats,
+        cache_configuration=cache_config,
+        timestamp=datetime.now().isoformat()
+    )
 
 
 @router.post("/cache/clear", response_model=ClearCacheResponse)
-async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(security)) -> ClearCacheResponse:
+@log_and_handle_errors(
+    operation_name="clear_cache",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
+async def clear_cache(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    log_context: LogContext = None
+) -> ClearCacheResponse:
     """
     Clear entire authentication cache.
     Requires admin permissions.
@@ -228,43 +237,46 @@ async def clear_cache(credentials: HTTPAuthorizationCredentials = Depends(securi
     Returns:
         Cache clearing confirmation
     """
-    try:
-        # Validate session and check admin permissions
-        session_data = validate_session(credentials.credentials)
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
+    # Check if user has admin permissions
+    user_type = get_user_type(log_context.user_id)
+    is_root = is_root_user(log_context.user_id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin permission required to clear cache",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
 
-        # Check if user has admin permissions (support global root sessions)
-        user_permissions = getattr(session_data, 'permissions', [])
-        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required to clear cache")
+    # Clear entire cache
+    success = cache_manager.clear_all_cache()
 
-        # Clear entire cache
-        success = cache_manager.clear_all_cache()
-
-        if success:
-            logger.warning(f"Cache cleared by user: {session_data.user_hash}")
-            return ClearCacheResponse(
-                success=True,
-                message="Entire authentication cache has been cleared",
-                cleared_by=session_data.user_hash,
-                timestamp=datetime.now().isoformat(),
-                warning="All users will need to re-authenticate or may experience slower response times"
-            )
-        else:
-            raise HTTPException(status_code=500, detail="Failed to clear cache")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Cache clearing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to clear cache")
+    if not success:
+        from src.Util.error_handler import InternalError
+        raise InternalError(
+            message="Failed to clear cache",
+            error_code=ErrorCode.INTERNAL_ERROR
+        )
+    
+    logger.warning(f"Cache cleared by user: {mask_uuid(log_context.user_hash)}")
+    return ClearCacheResponse(
+        success=True,
+        message="Entire authentication cache has been cleared",
+        cleared_by=mask_uuid(log_context.user_hash),
+        timestamp=datetime.now().isoformat(),
+        warning="All users will need to re-authenticate or may experience slower response times"
+    )
 
 
 @router.post("/cache/invalidate/user/{user_hash}", response_model=InvalidateCacheResponse)
+@log_and_handle_errors(
+    operation_name="invalidate_user_cache",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
 async def invalidate_user_cache(
         user_hash: str,
-        credentials: HTTPAuthorizationCredentials = Depends(security)
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
 ) -> InvalidateCacheResponse:
     """
     Invalidate cache for a specific user.
@@ -276,46 +288,52 @@ async def invalidate_user_cache(
     Returns:
         Cache invalidation confirmation
     """
-    try:
-        # Validate session and check admin permissions
-        session_data = validate_session(credentials.credentials)
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
+    # Check admin permissions
+    user_type = get_user_type(log_context.user_id)
+    is_root = is_root_user(log_context.user_id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin permission required",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
 
-        user_permissions = getattr(session_data, 'permissions', [])
-        if 'admin' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required")
+    # Get user ID from hash
+    from src.Util.db import get_user_by_hash
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash),
+        error_context="user lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}"
+    )
 
-        # Get user ID from hash
-        from src.Util.db import get_user_by_hash
-        target_user = get_user_by_hash(user_hash)
-        if not target_user:
-            raise HTTPException(status_code=404, detail="User not found")
+    # Invalidate user cache
+    success = cache_manager.invalidate_user_cache(target_user.id)
 
-        # Invalidate user cache
-        success = cache_manager.invalidate_user_cache(target_user.id)
+    if not success:
+        from src.Util.error_handler import InternalError
+        raise InternalError(
+            message="Failed to invalidate user cache",
+            error_code=ErrorCode.INTERNAL_ERROR
+        )
 
-        if success:
-            return InvalidateCacheResponse(
-                success=True,
-                message=f"Cache invalidated for user: {user_hash}",
-                invalidated_by=session_data.user_hash,
-                timestamp=datetime.now().isoformat()
-            )
-        else:
-            raise HTTPException(status_code=500, detail="Failed to invalidate user cache")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User cache invalidation error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to invalidate user cache")
+    return InvalidateCacheResponse(
+        success=True,
+        message=f"Cache invalidated for user: {mask_uuid(user_hash)}",
+        invalidated_by=mask_uuid(log_context.user_hash),
+        timestamp=datetime.now().isoformat()
+    )
 
 
 @router.post("/cache/invalidate/project/{project_id}", response_model=InvalidateCacheResponse)
+@log_and_handle_errors(
+    operation_name="invalidate_project_cache",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
 async def invalidate_project_cache(
         project_id: int,
-        credentials: HTTPAuthorizationCredentials = Depends(security)
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
 ) -> InvalidateCacheResponse:
     """
     Invalidate cache for a specific project.
@@ -327,31 +345,29 @@ async def invalidate_project_cache(
     Returns:
         Cache invalidation confirmation
     """
-    try:
-        # Validate session and check admin permissions
-        session_data = validate_session(credentials.credentials)
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
+    # Check admin permissions
+    user_type = get_user_type(log_context.user_id)
+    is_root = is_root_user(log_context.user_id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin permission required",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
 
-        user_permissions = getattr(session_data, 'permissions', [])
-        if 'admin' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required")
+    # Invalidate project cache
+    success = cache_manager.invalidate_project_cache(project_id)
 
-        # Invalidate project cache
-        success = cache_manager.invalidate_project_cache(project_id)
+    if not success:
+        from src.Util.error_handler import InternalError
+        raise InternalError(
+            message="Failed to invalidate project cache",
+            error_code=ErrorCode.INTERNAL_ERROR
+        )
 
-        if success:
-            return InvalidateCacheResponse(
-                success=True,
-                message=f"Cache invalidated for project: {project_id}",
-                invalidated_by=session_data.user_hash,
-                timestamp=datetime.now().isoformat()
-            )
-        else:
-            raise HTTPException(status_code=500, detail="Failed to invalidate project cache")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Project cache invalidation error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to invalidate project cache")
+    return InvalidateCacheResponse(
+        success=True,
+        message=f"Cache invalidated for project: {project_id}",
+        invalidated_by=mask_uuid(log_context.user_hash),
+        timestamp=datetime.now().isoformat()
+    )

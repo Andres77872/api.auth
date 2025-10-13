@@ -367,7 +367,7 @@ curl -X GET "http://localhost:8000/admin/system/overview" \
   "success": true,
   "system_overview": {
     "uptime": "15 days, 3 hours, 42 minutes",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "environment": "production",
     "health_status": "healthy",
     "performance": {

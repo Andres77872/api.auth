@@ -370,7 +370,10 @@ def get_user_groups_for_user(user_id: str) -> List[UserGroup]:
                            ug.is_active
                     FROM user_groups ug
                              INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-                    WHERE ug.id = %s
+                    WHERE ugm.user_id = %s
+                      AND ug.is_active = 1
+                      AND ugm.is_active = 1
+                    ORDER BY ug.group_name ASC
                     """, [user_id])
         groups = []
         for row in cur.fetchall():

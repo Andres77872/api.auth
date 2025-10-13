@@ -163,8 +163,8 @@ async def create_admin_user_endpoint(
         username: str = Form(...),
         password: str = Form(...),
         email: str = Form(...),
-        assigned_project_id: Optional[int] = Form(None),
-        assigned_project_ids: Optional[List[int]] = Form(None),
+        assigned_project_id: Optional[str] = Form(None),
+        assigned_project_ids: Optional[List[str]] = Form(None),
         current_user=Depends(require_root_user)
 ) -> CreateAdminUserResponse:
     """
@@ -332,7 +332,7 @@ async def get_user_type_information(
 async def update_user_type_endpoint(
         user_hash: str,
         user_type: str = Form(...),
-        assigned_project_id: Optional[int] = Form(None),
+        assigned_project_id: Optional[str] = Form(None),
         current_user=Depends(require_root_user)
 ) -> UpdateUserTypeResponse:
     """

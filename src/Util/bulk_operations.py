@@ -10,9 +10,9 @@ from typing import List, Dict, Any
 
 from src.Util.activity_logger import log_activity, ActivityType
 from src.Util.db import (
-    get_user_by_hash, update_user, delete_user,
-    assign_user_to_permission_group, get_project_by_hash
+    get_user_by_hash, update_user, delete_user, get_project_by_hash
 )
+from src.Util.db.db_global_roles import assign_role_to_user
 from src.Util.db_config import get_connection
 
 # Configure logging
@@ -250,12 +250,10 @@ class BulkOperations:
                         results["failed"] += 1
                         continue
 
-                    # Assign role
-                    assignment_result = assign_user_to_permission_group(
+                    # Assign role (global role system - project-agnostic)
+                    assignment_result = assign_role_to_user(
                         user_id=user.id,
-                        project_id=project.id,
-                        permission_group_id=role_id,
-                        assigned_by=assigned_by
+                        role_id=role_id
                     )
 
                     if assignment_result:
@@ -384,7 +382,7 @@ class BulkOperations:
         return results
 
     @staticmethod
-    def _update_user_status(user_id: int, is_active: bool) -> bool:
+    def _update_user_status(user_id: str, is_active: bool) -> bool:
         """Helper method to update user active status"""
         try:
             with get_connection() as con:

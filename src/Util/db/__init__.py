@@ -5,20 +5,20 @@ This module provides database operations for the 3-tier user type authentication
 
 1. ROOT USERS: Super administrators with unrestricted global access
 2. ADMIN USERS: Project-specific administrators limited to assigned projects  
-3. CONSUMER USERS: End users with RBAC-based permissions through groups
+3. CONSUMER USERS: End users with role-based permissions through the global role system
 
 The database operations are organized into specialized modules:
 - db_users.py: User management with user type support
 - db_projects.py: Project management and statistics
 - db_user_groups.py: User group management and membership operations
 - db_project_groups.py: Project group management and permission operations
-- db_rbac_permissions.py: RBAC permission and role management
+- db_global_roles.py: Global role system with roles, permissions, and permission groups
 - db_enhanced.py: Main authentication functions with user type handling
 
 User Type Access Model:
 Root Users → Unrestricted Access to Everything
 Admin Users → Project-Scoped Admin Access (assigned_project_id)
-Consumer Users → RBAC Access (User Groups → Project Access → Project Groups → Permissions)
+Consumer Users → Global Role System (User → Role → Permission Groups → Permissions)
 """
 
 import json
@@ -58,7 +58,9 @@ from src.Util.db.db_project_groups import (
     get_projects_in_group as get_projects_in_permission_group,
     get_project_permissions,
     get_user_project_permissions,
+    get_user_project_permissions as get_user_effective_permissions,
     check_user_project_permission,
+    check_user_project_permission as check_user_permission,
     create_default_project_groups as create_default_permission_groups
 )
 # Import project management functions
@@ -74,30 +76,6 @@ from src.Util.db.db_projects import (
     get_project_stats,
     get_project_groups,
     create_default_groups
-)
-# Import RBAC permissions functions
-from src.Util.db.db_rbac_permissions import (
-    create_permission,
-    get_project_permissions as get_rbac_project_permissions,
-    check_user_permission,
-    create_default_project_permissions,
-    create_permission_group,
-    assign_user_to_permission_group,
-    remove_user_from_permission_group,
-    initialize_project_rbac,
-    get_project_permission_groups,
-    get_user_permission_groups_in_project,
-    get_user_effective_permissions,
-    get_project_audit_log,
-    get_project_user_assignments,
-    create_default_project_roles,
-    assign_default_permissions_to_roles,
-    assign_permission_to_group,
-    get_group_permissions,
-    get_group_users,
-    get_project_users_with_permissions,
-    get_user_role_assignment_history,
-    count_user_role_assignment_history
 )
 # Import session analytics functions
 from src.Util.db.db_session_analytics import (
@@ -247,7 +225,7 @@ def get_user_type_info(user_id: str) -> dict:
                 for p in accessible_projects
             ]
             result["capabilities"] = [
-                "rbac_permissions",
+                "global_role_permissions",
                 "group_based_access",
                 "project_access_via_groups"
             ]
@@ -285,11 +263,15 @@ def check_user_type_permission(user_id: str, operation: str, project_id: str = N
                 return False
             return check_admin_project_access(user_id, project_id)
 
-        # Consumer users follow RBAC permissions
+        # Consumer users follow global role permissions
         elif user_type == "consumer":
-            if not project_id:
+            # Global role system - no project context needed for permission checks
+            # Import global role functions
+            try:
+                from src.Util.db.db_global_roles import check_user_has_permission
+                return check_user_has_permission(user_id, operation)
+            except Exception:
                 return False
-            return check_user_permission(user_id, project_id, operation)
 
         return False
 
@@ -336,7 +318,12 @@ def create_user_type_session(user_id: str, project_id: str, session_length: int 
             session_data["can_access_project"] = check_admin_project_access(user_id, project_id)
         elif user_type == "consumer":
             session_data["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
-            session_data["permissions"] = get_user_permissions_in_project(user_id, project_id)
+            # Get permissions from global role system
+            try:
+                from src.Util.db.db_global_roles import get_user_permissions
+                session_data["permissions"] = get_user_permissions(user_id)
+            except Exception:
+                session_data["permissions"] = []
 
         return session_data
 
@@ -529,31 +516,10 @@ __all__ = [
     'get_projects_in_permission_group',
     'get_project_permissions',
     'get_user_project_permissions',
-    'check_user_project_permission',
-    'create_default_permission_groups',
-
-    # RBAC Permission Management
-    'create_permission',
-    'get_rbac_project_permissions',
-    'check_user_permission',
-    'create_default_project_permissions',
-    'create_permission_group',
-    'assign_user_to_permission_group',
-    'remove_user_from_permission_group',
-    'initialize_project_rbac',
-    'get_project_permission_groups',
-    'get_user_permission_groups_in_project',
     'get_user_effective_permissions',
-    'get_project_audit_log',
-    'get_project_user_assignments',
-    'create_default_project_roles',
-    'assign_default_permissions_to_roles',
-    'assign_permission_to_group',
-    'get_group_permissions',
-    'get_group_users',
-    'get_project_users_with_permissions',
-    'get_user_role_assignment_history',
-    'count_user_role_assignment_history',
+    'check_user_project_permission',
+    'check_user_permission',
+    'create_default_permission_groups',
 
     # Session Analytics
     'count_active_sessions',

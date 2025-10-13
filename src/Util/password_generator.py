@@ -67,7 +67,7 @@ class PasswordGenerator:
         return secrets.token_urlsafe(32)
 
     @staticmethod
-    def create_password_reset_data(user_id: int, expiry_hours: int = 24) -> Dict[str, Any]:
+    def create_password_reset_data(user_id: str, expiry_hours: int = 24) -> Dict[str, Any]:
         """
         Create password reset data structure
         
@@ -158,12 +158,12 @@ def generate_reset_token() -> str:
     return password_generator.generate_reset_token()
 
 
-def create_password_reset(user_id: int, expiry_hours: int = 24) -> Dict[str, Any]:
+def create_password_reset(user_id: str, expiry_hours: int = 24) -> Dict[str, Any]:
     """Create password reset data"""
     return password_generator.create_password_reset_data(user_id, expiry_hours)
 
 
-def create_password_reset_data(user_id: int, expiry_hours: int = 24) -> Dict[str, Any]:
+def create_password_reset_data(user_id: str, expiry_hours: int = 24) -> Dict[str, Any]:
     """Create password reset data (convenience function for users.py import)"""
     return password_generator.create_password_reset_data(user_id, expiry_hours)
 

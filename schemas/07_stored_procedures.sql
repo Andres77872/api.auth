@@ -4,7 +4,12 @@
 
 USE magic_auth;
 
+-- Force collation for stored procedure creation in MySQL 8/9
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET character_set_client = utf8mb4;
+SET character_set_connection = utf8mb4;
+SET character_set_results = utf8mb4;
+SET collation_connection = utf8mb4_unicode_ci;
 
 DELIMITER $$
 
@@ -259,439 +264,35 @@ BEGIN
 END$$
 
 -- =====================================================
--- RBAC STORED PROCEDURES
+-- DEPRECATED RBAC PROCEDURES - REMOVED
 -- =====================================================
-
+-- The following procedures have been removed due to the
+-- refactor to the global role system. They referenced
+-- deprecated tables: permissions, permission_groups,
+-- permission_group_permissions, user_group_permission_groups
+--
+-- Removed procedures:
+-- - sp_rbac_create_permission
+-- - sp_rbac_get_project_permissions
+-- - sp_rbac_check_user_permission
+-- - sp_rbac_create_permission_group
+-- - sp_rbac_get_project_permission_groups
+-- - sp_rbac_assign_permission_to_group
+-- - sp_rbac_assign_user_to_permission_group
+-- - sp_rbac_remove_user_from_permission_group
+-- - sp_rbac_get_user_permission_groups_in_project
+-- - sp_rbac_get_user_effective_permissions
+-- - sp_rbac_get_group_permissions
+-- - sp_rbac_get_group_users
+-- - sp_rbac_get_project_users_with_permissions
+--
+-- Use the global role system instead:
+-- - global_permissions
+-- - roles
+-- - global_permission_groups
+-- - role_permission_groups
+-- - global_permission_group_permissions
 -- =====================================================
--- sp_rbac_create_permission
--- -----------------------------------------------------
--- Create a new project-specific permission
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_create_permission$$
-CREATE PROCEDURE sp_rbac_create_permission(
-    IN p_permission_id VARCHAR(64),
-    IN p_permission_hash VARCHAR(255),
-    IN p_project_id VARCHAR(64),
-    IN p_permission_name VARCHAR(100),
-    IN p_permission_display_name VARCHAR(255),
-    IN p_permission_description TEXT,
-    IN p_permission_category VARCHAR(50),
-    IN p_is_system_permission BOOLEAN,
-    IN p_created_by VARCHAR(64)
-)
-BEGIN
-    INSERT INTO permissions (
-        id, permission_hash, project_id, permission_name, 
-        permission_display_name, permission_description, 
-        permission_category, is_system_permission, created_by
-    ) VALUES (
-        p_permission_id, p_permission_hash, p_project_id, p_permission_name,
-        p_permission_display_name, p_permission_description,
-        p_permission_category, p_is_system_permission, p_created_by
-    );
-    
-    SELECT id, permission_hash, project_id, permission_name,
-           permission_display_name, permission_description,
-           permission_category, is_system_permission,
-           created_at, updated_at, created_by, is_active
-    FROM permissions
-    WHERE id = p_permission_id;
-END$$
-
--- =====================================================
--- sp_rbac_get_project_permissions
--- -----------------------------------------------------
--- Get all permissions for a project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_project_permissions$$
-CREATE PROCEDURE sp_rbac_get_project_permissions(
-    IN p_project_id VARCHAR(64),
-    IN p_category VARCHAR(50)
-)
-BEGIN
-    IF p_category IS NOT NULL THEN
-        SELECT id, permission_hash, project_id, permission_name,
-               permission_display_name, permission_description,
-               permission_category, is_system_permission,
-               created_at, updated_at, created_by, is_active
-        FROM permissions
-        WHERE project_id = p_project_id
-          AND permission_category = p_category
-          AND is_active = 1
-        ORDER BY permission_category, permission_name;
-    ELSE
-        SELECT id, permission_hash, project_id, permission_name,
-               permission_display_name, permission_description,
-               permission_category, is_system_permission,
-               created_at, updated_at, created_by, is_active
-        FROM permissions
-        WHERE project_id = p_project_id
-          AND is_active = 1
-        ORDER BY permission_category, permission_name;
-    END IF;
-END$$
-
--- =====================================================
--- sp_rbac_check_user_permission
--- -----------------------------------------------------
--- Check if user has specific permission in project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_check_user_permission$$
-CREATE PROCEDURE sp_rbac_check_user_permission(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64),
-    IN p_permission_name VARCHAR(100)
-)
-BEGIN
-    SELECT COUNT(*) > 0 as has_permission
-    FROM permissions p
-    JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
-    JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-    JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-    WHERE ugm.user_id = p_user_id
-      AND ugpg.project_id = p_project_id
-      AND p.permission_name = p_permission_name
-      AND p.is_active = 1
-      AND pgp.is_active = 1
-      AND pg.is_active = 1
-      AND ugpg.is_active = 1
-      AND ugm.is_active = 1;
-END$$
-
--- =====================================================
--- sp_rbac_create_permission_group
--- -----------------------------------------------------
--- Create a new permission group (role)
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_create_permission_group$$
-CREATE PROCEDURE sp_rbac_create_permission_group(
-    IN p_group_id VARCHAR(64),
-    IN p_group_hash VARCHAR(255),
-    IN p_project_id VARCHAR(64),
-    IN p_group_name VARCHAR(100),
-    IN p_group_display_name VARCHAR(255),
-    IN p_group_description TEXT,
-    IN p_group_priority INT,
-    IN p_is_system_role BOOLEAN,
-    IN p_created_by VARCHAR(64)
-)
-BEGIN
-    INSERT INTO permission_groups (
-        id, group_hash, project_id, group_name,
-        group_display_name, group_description,
-        group_priority, is_system_role, created_by
-    ) VALUES (
-        p_group_id, p_group_hash, p_project_id, p_group_name,
-        p_group_display_name, p_group_description,
-        p_group_priority, p_is_system_role, p_created_by
-    );
-    
-    SELECT id, group_hash, project_id, group_name,
-           group_display_name, group_description,
-           group_priority, is_system_role,
-           created_at, updated_at, created_by, is_active
-    FROM permission_groups
-    WHERE id = p_group_id;
-END$$
-
--- =====================================================
--- sp_rbac_get_project_permission_groups
--- -----------------------------------------------------
--- Get all permission groups for a project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_project_permission_groups$$
-CREATE PROCEDURE sp_rbac_get_project_permission_groups(
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT id, group_hash, project_id, group_name,
-           group_display_name, group_description,
-           group_priority, is_system_role,
-           created_at, updated_at, created_by, is_active
-    FROM permission_groups
-    WHERE project_id = p_project_id
-      AND is_active = 1
-    ORDER BY group_priority DESC, group_name;
-END$$
-
--- =====================================================
--- sp_rbac_assign_permission_to_group
--- -----------------------------------------------------
--- Assign a permission to a permission group
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_assign_permission_to_group$$
-CREATE PROCEDURE sp_rbac_assign_permission_to_group(
-    IN p_link_id VARCHAR(64),
-    IN p_permission_group_id VARCHAR(64),
-    IN p_permission_id VARCHAR(64),
-    IN p_assigned_by VARCHAR(64),
-    OUT p_success BOOLEAN
-)
-BEGIN
-    DECLARE v_pg_project_id VARCHAR(64);
-    DECLARE v_perm_project_id VARCHAR(64);
-    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET p_success = FALSE;
-    
-    SET p_success = TRUE;
-    
-    -- Verify both belong to same project
-    SELECT pg.project_id, p.project_id
-    INTO v_pg_project_id, v_perm_project_id
-    FROM permission_groups pg, permissions p
-    WHERE pg.id = p_permission_group_id
-      AND p.id = p_permission_id;
-    
-    IF v_pg_project_id != v_perm_project_id THEN
-        SET p_success = FALSE;
-    ELSE
-        INSERT INTO permission_group_permissions (
-            id, permission_group_id, permission_id, granted_by
-        ) VALUES (
-            p_link_id, p_permission_group_id, p_permission_id, p_assigned_by
-        )
-        ON DUPLICATE KEY UPDATE
-            is_active = 1,
-            revoked_at = NULL,
-            revoked_by = NULL,
-            granted_by = p_assigned_by;
-    END IF;
-END$$
-
--- =====================================================
--- sp_rbac_assign_user_to_permission_group
--- -----------------------------------------------------
--- Assign user to permission group through user groups
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_assign_user_to_permission_group$$
-CREATE PROCEDURE sp_rbac_assign_user_to_permission_group(
-    IN p_assignment_id VARCHAR(64),
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64),
-    IN p_permission_group_id VARCHAR(64),
-    IN p_assigned_by VARCHAR(64),
-    OUT p_success BOOLEAN,
-    OUT p_error_message VARCHAR(255)
-)
-BEGIN
-    DECLARE v_pg_project_id VARCHAR(64);
-    DECLARE v_user_group_id VARCHAR(64);
-    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
-    BEGIN
-        SET p_success = FALSE;
-        SET p_error_message = 'Database error occurred';
-    END;
-    
-    SET p_success = TRUE;
-    SET p_error_message = NULL;
-    
-    -- Verify permission group belongs to project
-    SELECT project_id INTO v_pg_project_id
-    FROM permission_groups
-    WHERE id = p_permission_group_id AND is_active = 1;
-    
-    IF v_pg_project_id IS NULL THEN
-        SET p_success = FALSE;
-        SET p_error_message = 'Permission group not found or inactive';
-    ELSEIF v_pg_project_id != p_project_id THEN
-        SET p_success = FALSE;
-        SET p_error_message = 'Permission group does not belong to specified project';
-    ELSE
-        -- Get user's user group with project access
-        SELECT ug.id INTO v_user_group_id
-        FROM user_groups ug
-        JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-        JOIN user_group_projects ugp ON ug.id = ugp.user_group_id
-        WHERE ugm.user_id = p_user_id
-          AND ugp.project_id = p_project_id
-          AND ugm.is_active = 1
-          AND ug.is_active = 1
-          AND ugp.is_active = 1
-        LIMIT 1;
-        
-        IF v_user_group_id IS NULL THEN
-            SET p_success = FALSE;
-            SET p_error_message = 'User does not belong to any user group with access to this project';
-        ELSE
-            INSERT INTO user_group_permission_groups (
-                id, user_group_id, project_id, permission_group_id, assigned_by
-            ) VALUES (
-                p_assignment_id, v_user_group_id, p_project_id, p_permission_group_id, p_assigned_by
-            )
-            ON DUPLICATE KEY UPDATE
-                is_active = 1,
-                removed_at = NULL,
-                removed_by = NULL,
-                assigned_by = p_assigned_by;
-        END IF;
-    END IF;
-END$$
-
--- =====================================================
--- sp_rbac_remove_user_from_permission_group
--- -----------------------------------------------------
--- Remove user from permission group
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_remove_user_from_permission_group$$
-CREATE PROCEDURE sp_rbac_remove_user_from_permission_group(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64),
-    IN p_permission_group_id VARCHAR(64),
-    IN p_removed_by VARCHAR(64),
-    OUT p_rows_affected INT
-)
-BEGIN
-    UPDATE user_group_permission_groups ugpg
-    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-    SET ugpg.is_active = 0,
-        ugpg.removed_at = NOW(),
-        ugpg.removed_by = p_removed_by
-    WHERE ugm.user_id = p_user_id
-      AND ugpg.project_id = p_project_id
-      AND ugpg.permission_group_id = p_permission_group_id
-      AND ugpg.is_active = 1
-      AND ugm.is_active = 1;
-    
-    SET p_rows_affected = ROW_COUNT();
-END$$
-
--- =====================================================
--- sp_rbac_get_user_permission_groups_in_project
--- -----------------------------------------------------
--- Get user's permission groups in a project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_user_permission_groups_in_project$$
-CREATE PROCEDURE sp_rbac_get_user_permission_groups_in_project(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT pg.id, pg.group_hash, pg.project_id, pg.group_name,
-           pg.group_display_name, pg.group_description,
-           pg.group_priority, pg.is_system_role,
-           pg.created_at, pg.updated_at, pg.created_by, pg.is_active,
-           ugpg.assigned_at
-    FROM permission_groups pg
-    JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-    WHERE ugm.user_id = p_user_id
-      AND ugpg.project_id = p_project_id
-      AND pg.is_active = 1
-      AND ugpg.is_active = 1
-      AND ugm.is_active = 1
-    ORDER BY pg.group_priority DESC, pg.group_name;
-END$$
-
--- =====================================================
--- sp_rbac_get_user_effective_permissions
--- -----------------------------------------------------
--- Get all effective permissions for user in project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_user_effective_permissions$$
-CREATE PROCEDURE sp_rbac_get_user_effective_permissions(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT DISTINCT p.id, p.permission_hash, p.project_id,
-           p.permission_name, p.permission_display_name,
-           p.permission_description, p.permission_category,
-           p.is_system_permission, p.created_at, p.updated_at,
-           p.created_by, p.is_active,
-           pg.group_name as granted_through_role
-    FROM permissions p
-    JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
-    JOIN permission_groups pg ON pgp.permission_group_id = pg.id
-    JOIN user_group_permission_groups ugpg ON pg.id = ugpg.permission_group_id
-    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-    WHERE ugm.user_id = p_user_id
-      AND ugpg.project_id = p_project_id
-      AND p.is_active = 1
-      AND pgp.is_active = 1
-      AND pg.is_active = 1
-      AND ugpg.is_active = 1
-      AND ugm.is_active = 1
-    ORDER BY p.permission_category, p.permission_name;
-END$$
-
--- =====================================================
--- sp_rbac_get_group_permissions
--- -----------------------------------------------------
--- Get all permissions assigned to a role
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_group_permissions$$
-CREATE PROCEDURE sp_rbac_get_group_permissions(
-    IN p_permission_group_id VARCHAR(64)
-)
-BEGIN
-    SELECT p.id, p.permission_hash, p.project_id,
-           p.permission_name, p.permission_display_name,
-           p.permission_description, p.permission_category,
-           p.is_system_permission, p.created_at, p.updated_at,
-           p.created_by, p.is_active
-    FROM permissions p
-    JOIN permission_group_permissions pgp ON p.id = pgp.permission_id
-    WHERE pgp.permission_group_id = p_permission_group_id
-      AND p.is_active = 1
-      AND pgp.is_active = 1
-    ORDER BY p.permission_category, p.permission_name;
-END$$
-
--- =====================================================
--- sp_rbac_get_group_users
--- -----------------------------------------------------
--- Get all users assigned to a role
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_group_users$$
-CREATE PROCEDURE sp_rbac_get_group_users(
-    IN p_permission_group_id VARCHAR(64)
-)
-BEGIN
-    SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type,
-           ug.group_name as user_group_name,
-           ugpg.assigned_at
-    FROM users u
-    JOIN user_group_members ugm ON u.id = ugm.user_id
-    JOIN user_groups ug ON ugm.user_group_id = ug.id
-    JOIN user_group_permission_groups ugpg ON ug.id = ugpg.user_group_id
-    WHERE ugpg.permission_group_id = p_permission_group_id
-      AND u.is_active = 1
-      AND ugm.is_active = 1
-      AND ug.is_active = 1
-      AND ugpg.is_active = 1
-    ORDER BY u.username;
-END$$
-
--- =====================================================
--- sp_rbac_get_project_users_with_permissions
--- -----------------------------------------------------
--- Get all users with permissions in a project
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_project_users_with_permissions$$
-CREATE PROCEDURE sp_rbac_get_project_users_with_permissions(
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type,
-           COUNT(DISTINCT p.id) as permission_count,
-           COUNT(DISTINCT pg.id) as role_count,
-           GROUP_CONCAT(DISTINCT pg.group_name ORDER BY pg.group_priority DESC SEPARATOR ', ') as roles
-    FROM users u
-    JOIN user_group_members ugm ON u.id = ugm.user_id
-    JOIN user_groups ug ON ugm.user_group_id = ug.id
-    JOIN user_group_permission_groups ugpg ON ug.id = ugpg.user_group_id
-    JOIN permission_groups pg ON ugpg.permission_group_id = pg.id
-    LEFT JOIN permission_group_permissions pgp ON pg.id = pgp.permission_group_id
-    LEFT JOIN permissions p ON pgp.permission_id = p.id AND p.is_active = 1
-    WHERE ugpg.project_id = p_project_id
-      AND u.is_active = 1
-      AND ugm.is_active = 1
-      AND ug.is_active = 1
-      AND ugpg.is_active = 1
-      AND pg.is_active = 1
-    GROUP BY u.id, u.user_hash, u.username, u.email, u.user_type
-    ORDER BY u.username;
-END$$
 
 -- =====================================================
 -- sp_rbac_get_project_audit_log
@@ -727,71 +328,12 @@ BEGIN
 END$$
 
 -- =====================================================
--- sp_rbac_get_project_user_assignments
--- -----------------------------------------------------
--- Get user role assignment statistics for a project
+-- DEPRECATED PROCEDURES - REMOVED
 -- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_project_user_assignments$$
-CREATE PROCEDURE sp_rbac_get_project_user_assignments(
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT COUNT(DISTINCT ugm.user_id) as total_users,
-           COUNT(*) as total_assignments
-    FROM user_group_permission_groups ugpg
-    JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-    WHERE ugpg.project_id = p_project_id
-      AND ugpg.is_active = 1
-      AND ugm.is_active = 1;
-END$$
-
+-- - sp_rbac_get_project_user_assignments (used user_group_permission_groups)
+-- - sp_rbac_get_user_role_assignment_history (used permission_groups)
+-- - sp_rbac_count_user_role_assignment_history
 -- =====================================================
--- sp_rbac_get_user_role_assignment_history
--- -----------------------------------------------------
--- Get role assignment history for a user
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_get_user_role_assignment_history$$
-CREATE PROCEDURE sp_rbac_get_user_role_assignment_history(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64),
-    IN p_limit INT,
-    IN p_offset INT
-)
-BEGIN
-    SELECT pal.id, pal.action_type, pal.permission_group_id,
-           pg.group_name, pg.group_description,
-           pal.performed_by,
-           u.username as performed_by_username,
-           u.user_hash as performed_by_hash,
-           pal.performed_at, pal.old_values, pal.new_values,
-           pal.ip_address
-    FROM permission_audit_log pal
-    LEFT JOIN permission_groups pg ON pal.permission_group_id = pg.id
-    LEFT JOIN users u ON pal.performed_by = u.id
-    WHERE pal.target_user_id = p_user_id
-      AND pal.project_id = p_project_id
-      AND pal.action_type IN ('ASSIGN_ROLE', 'REMOVE_ROLE')
-    ORDER BY pal.performed_at DESC
-    LIMIT p_limit OFFSET p_offset;
-END$$
-
--- =====================================================
--- sp_rbac_count_user_role_assignment_history
--- -----------------------------------------------------
--- Count role assignment history entries
--- =====================================================
-DROP PROCEDURE IF EXISTS sp_rbac_count_user_role_assignment_history$$
-CREATE PROCEDURE sp_rbac_count_user_role_assignment_history(
-    IN p_user_id VARCHAR(64),
-    IN p_project_id VARCHAR(64)
-)
-BEGIN
-    SELECT COUNT(*) as total_count
-    FROM permission_audit_log
-    WHERE target_user_id = p_user_id
-      AND project_id = p_project_id
-      AND action_type IN ('ASSIGN_ROLE', 'REMOVE_ROLE');
-END$$
 
 -- =====================================================
 -- ACTIVITY LOGGING PROCEDURES
@@ -978,6 +520,401 @@ BEGIN
       AND (p_project_id IS NULL OR al.project_id = p_project_id)
     GROUP BY ac.activity_category, ac.severity_level
     ORDER BY activity_count DESC;
+END$$
+
+-- =====================================================
+-- GLOBAL ROLE SYSTEM PROCEDURES
+-- =====================================================
+
+-- =====================================================
+-- sp_global_create_role
+-- -----------------------------------------------------
+-- Create a new global role
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_create_role$$
+CREATE PROCEDURE sp_global_create_role(
+    IN p_role_id VARCHAR(64),
+    IN p_role_hash VARCHAR(255),
+    IN p_role_name VARCHAR(100),
+    IN p_role_display_name VARCHAR(255),
+    IN p_role_description TEXT,
+    IN p_role_priority INT,
+    IN p_is_system_role BOOLEAN,
+    IN p_created_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO roles (id, role_hash, role_name, role_display_name, role_description,
+                      role_priority, is_system_role, created_by, created_at, is_active)
+    VALUES (p_role_id, p_role_hash, p_role_name, p_role_display_name, p_role_description,
+            p_role_priority, p_is_system_role, p_created_by, NOW(), TRUE);
+    
+    SELECT * FROM roles WHERE id = p_role_id;
+END$$
+
+-- =====================================================
+-- sp_global_get_role_by_hash
+-- -----------------------------------------------------
+-- Get role by hash
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_role_by_hash$$
+CREATE PROCEDURE sp_global_get_role_by_hash(
+    IN p_role_hash VARCHAR(255)
+)
+BEGIN
+    SELECT * FROM roles WHERE role_hash = p_role_hash AND is_active = TRUE;
+END$$
+
+-- =====================================================
+-- sp_global_list_roles
+-- -----------------------------------------------------
+-- List all roles with pagination
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_list_roles$$
+CREATE PROCEDURE sp_global_list_roles(
+    IN p_limit INT,
+    IN p_offset INT
+)
+BEGIN
+    SELECT * FROM roles WHERE is_active = TRUE 
+    ORDER BY role_priority DESC, role_name ASC 
+    LIMIT p_limit OFFSET p_offset;
+END$$
+
+-- =====================================================
+-- sp_global_update_role
+-- -----------------------------------------------------
+-- Update role details
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_update_role$$
+CREATE PROCEDURE sp_global_update_role(
+    IN p_role_id VARCHAR(64),
+    IN p_role_display_name VARCHAR(255),
+    IN p_role_description TEXT,
+    IN p_role_priority INT
+)
+BEGIN
+    UPDATE roles 
+    SET role_display_name = COALESCE(p_role_display_name, role_display_name),
+        role_description = COALESCE(p_role_description, role_description),
+        role_priority = COALESCE(p_role_priority, role_priority),
+        updated_at = NOW()
+    WHERE id = p_role_id;
+    
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_delete_role
+-- -----------------------------------------------------
+-- Soft delete a role
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_delete_role$$
+CREATE PROCEDURE sp_global_delete_role(
+    IN p_role_id VARCHAR(64)
+)
+BEGIN
+    UPDATE roles SET is_active = FALSE, updated_at = NOW() WHERE id = p_role_id;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_create_permission_group
+-- -----------------------------------------------------
+-- Create a new permission group
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_create_permission_group$$
+CREATE PROCEDURE sp_global_create_permission_group(
+    IN p_group_id VARCHAR(64),
+    IN p_group_hash VARCHAR(255),
+    IN p_group_name VARCHAR(100),
+    IN p_group_display_name VARCHAR(255),
+    IN p_group_description TEXT,
+    IN p_group_category VARCHAR(50),
+    IN p_created_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO global_permission_groups (id, group_hash, group_name, group_display_name,
+                                         group_description, group_category, created_by, created_at, is_active)
+    VALUES (p_group_id, p_group_hash, p_group_name, p_group_display_name,
+            p_group_description, p_group_category, p_created_by, NOW(), TRUE);
+    
+    SELECT * FROM global_permission_groups WHERE id = p_group_id;
+END$$
+
+-- =====================================================
+-- sp_global_get_permission_group_by_hash
+-- -----------------------------------------------------
+-- Get permission group by hash
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_permission_group_by_hash$$
+CREATE PROCEDURE sp_global_get_permission_group_by_hash(
+    IN p_group_hash VARCHAR(255)
+)
+BEGIN
+    SELECT * FROM global_permission_groups WHERE group_hash = p_group_hash AND is_active = TRUE;
+END$$
+
+-- =====================================================
+-- sp_global_list_permission_groups
+-- -----------------------------------------------------
+-- List permission groups with optional category filter
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_list_permission_groups$$
+CREATE PROCEDURE sp_global_list_permission_groups(
+    IN p_category VARCHAR(50),
+    IN p_limit INT,
+    IN p_offset INT
+)
+BEGIN
+    IF p_category IS NOT NULL THEN
+        SELECT * FROM global_permission_groups 
+        WHERE is_active = TRUE AND group_category = p_category
+        ORDER BY group_name ASC LIMIT p_limit OFFSET p_offset;
+    ELSE
+        SELECT * FROM global_permission_groups WHERE is_active = TRUE 
+        ORDER BY group_name ASC LIMIT p_limit OFFSET p_offset;
+    END IF;
+END$$
+
+-- =====================================================
+-- sp_global_create_permission
+-- -----------------------------------------------------
+-- Create a new global permission
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_create_permission$$
+CREATE PROCEDURE sp_global_create_permission(
+    IN p_permission_id VARCHAR(64),
+    IN p_permission_hash VARCHAR(255),
+    IN p_permission_name VARCHAR(100),
+    IN p_permission_display_name VARCHAR(255),
+    IN p_permission_description TEXT,
+    IN p_permission_category VARCHAR(50),
+    IN p_created_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO global_permissions (id, permission_hash, permission_name, permission_display_name,
+                                   permission_description, permission_category, created_by, created_at, is_active)
+    VALUES (p_permission_id, p_permission_hash, p_permission_name, p_permission_display_name,
+            p_permission_description, p_permission_category, p_created_by, NOW(), TRUE);
+    
+    SELECT * FROM global_permissions WHERE id = p_permission_id;
+END$$
+
+-- =====================================================
+-- sp_global_get_permission_by_hash
+-- -----------------------------------------------------
+-- Get permission by hash
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_permission_by_hash$$
+CREATE PROCEDURE sp_global_get_permission_by_hash(
+    IN p_permission_hash VARCHAR(255)
+)
+BEGIN
+    SELECT * FROM global_permissions WHERE permission_hash = p_permission_hash AND is_active = TRUE;
+END$$
+
+-- =====================================================
+-- sp_global_list_permissions
+-- -----------------------------------------------------
+-- List permissions with optional category filter
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_list_permissions$$
+CREATE PROCEDURE sp_global_list_permissions(
+    IN p_category VARCHAR(50),
+    IN p_limit INT,
+    IN p_offset INT
+)
+BEGIN
+    IF p_category IS NOT NULL THEN
+        SELECT * FROM global_permissions 
+        WHERE is_active = TRUE AND permission_category = p_category
+        ORDER BY permission_name ASC LIMIT p_limit OFFSET p_offset;
+    ELSE
+        SELECT * FROM global_permissions WHERE is_active = TRUE 
+        ORDER BY permission_name ASC LIMIT p_limit OFFSET p_offset;
+    END IF;
+END$$
+
+-- =====================================================
+-- sp_global_assign_permission_group_to_role
+-- -----------------------------------------------------
+-- Assign a permission group to a role
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_assign_permission_group_to_role$$
+CREATE PROCEDURE sp_global_assign_permission_group_to_role(
+    IN p_link_id VARCHAR(64),
+    IN p_role_id VARCHAR(64),
+    IN p_permission_group_id VARCHAR(64),
+    IN p_assigned_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO role_permission_groups (id, role_id, permission_group_id, assigned_by, assigned_at, is_active)
+    VALUES (p_link_id, p_role_id, p_permission_group_id, p_assigned_by, NOW(), TRUE)
+    ON DUPLICATE KEY UPDATE is_active = TRUE, assigned_at = NOW(), assigned_by = p_assigned_by;
+    
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_get_role_permission_groups
+-- -----------------------------------------------------
+-- Get permission groups for a role
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_role_permission_groups$$
+CREATE PROCEDURE sp_global_get_role_permission_groups(
+    IN p_role_id VARCHAR(64)
+)
+BEGIN
+    SELECT gpg.* FROM global_permission_groups gpg
+    JOIN role_permission_groups rpg ON gpg.id = rpg.permission_group_id
+    WHERE rpg.role_id = p_role_id AND rpg.is_active = TRUE AND gpg.is_active = TRUE
+    ORDER BY gpg.group_name;
+END$$
+
+-- =====================================================
+-- sp_global_assign_permission_to_group
+-- -----------------------------------------------------
+-- Assign a permission to a permission group
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_assign_permission_to_group$$
+CREATE PROCEDURE sp_global_assign_permission_to_group(
+    IN p_link_id VARCHAR(64),
+    IN p_permission_group_id VARCHAR(64),
+    IN p_permission_id VARCHAR(64),
+    IN p_granted_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO global_permission_group_permissions (id, permission_group_id, permission_id, granted_by, granted_at, is_active)
+    VALUES (p_link_id, p_permission_group_id, p_permission_id, p_granted_by, NOW(), TRUE)
+    ON DUPLICATE KEY UPDATE is_active = TRUE, granted_at = NOW(), granted_by = p_granted_by;
+    
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_get_permission_group_permissions
+-- -----------------------------------------------------
+-- Get permissions in a permission group
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_permission_group_permissions$$
+CREATE PROCEDURE sp_global_get_permission_group_permissions(
+    IN p_permission_group_id VARCHAR(64)
+)
+BEGIN
+    SELECT gp.* FROM global_permissions gp
+    JOIN global_permission_group_permissions pgp ON gp.id = pgp.permission_id
+    WHERE pgp.permission_group_id = p_permission_group_id AND pgp.is_active = TRUE AND gp.is_active = TRUE
+    ORDER BY gp.permission_name;
+END$$
+
+-- =====================================================
+-- sp_global_assign_role_to_user
+-- -----------------------------------------------------
+-- Assign a role to a user
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_assign_role_to_user$$
+CREATE PROCEDURE sp_global_assign_role_to_user(
+    IN p_user_id VARCHAR(64),
+    IN p_role_id VARCHAR(64)
+)
+BEGIN
+    UPDATE users SET role_id = p_role_id, updated_at = NOW() WHERE id = p_user_id;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_get_user_role
+-- -----------------------------------------------------
+-- Get the role assigned to a user
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_user_role$$
+CREATE PROCEDURE sp_global_get_user_role(
+    IN p_user_id VARCHAR(64)
+)
+BEGIN
+    SELECT r.* FROM roles r
+    JOIN users u ON r.id = u.role_id
+    WHERE u.id = p_user_id AND u.is_active = TRUE AND r.is_active = TRUE;
+END$$
+
+-- =====================================================
+-- sp_global_get_user_permissions
+-- -----------------------------------------------------
+-- Get all permissions for a user (GLOBAL - no project context)
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_user_permissions$$
+CREATE PROCEDURE sp_global_get_user_permissions(
+    IN p_user_id VARCHAR(64)
+)
+BEGIN
+    SELECT DISTINCT gp.permission_name, gp.permission_display_name, gp.permission_category
+    FROM users u
+    JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
+    JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
+    JOIN global_permission_group_permissions pgp ON rpg.permission_group_id = pgp.permission_group_id AND pgp.is_active = TRUE
+    JOIN global_permissions gp ON pgp.permission_id = gp.id AND gp.is_active = TRUE
+    WHERE u.id = p_user_id AND u.is_active = TRUE
+    ORDER BY gp.permission_category, gp.permission_name;
+END$$
+
+-- =====================================================
+-- sp_global_check_user_has_permission
+-- -----------------------------------------------------
+-- Check if user has a specific permission (GLOBAL)
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_check_user_has_permission$$
+CREATE PROCEDURE sp_global_check_user_has_permission(
+    IN p_user_id VARCHAR(64),
+    IN p_permission_name VARCHAR(100)
+)
+BEGIN
+    SELECT EXISTS(
+        SELECT 1 FROM users u
+        JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
+        JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
+        JOIN global_permission_group_permissions pgp ON rpg.permission_group_id = pgp.permission_group_id AND pgp.is_active = TRUE
+        JOIN global_permissions gp ON pgp.permission_id = gp.id AND gp.is_active = TRUE
+        WHERE u.id = p_user_id AND gp.permission_name = p_permission_name AND u.is_active = TRUE
+    ) as has_permission;
+END$$
+
+-- =====================================================
+-- sp_global_add_role_to_project_catalog
+-- -----------------------------------------------------
+-- Add role to project catalog (METADATA ONLY)
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_add_role_to_project_catalog$$
+CREATE PROCEDURE sp_global_add_role_to_project_catalog(
+    IN p_catalog_id VARCHAR(64),
+    IN p_role_id VARCHAR(64),
+    IN p_project_id VARCHAR(64),
+    IN p_catalog_purpose VARCHAR(255),
+    IN p_notes TEXT,
+    IN p_added_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO role_project_catalog (id, role_id, project_id, catalog_purpose, notes, added_by, added_at, is_active)
+    VALUES (p_catalog_id, p_role_id, p_project_id, p_catalog_purpose, p_notes, p_added_by, NOW(), TRUE)
+    ON DUPLICATE KEY UPDATE is_active = TRUE, added_at = NOW(), catalog_purpose = p_catalog_purpose, notes = p_notes;
+    
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- =====================================================
+-- sp_global_get_project_cataloged_roles
+-- -----------------------------------------------------
+-- Get roles cataloged for a project (METADATA - for UI suggestions only)
+-- =====================================================
+DROP PROCEDURE IF EXISTS sp_global_get_project_cataloged_roles$$
+CREATE PROCEDURE sp_global_get_project_cataloged_roles(
+    IN p_project_id VARCHAR(64)
+)
+BEGIN
+    SELECT r.*, rpc.catalog_purpose, rpc.notes 
+    FROM roles r
+    JOIN role_project_catalog rpc ON r.id = rpc.role_id
+    WHERE rpc.project_id = p_project_id AND rpc.is_active = TRUE AND r.is_active = TRUE
+    ORDER BY r.role_priority DESC, r.role_name;
 END$$
 
 DELIMITER ; 
