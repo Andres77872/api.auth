@@ -13,7 +13,7 @@ capabilities for enterprise-grade access control.
 🟢 CONSUMER USERS → RBAC-Based Access (End Users with Group Permissions)
 ```
 
-**Complete Access Flow:** Users → User Types → Groups → Projects → RBAC Permissions
+**Complete Access Flow:** Users → User Types → Groups → Projects → Global Roles & Permission Groups
 
 **Perfect for:** Enterprise systems, multi-tenant SaaS, complex organizational structures, or any application requiring
 sophisticated access control.
@@ -39,15 +39,16 @@ sophisticated access control.
 - ✅ Availability checking for usernames/emails
 - 🆕 **Dual Authentication Methods**: Support for both Authorization Bearer headers and secure HTTP-only cookies
 
-### 🎭 **Complete RBAC Management**
+### 🎭 **Global Role & Permission System**
 
-- ✅ **Permission Management**: Create/manage granular permissions per project
-- ✅ **Role Management**: Create roles with specific permission sets
-- ✅ **User-Role Assignments**: Assign users to roles in specific projects
-- ✅ **Permission Checking**: Real-time permission validation
-- ✅ **RBAC Initialization**: Auto-setup default permissions and roles
-- ✅ **Audit Trails**: Complete tracking of all RBAC operations
-- ✅ **RBAC Summary**: Comprehensive permission overviews
+- ✅ **Global Roles**: Assign one role per user with hierarchical permission structure
+- ✅ **Permission Groups**: Create reusable permission bundles for flexible access control
+- ✅ **Permission Management**: Create/manage granular global permissions
+- ✅ **User Group Assignments**: Assign permission groups to user groups (organizational scale)
+- ✅ **Direct User Assignments**: Assign permission groups directly to users (individual overrides)
+- ✅ **Permission Checking**: Real-time permission validation with caching
+- ✅ **Project Catalogs**: Metadata-only catalogs for organizing permissions by project context
+- ✅ **Audit Trails**: Complete tracking of all permission operations
 
 ### 👥 **Hierarchical Group Management**
 
@@ -77,12 +78,13 @@ sophisticated access control.
 
 ### 🔧 **Developer & Admin Features**
 
-- ✅ **Comprehensive REST API**: 80+ endpoints across 11 major areas
+- ✅ **Comprehensive REST API**: 119 endpoints across 13 major areas
 - ✅ **System Monitoring**: Health checks, performance metrics, diagnostics
-- ✅ **Complete Documentation**: 150+ pages of detailed API documentation
-- ✅ **SDK Examples**: Python and JavaScript integration examples
-- ✅ **Testing Suite**: Comprehensive test scripts for all functionality
+- ✅ **Activity Logging**: Comprehensive activity tracking with catalog system
+- ✅ **Bulk Operations**: Mass user and permission management APIs
+- ✅ **Error Handling**: Standardized error codes and responses
 - 🆕 **Multi-Project Admin APIs**: New endpoints for managing admin access to multiple projects
+- 🆕 **Form Data API**: All endpoints use Form data for consistency (not JSON)
 
 ### 🏗️ **Production-Ready Architecture**
 
@@ -102,14 +104,17 @@ sophisticated access control.
 - [Setup Guide](../docs/setup-guide.md) - Complete installation and configuration
 - [Architecture Documentation](../docs/ARCHITECTURE/README.md) - Comprehensive system architecture
 
-### 📡 **API Documentation** (150+ pages)
+### 📡 **API Documentation**
 
 - [Authentication API](../docs/api/authentication.md) - Login, logout, session management
 - [User Type Management API](../docs/api/user-type-management.md) - 3-tier user system
 - [User Management API](../docs/api/user-management.md) - User profile and access
-- [RBAC Management API](../docs/api/rbac-management.md) - Complete permission system
+- [Global Roles API](../docs/api/global_roles.md) - Global role system with permissions
+- [Permission Assignments API](../docs/api/permission-assignments.md) - Permission group assignments
 - [Project Management API](../docs/api/project-management.md) - Project operations
 - [Admin API](../docs/api/admin.md) - Group and system administration
+- [Analytics API](../docs/api/analytics.md) - System analytics and metrics
+- [Bulk Operations API](../docs/api/bulk-operations.md) - Mass operations
 - [System API](../docs/api/system.md) - Monitoring and health checks
 - [Errors & Responses](../docs/api/errors-and-responses.md) - Error handling reference
 
@@ -129,27 +134,30 @@ sophisticated access control.
 
 ## 🛠️ Complete API Overview
 
-### **Core APIs (80+ Endpoints)**
+### **Core APIs (119 Endpoints)**
 
-| API Area                  | Endpoints     | Purpose                                             |
-|---------------------------|---------------|-----------------------------------------------------|
-| **Authentication**        | 7 endpoints   | Login, registration, session management             |
-| **User Management**       | 8 endpoints   | User profile, status, and access management         |
-| **User Type Management**  | 10 endpoints  | 3-tier user system + multi-project admin management |
-| **Project Management**    | 14 endpoints  | Project CRUD with access control                    |
-| **RBAC Management**       | 15 endpoints  | Permissions, roles, assignments, auditing           |
-| **User Groups Admin**     | 12 endpoints  | Global user group management                        |
-| **Project Groups Admin**  | 7 endpoints   | Permission group management                         |
-| **Admin Dashboard**       | 7 endpoints   | Dashboard statistics and activity feed              |
-| **Analytics**             | 5 endpoints   | System-wide analytics and trends                    |
-| **System Monitoring**     | 7 endpoints   | Health, stats, performance, and cache management    |
-| **Bulk Operations**       | 4 endpoints   | Mass user and permission management                 |
+| API Area                    | Endpoints     | Purpose                                             |
+|-----------------------------|---------------|-----------------------------------------------------|
+| **Authentication**          | 7 endpoints   | Login, registration, session management             |
+| **User Management**         | 8 endpoints   | User profile, status, and access management         |
+| **User Type Management**    | 10 endpoints  | 3-tier user system + multi-project admin management |
+| **Project Management**      | 12 endpoints  | Project CRUD with access control                    |
+| **Global Roles**            | 22 endpoints  | Global role system with hierarchical permissions    |
+| **Permission Assignments**  | 17 endpoints  | Permission group assignments to users/groups        |
+| **User Groups Admin**       | 12 endpoints  | Global user group management                        |
+| **Project Groups Admin**    | 7 endpoints   | Project permission group management                 |
+| **Admin Dashboard**         | 7 endpoints   | Dashboard statistics and activity feed              |
+| **Analytics**               | 5 endpoints   | System-wide analytics and trends                    |
+| **System Monitoring**       | 7 endpoints   | Health, stats, performance, and cache management    |
+| **Bulk Operations**         | 4 endpoints   | Mass user and permission management                 |
+| **Access Control (Legacy)** | 1 endpoint    | Legacy compatibility endpoint                       |
 
-### **Database Layer (200KB+ of Code)**
+### **Database Layer (Comprehensive)**
 
-- **8 Major Modules**: Users, Projects, RBAC, Groups, Sessions, Enhanced operations
-- **Comprehensive Functions**: 150+ database operations
-- **Performance Optimized**: Strategic indexing and caching
+- **10 Major Modules**: Users, Projects, Global Roles, Permission Assignments, User Groups, Project Groups, Session Analytics, Enhanced Operations
+- **Comprehensive Functions**: 200+ database operations with stored procedure support
+- **Performance Optimized**: Strategic indexing, Redis caching, and cache-first queries
+- **Activity Logging**: Full activity catalog system with detailed tracking
 
 ## 📋 Roadmap - Advanced Features
 
@@ -191,35 +199,40 @@ sophisticated access control.
 ### 🌍 **Enterprise Integration**
 
 - [ ] Advanced webhook system for external integrations
-- [ ] Bulk operations API for mass user/permission management
+- [x] Bulk operations API for mass user/permission management ✅ **IMPLEMENTED**
 - [ ] Advanced export/import capabilities
 - [ ] Third-party system synchronization
+- [ ] GraphQL API support alongside REST
+- [ ] Event streaming for real-time updates
 
 ## 🆘 Need Help?
 
 ### 📚 **By User Type**
 
-- **👑 ROOT USERS**: Start with [User Type Management API](../docs/api/user-type-management.md)
-- **🛡️ ADMIN USERS**: Focus on [Admin API](../docs/api/admin.md) and [RBAC Management](../docs/api/rbac-management.md)
-- **👤 CONSUMER USERS**: Review [Authentication API](../docs/api/authentication.md)
-- **🔧 DEVELOPERS**: Begin with [Architecture Documentation](../docs/ARCHITECTURE/README.md)
+- **👑 ROOT USERS**: Start with [User Type Management API](../docs/api/user-type-management.md) and [Global Roles API](../docs/api/global_roles.md)
+- **🛡️ ADMIN USERS**: Focus on [Admin API](../docs/api/admin.md), [Permission Assignments](../docs/api/permission-assignments.md), and [Analytics](../docs/api/analytics.md)
+- **👤 CONSUMER USERS**: Review [Authentication API](../docs/api/authentication.md) and [User Management](../docs/api/user-management.md)
+- **🔧 DEVELOPERS**: Begin with [Architecture Documentation](../docs/ARCHITECTURE/README.md) and [System API](../docs/api/system.md)
 
 ### 🔧 **Quick Troubleshooting**
 
 | Problem                   | Solution                                         |
 |---------------------------|--------------------------------------------------|
-| 3-tier system not working | Run rbac_migration_script.py --initialize-system |
-| RBAC permissions failing  | Check project RBAC initialization                |
+| Authentication failing    | Check JWT_SECRET_KEY environment variable        |
+| Permission check errors   | Verify user has assigned role and permission groups |
 | User type errors          | Verify user type database constraints            |
 | Database errors           | Verify MySQL is running with correct schema      |
 | Redis cache issues        | Check Redis connection and restart if needed     |
+| Session expired errors    | Clear cache via `/system/cache/clear` endpoint   |
 
 ### 💡 **Getting Advanced Support**
 
 1. **System Architecture Questions**: Review [Architecture Documentation](../docs/ARCHITECTURE/README.md)
-2. **RBAC Implementation**: Check [RBAC Management API](../docs/api/rbac-management.md)
+2. **Global Roles & Permissions**: Check [Global Roles API](../docs/api/global_roles.md) and [Permission Assignments](../docs/api/permission-assignments.md)
 3. **User Type Management**: See [User Type API](../docs/api/user-type-management.md)
 4. **Performance Issues**: Review [System API](../docs/api/system.md) and [Caching Strategy](../docs/ARCHITECTURE/04_caching_strategy.md)
+5. **Bulk Operations**: Consult [Bulk Operations API](../docs/api/bulk-operations.md)
+6. **Analytics & Monitoring**: Reference [Analytics API](../docs/api/analytics.md) and [Admin Dashboard](../docs/api/admin.md)
 
 ## 🎉 Why Choose This 3-Tier System?
 
@@ -229,11 +242,13 @@ sophisticated access control.
 - **Scalable Design**: From small teams to large organizations
 - **Security First**: Multi-layer security with comprehensive auditing
 
-### ✅ **Complete RBAC Implementation**
+### ✅ **Global Role & Permission System**
 
-- **Granular Permissions**: Fine-grained access control
-- **Flexible Roles**: Customizable permission sets
-- **Real-time Validation**: Instant permission checking
+- **Granular Permissions**: Fine-grained global permission control
+- **Hierarchical Roles**: One role per user with permission group inheritance
+- **Permission Groups**: Reusable bundles assignable to users and user groups
+- **Real-time Validation**: Instant permission checking with caching
+- **Flexible Architecture**: Support for both organizational and individual permission assignments
 
 ### ✅ **Production-Proven**
 
@@ -243,9 +258,45 @@ sophisticated access control.
 
 ### ✅ **Developer Excellence**
 
-- **150+ Pages Documentation**: Complete API reference
-- **Multiple SDKs**: Python and JavaScript examples
+- **119 REST Endpoints**: Complete API coverage across all features
+- **OpenAPI/Swagger Documentation**: Auto-generated interactive API docs
+- **Form Data API**: Consistent Form data format for all requests
+- **Standardized Errors**: Comprehensive error codes and handling
 - **Easy Integration**: RESTful design with comprehensive examples
+- **Version 2.2.0**: Production-ready and actively maintained
+
+## 🔑 Key Architectural Features
+
+### **Global vs Project-Scoped Permissions**
+- **Global Roles**: Each user has ONE global role with associated permission groups
+- **Permission Groups**: Reusable permission bundles that can be assigned to:
+  - User Groups (organizational-level assignments)
+  - Individual Users (override/exception assignments)
+- **Project Catalogs**: Metadata-only system for organizing permissions by project context (not used for authorization)
+
+### **Form Data API Design**
+All API endpoints use **Form Data** instead of JSON for requests:
+- Consistent across all endpoints
+- Better support for file uploads (future)
+- Simpler integration for web forms
+- Responses are JSON with Pydantic validation
+
+### **Dual Authentication Support**
+- **Bearer Token**: Standard `Authorization: Bearer <token>` header
+- **HTTP-Only Cookies**: Secure `session_token` cookie for web applications
+- Automatic fallback between both methods
+
+### **Caching Strategy**
+- **Session Cache**: 1 hour TTL for user sessions
+- **Permission Cache**: 30 minutes TTL for permission checks
+- **Access Cache**: 30 minutes TTL for project access checks
+- **Automatic Invalidation**: Cache cleared on user/role changes
+
+### **Activity Logging**
+- Catalog-based activity types for consistent logging
+- Automatic request context capture (IP, User-Agent)
+- Detailed activity tracking with metadata support
+- Activity statistics and analytics
 
 ## 💝 Support This Project
 
