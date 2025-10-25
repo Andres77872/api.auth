@@ -335,7 +335,7 @@ class CacheManager:
 
     def invalidate_user_cache(self, user_id: str) -> bool:
         """
-        Invalidate all cache entries for a specific user
+        Invalidate all cache entries for a specific user including their sessions
         
         Args:
             user_id: User ID
@@ -357,6 +357,20 @@ class CacheManager:
                 keys = self.redis.keys(pattern)
                 if keys:
                     deleted_count += self.redis.delete(*keys)
+            
+            # Also invalidate all sessions for this user
+            # Sessions are stored with session token as key, so we need to check each one
+            session_keys = self.redis.keys(f"{SESSION_PREFIX}*")
+            for key in session_keys:
+                try:
+                    session_data = self.redis.get(key)
+                    if session_data:
+                        data = json.loads(session_data)
+                        if data.get('user_id') == user_id:
+                            self.redis.delete(key)
+                            deleted_count += 1
+                except Exception:
+                    continue
 
             logger.info(f"Invalidated {deleted_count} cache entries for user_{user_id}")
             return True

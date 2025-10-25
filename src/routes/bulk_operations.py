@@ -29,26 +29,7 @@ router = APIRouter(prefix="/admin", tags=["Bulk Operations"])
 security = HTTPBearerOrCookie()
 
 
-# Pydantic models
-class BulkUpdateRequest(BaseModel):
-    user_hashes: List[str]
-    updates: Dict[str, Any]
-
-
-class BulkDeleteRequest(BaseModel):
-    user_hashes: List[str]
-    confirm_deletion: bool = False
-
-
-class BulkRoleAssignRequest(BaseModel):
-    user_hashes: List[str]
-    project_hash: str
-    role_names: List[str]
-
-
-class BulkGroupAssignRequest(BaseModel):
-    user_hashes: List[str]
-    group_names: List[str]
+# Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
 
 
 @router.post("/users/bulk-update")

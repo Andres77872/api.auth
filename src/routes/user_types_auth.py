@@ -47,20 +47,7 @@ security = HTTPBearerOrCookie()
 
 
 # Pydantic models for requests that aren't in Models.py
-class UpdateAdminProject(BaseModel):
-    assigned_project_id: int
-
-
-class UpdateAdminProjects(BaseModel):
-    assigned_project_ids: List[int]
-
-
-class AddAdminToProject(BaseModel):
-    project_id: int
-
-
-class RemoveAdminFromProject(BaseModel):
-    project_id: int
+# Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
 
 
 def require_root_user(credentials: HTTPAuthorizationCredentials = Depends(security)):

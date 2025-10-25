@@ -1,5 +1,6 @@
 """
 Enhanced Multi-Project Authentication - Project Group Management
+REFACTORED TO USE STORED PROCEDURES
 
 This module handles all project group-related database operations in the new
 hierarchical access control system where:
@@ -9,6 +10,7 @@ hierarchical access control system where:
 """
 
 import json
+import logging
 import secrets
 from datetime import datetime
 from typing import List, Optional
@@ -21,23 +23,27 @@ from src.Util.Models import (
 from src.Util.db_config import get_connection
 from src.Util.uuid_generator import generate_project_group_id, generate_project_group_member_id
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 
 # =================== PROJECT GROUP MANAGEMENT ===================
 
 def create_project_group(group_name: str, permissions: List[str], group_description: str = None,
                          created_by: str = None) -> ProjectGroup:
-    """Create a new project group with permissions"""
+    """Create a new project group with permissions using stored procedure"""
     group_id = generate_project_group_id()
     group_hash = secrets.token_hex(32).upper()
     permissions_json = json.dumps(permissions)
 
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    INSERT INTO project_groups (id, group_hash, group_name, group_description, permissions, created_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
-                    """, [group_id, group_hash, group_name, group_description, permissions_json])
-
+        cur.callproc('sp_create_project_group', [group_id, group_hash, group_name, group_description, permissions_json])
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
         con.commit()
 
         return ProjectGroup(
@@ -52,24 +58,17 @@ def create_project_group(group_name: str, permissions: List[str], group_descript
 
 
 def get_project_group_by_id(group_id: str) -> Optional[ProjectGroup]:
-    """Get project group by ID"""
+    """Get project group by ID using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           group_name,
-                           group_description,
-                           permissions,
-                           created_at,
-                           updated_at,
-                           is_active
-                    FROM project_groups
-                    WHERE id = %s
-                      AND is_active = 1
-                    """, [group_id])
-
+        cur.callproc('sp_get_project_group_by_id', [group_id])
+        
         result = cur.fetchone()
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
         if result:
             permissions = json.loads(result[4]) if result[4] else []
             return ProjectGroup(
@@ -86,24 +85,17 @@ def get_project_group_by_id(group_id: str) -> Optional[ProjectGroup]:
 
 
 def get_project_group_by_hash(group_hash: str) -> Optional[ProjectGroup]:
-    """Get project group by hash"""
+    """Get project group by hash using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           group_name,
-                           group_description,
-                           permissions,
-                           created_at,
-                           updated_at,
-                           is_active
-                    FROM project_groups
-                    WHERE group_hash = %s
-                      AND is_active = 1
-                    """, [group_hash])
-
+        cur.callproc('sp_get_project_group_by_hash', [group_hash])
+        
         result = cur.fetchone()
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
         if result:
             permissions = json.loads(result[4]) if result[4] else []
             return ProjectGroup(
@@ -120,24 +112,17 @@ def get_project_group_by_hash(group_hash: str) -> Optional[ProjectGroup]:
 
 
 def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
-    """Get project group by name"""
+    """Get project group by name using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           group_name,
-                           group_description,
-                           permissions,
-                           created_at,
-                           updated_at,
-                           is_active
-                    FROM project_groups
-                    WHERE group_name = %s
-                      AND is_active = 1
-                    """, [group_name])
-
+        cur.callproc('sp_get_project_group_by_name', [group_name])
+        
         result = cur.fetchone()
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
         if result:
             permissions = json.loads(result[4]) if result[4] else []
             return ProjectGroup(
@@ -154,25 +139,11 @@ def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
 
 
 def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGroup]:
-    """List all active project groups with pagination"""
+    """List all active project groups with pagination using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           group_name,
-                           group_description,
-                           permissions,
-                           created_at,
-                           updated_at,
-                           is_active
-                    FROM project_groups
-                    WHERE is_active = 1
-                    ORDER BY group_name ASC
-                        LIMIT %s
-                    OFFSET %s
-                    """, [limit, offset])
-
+        cur.callproc('sp_list_all_project_groups', [limit, offset])
+        
         results = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -186,91 +157,54 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
 
         return results
 
 
 def update_project_group(group_id: str, group_name: str = None, group_description: str = None,
                          permissions: List[str] = None) -> Optional[ProjectGroup]:
-    """Update project group information"""
+    """Update project group information using stored procedure"""
     if not group_name and group_description is None and permissions is None:
         return None
 
     with get_connection() as con:
         cur = con.cursor()
-
-        # Build dynamic update query
-        update_fields = []
-        update_values = []
-
-        if group_name:
-            update_fields.append("group_name = %s")
-            update_values.append(group_name)
-
-        if group_description is not None:
-            update_fields.append("group_description = %s")
-            update_values.append(group_description)
-
-        if permissions is not None:
-            update_fields.append("permissions = %s")
-            update_values.append(json.dumps(permissions))
-
-        update_fields.append("updated_at = NOW()")
-        update_values.append(group_id)
-
-        query = f"""
-            UPDATE project_groups 
-            SET {', '.join(update_fields)}
-            WHERE id = %s AND is_active = 1
-        """
-
-        cur.execute(query, update_values)
-
-        if cur.rowcount > 0:
-            con.commit()
-            return get_project_group_by_id(group_id)
-        else:
-            return None
+        
+        permissions_json = json.dumps(permissions) if permissions is not None else None
+        
+        cur.callproc('sp_update_project_group', [group_id, group_name, group_description, permissions_json])
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
+        con.commit()
+        
+        # Return updated group
+        return get_project_group_by_id(group_id)
 
 
 def delete_project_group(group_id: str, deleted_by: str = None) -> bool:
-    """Soft delete a project group and all related relationships"""
+    """Soft delete a project group and all related relationships using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-
+        
         try:
-            # Start transaction
-            con.begin()
-
-            # Soft delete the project group
-            cur.execute("""
-                        UPDATE project_groups
-                        SET is_active  = 0,
-                            updated_at = NOW()
-                        WHERE id = %s
-                          AND is_active = 1
-                        """, [group_id])
-
-            if cur.rowcount == 0:
-                con.rollback()
-                return False
-
-            # Soft delete all project memberships
-            cur.execute("""
-                        UPDATE project_group_members
-                        SET is_active  = 0,
-                            removed_at = NOW(),
-                            removed_by = %s
-                        WHERE project_group_id = %s
-                          AND is_active = 1
-                        """, [deleted_by, group_id])
-
+            cur.callproc('sp_delete_project_group', [group_id, deleted_by])
+            
+            # Clean up result sets
+            while cur.nextset():
+                pass
+            
             con.commit()
             return True
-
         except Exception as e:
             con.rollback()
-            print(f"Error deleting project group: {e}")
+            logger.error(f"Error deleting project group: {e}")
             return False
 
 
@@ -278,17 +212,18 @@ def delete_project_group(group_id: str, deleted_by: str = None) -> bool:
 
 def assign_project_to_group(project_id: str, project_group_id: str, assigned_by: str = None) -> Optional[
     ProjectGroupMember]:
-    """Assign a project to a project group"""
+    """Assign a project to a project group using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
 
         try:
             member_id = generate_project_group_member_id()
-            cur.execute("""
-                        INSERT INTO project_group_members (id, project_id, project_group_id, assigned_at, assigned_by)
-                        VALUES (%s, %s, %s, NOW(), %s)
-                        """, [member_id, project_id, project_group_id, assigned_by])
-
+            cur.callproc('sp_assign_project_to_group', [member_id, project_id, project_group_id, assigned_by])
+            
+            # Clean up result sets
+            while cur.nextset():
+                pass
+            
             con.commit()
 
             return ProjectGroupMember(
@@ -302,63 +237,42 @@ def assign_project_to_group(project_id: str, project_group_id: str, assigned_by:
 
         except pymysql.IntegrityError:
             # Project already in group, reactivate if needed
-            cur.execute("""
-                        UPDATE project_group_members
-                        SET is_active   = 1,
-                            removed_at  = NULL,
-                            removed_by  = NULL,
-                            assigned_by = %s
-                        WHERE project_id = %s
-                          AND project_group_id = %s
-                        """, [assigned_by, project_id, project_group_id])
-
-            if cur.rowcount > 0:
-                con.commit()
-                return get_project_group_membership(project_id, project_group_id)
-
-            return None
+            cur.callproc('sp_reactivate_project_in_group', [project_id, project_group_id, assigned_by])
+            
+            # Clean up result sets
+            while cur.nextset():
+                pass
+            
+            con.commit()
+            return get_project_group_membership(project_id, project_group_id)
 
 
 def remove_project_from_group(project_id: str, project_group_id: str, removed_by: str = None) -> bool:
-    """Remove a project from a project group"""
+    """Remove a project from a project group using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    UPDATE project_group_members
-                    SET is_active  = 0,
-                        removed_at = NOW(),
-                        removed_by = %s
-                    WHERE project_id = %s
-                      AND project_group_id = %s
-                      AND is_active = 1
-                    """, [removed_by, project_id, project_group_id])
-
-        success = cur.rowcount > 0
-        if success:
-            con.commit()
-        return success
+        cur.callproc('sp_remove_project_from_group', [project_id, project_group_id, removed_by])
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
+        con.commit()
+        return True
 
 
 def get_project_group_membership(project_id: str, project_group_id: str) -> Optional[ProjectGroupMember]:
-    """Get specific project group membership"""
+    """Get specific project group membership using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           project_id,
-                           project_group_id,
-                           assigned_at,
-                           assigned_by,
-                           removed_at,
-                           removed_by,
-                           is_active
-                    FROM project_group_members
-                    WHERE project_id = %s
-                      AND project_group_id = %s
-                      AND is_active = 1
-                    """, [project_id, project_group_id])
-
+        cur.callproc('sp_get_project_group_membership', [project_id, project_group_id])
+        
         result = cur.fetchone()
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
         if result:
             return ProjectGroupMember(
                 id=result[0],
@@ -374,26 +288,11 @@ def get_project_group_membership(project_id: str, project_group_id: str) -> Opti
 
 
 def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
-    """Get all project groups a project belongs to"""
+    """Get all project groups a project belongs to using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT pg.id,
-                           pg.group_hash,
-                           pg.group_name,
-                           pg.group_description,
-                           pg.permissions,
-                           pg.created_at,
-                           pg.updated_at,
-                           pg.is_active
-                    FROM project_groups pg
-                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-                    WHERE pgm.project_id = %s
-                      AND pg.is_active = 1
-                      AND pgm.is_active = 1
-                    ORDER BY pg.group_name ASC
-                    """, [project_id])
-
+        cur.callproc('sp_get_project_groups_for_project', [project_id])
+        
         groups = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -407,30 +306,20 @@ def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
 
         return groups
 
 
 def get_projects_in_group(project_group_id: str) -> List[Project]:
-    """Get all projects in a project group"""
+    """Get all projects in a project group using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT p.id,
-                           p.project_hash,
-                           p.project_name,
-                           p.project_description,
-                           p.created_at,
-                           p.updated_at,
-                           p.is_active
-                    FROM projects p
-                             INNER JOIN project_group_members pgm ON p.id = pgm.project_id
-                    WHERE pgm.project_group_id = %s
-                      AND p.is_active = 1
-                      AND pgm.is_active = 1
-                    ORDER BY p.project_name ASC
-                    """, [project_group_id])
-
+        cur.callproc('sp_get_projects_in_group', [project_group_id])
+        
         projects = []
         for row in cur.fetchall():
             projects.append(Project(
@@ -442,6 +331,10 @@ def get_projects_in_group(project_group_id: str) -> List[Project]:
                 updated_at=row[5],
                 is_active=bool(row[6])
             ))
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
 
         return projects
 
@@ -449,38 +342,39 @@ def get_projects_in_group(project_group_id: str) -> List[Project]:
 # =================== PERMISSION UTILITIES ===================
 
 def get_project_permissions(project_id: str) -> List[str]:
-    """Get all permissions available for a project (from all its project groups)"""
+    """Get all permissions available for a project (from all its project groups) using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT DISTINCT pg.permissions
-                    FROM project_groups pg
-                             INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
-                    WHERE pgm.project_id = %s
-                      AND pg.is_active = 1
-                      AND pgm.is_active = 1
-                    """, [project_id])
-
+        cur.callproc('sp_get_project_permissions', [project_id])
+        
         all_permissions = set()
         for row in cur.fetchall():
             permissions = json.loads(row[0]) if row[0] else []
             all_permissions.update(permissions)
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
 
         return list(all_permissions)
 
 
 def get_user_project_permissions(user_id: str, project_id: str) -> List[str]:
-    """Get permissions a user has for a specific project"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-                    SELECT DISTINCT permission_name
-                    FROM v_user_effective_permissions
-                    WHERE user_id = %s
-                      AND project_id = %s
-                    """, [user_id, project_id])
-
-        return [row[0] for row in cur.fetchall()]
+    """
+    Get permissions a user has for a specific project.
+    Note: After refactor to global role system, permissions are now global (not project-specific).
+    This function maintains backward compatibility by returning global permissions.
+    """
+    try:
+        # Import here to avoid circular imports
+        from src.Util.db.db_global_roles import get_user_permissions
+        
+        # Get global permissions for the user
+        permissions = get_user_permissions(user_id)
+        return permissions
+    except Exception as e:
+        logger.error(f"Error getting user project permissions: {str(e)}")
+        return []
 
 
 def check_user_project_permission(user_id: str, project_id: str, required_permission: str) -> bool:
@@ -531,35 +425,26 @@ def create_default_project_groups():
 # =================== UTILITIES ===================
 
 def count_project_groups() -> int:
-    """Count total number of active project groups"""
+    """Count total number of active project groups using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("SELECT COUNT(*) FROM project_groups WHERE is_active = 1")
-        return cur.fetchone()[0]
+        cur.callproc('sp_count_project_groups', [])
+        
+        result = cur.fetchone()
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
+        
+        return result[0] if result else 0
 
 
 def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGroup]:
-    """Search project groups by name or description"""
+    """Search project groups by name or description using stored procedure"""
     with get_connection() as con:
         cur = con.cursor()
-        search_pattern = f"%{search_term}%"
-
-        cur.execute("""
-                    SELECT id,
-                           group_hash,
-                           group_name,
-                           group_description,
-                           permissions,
-                           created_at,
-                           updated_at,
-                           is_active
-                    FROM project_groups
-                    WHERE is_active = 1
-                      AND (group_name LIKE %s OR group_description LIKE %s)
-                    ORDER BY group_name ASC
-                        LIMIT %s
-                    """, [search_pattern, search_pattern, limit])
-
+        cur.callproc('sp_search_project_groups', [search_term, limit])
+        
         results = []
         for row in cur.fetchall():
             permissions = json.loads(row[4]) if row[4] else []
@@ -573,5 +458,9 @@ def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGrou
                 updated_at=row[6],
                 is_active=bool(row[7])
             ))
+        
+        # Clean up result sets
+        while cur.nextset():
+            pass
 
         return results

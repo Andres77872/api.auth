@@ -41,16 +41,8 @@ router = APIRouter(prefix="/projects", tags=["Project Management"])
 security = HTTPBearerOrCookie()
 
 
-# Pydantic models
-class ProjectCreate(BaseModel):
-    project_name: str
-    project_description: str = None
-
-
-class ProjectUpdate(BaseModel):
-    project_name: str = None
-    project_description: str = None
-
+# Note: All request endpoints use Form data instead of JSON/Pydantic models for consistency
+# Response models below use Pydantic for type safety
 
 class ProjectMembersResponse(BaseModel):
     """Response model for project members"""

@@ -41,25 +41,7 @@ router = APIRouter(prefix="/admin/user-groups", tags=["Admin - User Groups"])
 security = HTTPBearerOrCookie()
 
 
-# Pydantic models
-class UserGroupCreate(BaseModel):
-    group_name: str
-    description: str = None
-
-
-class UserGroupUpdate(BaseModel):
-    group_name: str = None
-    description: str = None
-
-
-class GroupAssignment(BaseModel):
-    user_hash: str
-    group_hash: str = None
-
-
-class ProjectAccess(BaseModel):
-    user_group_hash: str = None
-    project_hash: str
+# Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
 
 
 # Helper function to check admin permissions

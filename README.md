@@ -1,6 +1,8 @@
 # 🔐 3-Tier User Type Multi-Project Authentication System
 A comprehensive authentication system with **3-tier user management** (Root/Admin/Consumer) and **complete RBAC** capabilities for enterprise-grade access control.
 
+> **⚠️ IMPORTANT API UPDATE (October 2025)**: All API endpoints now use **Form Data** (`application/x-www-form-urlencoded`) instead of JSON for request bodies. See [FORM_DATA_MIGRATION_SUMMARY.md](./FORM_DATA_MIGRATION_SUMMARY.md) for complete migration guide and examples.
+
 ## 🌟 What This System Does
 
 **3-Tier Architecture** for clear privilege separation:

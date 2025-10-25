@@ -21,11 +21,6 @@ Admin Users → Project-Scoped Admin Access (assigned_project_id)
 Consumer Users → Global Role System (User → Role → Permission Groups → Permissions)
 """
 
-import json
-
-# Import utility functions
-from src.Util.Models import UserLogin
-# Import enhanced authentication functions
 from src.Util.db.db_enhanced import (
     enhanced_login,
     enhanced_register,
@@ -35,10 +30,9 @@ from src.Util.db.db_enhanced import (
     is_admin_user,
     is_consumer_user,
     check_admin_project_access,
-    # Legacy compatibility
-    db_login,
-    db_register,
-    db_username_or_email_available
+    create_root_session,
+    validate_root_session,
+    validate_admin_session
 )
 # Import project group management functions
 from src.Util.db.db_project_groups import (
@@ -350,68 +344,6 @@ def create_user_type_session(user_id: str, project_id: str, session_length: int 
         return None
 
 
-# Session management functions for backward compatibility
-def set_session(key: int, value: str, ex: int, user_hash: str) -> bool:
-    """
-    Set session data in Redis cache.
-    Enhanced to support user types.
-    """
-    try:
-        client.set(hex(key)[2:], value, ex=ex)
-        return True
-    except Exception as e:
-        print(f"Session creation error: {e}")
-        return False
-
-
-def get_session(key: int) -> UserLogin | None:
-    """
-    Get session data from Redis cache.
-    Enhanced to support user types.
-    """
-    try:
-        res = client.get(hex(key)[2:])
-        if res:
-            res = json.loads(res)
-            return UserLogin(
-                user_session=res.get('user_session', ''),
-                user_session_length=res.get('user_session_length', 0),
-                user_hash=res.get('user_hash', ''),
-                user_collection=res.get('user_collection', ''),
-                user_id=res.get('user_id', 0),
-                project_id=res.get('project_id'),
-                user_project_id=res.get('user_project_id'),
-                groups=res.get('groups', []),
-                user_type=res.get('user_type', 'consumer'),
-                assigned_project_id=res.get('assigned_project_id')
-            )
-    except Exception as e:
-        print(f"Session retrieval error: {e}")
-
-    return None
-
-
-def db_validate_session(user_hash: str, user_session: str) -> bool:
-    """
-    Validate a session token and user hash.
-    Enhanced to support user types.
-    """
-    try:
-        result = validate_session(user_session)
-        if result and result.user_hash == user_hash:
-            # Additional validation for user types
-            user = get_user_by_hash(user_hash)
-            if user:
-                user_type = get_user_type(user.id)
-                # Make sure session user type matches stored user type
-                if result.user_type and result.user_type != user_type:
-                    print(f"User type mismatch: session={result.user_type}, stored={user_type}")
-                    return False
-                return True
-        return False
-    except Exception as e:
-        print(f"Session validation error: {e}")
-        return False
 
 
 # Export all available functions for easy importing
@@ -425,6 +357,9 @@ __all__ = [
     'enhanced_register',
     'validate_session',
     'get_session_data',
+    'create_root_session',
+    'validate_root_session',
+    'validate_admin_session',
 
     # User type functions
     'is_root_user',
@@ -486,14 +421,6 @@ __all__ = [
     'create_session',
     'invalidate_session',
     'invalidate_user_sessions',
-    'set_session',
-    'get_session',
-    'db_validate_session',
-
-    # Legacy compatibility
-    'db_login',
-    'db_register',
-    'db_username_or_email_available',
 
     # User group management
     'create_user_group',
@@ -552,7 +479,6 @@ __all__ = [
     'check_database_health',
     'check_redis_health',
     'get_recent_activity_count',
-    'initialize_activity_logs_table',
     
     # Permission Assignment System
     'assign_permission_group_to_user_group',

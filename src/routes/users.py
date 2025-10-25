@@ -717,10 +717,16 @@ async def update_user_status(
             error_code=ErrorCode.INTERNAL_ERROR
         )
         
-    # If deactivating user, handle cleaning up their active sessions
+    # If deactivating user, handle cleaning up their active sessions and cache
     if not is_active:
         from src.Util.db import invalidate_user_sessions
+        from src.Util.cache_manager import cache_manager
+        
+        # Invalidate sessions from Redis
         invalidate_user_sessions(target_user.id)
+        
+        # Invalidate all cached data including cached sessions
+        cache_manager.invalidate_user_cache(target_user.id)
 
     # Log the activity with enhanced details for audit trail
     log_operation_details(

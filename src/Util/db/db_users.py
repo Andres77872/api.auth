@@ -303,23 +303,36 @@ def get_user_by_id(user_id: str) -> Optional[User]:
     return None
 
 
-def get_user_by_hash(user_hash: str) -> Optional[User]:
-    """Get user by user hash (enhanced with user type)"""
+def get_user_by_hash(user_hash: str, include_inactive: bool = False) -> Optional[User]:
+    """
+    Get user by user hash (enhanced with user type)
+    
+    Args:
+        user_hash: The user's hash
+        include_inactive: If True, returns inactive users too. Default False for security.
+    
+    Returns:
+        User object or None
+    """
     with get_connection() as con:
         cur = con.cursor()
-        cur.execute("""
-                    SELECT id,
-                           user_hash,
-                           username,
-                           email,
-                           password_hash,
-                           user_type,
-                           created_at,
-                           is_active
-                    FROM users
-                    WHERE user_hash = %s
-                      AND is_active = 1
-                    """, [user_hash])
+        
+        if include_inactive:
+            query = """
+                SELECT id, user_hash, username, email, password_hash, 
+                       user_type, created_at, is_active
+                FROM users
+                WHERE user_hash = %s
+            """
+        else:
+            query = """
+                SELECT id, user_hash, username, email, password_hash,
+                       user_type, created_at, is_active
+                FROM users
+                WHERE user_hash = %s AND is_active = 1
+            """
+        
+        cur.execute(query, [user_hash])
 
         result = cur.fetchone()
         if result:

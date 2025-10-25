@@ -30,7 +30,7 @@ Create a new global role.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `role_name` (required): Unique role name
 - `role_display_name` (required): Display name
 - `role_description` (optional): Description
@@ -40,13 +40,10 @@ Create a new global role.
 ```bash
 curl -X POST "http://localhost:8000/roles/roles" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "role_name": "content_editor",
-    "role_display_name": "Content Editor",
-    "role_description": "Can edit and publish content",
-    "role_priority": 60
-  }'
+  -F "role_name=content_editor" \
+  -F "role_display_name=Content Editor" \
+  -F "role_description=Can edit and publish content" \
+  -F "role_priority=60"
 ```
 
 **Response (201):**
@@ -170,7 +167,7 @@ Update a role's information.
 **Path Parameters:**
 - `role_hash`: Role identifier
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `role_display_name` (optional): Updated display name
 - `role_description` (optional): Updated description
 - `role_priority` (optional): Updated priority (0-100)
@@ -179,11 +176,8 @@ Update a role's information.
 ```bash
 curl -X PUT "http://localhost:8000/roles/roles/role_abc123..." \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "role_display_name": "Senior Content Editor",
-    "role_priority": 70
-  }'
+  -F "role_display_name=Senior Content Editor" \
+  -F "role_priority=70"
 ```
 
 **Response (200):**
@@ -237,7 +231,7 @@ Create a new global permission group.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `group_name` (required): Unique group name
 - `group_display_name` (required): Display name
 - `group_description` (optional): Description
@@ -247,13 +241,10 @@ Create a new global permission group.
 ```bash
 curl -X POST "http://localhost:8000/roles/permission-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "group_name": "content_management",
-    "group_display_name": "Content Management",
-    "group_description": "Permissions for managing content",
-    "group_category": "general"
-  }'
+  -F "group_name=content_management" \
+  -F "group_display_name=Content Management" \
+  -F "group_description=Permissions for managing content" \
+  -F "group_category=general"
 ```
 
 **Response (201):**
@@ -442,7 +433,7 @@ Create a new global permission.
 
 **Authentication:** Required (admin permission)
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `permission_name` (required): Unique permission name
 - `permission_display_name` (required): Display name
 - `permission_description` (optional): Description
@@ -452,13 +443,10 @@ Create a new global permission.
 ```bash
 curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "permission_name": "publish_content",
-    "permission_display_name": "Publish Content",
-    "permission_description": "Can publish content to live site",
-    "permission_category": "general"
-  }'
+  -F "permission_name=publish_content" \
+  -F "permission_display_name=Publish Content" \
+  -F "permission_description=Can publish content to live site" \
+  -F "permission_category=general"
 ```
 
 **Response (201):**
@@ -639,15 +627,14 @@ Assign a role to a user (replaces any existing role).
 **Path Parameters:**
 - `user_hash`: User identifier
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `role_hash` (required): Role hash to assign
 
 **Example Request:**
 ```bash
 curl -X PUT "http://localhost:8000/roles/users/user123.../role" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"role_hash": "role_abc123..."}'
+  -F "role_hash=role_abc123..."
 ```
 
 **Response (200):**
@@ -841,7 +828,7 @@ Add a role to a project's catalog for UI suggestions.
 - `project_hash`: Project identifier
 - `role_hash`: Role identifier
 
-**Request Body** (JSON):
+**Request Body** (Form Data):
 - `catalog_purpose` (optional): Purpose of this catalog entry
 - `notes` (optional): Additional notes
 
@@ -849,11 +836,8 @@ Add a role to a project's catalog for UI suggestions.
 ```bash
 curl -X POST "http://localhost:8000/roles/projects/proj_abc123/catalog/roles/role_xyz789" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "catalog_purpose": "Suggested role for content team",
-    "notes": "Use for content editors in this project"
-  }'
+  -F "catalog_purpose=Suggested role for content team" \
+  -F "notes=Use for content editors in this project"
 ```
 
 **Response (200):**
@@ -922,34 +906,25 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
 echo "1. Creating a new role..."
 curl -X POST "http://localhost:8000/roles/roles" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "role_name": "content_moderator",
-    "role_display_name": "Content Moderator",
-    "role_description": "Moderate and approve content",
-    "role_priority": 55
-  }'
+  -F "role_name=content_moderator" \
+  -F "role_display_name=Content Moderator" \
+  -F "role_description=Moderate and approve content" \
+  -F "role_priority=55"
 
 echo -e "\n\n2. Creating a permission group..."
 curl -X POST "http://localhost:8000/roles/permission-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "group_name": "moderation",
-    "group_display_name": "Moderation Permissions",
-    "group_description": "Permissions for content moderation",
-    "group_category": "general"
-  }'
+  -F "group_name=moderation" \
+  -F "group_display_name=Moderation Permissions" \
+  -F "group_description=Permissions for content moderation" \
+  -F "group_category=general"
 
 echo -e "\n\n3. Creating permissions..."
 curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "permission_name": "moderate_content",
-    "permission_display_name": "Moderate Content",
-    "permission_category": "general"
-  }'
+  -F "permission_name=moderate_content" \
+  -F "permission_display_name=Moderate Content" \
+  -F "permission_category=general"
 
 echo -e "\n\n4. Assigning permission to group..."
 curl -X POST "http://localhost:8000/roles/permission-groups/GROUP_HASH/permissions/PERM_HASH" \
@@ -962,8 +937,7 @@ curl -X POST "http://localhost:8000/roles/roles/ROLE_HASH/permission-groups/GROU
 echo -e "\n\n6. Assigning role to user..."
 curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"role_hash": "ROLE_HASH"}'
+  -F "role_hash=ROLE_HASH"
 
 echo -e "\n\n7. Checking user permissions..."
 curl -X GET "http://localhost:8000/roles/users/me/permissions" \

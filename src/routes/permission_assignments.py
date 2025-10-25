@@ -12,7 +12,7 @@ import logging
 from typing import Optional, List
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -46,20 +46,7 @@ router = APIRouter(prefix="/v1", tags=["Permission Assignments"])
 security = HTTPBearerOrCookie()
 
 
-# =================== PYDANTIC MODELS ===================
-
-class PermissionGroupAssignment(BaseModel):
-    permission_group_hash: str = Field(..., description="Permission group hash to assign")
-
-
-class UserPermissionGroupAssignment(BaseModel):
-    permission_group_hash: str = Field(..., description="Permission group hash to assign")
-    notes: Optional[str] = Field(None, description="Reason for direct assignment")
-
-
-class CatalogEntry(BaseModel):
-    catalog_purpose: Optional[str] = Field(None, description="Purpose of this catalog entry")
-    notes: Optional[str] = Field(None, description="Additional notes")
+# Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
 
 
 # =================== AUTHENTICATION DEPENDENCIES ===================
@@ -95,7 +82,7 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
 @router.post("/admin/user-groups/{group_hash}/permission-groups", status_code=200)
 async def assign_permission_group_to_group(
     group_hash: str = Path(..., description="User group hash"),
-    assignment: PermissionGroupAssignment = ...,
+    permission_group_hash: str = Form(..., description="Permission group hash to assign"),
     session_data=Depends(require_admin)
 ):
     """
@@ -111,7 +98,7 @@ async def assign_permission_group_to_group(
             raise HTTPException(status_code=404, detail="User group not found")
         
         # Get permission group
-        permission_group = global_roles.get_permission_group_by_hash(assignment.permission_group_hash)
+        permission_group = global_roles.get_permission_group_by_hash(permission_group_hash)
         if not permission_group:
             raise HTTPException(status_code=404, detail="Permission group not found")
         
@@ -227,7 +214,7 @@ async def get_group_permission_groups(
 @router.post("/admin/user-groups/{group_hash}/permission-groups/bulk", status_code=200)
 async def bulk_assign_permission_groups_to_group(
     group_hash: str = Path(..., description="User group hash"),
-    permission_group_hashes: List[str] = ...,
+    permission_group_hashes: List[str] = Form(..., description="List of permission group hashes"),
     session_data=Depends(require_admin)
 ):
     """Bulk assign multiple permission groups to a user group"""
@@ -296,7 +283,8 @@ async def bulk_assign_permission_groups_to_group(
 @router.post("/users/{user_hash}/permission-groups", status_code=200)
 async def assign_permission_group_to_user_direct(
     user_hash: str = Path(..., description="User hash"),
-    assignment: UserPermissionGroupAssignment = ...,
+    permission_group_hash: str = Form(..., description="Permission group hash to assign"),
+    notes: Optional[str] = Form(None, description="Reason for direct assignment"),
     session_data=Depends(require_admin)
 ):
     """
@@ -312,7 +300,7 @@ async def assign_permission_group_to_user_direct(
             raise HTTPException(status_code=404, detail="User not found")
         
         # Get permission group
-        permission_group = global_roles.get_permission_group_by_hash(assignment.permission_group_hash)
+        permission_group = global_roles.get_permission_group_by_hash(permission_group_hash)
         if not permission_group:
             raise HTTPException(status_code=404, detail="Permission group not found")
         
@@ -321,7 +309,7 @@ async def assign_permission_group_to_user_direct(
             target_user.id,
             permission_group['id'],
             admin_data.id,
-            assignment.notes
+            notes
         )
         
         if not success:
@@ -556,7 +544,8 @@ async def get_my_permission_sources(session_data=Depends(require_valid_session))
 async def add_permission_group_to_catalog(
     project_hash: str = Path(..., description="Project hash"),
     pg_hash: str = Path(..., description="Permission group hash"),
-    catalog: CatalogEntry = ...,
+    catalog_purpose: Optional[str] = Form(None, description="Purpose of this catalog entry"),
+    notes: Optional[str] = Form(None, description="Additional notes"),
     session_data=Depends(require_admin)
 ):
     """
@@ -580,8 +569,8 @@ async def add_permission_group_to_catalog(
         success = add_permission_group_to_project_catalog(
             permission_group['id'],
             project.id,
-            catalog.catalog_purpose,
-            catalog.notes,
+            catalog_purpose,
+            notes,
             user_data.id
         )
         

@@ -163,9 +163,8 @@ class ActivityLogger:
                 ])
 
                 # Fetch results from the stored procedure
-                results = []
-                for result in cur.stored_results():
-                    results = result.fetchall()
+                # In pymysql, callproc returns the result, use fetchall directly
+                results = cur.fetchall()
 
                 activities = []
                 for row in results:
@@ -233,11 +232,8 @@ class ActivityLogger:
                 ])
 
                 # Fetch result from stored procedure
-                for result in cur.stored_results():
-                    row = result.fetchone()
-                    return row[0] if row else 0
-
-                return 0
+                row = cur.fetchone()
+                return row[0] if row else 0
 
         except Exception as e:
             logger.error(f"Failed to count activity logs: {str(e)}")
@@ -262,9 +258,7 @@ class ActivityLogger:
                 cur.callproc('sp_get_activity_catalog', [category])
 
                 # Fetch results from stored procedure
-                results = []
-                for result in cur.stored_results():
-                    results = result.fetchall()
+                results = cur.fetchall()
 
                 catalog = []
                 for row in results:
@@ -305,19 +299,18 @@ class ActivityLogger:
                 cur.callproc('sp_get_activity_by_code', [activity_code])
 
                 # Fetch result
-                for result in cur.stored_results():
-                    row = result.fetchone()
-                    if row:
-                        return {
-                            "id": row[0],
-                            "activity_code": row[1],
-                            "activity_name": row[2],
-                            "activity_description": row[3],
-                            "activity_category": row[4],
-                            "severity_level": row[5],
-                            "requires_audit": row[6],
-                            "is_active": row[7]
-                        }
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "activity_code": row[1],
+                        "activity_name": row[2],
+                        "activity_description": row[3],
+                        "activity_category": row[4],
+                        "severity_level": row[5],
+                        "requires_audit": row[6],
+                        "is_active": row[7]
+                    }
 
                 return None
 
@@ -345,9 +338,7 @@ class ActivityLogger:
                 cur.callproc('sp_get_activity_stats', [project_id, days])
 
                 # Fetch results
-                results = []
-                for result in cur.stored_results():
-                    results = result.fetchall()
+                results = cur.fetchall()
 
                 stats = []
                 for row in results:
