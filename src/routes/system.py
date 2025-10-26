@@ -43,72 +43,62 @@ async def get_system_info() -> SystemInfoResponse:
     Returns:
         System status and configuration information
     """
-    try:
-        # Get basic system statistics (safely)
-        try:
-            total_users = count_users()
-        except:
-            total_users = 0
+    # Get basic system statistics (safely - all return 0 on error)
+    total_users = handle_db_operation(
+        lambda: count_users(),
+        error_context="count users for system info",
+        default_return=0
+    )
+    
+    total_projects = handle_db_operation(
+        lambda: count_projects(),
+        error_context="count projects for system info",
+        default_return=0
+    )
+    
+    total_user_groups = handle_db_operation(
+        lambda: count_user_groups(),
+        error_context="count user groups for system info",
+        default_return=0
+    )
+    
+    total_project_groups = handle_db_operation(
+        lambda: count_project_permission_groups(),
+        error_context="count project groups for system info",
+        default_return=0
+    )
 
-        try:
-            total_projects = count_projects()
-        except:
-            total_projects = 0
+    system_info = {
+        "name": "Group-Based Multi-Project Authentication API",
+        "version": "1.0.0",
+        "architecture": "hierarchical-group-based",
+        "status": "operational"
+    }
 
-        try:
-            total_user_groups = count_user_groups()
-        except:
-            total_user_groups = 0
+    statistics = {
+        "total_users": total_users,
+        "total_projects": total_projects,
+        "total_user_groups": total_user_groups,
+        "total_project_groups": total_project_groups,
+        "authentication_type": "group-based-jwt"
+    }
 
-        try:
-            total_project_groups = count_project_permission_groups()
-        except:
-            total_project_groups = 0
+    features = [
+        "hierarchical-group-access-control",
+        "global-user-groups",
+        "project-permission-groups",
+        "multi-project-support",
+        "session-management-with-group-context",
+        "comprehensive-audit-trail",
+        "restful-admin-api"
+    ]
 
-        system_info = {
-            "name": "Group-Based Multi-Project Authentication API",
-            "version": "1.0.0",
-            "architecture": "hierarchical-group-based",
-            "status": "operational"
-        }
-
-        statistics = {
-            "total_users": total_users,
-            "total_projects": total_projects,
-            "total_user_groups": total_user_groups,
-            "total_project_groups": total_project_groups,
-            "authentication_type": "group-based-jwt"
-        }
-
-        features = [
-            "hierarchical-group-access-control",
-            "global-user-groups",
-            "project-permission-groups",
-            "multi-project-support",
-            "session-management-with-group-context",
-            "comprehensive-audit-trail",
-            "restful-admin-api"
-        ]
-
-        return SystemInfoResponse(
-            success=True,
-            system=system_info,
-            statistics=statistics,
-            features=features
-        )
-
-    except Exception as e:
-        logger.error(f"System info error: {str(e)}")
-        return SystemInfoResponse(
-            success=False,
-            message="System information temporarily unavailable",
-            system={
-                "name": "Group-Based Multi-Project Authentication API",
-                "version": "1.0.0",
-                "architecture": "hierarchical-group-based",
-                "status": "operational"
-            }
-        )
+    return SystemInfoResponse(
+        success=True,
+        system=system_info,
+        statistics=statistics,
+        features=features
+    )
 
 
 @router.get("/health", response_model=HealthCheckResponse)
@@ -119,55 +109,65 @@ async def system_health() -> HealthCheckResponse:
     Returns:
         Detailed health status of all system components
     """
-    try:
-        status = "healthy"
-        timestamp = datetime.now().isoformat()
-        components = {}
+    status = "healthy"
+    timestamp = datetime.now().isoformat()
+    components = {}
 
-        # Check database connectivity
-        try:
-            count_users()
-            components["database"] = {"status": "healthy", "message": "Database accessible"}
-        except Exception as e:
-            components["database"] = {"status": "unhealthy", "message": f"Database error: {str(e)}"}
-            status = "degraded"
+    # Check database connectivity
+    db_check = handle_db_operation(
+        lambda: count_users(),
+        error_context="database health check",
+        default_return=None
+    )
+    if db_check is not None:
+        components["database"] = {"status": "healthy", "message": "Database accessible"}
+    else:
+        components["database"] = {"status": "unhealthy", "message": "Database connection failed"}
+        status = "degraded"
 
-        # Check Redis connectivity
-        try:
-            from src.Util.db_config import redis_client
-            redis_client.ping()
-            components["redis"] = {"status": "healthy", "message": "Redis accessible"}
-        except Exception as e:
-            components["redis"] = {"status": "unhealthy", "message": f"Redis error: {str(e)}"}
-            status = "degraded"
+    # Check Redis connectivity
+    def check_redis():
+        from src.Util.db_config import redis_client
+        redis_client.ping()
+        return True
+    
+    redis_ok = handle_db_operation(
+        check_redis,
+        error_context="redis health check",
+        default_return=False
+    )
+    if redis_ok:
+        components["redis"] = {"status": "healthy", "message": "Redis accessible"}
+    else:
+        components["redis"] = {"status": "unhealthy", "message": "Redis connection failed"}
+        status = "degraded"
 
-        # Check group system
-        try:
-            user_groups_count = count_user_groups()
-            project_groups_count = count_project_permission_groups()
-            components["group_system"] = {
-                "status": "healthy",
-                "message": f"Group system operational: {user_groups_count} user groups, {project_groups_count} project groups"
-            }
-        except Exception as e:
-            components["group_system"] = {"status": "unhealthy", "message": f"Group system error: {str(e)}"}
-            status = "degraded"
+    # Check group system
+    def check_group_system():
+        user_groups_count = count_user_groups()
+        project_groups_count = count_project_permission_groups()
+        return {"user_groups": user_groups_count, "project_groups": project_groups_count}
+    
+    group_stats = handle_db_operation(
+        check_group_system,
+        error_context="group system health check",
+        default_return=None
+    )
+    if group_stats:
+        components["group_system"] = {
+            "status": "healthy",
+            "message": f"Group system operational: {group_stats['user_groups']} user groups, {group_stats['project_groups']} project groups"
+        }
+    else:
+        components["group_system"] = {"status": "unhealthy", "message": "Group system check failed"}
+        status = "degraded"
 
-        return HealthCheckResponse(
-            success=True,
-            status=status,
-            timestamp=timestamp,
-            components=components
-        )
-
-    except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        return HealthCheckResponse(
-            success=False,
-            status="unhealthy",
-            timestamp=datetime.now().isoformat(),
-            components={"error": str(e)}
-        )
+    return HealthCheckResponse(
+        success=True,
+        status=status,
+        timestamp=timestamp,
+        components=components
+    )
 
 
 @router.get("/ping", response_model=PingResponse)

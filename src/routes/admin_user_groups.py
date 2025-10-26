@@ -32,6 +32,10 @@ from src.Util.db import (
     get_projects_for_user_group, get_project_by_hash, get_user_groups_for_user,
     get_total_user_groups_count
 )
+from src.Util.error_handler import (
+    AuthenticationError, AuthorizationError, ValidationError,
+    NotFoundError, ConflictError, InternalError, ErrorCode
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -49,11 +53,18 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     """Ensure user has admin permissions"""
     session_data = validate_session(credentials.credentials)
     if not session_data:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
+        )
 
     user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
     if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-        raise HTTPException(status_code=403, detail="Admin or manage_users permission required")
+        raise AuthorizationError(
+            message="Admin or manage_users permission required",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_permissions": ["admin", "manage_users"]}
+        )
 
     return session_data
 
@@ -80,44 +91,36 @@ async def list_user_groups(
     Returns:
         List of user groups with member counts
     """
-    try:
-        # Get all user groups with sorting parameters
-        user_groups = list_all_user_groups(limit, offset, sort_by, sort_order, search)
+    # Get all user groups with sorting parameters
+    user_groups = list_all_user_groups(limit, offset, sort_by, sort_order, search)
 
-        # Add member counts
-        groups_with_counts = []
-        for group in user_groups:
-            members = get_users_in_group(group.id)
-            group_info = UserGroupInfo(
-                group_hash=group.group_hash,
-                group_name=group.group_name,
-                description=group.group_description,
-                member_count=len(members),
-                created_at=group.created_at
-            )
-            groups_with_counts.append(group_info)
-
-        # Get total count for pagination
-        total_count = get_total_user_groups_count()
-        
-        pagination = PaginationInfo(
-            limit=limit,
-            offset=offset,
-            total=total_count
+    # Add member counts
+    groups_with_counts = []
+    for group in user_groups:
+        members = get_users_in_group(group.id)
+        group_info = UserGroupInfo(
+            group_hash=group.group_hash,
+            group_name=group.group_name,
+            description=group.group_description,
+            member_count=len(members),
+            created_at=group.created_at
         )
+        groups_with_counts.append(group_info)
 
-        return ListUserGroupsResponse(
-            success=True,
-            user_groups=groups_with_counts,
-            pagination=pagination
-        )
+    # Get total count for pagination
+    total_count = get_total_user_groups_count()
+    
+    pagination = PaginationInfo(
+        limit=limit,
+        offset=offset,
+        total=total_count
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User groups listing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list user groups")
-
+    return ListUserGroupsResponse(
+        success=True,
+        user_groups=groups_with_counts,
+        pagination=pagination
+    )
 
 @router.post("", response_model=CreateUserGroupResponse)
 async def create_user_group_endpoint(
@@ -135,44 +138,42 @@ async def create_user_group_endpoint(
     Returns:
         Created user group information
     """
-    try:
-        # Get current user for audit trail
-        user_data = get_user_by_hash(session_data.user_hash)
+    # Get current user for audit trail
+    user_data = get_user_by_hash(session_data.user_hash)
 
-        create_name = group_name
-        create_description = description
-
-        if not create_name:
-            raise HTTPException(status_code=400, detail="Group name is required")
-
-        # Create user group
-        new_group = create_user_group(
-            create_name,
-            create_description,
-            created_by=user_data.id
+    if not group_name:
+        raise ValidationError(
+            message="Group name is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"field": "group_name"}
         )
 
-        if not new_group:
-            raise HTTPException(status_code=400, detail="User group creation failed")
+    # Create user group - db layer converts IntegrityError to ConflictError automatically
+    new_group = create_user_group(
+        group_name,
+        description,
+        created_by=user_data.id
+    )
 
-        group_info = UserGroupInfo(
-            group_hash=new_group.group_hash,
-            group_name=new_group.group_name,
-            description=new_group.group_description,
-            created_at=new_group.created_at
+    if not new_group:
+        raise InternalError(
+            message="User group creation failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "create_user_group"}
         )
 
-        return CreateUserGroupResponse(
-            success=True,
-            message=f"User group \"{create_name}\" created successfully",
-            user_group=group_info
-        )
+    group_info = UserGroupInfo(
+        group_hash=new_group.group_hash,
+        group_name=new_group.group_name,
+        description=new_group.group_description,
+        created_at=new_group.created_at
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group creation error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group creation error")
+    return CreateUserGroupResponse(
+        success=True,
+        message=f"User group \"{group_name}\" created successfully",
+        user_group=group_info
+    )
 
 
 @router.get("/{group_hash}", response_model=UserGroupDetailsResponse)
@@ -189,59 +190,55 @@ async def get_user_group_details(
     Returns:
         User group details with members and project access
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
-
-        # Get members
-        members = get_users_in_group(user_group.id)
-
-        # Get accessible projects
-        accessible_projects = get_projects_for_user_group(user_group.id)
-
-        group_info = UserGroupInfo(
-            group_hash=user_group.group_hash,
-            group_name=user_group.group_name,
-            description=user_group.group_description,
-            created_at=user_group.created_at
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
 
-        member_list = [
-            UserInfo(
-                user_hash=member.user_hash,
-                username=member.username,
-                email=member.email
-            ) for member in members
-        ]
+    # Get members
+    members = get_users_in_group(user_group.id)
 
-        project_list = [
-            ProjectInfo(
-                project_hash=project[1],
-                project_name=project[2]
-            ) for project in accessible_projects
-        ]
+    # Get accessible projects
+    accessible_projects = get_projects_for_user_group(user_group.id)
 
-        statistics_info = {
-            "total_members": len(members),
-            "total_projects": len(accessible_projects)
-        }
+    group_info = UserGroupInfo(
+        group_hash=user_group.group_hash,
+        group_name=user_group.group_name,
+        description=user_group.group_description,
+        created_at=user_group.created_at
+    )
 
-        return UserGroupDetailsResponse(
-            success=True,
-            user_group=group_info,
-            members=member_list,
-            accessible_projects=project_list,
-            statistics=statistics_info
-        )
+    member_list = [
+        UserInfo(
+            user_hash=member.user_hash,
+            username=member.username,
+            email=member.email
+        ) for member in members
+    ]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group details error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group details error")
+    project_list = [
+        ProjectInfo(
+            project_hash=project[1],
+            project_name=project[2]
+        ) for project in accessible_projects
+    ]
 
+    statistics_info = {
+        "total_members": len(members),
+        "total_projects": len(accessible_projects)
+    }
+
+    return UserGroupDetailsResponse(
+        success=True,
+        user_group=group_info,
+        members=member_list,
+        accessible_projects=project_list,
+        statistics=statistics_info
+    )
 
 @router.put("/{group_hash}", response_model=UpdateUserGroupResponse)
 async def update_user_group_endpoint(
@@ -261,43 +258,43 @@ async def update_user_group_endpoint(
     Returns:
         Updated user group information
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
-
-        update_name = group_name
-        update_description = description
-
-        # Update group
-        updated_group = update_user_group(
-            user_group.id,
-            group_name=update_name,
-            group_description=update_description
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
 
-        if not updated_group:
-            raise HTTPException(status_code=400, detail="Update failed")
+    update_name = group_name
+    update_description = description
 
-        group_info = UserGroupInfo(
-            group_hash=updated_group.group_hash,
-            group_name=updated_group.group_name,
-            description=updated_group.group_description
+    # Update group
+    updated_group = update_user_group(
+        user_group.id,
+        group_name=update_name,
+        group_description=update_description
+    )
+
+    if not updated_group:
+        raise InternalError(
+            message="Update failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "update_user_group"}
         )
 
-        return UpdateUserGroupResponse(
-            success=True,
-            message="User group updated successfully",
-            user_group=group_info
-        )
+    group_info = UserGroupInfo(
+        group_hash=updated_group.group_hash,
+        group_name=updated_group.group_name,
+        description=updated_group.group_description
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group update error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group update error")
-
+    return UpdateUserGroupResponse(
+        success=True,
+        message="User group updated successfully",
+        user_group=group_info
+    )
 
 @router.delete("/{group_hash}", response_model=DeleteUserGroupResponse)
 async def delete_user_group_endpoint(
@@ -313,31 +310,31 @@ async def delete_user_group_endpoint(
     Returns:
         Deletion confirmation
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
 
-        # Get current user for audit trail
-        user_data = get_user_by_hash(session_data.user_hash)
+    # Get current user for audit trail
+    user_data = get_user_by_hash(session_data.user_hash)
 
-        # Delete group
-        if delete_user_group(user_group.id, deleted_by=user_data.id):
-            return DeleteUserGroupResponse(
-                success=True,
-                message=f"User group \"{user_group.group_name}\" deleted successfully",
-                warning="All user memberships and project access have been revoked"
-            )
-        else:
-            raise HTTPException(status_code=400, detail="Delete failed")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group deletion error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group deletion error")
-
+    # Delete group
+    if delete_user_group(user_group.id, deleted_by=user_data.id):
+        return DeleteUserGroupResponse(
+            success=True,
+            message=f"User group \"{user_group.group_name}\" deleted successfully",
+            warning="All user memberships and project access have been revoked"
+        )
+    else:
+        raise InternalError(
+            message="Delete failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "delete_user_group"}
+        )
 
 @router.post("/{group_hash}/members", response_model=AssignUserToGroupResponse)
 async def assign_user_to_group_endpoint(
@@ -355,56 +352,60 @@ async def assign_user_to_group_endpoint(
     Returns:
         Assignment confirmation
     """
-    try:
-        target_user_hash = user_hash
+    target_user_hash = user_hash
 
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
-
-        # Get target user
-        target_user = get_user_by_hash(target_user_hash)
-        if not target_user:
-            raise HTTPException(status_code=404, detail="Target user not found")
-
-        # Get current user for audit trail
-        current_user = get_user_by_hash(session_data.user_hash)
-
-        # Assign user to group
-        assignment_result = assign_user_to_user_group(
-            target_user.id,
-            user_group.id,
-            assigned_by=current_user.id
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
 
-        if not assignment_result:
-            raise HTTPException(status_code=400, detail="Assignment failed")
-
-        assignment_info = {
-            "user": {
-                "user_hash": target_user.user_hash,
-                "username": target_user.username
-            },
-            "group": {
-                "group_hash": user_group.group_hash,
-                "group_name": user_group.group_name
-            },
-            "assigned_by": current_user.username
-        }
-
-        return AssignUserToGroupResponse(
-            success=True,
-            message=f"User \"{target_user.username}\" assigned to group \"{user_group.group_name}\"",
-            assignment=assignment_info
+    # Get target user
+    target_user = get_user_by_hash(target_user_hash)
+    if not target_user:
+        raise NotFoundError(
+            message="Target user not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": target_user_hash}
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group assignment error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group assignment error")
+    # Get current user for audit trail
+    current_user = get_user_by_hash(session_data.user_hash)
 
+    # Assign user to group
+    assignment_result = assign_user_to_user_group(
+        target_user.id,
+        user_group.id,
+        assigned_by=current_user.id
+    )
+
+    if not assignment_result:
+        raise InternalError(
+            message="Assignment failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "assign_user_to_user_group"}
+        )
+
+    assignment_info = {
+        "user": {
+            "user_hash": target_user.user_hash,
+            "username": target_user.username
+        },
+        "group": {
+            "group_hash": user_group.group_hash,
+            "group_name": user_group.group_name
+        },
+        "assigned_by": current_user.username
+    }
+
+    return AssignUserToGroupResponse(
+        success=True,
+        message=f"User \"{target_user.username}\" assigned to group \"{user_group.group_name}\"",
+        assignment=assignment_info
+    )
 
 @router.delete("/{group_hash}/members/{user_hash}", response_model=RemoveUserFromGroupResponse)
 async def remove_user_from_group_endpoint(
@@ -422,35 +423,39 @@ async def remove_user_from_group_endpoint(
     Returns:
         Removal confirmation
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
 
-        # Get target user
-        target_user = get_user_by_hash(user_hash)
-        if not target_user:
-            raise HTTPException(status_code=404, detail="User not found")
+    # Get target user
+    target_user = get_user_by_hash(user_hash)
+    if not target_user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
 
-        # Get current user for audit trail
-        current_user = get_user_by_hash(session_data.user_hash)
+    # Get current user for audit trail
+    current_user = get_user_by_hash(session_data.user_hash)
 
-        # Remove user from group
-        if remove_user_from_user_group(target_user.id, user_group.id, removed_by=current_user.id):
-            return RemoveUserFromGroupResponse(
-                success=True,
-                message=f"User \"{target_user.username}\" removed from group \"{user_group.group_name}\""
-            )
-        else:
-            raise HTTPException(status_code=400, detail="Removal failed")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User group removal error: {str(e)}")
-        raise HTTPException(status_code=500, detail="User group removal error")
-
+    # Remove user from group
+    if remove_user_from_user_group(target_user.id, user_group.id, removed_by=current_user.id):
+        return RemoveUserFromGroupResponse(
+            success=True,
+            message=f"User \"{target_user.username}\" removed from group \"{user_group.group_name}\""
+        )
+    else:
+        raise InternalError(
+            message="Removal failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "remove_user_from_user_group"}
+        )
 
 @router.post("/{group_hash}/projects", response_model=GrantGroupProjectAccessResponse)
 async def grant_group_project_access_endpoint(
@@ -468,56 +473,60 @@ async def grant_group_project_access_endpoint(
     Returns:
         Access grant confirmation
     """
-    try:
-        target_project_hash = project_hash
+    target_project_hash = project_hash
 
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
-
-        # Get target project
-        target_project = get_project_by_hash(target_project_hash)
-        if not target_project:
-            raise HTTPException(status_code=404, detail="Target project not found")
-
-        # Get current user for audit trail
-        current_user = get_user_by_hash(session_data.user_hash)
-
-        # Grant access
-        access_result = grant_group_project_access(
-            user_group.id,
-            target_project.id,
-            granted_by=current_user.id
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
 
-        if not access_result:
-            raise HTTPException(status_code=400, detail="Access grant failed")
-
-        access_details = {
-            "user_group": {
-                "group_hash": user_group.group_hash,
-                "group_name": user_group.group_name
-            },
-            "project": {
-                "project_hash": target_project.project_hash,
-                "project_name": target_project.project_name
-            },
-            "granted_by": current_user.username
-        }
-
-        return GrantGroupProjectAccessResponse(
-            success=True,
-            message=f"User group \"{user_group.group_name}\" granted access to project \"{target_project.project_name}\"",
-            access_details=access_details
+    # Get target project
+    target_project = get_project_by_hash(target_project_hash)
+    if not target_project:
+        raise NotFoundError(
+            message="Target project not found",
+            error_code=ErrorCode.PROJECT_NOT_FOUND,
+            details={"project_hash": target_project_hash}
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Group project access error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Group project access error")
+    # Get current user for audit trail
+    current_user = get_user_by_hash(session_data.user_hash)
 
+    # Grant access
+    access_result = grant_group_project_access(
+        user_group.id,
+        target_project.id,
+        granted_by=current_user.id
+    )
+
+    if not access_result:
+        raise InternalError(
+            message="Access grant failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "grant_group_project_access"}
+        )
+
+    access_details = {
+        "user_group": {
+            "group_hash": user_group.group_hash,
+            "group_name": user_group.group_name
+        },
+        "project": {
+            "project_hash": target_project.project_hash,
+            "project_name": target_project.project_name
+        },
+        "granted_by": current_user.username
+    }
+
+    return GrantGroupProjectAccessResponse(
+        success=True,
+        message=f"User group \"{user_group.group_name}\" granted access to project \"{target_project.project_name}\"",
+        access_details=access_details
+    )
 
 @router.delete("/{group_hash}/projects/{project_hash}", response_model=RevokeGroupProjectAccessResponse)
 async def revoke_group_project_access_endpoint(
@@ -535,35 +544,39 @@ async def revoke_group_project_access_endpoint(
     Returns:
         Revocation confirmation
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
 
-        # Get project
-        project = get_project_by_hash(project_hash)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+    # Get project
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise NotFoundError(
+            message="Project not found",
+            error_code=ErrorCode.PROJECT_NOT_FOUND,
+            details={"project_hash": project_hash}
+        )
 
-        # Get current user for audit trail
-        current_user = get_user_by_hash(session_data.user_hash)
+    # Get current user for audit trail
+    current_user = get_user_by_hash(session_data.user_hash)
 
-        # Revoke access
-        if revoke_group_project_access(user_group.id, project.id, revoked_by=current_user.id):
-            return RevokeGroupProjectAccessResponse(
-                success=True,
-                message=f"User group \"{user_group.group_name}\" access to project \"{project.project_name}\" revoked"
-            )
-        else:
-            raise HTTPException(status_code=400, detail="Revocation failed")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Group project access revocation error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Group project access revocation error")
-
+    # Revoke access
+    if revoke_group_project_access(user_group.id, project.id, revoked_by=current_user.id):
+        return RevokeGroupProjectAccessResponse(
+            success=True,
+            message=f"User group \"{user_group.group_name}\" access to project \"{project.project_name}\" revoked"
+        )
+    else:
+        raise InternalError(
+            message="Revocation failed",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "revoke_group_project_access"}
+        )
 
 @router.get("/{group_hash}/members", response_model=GroupMembersPaginatedResponse)
 async def get_group_members_with_pagination(
@@ -585,63 +598,59 @@ async def get_group_members_with_pagination(
     Returns:
         Paginated list of group members
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
-
-        # Get all members first for total count
-        all_members = get_users_in_group(user_group.id)
-        total_count = len(all_members)
-
-        # Apply pagination
-        paginated_members = all_members[offset:offset + limit]
-
-        # Format member data
-        members_data = []
-        for member in paginated_members:
-            member_info = {
-                "user_hash": member.user_hash,
-                "username": member.username,
-                "email": member.email,
-                "user_type": getattr(member, 'user_type', 'consumer'),
-                "is_active": getattr(member, 'is_active', True),
-                "joined_group_at": getattr(member, 'created_at', None)
-            }
-            members_data.append(member_info)
-
-        pagination_info = PaginationInfo(
-            limit=limit,
-            offset=offset,
-            total=total_count,
-            has_more=offset + limit < total_count
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
 
-        user_group_info = UserGroupInfo(
-            group_hash=user_group.group_hash,
-            group_name=user_group.group_name,
-            description=user_group.group_description
-        )
+    # Get all members first for total count
+    all_members = get_users_in_group(user_group.id)
+    total_count = len(all_members)
 
-        return GroupMembersPaginatedResponse(
-            success=True,
-            user_group=user_group_info,
-            members=members_data,
-            pagination=pagination_info,
-            statistics={
-                "total_members": total_count,
-                "members_shown": len(members_data)
-            },
-            generated_at=datetime.utcnow().isoformat()
-        )
+    # Apply pagination
+    paginated_members = all_members[offset:offset + limit]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Group members listing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list group members")
+    # Format member data
+    members_data = []
+    for member in paginated_members:
+        member_info = {
+            "user_hash": member.user_hash,
+            "username": member.username,
+            "email": member.email,
+            "user_type": getattr(member, 'user_type', 'consumer'),
+            "is_active": getattr(member, 'is_active', True),
+            "joined_group_at": getattr(member, 'created_at', None)
+        }
+        members_data.append(member_info)
 
+    pagination_info = PaginationInfo(
+        limit=limit,
+        offset=offset,
+        total=total_count,
+        has_more=offset + limit < total_count
+    )
+
+    user_group_info = UserGroupInfo(
+        group_hash=user_group.group_hash,
+        group_name=user_group.group_name,
+        description=user_group.group_description
+    )
+
+    return GroupMembersPaginatedResponse(
+        success=True,
+        user_group=user_group_info,
+        members=members_data,
+        pagination=pagination_info,
+        statistics={
+            "total_members": total_count,
+            "members_shown": len(members_data)
+        },
+        generated_at=datetime.utcnow().isoformat()
+    )
 
 @router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
 async def bulk_add_users_to_group(
@@ -661,103 +670,107 @@ async def bulk_add_users_to_group(
     Returns:
         Bulk assignment results
     """
-    try:
-        # Get user group
-        user_group = get_user_group_by_hash(group_hash)
-        if not user_group:
-            raise HTTPException(status_code=404, detail="User group not found")
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
 
-        # Get current user for audit trail
-        current_user = get_user_by_hash(session_data.user_hash)
+    # Get current user for audit trail
+    current_user = get_user_by_hash(session_data.user_hash)
 
-        # Validate input
-        if not user_hashes:
-            raise HTTPException(status_code=400, detail="At least one user hash is required")
+    # Validate input
+    if not user_hashes:
+        raise ValidationError(
+            message="At least one user hash is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"field": "user_hashes"}
+        )
 
-        if len(user_hashes) > 100:
-            raise HTTPException(status_code=400, detail="Maximum 100 users can be assigned at once")
+    if len(user_hashes) > 100:
+        raise ValidationError(
+            message="Maximum 100 users can be assigned at once",
+            error_code=ErrorCode.INVALID_LENGTH,
+            details={"max_length": 100, "provided_length": len(user_hashes)}
+        )
 
-        # Perform bulk assignment
-        results = []
-        success_count = 0
-        error_count = 0
-        errors = []
+    # Perform bulk assignment
+    results = []
+    success_count = 0
+    error_count = 0
+    errors = []
 
-        for user_hash in user_hashes:
-            try:
-                # Get target user
-                target_user = get_user_by_hash(user_hash)
-                if not target_user:
-                    errors.append(f"User not found: {user_hash}")
-                    error_count += 1
-                    continue
+    for user_hash in user_hashes:
+        try:
+            # Get target user
+            target_user = get_user_by_hash(user_hash)
+            if not target_user:
+                errors.append(f"User not found: {user_hash}")
+                error_count += 1
+                continue
 
-                # Assign user to group
-                assignment_result = assign_user_to_user_group(
-                    target_user.id,
-                    user_group.id,
-                    assigned_by=current_user.id
-                )
+            # Assign user to group
+            assignment_result = assign_user_to_user_group(
+                target_user.id,
+                user_group.id,
+                assigned_by=current_user.id
+            )
 
-                if assignment_result:
-                    results.append({
-                        "user_hash": user_hash,
-                        "username": target_user.username,
-                        "status": "success",
-                        "message": "Added to group successfully"
-                    })
-                    success_count += 1
-                else:
-                    results.append({
-                        "user_hash": user_hash,
-                        "username": target_user.username,
-                        "status": "error",
-                        "message": "Assignment failed - user may already be in group"
-                    })
-                    error_count += 1
-
-            except Exception as e:
+            if assignment_result:
                 results.append({
                     "user_hash": user_hash,
+                    "username": target_user.username,
+                    "status": "success",
+                    "message": "Added to group successfully"
+                })
+                success_count += 1
+            else:
+                results.append({
+                    "user_hash": user_hash,
+                    "username": target_user.username,
                     "status": "error",
-                    "message": str(e)
+                    "message": "Assignment failed - user may already be in group"
                 })
                 error_count += 1
 
-        # Log the activity
-        ActivityLogger.log_bulk_group_assignment(
-            current_user.id,
-            count=success_count,
-            user_group_id=user_group.id
-        )
+        except Exception as e:
+            results.append({
+                "user_hash": user_hash,
+                "status": "error",
+                "message": str(e)
+            })
+            error_count += 1
 
-        logger.info(
-            f"Bulk group assignment by {current_user.username}: {success_count} succeeded, {error_count} failed")
+    # Log the activity
+    ActivityLogger.log_bulk_group_assignment(
+        current_user.id,
+        count=success_count,
+        user_group_id=user_group.id
+    )
 
-        return BulkAddUsersToGroupResponse(
-            success=True,
-            message=f"Bulk assignment completed: {success_count} succeeded, {error_count} failed",
-            user_group={
-                "group_hash": user_group.group_hash,
-                "group_name": user_group.group_name
-            },
-            summary={
-                "total_requested": len(user_hashes),
-                "success_count": success_count,
-                "error_count": error_count
-            },
-            results=results,
-            errors=errors,
-            performed_by=current_user.username,
-            performed_at=datetime.utcnow().isoformat()
-        )
+    logger.info(
+        f"Bulk group assignment by {current_user.username}: {success_count} succeeded, {error_count} failed")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk group assignment error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Bulk group assignment failed")
-
+    return BulkAddUsersToGroupResponse(
+        success=True,
+        message=f"Bulk assignment completed: {success_count} succeeded, {error_count} failed",
+        user_group={
+            "group_hash": user_group.group_hash,
+            "group_name": user_group.group_name
+        },
+        summary={
+            "total_requested": len(user_hashes),
+            "success_count": success_count,
+            "error_count": error_count
+        },
+        results=results,
+        errors=errors,
+        performed_by=current_user.username,
+        performed_at=datetime.utcnow().isoformat()
+    )
 
 @router.get("/users/{user_hash}/groups", response_model=UserGroupsForUserResponse)
 async def get_user_groups(
@@ -775,43 +788,40 @@ async def get_user_groups(
     Returns:
         List of groups the user belongs to
     """
-    try:
-        # Get target user
-        target_user = get_user_by_hash(user_hash)
-        if not target_user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Get user's groups
-        user_groups = get_user_groups_for_user(target_user.id)
-
-        # Format group data
-        groups_data = []
-        for group in user_groups:
-            group_info = {
-                "group_hash": group.group_hash,
-                "group_name": group.group_name,
-                "description": group.group_description,
-                "joined_at": getattr(group, 'created_at', None)
-            }
-            groups_data.append(group_info)
-
-        return UserGroupsForUserResponse(
-            success=True,
-            user={
-                "user_hash": target_user.user_hash,
-                "username": target_user.username,
-                "email": target_user.email,
-                "user_type": getattr(target_user, 'user_type', 'consumer')
-            },
-            groups=groups_data,
-            statistics={
-                "total_groups": len(groups_data)
-            },
-            generated_at=datetime.utcnow().isoformat()
+    # Get target user
+    target_user = get_user_by_hash(user_hash)
+    if not target_user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User groups listing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list user groups")
+    # Get user's groups
+    user_groups = get_user_groups_for_user(target_user.id)
+
+    # Format group data
+    groups_data = []
+    for group in user_groups:
+        group_info = {
+            "group_hash": group.group_hash,
+            "group_name": group.group_name,
+            "description": group.group_description,
+            "joined_at": getattr(group, 'created_at', None)
+        }
+        groups_data.append(group_info)
+
+    return UserGroupsForUserResponse(
+        success=True,
+        user={
+            "user_hash": target_user.user_hash,
+            "username": target_user.username,
+            "email": target_user.email,
+            "user_type": getattr(target_user, 'user_type', 'consumer')
+        },
+        groups=groups_data,
+        statistics={
+            "total_groups": len(groups_data)
+        },
+        generated_at=datetime.utcnow().isoformat()
+    )

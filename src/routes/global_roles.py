@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.db import validate_session, get_user_by_hash, get_project_by_hash
 from src.Util.db import db_global_roles as global_roles
+from src.Util.error_handler import (
+    AuthenticationError, AuthorizationError, NotFoundError,
+    ValidationError, InternalError, ConflictError, DatabaseError, ErrorCode
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/roles", tags=["Global Role System"])
@@ -33,7 +37,10 @@ async def require_valid_session(credentials: HTTPAuthorizationCredentials = Depe
     """Ensure user has valid session"""
     session_data = validate_session(credentials.credentials)
     if not session_data:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
+        )
     return session_data
 
 
@@ -41,22 +48,36 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     """Ensure user has admin permissions"""
     session_data = validate_session(credentials.credentials)
     if not session_data:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
+        )
     
     # Check if user exists (including inactive)
     user_data = get_user_by_hash(session_data.user_hash, include_inactive=True)
     if not user_data:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
     
     # Check if user is active
     if not user_data.is_active:
-        raise HTTPException(status_code=403, detail="User account is inactive")
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE
+        )
     
     if user_data.user_type not in ['root', 'admin']:
         # Check if user has manage_roles permission
         has_permission = global_roles.check_user_has_permission(user_data.id, 'manage_roles')
         if not has_permission:
-            raise HTTPException(status_code=403, detail="Admin permission required")
+            raise AuthorizationError(
+                message="Admin permission required",
+                error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+                details={"required_permission": "manage_roles"}
+            )
     
     return session_data
 
@@ -74,32 +95,28 @@ async def create_role(
     session_data=Depends(require_admin)
 ):
     """Create a new global role"""
-    try:
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        new_role = global_roles.create_role(
-            role_name=role_name,
-            role_display_name=role_display_name,
-            role_description=role_description,
-            role_priority=role_priority,
-            created_by=user_data.id
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
         )
-        
-        if not new_role:
-            raise HTTPException(status_code=400, detail="Failed to create role")
-        
-        return {
-            "success": True,
-            "message": f"Role '{new_role['role_name']}' created successfully",
-            "role": new_role
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create role")
+    
+    # The database function now raises exceptions directly (ConflictError for duplicates)
+    new_role = global_roles.create_role(
+        role_name=role_name,
+        role_display_name=role_display_name,
+        role_description=role_description,
+        role_priority=role_priority,
+        created_by=user_data.id
+    )
+    
+    return {
+        "success": True,
+        "message": f"Role '{new_role['role_name']}' created successfully",
+        "role": new_role
+    }
 
 
 @router.get("/roles")
@@ -109,39 +126,33 @@ async def list_roles(
     session_data=Depends(require_valid_session)
 ):
     """List all global roles"""
-    try:
-        roles = global_roles.list_roles(limit=limit, offset=offset)
-        return {
-            "success": True,
-            "roles": roles,
-            "pagination": {"limit": limit, "offset": offset, "total": len(roles)}
-        }
-    except Exception as e:
-        logger.error(f"Error listing roles: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list roles")
+    roles = global_roles.list_roles(limit=limit, offset=offset)
+    return {
+        "success": True,
+        "roles": roles,
+        "pagination": {"limit": limit, "offset": offset, "total": len(roles)}
+    }
 
 
 @router.get("/roles/{role_hash}")
 async def get_role(role_hash: str, session_data=Depends(require_valid_session)):
     """Get role by hash"""
-    try:
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        # Get permission groups for this role
-        permission_groups = global_roles.get_role_permission_groups(role['id'])
-        
-        return {
-            "success": True,
-            "role": role,
-            "permission_groups": permission_groups
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get role")
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    # Get permission groups for this role
+    permission_groups = global_roles.get_role_permission_groups(role['id'])
+    
+    return {
+        "success": True,
+        "role": role,
+        "permission_groups": permission_groups
+    }
 
 
 @router.put("/roles/{role_hash}")
@@ -153,55 +164,63 @@ async def update_role(
     session_data=Depends(require_admin)
 ):
     """Update role information"""
-    try:
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        success = global_roles.update_role(
-            role_id=role['id'],
-            role_display_name=role_display_name,
-            role_description=role_description,
-            role_priority=role_priority
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
         )
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to update role")
-        
-        updated_role = global_roles.get_role_by_hash(role_hash)
-        return {
-            "success": True,
-            "message": "Role updated successfully",
-            "role": updated_role
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update role")
+    
+    success = global_roles.update_role(
+        role_id=role['id'],
+        role_display_name=role_display_name,
+        role_description=role_description,
+        role_priority=role_priority
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to update role",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "update_role", "role_hash": role_hash}
+        )
+    
+    updated_role = global_roles.get_role_by_hash(role_hash)
+    return {
+        "success": True,
+        "message": "Role updated successfully",
+        "role": updated_role
+    }
 
 
 @router.delete("/roles/{role_hash}")
 async def delete_role(role_hash: str, session_data=Depends(require_admin)):
     """Soft delete a role"""
-    try:
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        if role.get('is_system_role'):
-            raise HTTPException(status_code=403, detail="Cannot delete system roles")
-        
-        success = global_roles.delete_role(role['id'])
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to delete role")
-        
-        return {"success": True, "message": "Role deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to delete role")
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    if role.get('is_system_role'):
+        raise AuthorizationError(
+            message="Cannot delete system roles",
+            error_code=ErrorCode.OPERATION_NOT_ALLOWED,
+            details={"role_hash": role_hash, "reason": "system_role"}
+        )
+    
+    success = global_roles.delete_role(role['id'])
+    if not success:
+        raise InternalError(
+            message="Failed to delete role",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "delete_role", "role_hash": role_hash}
+        )
+    
+    return {"success": True, "message": "Role deleted successfully"}
 
 
 # =============================================================================
@@ -215,58 +234,66 @@ async def assign_permission_group_to_role(
     session_data=Depends(require_admin)
 ):
     """Assign a permission group to a role"""
-    try:
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        group = global_roles.get_permission_group_by_hash(group_hash)
-        if not group:
-            raise HTTPException(status_code=404, detail="Permission group not found")
-        
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        success = global_roles.assign_permission_group_to_role(
-            role_id=role['id'],
-            permission_group_id=group['id'],
-            assigned_by=user_data.id
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
         )
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to assign permission group")
-        
-        return {
-            "success": True,
-            "message": f"Permission group '{group['group_name']}' assigned to role '{role['role_name']}'"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error assigning permission group: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to assign permission group")
+    
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    success = global_roles.assign_permission_group_to_role(
+        role_id=role['id'],
+        permission_group_id=group['id'],
+        assigned_by=user_data.id
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to assign permission group",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "assign_permission_group"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission group '{group['group_name']}' assigned to role '{role['role_name']}'"
+    }
 
 
 @router.get("/roles/{role_hash}/permission-groups")
 async def get_role_permission_groups(role_hash: str, session_data=Depends(require_valid_session)):
     """Get all permission groups for a role"""
-    try:
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        groups = global_roles.get_role_permission_groups(role['id'])
-        return {
-            "success": True,
-            "role": {"role_hash": role_hash, "role_name": role['role_name']},
-            "permission_groups": groups
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting role permission groups: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get permission groups")
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    groups = global_roles.get_role_permission_groups(role['id'])
+    return {
+        "success": True,
+        "role": {"role_hash": role_hash, "role_name": role['role_name']},
+        "permission_groups": groups
+    }
 
 
 # =============================================================================
@@ -282,32 +309,35 @@ async def create_permission_group(
     session_data=Depends(require_admin)
 ):
     """Create a new global permission group"""
-    try:
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        new_group = global_roles.create_permission_group(
-            group_name=group_name,
-            group_display_name=group_display_name,
-            group_description=group_description,
-            group_category=group_category,
-            created_by=user_data.id
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
         )
-        
-        if not new_group:
-            raise HTTPException(status_code=400, detail="Failed to create permission group")
-        
-        return {
-            "success": True,
-            "message": f"Permission group '{new_group['group_name']}' created successfully",
-            "permission_group": new_group
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating permission group: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create permission group")
+    
+    # Database layer converts IntegrityError to ConflictError automatically
+    new_group = global_roles.create_permission_group(
+        group_name=group_name,
+        group_display_name=group_display_name,
+        group_description=group_description,
+        group_category=group_category,
+        created_by=user_data.id
+    )
+    
+    if not new_group:
+        raise InternalError(
+            message="Failed to create permission group",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "create_permission_group"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission group '{new_group['group_name']}' created successfully",
+        "permission_group": new_group
+    }
 
 
 @router.get("/permission-groups")
@@ -318,38 +348,33 @@ async def list_permission_groups(
     session_data=Depends(require_valid_session)
 ):
     """List all global permission groups"""
-    try:
-        groups = global_roles.list_permission_groups(category=category, limit=limit, offset=offset)
-        return {
-            "success": True,
-            "permission_groups": groups,
-            "pagination": {"limit": limit, "offset": offset, "total": len(groups)}
-        }
-    except Exception as e:
-        logger.error(f"Error listing permission groups: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list permission groups")
+    # Database function uses handle_db_operation - errors propagate to middleware
+    groups = global_roles.list_permission_groups(category=category, limit=limit, offset=offset)
+    return {
+        "success": True,
+        "permission_groups": groups,
+        "pagination": {"limit": limit, "offset": offset, "total": len(groups)}
+    }
 
 
 @router.get("/permission-groups/{group_hash}")
 async def get_permission_group(group_hash: str, session_data=Depends(require_valid_session)):
     """Get permission group by hash"""
-    try:
-        group = global_roles.get_permission_group_by_hash(group_hash)
-        if not group:
-            raise HTTPException(status_code=404, detail="Permission group not found")
-        
-        permissions = global_roles.get_permission_group_permissions(group['id'])
-        
-        return {
-            "success": True,
-            "permission_group": group,
-            "permissions": permissions
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting permission group: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get permission group")
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    permissions = global_roles.get_permission_group_permissions(group['id'])
+    
+    return {
+        "success": True,
+        "permission_group": group,
+        "permissions": permissions
+    }
 
 
 # =============================================================================
@@ -363,58 +388,66 @@ async def assign_permission_to_group(
     session_data=Depends(require_admin)
 ):
     """Assign a permission to a permission group"""
-    try:
-        group = global_roles.get_permission_group_by_hash(group_hash)
-        if not group:
-            raise HTTPException(status_code=404, detail="Permission group not found")
-        
-        permission = global_roles.get_permission_by_hash(permission_hash)
-        if not permission:
-            raise HTTPException(status_code=404, detail="Permission not found")
-        
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        success = global_roles.assign_permission_to_group(
-            permission_group_id=group['id'],
-            permission_id=permission['id'],
-            granted_by=user_data.id
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
         )
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to assign permission")
-        
-        return {
-            "success": True,
-            "message": f"Permission '{permission['permission_name']}' assigned to group '{group['group_name']}'"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error assigning permission: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to assign permission")
+    
+    permission = global_roles.get_permission_by_hash(permission_hash)
+    if not permission:
+        raise NotFoundError(
+            message="Permission not found",
+            error_code=ErrorCode.PERMISSION_NOT_FOUND,
+            details={"permission_hash": permission_hash}
+        )
+    
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    success = global_roles.assign_permission_to_group(
+        permission_group_id=group['id'],
+        permission_id=permission['id'],
+        granted_by=user_data.id
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to assign permission",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "assign_permission"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission '{permission['permission_name']}' assigned to group '{group['group_name']}'"
+    }
 
 
 @router.get("/permission-groups/{group_hash}/permissions")
 async def get_permission_group_permissions(group_hash: str, session_data=Depends(require_valid_session)):
     """Get all permissions in a permission group"""
-    try:
-        group = global_roles.get_permission_group_by_hash(group_hash)
-        if not group:
-            raise HTTPException(status_code=404, detail="Permission group not found")
-        
-        permissions = global_roles.get_permission_group_permissions(group['id'])
-        return {
-            "success": True,
-            "permission_group": {"group_hash": group_hash, "group_name": group['group_name']},
-            "permissions": permissions
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting permissions: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get permissions")
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    permissions = global_roles.get_permission_group_permissions(group['id'])
+    return {
+        "success": True,
+        "permission_group": {"group_hash": group_hash, "group_name": group['group_name']},
+        "permissions": permissions
+    }
 
 
 # =============================================================================
@@ -430,32 +463,35 @@ async def create_permission(
     session_data=Depends(require_admin)
 ):
     """Create a new global permission"""
-    try:
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        new_permission = global_roles.create_permission(
-            permission_name=permission_name,
-            permission_display_name=permission_display_name,
-            permission_description=permission_description,
-            permission_category=permission_category,
-            created_by=user_data.id
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
         )
-        
-        if not new_permission:
-            raise HTTPException(status_code=400, detail="Failed to create permission")
-        
-        return {
-            "success": True,
-            "message": f"Permission '{new_permission['permission_name']}' created successfully",
-            "permission": new_permission
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating permission: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create permission")
+    
+    # Database layer converts IntegrityError to ConflictError automatically
+    new_permission = global_roles.create_permission(
+        permission_name=permission_name,
+        permission_display_name=permission_display_name,
+        permission_description=permission_description,
+        permission_category=permission_category,
+        created_by=user_data.id
+    )
+    
+    if not new_permission:
+        raise InternalError(
+            message="Failed to create permission",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "create_permission"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission '{new_permission['permission_name']}' created successfully",
+        "permission": new_permission
+    }
 
 
 @router.get("/permissions")
@@ -466,32 +502,27 @@ async def list_permissions(
     session_data=Depends(require_valid_session)
 ):
     """List all global permissions"""
-    try:
-        permissions = global_roles.list_permissions(category=category, limit=limit, offset=offset)
-        return {
-            "success": True,
-            "permissions": permissions,
-            "pagination": {"limit": limit, "offset": offset, "total": len(permissions)}
-        }
-    except Exception as e:
-        logger.error(f"Error listing permissions: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to list permissions")
+    # Database function uses handle_db_operation - errors propagate to middleware
+    permissions = global_roles.list_permissions(category=category, limit=limit, offset=offset)
+    return {
+        "success": True,
+        "permissions": permissions,
+        "pagination": {"limit": limit, "offset": offset, "total": len(permissions)}
+    }
 
 
 @router.get("/permissions/{permission_hash}")
 async def get_permission(permission_hash: str, session_data=Depends(require_valid_session)):
     """Get permission by hash"""
-    try:
-        permission = global_roles.get_permission_by_hash(permission_hash)
-        if not permission:
-            raise HTTPException(status_code=404, detail="Permission not found")
-        
-        return {"success": True, "permission": permission}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting permission: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get permission")
+    permission = global_roles.get_permission_by_hash(permission_hash)
+    if not permission:
+        raise NotFoundError(
+            message="Permission not found",
+            error_code=ErrorCode.PERMISSION_NOT_FOUND,
+            details={"permission_hash": permission_hash}
+        )
+    
+    return {"success": True, "permission": permission}
 
 
 # =============================================================================
@@ -505,62 +536,74 @@ async def assign_role_to_user(
     session_data=Depends(require_admin)
 ):
     """Assign a role to a user"""
-    try:
-        # Check if user exists (including inactive)
-        user = get_user_by_hash(user_hash, include_inactive=True)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="Cannot assign role to inactive user")
-        
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        success = global_roles.assign_role_to_user(user.id, role['id'])
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to assign role")
-        
-        return {
-            "success": True,
-            "message": f"Role '{role['role_name']}' assigned to user '{user.username}'",
-            "user": {"user_hash": user_hash, "username": user.username},
-            "role": {"role_hash": role_hash, "role_name": role['role_name']}
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error assigning role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to assign role")
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="Cannot assign role to inactive user",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": user_hash}
+        )
+    
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    success = global_roles.assign_role_to_user(user.id, role['id'])
+    if not success:
+        raise InternalError(
+            message="Failed to assign role",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "assign_role_to_user"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Role '{role['role_name']}' assigned to user '{user.username}'",
+        "user": {"user_hash": user_hash, "username": user.username},
+        "role": {"role_hash": role_hash, "role_name": role['role_name']}
+    }
 
 
 @router.get("/users/{user_hash}/role")
 async def get_user_role(user_hash: str, session_data=Depends(require_valid_session)):
     """Get user's role"""
-    try:
-        # Check if user exists (including inactive)
-        user = get_user_by_hash(user_hash, include_inactive=True)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is inactive")
-        
-        role = global_roles.get_user_role(user.id)
-        
-        return {
-            "success": True,
-            "user": {"user_hash": user_hash, "username": user.username},
-            "role": role
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting user role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get user role")
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": user_hash}
+        )
+    
+    role = global_roles.get_user_role(user.id)
+    
+    return {
+        "success": True,
+        "user": {"user_hash": user_hash, "username": user.username},
+        "role": role
+    }
 
 
 # =============================================================================
@@ -570,103 +613,109 @@ async def get_user_role(user_hash: str, session_data=Depends(require_valid_sessi
 @router.get("/users/me/role")
 async def get_my_role(session_data=Depends(require_valid_session)):
     """Get current user's role"""
-    try:
-        # Check if user exists (including inactive)
-        user = get_user_by_hash(session_data.user_hash, include_inactive=True)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is inactive")
-        
-        role = global_roles.get_user_role(user.id)
-        
-        return {
-            "success": True,
-            "user": {"user_hash": session_data.user_hash, "username": user.username},
-            "role": role
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting my role: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get role")
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(session_data.user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    role = global_roles.get_user_role(user.id)
+    
+    return {
+        "success": True,
+        "user": {"user_hash": session_data.user_hash, "username": user.username},
+        "role": role
+    }
 
 
 @router.get("/users/me/permissions")
 async def get_my_permissions(session_data=Depends(require_valid_session)):
     """Get current user's permissions (GLOBAL - works everywhere)"""
-    try:
-        # Check if user exists (including inactive)
-        user = get_user_by_hash(session_data.user_hash, include_inactive=True)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is inactive")
-        
-        # Root users have all permissions
-        if user.user_type == 'root':
-            return {
-                "success": True,
-                "user": {"user_hash": session_data.user_hash, "username": user.username},
-                "permissions": ["*"],
-                "note": "Root user has all permissions"
-            }
-        
-        permissions = global_roles.get_user_permissions(user.id)
-        
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(session_data.user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    # Root users have all permissions
+    if user.user_type == 'root':
         return {
             "success": True,
             "user": {"user_hash": session_data.user_hash, "username": user.username},
-            "permissions": permissions,
-            "total": len(permissions)
+            "permissions": ["*"],
+            "note": "Root user has all permissions"
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting my permissions: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get permissions")
+    
+    permissions = global_roles.get_user_permissions(user.id)
+    
+    return {
+        "success": True,
+        "user": {"user_hash": session_data.user_hash, "username": user.username},
+        "permissions": permissions,
+        "total": len(permissions)
+    }
 
 
 @router.get("/users/me/permissions/check/{permission_name}")
 async def check_my_permission(permission_name: str, session_data=Depends(require_valid_session)):
     """Check if current user has a specific permission"""
-    try:
-        # Check if user exists (including inactive)
-        user = get_user_by_hash(session_data.user_hash, include_inactive=True)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is inactive")
-        
-        # Root users have all permissions
-        if user.user_type == 'root':
-            return {
-                "success": True,
-                "permission": permission_name,
-                "has_permission": True,
-                "reason": "Root user",
-                "checked_at": datetime.utcnow().isoformat()
-            }
-        
-        has_permission = global_roles.check_user_has_permission(user.id, permission_name)
-        
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(session_data.user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    # Root users have all permissions
+    if user.user_type == 'root':
         return {
             "success": True,
             "permission": permission_name,
-            "has_permission": has_permission,
+            "has_permission": True,
+            "reason": "Root user",
             "checked_at": datetime.utcnow().isoformat()
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking permission: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to check permission")
+    
+    has_permission = global_roles.check_user_has_permission(user.id, permission_name)
+    
+    return {
+        "success": True,
+        "permission": permission_name,
+        "has_permission": has_permission,
+        "checked_at": datetime.utcnow().isoformat()
+    }
 
 
 # =============================================================================
@@ -682,60 +731,68 @@ async def add_role_to_project_catalog(
     session_data=Depends(require_admin)
 ):
     """Add role to project catalog (METADATA ONLY - for UI suggestions)"""
-    try:
-        project = get_project_by_hash(project_hash)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        role = global_roles.get_role_by_hash(role_hash)
-        if not role:
-            raise HTTPException(status_code=404, detail="Role not found")
-        
-        user_data = get_user_by_hash(session_data.user_hash)
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        success = global_roles.add_role_to_project_catalog(
-            role_id=role['id'],
-            project_id=project.id,
-            catalog_purpose=catalog_purpose,
-            notes=notes,
-            added_by=user_data.id
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise NotFoundError(
+            message="Project not found",
+            error_code=ErrorCode.PROJECT_NOT_FOUND,
+            details={"project_hash": project_hash}
         )
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to add to catalog")
-        
-        return {
-            "success": True,
-            "message": f"Role '{role['role_name']}' added to project catalog",
-            "note": "This is METADATA ONLY - does not affect permissions"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error adding to catalog: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to add to catalog")
+    
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    success = global_roles.add_role_to_project_catalog(
+        role_id=role['id'],
+        project_id=project.id,
+        catalog_purpose=catalog_purpose,
+        notes=notes,
+        added_by=user_data.id
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to add to catalog",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "add_role_to_catalog"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Role '{role['role_name']}' added to project catalog",
+        "note": "This is METADATA ONLY - does not affect permissions"
+    }
 
 
 @router.get("/projects/{project_hash}/catalog/roles")
 async def get_project_cataloged_roles(project_hash: str, session_data=Depends(require_valid_session)):
     """Get roles cataloged for a project (METADATA - for UI suggestions)"""
-    try:
-        project = get_project_by_hash(project_hash)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        cataloged_roles = global_roles.get_project_cataloged_roles(project.id)
-        
-        return {
-            "success": True,
-            "project": {"project_hash": project_hash, "project_name": project.project_name},
-            "cataloged_roles": cataloged_roles,
-            "note": "These are suggestions only - any role can be used with this project"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting cataloged roles: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get cataloged roles")
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise NotFoundError(
+            message="Project not found",
+            error_code=ErrorCode.PROJECT_NOT_FOUND,
+            details={"project_hash": project_hash}
+        )
+    
+    cataloged_roles = global_roles.get_project_cataloged_roles(project.id)
+    
+    return {
+        "success": True,
+        "project": {"project_hash": project_hash, "project_name": project.project_name},
+        "cataloged_roles": cataloged_roles,
+        "note": "These are suggestions only - any role can be used with this project"
+    }

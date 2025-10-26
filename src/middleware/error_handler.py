@@ -6,7 +6,10 @@ with UUID masking and detailed error descriptions.
 """
 
 import logging
-from typing import Union
+import traceback
+import inspect
+import sys
+from typing import Union, Optional, Dict, Any
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -19,15 +22,96 @@ from src.Util.error_handler import (
     ErrorCode,
     ErrorCategory,
     ValidationError,
-    log_error
+    log_error,
+    mask_uuid
 )
 
 logger = logging.getLogger(__name__)
 
 
+def extract_function_context_from_exception() -> Optional[Dict[str, Any]]:
+    """
+    Extract function name and parameters from the exception's traceback.
+    
+    This automatically captures where the exception was raised by inspecting
+    the exception's traceback (not the current stack!) and extracting the 
+    function name and its parameters.
+    
+    Returns:
+        Dictionary with 'name' and 'params' or None if extraction fails
+    """
+    try:
+        # Get the exception info - THIS is the key!
+        # We need the traceback from when the exception was raised,
+        # not the current call stack
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        
+        if not exc_traceback:
+            return None
+        
+        # Walk the traceback frames to find the route handler
+        tb = exc_traceback
+        while tb is not None:
+            frame = tb.tb_frame
+            filepath = frame.f_code.co_filename
+            function_name = frame.f_code.co_name
+            
+            # Look for frames in src/routes/ (the route handler)
+            if '/src/routes/' in filepath and not filepath.endswith('error_handler.py'):
+                # Skip internal FastAPI/Starlette functions
+                if function_name.startswith('_') or function_name in ['app', 'wrapped_app']:
+                    tb = tb.tb_next
+                    continue
+                
+                # Get local variables (function parameters) from the frame
+                local_vars = frame.f_locals
+                
+                # Extract relevant parameters (skip internal FastAPI stuff)
+                params = {}
+                skip_params = {'request', 'response', 'credentials', 'session_data', 
+                              'log_context', 'self', 'cls', '__class__'}
+                
+                for key, value in local_vars.items():
+                    if key in skip_params or key.startswith('_'):
+                        continue
+                    
+                    # Convert value to string representation
+                    if isinstance(value, str):
+                        # Mask UUIDs in string values
+                        params[key] = mask_uuid(value)
+                    elif isinstance(value, (int, float, bool)):
+                        params[key] = value
+                    elif value is None:
+                        params[key] = None
+                    elif hasattr(value, 'user_hash'):
+                        # Session data or user object
+                        params[key] = mask_uuid(value.user_hash)
+                    elif hasattr(value, 'project_hash'):
+                        params[key] = mask_uuid(value.project_hash)
+                    else:
+                        # For other objects, just use their type
+                        params[key] = f"<{type(value).__name__}>"
+                
+                return {
+                    "name": function_name,
+                    "params": params
+                }
+            
+            tb = tb.tb_next
+        
+        return None
+    except Exception as e:
+        # Don't let context extraction break error handling
+        logger.debug(f"Failed to extract function context: {e}")
+        return None
+
+
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """
     Handle custom AppException instances.
+    
+    Automatically extracts function context (name and parameters) from the
+    traceback if not already provided in the exception.
     
     Args:
         request: FastAPI request object
@@ -36,16 +120,49 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     Returns:
         JSONResponse with standardized error format
     """
-    # Log the error with request context
-    log_error(exc, {
+    # Build request context for logging and error details
+    request_context = {
         "path": request.url.path,
         "method": request.method,
-        "client": request.client.host if request.client else "unknown"
-    })
+        "client": request.client.host if request.client else "unknown",
+        "query_params": dict(request.query_params) if request.query_params else {},
+    }
+    
+    # Automatically extract function context if not already provided
+    # This is the key: we don't need to manually add error_context everywhere!
+    if not hasattr(exc, 'error_context') or not exc.error_context:
+        function_context = extract_function_context_from_exception()
+        logger.debug(f"Extracted function context: {function_context}")
+        if function_context:
+            # Build error_context string in function call format
+            params_str = ', '.join([f"{k}={v!r}" for k, v in function_context['params'].items()])
+            exc.error_context = f"{function_context['name']}({params_str})"
+            logger.debug(f"Set error_context: {exc.error_context}")
+        else:
+            logger.warning("Failed to extract function context from traceback")
+    
+    # Log the error with request context
+    log_error(exc, request_context)
+    
+    # Get error response
+    response_data = exc.to_dict()
+    
+    # Add API context to details if DEBUG_MODE is enabled
+    from src.Util.error_handler import DEBUG_MODE
+    if DEBUG_MODE and "error" in response_data and "details" in response_data["error"]:
+        if "api_error" not in response_data["error"]["details"]:
+            response_data["error"]["details"]["api_error"] = {}
+        
+        response_data["error"]["details"]["api_error"].update({
+            "endpoint": request.url.path,
+            "method": request.method,
+            "query_params": request_context["query_params"],
+            "client_host": request_context["client"]
+        })
     
     return JSONResponse(
         status_code=exc.status_code,
-        content=exc.to_dict()
+        content=response_data
     )
 
 
@@ -88,13 +205,37 @@ async def http_exception_handler(request: Request, exc: Union[HTTPException, Sta
     sanitized_detail = sanitize_error_message(str(exc.detail))
     
     response = {
-        "success": False,
+        "status": "error",
         "error": {
             "code": error_code.value,
             "category": category.value,
             "message": sanitized_detail,
         }
     }
+    
+    # Add detailed information in DEBUG_MODE
+    from src.Util.error_handler import DEBUG_MODE
+    import traceback
+    import sys
+    
+    if DEBUG_MODE:
+        response["error"]["details"] = {
+            "error_type": type(exc).__name__,
+            "error_message": sanitized_detail,
+            "api_error": {
+                "endpoint": request.url.path,
+                "method": request.method,
+                "query_params": dict(request.query_params) if request.query_params else {},
+                "client_host": request.client.host if request.client else "unknown"
+            }
+        }
+        
+        # Include trace
+        exc_info = sys.exc_info()
+        if exc_info[0] is not None:
+            response["error"]["trace"] = ''.join(traceback.format_exception(*exc_info))
+        else:
+            response["error"]["trace"] = ''.join(traceback.format_stack())
     
     logger.warning(
         f"HTTP {status_code} - {sanitized_detail}",
@@ -135,16 +276,41 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "type": error_type
         })
     
-    response = {
-        "success": False,
-        "error": {
-            "code": ErrorCode.INVALID_INPUT.value,
-            "category": ErrorCategory.VALIDATION.value,
-            "message": "Request validation failed",
-            "details": {
-                "validation_errors": validation_errors
-            }
+    # Build error response
+    error_dict = {
+        "code": ErrorCode.INVALID_INPUT.value,
+        "category": ErrorCategory.VALIDATION.value,
+        "message": "Request validation failed",
+    }
+    
+    # Always include validation errors in details (these are safe to expose)
+    error_dict["details"] = {
+        "validation_errors": validation_errors
+    }
+    
+    # Add API context and trace in DEBUG_MODE
+    from src.Util.error_handler import DEBUG_MODE
+    import traceback
+    import sys
+    
+    if DEBUG_MODE:
+        error_dict["details"]["api_error"] = {
+            "endpoint": request.url.path,
+            "method": request.method,
+            "query_params": dict(request.query_params) if request.query_params else {},
+            "client_host": request.client.host if request.client else "unknown"
         }
+        
+        # Include trace
+        exc_info = sys.exc_info()
+        if exc_info[0] is not None:
+            error_dict["trace"] = ''.join(traceback.format_exception(*exc_info))
+        else:
+            error_dict["trace"] = ''.join(traceback.format_stack())
+    
+    response = {
+        "status": "error",
+        "error": error_dict
     }
     
     logger.warning(
@@ -184,8 +350,24 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         }
     )
     
-    # Build sanitized response
-    response = build_error_response(exc, include_traceback=False)
+    # Build sanitized response (traceback included only if DEBUG_MODE is True)
+    response = build_error_response(exc, include_traceback=True)
+    
+    # Add API context to details if DEBUG_MODE is enabled
+    from src.Util.error_handler import DEBUG_MODE
+    if DEBUG_MODE and "error" in response:
+        if "details" not in response["error"]:
+            response["error"]["details"] = {}
+        
+        if "api_error" not in response["error"]["details"]:
+            response["error"]["details"]["api_error"] = {}
+        
+        response["error"]["details"]["api_error"].update({
+            "endpoint": request.url.path,
+            "method": request.method,
+            "query_params": dict(request.query_params) if request.query_params else {},
+            "client_host": request.client.host if request.client else "unknown"
+        })
     
     return JSONResponse(
         status_code=500,

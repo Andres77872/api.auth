@@ -647,30 +647,33 @@ async def check_availability(
     Returns:
         Availability status for username and email
     """
-    try:
-        check_username = username
-        check_email = email
+    check_username = username
+    check_email = email
 
-        if not check_username and not check_email:
-            raise HTTPException(status_code=400, detail="Username or email required")
-
-        username_available = None
-        email_available = None
-
-        if check_username:
-            username_available = check_username_email_available(check_username)
-
-        if check_email:
-            email_available = check_username_email_available(check_email)
-
-        return CheckAvailabilityResponse(
-            success=True,
-            username_available=username_available,
-            email_available=email_available
+    if not check_username and not check_email:
+        raise ValidationError(
+            message="Username or email required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"required_fields": ["username", "email"]}
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Availability check error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Availability check error")
+    username_available = None
+    email_available = None
+
+    if check_username:
+        username_available = handle_db_operation(
+            lambda: check_username_email_available(check_username),
+            error_context="username availability check"
+        )
+
+    if check_email:
+        email_available = handle_db_operation(
+            lambda: check_username_email_available(check_email),
+            error_context="email availability check"
+        )
+
+    return CheckAvailabilityResponse(
+        success=True,
+        username_available=username_available,
+        email_available=email_available
+    )

@@ -1,6 +1,10 @@
+-- ===================================================================================
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
 -- Foreign Keys and Constraints Script (Updated for Group-Based Access)
+-- ===================================================================================
+-- This script adds all foreign key constraints and triggers for data integrity
 -- MySQL Database
+-- ===================================================================================
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -9,7 +13,9 @@ USE magic_auth;
 -- =================== USERS TABLE CONSTRAINTS ===================
 ALTER TABLE users
     ADD CONSTRAINT fk_users_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
+        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    ADD CONSTRAINT fk_user_role FOREIGN KEY (role_id) 
+        REFERENCES roles(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- =================== PROJECTS TABLE CONSTRAINTS ===================
 ALTER TABLE projects
@@ -60,11 +66,6 @@ ALTER TABLE project_group_members
     ADD CONSTRAINT fk_project_group_members_removed_by FOREIGN KEY (removed_by) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- =================== DEPRECATED CONSTRAINTS REMOVED ===================
--- Old project-specific permission tables (permissions, permission_groups,
--- permission_group_permissions, user_group_permission_groups) have been
--- replaced by the global role system
-
 -- =================== USER_SESSIONS TABLE CONSTRAINTS ===================
 ALTER TABLE user_sessions
     ADD CONSTRAINT fk_user_sessions_user FOREIGN KEY (user_id) 
@@ -103,8 +104,6 @@ ALTER TABLE permission_cache
     ADD CONSTRAINT fk_permission_cache_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
--- =================== ADDITIONAL TABLE CONSTRAINTS ===================
-
 -- =================== USER_PASSWORD_RESETS TABLE CONSTRAINTS ===================
 ALTER TABLE user_password_resets
     ADD CONSTRAINT fk_user_password_resets_user FOREIGN KEY (user_id) 
@@ -128,10 +127,11 @@ ALTER TABLE bulk_operations_log
     ADD CONSTRAINT fk_bulk_ops_performed_by FOREIGN KEY (performed_by) 
         REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
--- =================== DATA INTEGRITY CONSTRAINTS ===================
+-- =================== DATA INTEGRITY TRIGGERS ===================
+
+DELIMITER $$
 
 -- Ensure hierarchical user groups don't create cycles
-DELIMITER $$
 CREATE TRIGGER tr_validate_user_group_hierarchy
 BEFORE INSERT ON user_groups
 FOR EACH ROW
@@ -199,8 +199,6 @@ BEGIN
     SET NEW.updated_at = NOW();
 END$$
 
--- Deprecated table triggers removed (permissions, permission_groups)
-
 -- Trigger to automatically update updated_at field for activity_catalog table
 CREATE TRIGGER tr_activity_catalog_updated_at
 BEFORE UPDATE ON activity_catalog
@@ -209,10 +207,31 @@ BEGIN
     SET NEW.updated_at = NOW();
 END$$
 
--- Deprecated table triggers removed (permission hierarchy validation triggers)
+-- Trigger to automatically update updated_at field for roles table
+CREATE TRIGGER tr_roles_updated_at
+BEFORE UPDATE ON roles
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for global_permission_groups table
+CREATE TRIGGER tr_global_permission_groups_updated_at
+BEFORE UPDATE ON global_permission_groups
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
+
+-- Trigger to automatically update updated_at field for global_permissions table
+CREATE TRIGGER tr_global_permissions_updated_at
+BEFORE UPDATE ON global_permissions
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = NOW();
+END$$
 
 -- Ensure session tokens expire in the future when created
-DELIMITER $$
 CREATE TRIGGER tr_validate_session_expiry
 BEFORE INSERT ON user_sessions
 FOR EACH ROW
@@ -222,10 +241,8 @@ BEGIN
         SET MESSAGE_TEXT = 'Session expiry must be in the future';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure permission cache entries expire in the future
-DELIMITER $$
 CREATE TRIGGER tr_validate_permission_cache_expiry
 BEFORE INSERT ON permission_cache
 FOR EACH ROW
@@ -235,10 +252,8 @@ BEGIN
         SET MESSAGE_TEXT = 'Permission cache expiry must be in the future';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure password reset tokens expire in the future when created
-DELIMITER $$
 CREATE TRIGGER tr_validate_password_reset_expiry
 BEFORE INSERT ON user_password_resets
 FOR EACH ROW
@@ -248,10 +263,8 @@ BEGIN
         SET MESSAGE_TEXT = 'Password reset expiry must be in the future';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure bulk operations have valid counts
-DELIMITER $$
 CREATE TRIGGER tr_validate_bulk_operation_counts
 BEFORE INSERT ON bulk_operations_log
 FOR EACH ROW
@@ -265,10 +278,8 @@ BEGIN
         SET MESSAGE_TEXT = 'Sum of success and error counts cannot exceed target count';
     END IF;
 END$$
-DELIMITER ;
 
 -- Ensure bulk operations completion time is after start time
-DELIMITER $$
 CREATE TRIGGER tr_validate_bulk_operation_completion
 BEFORE UPDATE ON bulk_operations_log
 FOR EACH ROW
@@ -278,67 +289,10 @@ BEGIN
         SET MESSAGE_TEXT = 'Bulk operation completion time must be after start time';
     END IF;
 END$$
+
 DELIMITER ;
 
--- =================== GLOBAL ROLE SYSTEM CONSTRAINTS ===================
+-- =================== CONSTRAINTS AND TRIGGERS COMPLETE ===================
+SELECT 'All constraints and triggers created successfully!' as status,
+       '30+ foreign keys and 12 triggers created for data integrity' as details;
 
--- Add foreign key constraint for users.role_id
-ALTER TABLE users
-    ADD CONSTRAINT fk_user_role FOREIGN KEY (role_id) 
-        REFERENCES roles(id) ON DELETE SET NULL ON UPDATE CASCADE;
-
--- Trigger to automatically update updated_at field for roles table
-DELIMITER $$
-CREATE TRIGGER tr_roles_updated_at
-BEFORE UPDATE ON roles
-FOR EACH ROW
-BEGIN
-    SET NEW.updated_at = NOW();
-END$$
-DELIMITER ;
-
--- Trigger to automatically update updated_at field for global_permission_groups table
-DELIMITER $$
-CREATE TRIGGER tr_global_permission_groups_updated_at
-BEFORE UPDATE ON global_permission_groups
-FOR EACH ROW
-BEGIN
-    SET NEW.updated_at = NOW();
-END$$
-DELIMITER ;
-
--- Trigger to automatically update updated_at field for global_permissions table
-DELIMITER $$
-CREATE TRIGGER tr_global_permissions_updated_at
-BEFORE UPDATE ON global_permissions
-FOR EACH ROW
-BEGIN
-    SET NEW.updated_at = NOW();
-END$$
-DELIMITER ;
-
--- =================== REV2: PERMISSION ASSIGNMENT SYSTEM CONSTRAINTS ===================
--- Foreign key constraints for user group and direct user permission assignments
--- Note: Most constraints are defined inline in CREATE TABLE statements in 02_create_tables.sql
--- This section documents the constraint architecture for reference
-
--- USER_GROUP_PERMISSION_GROUPS TABLE CONSTRAINTS (defined inline):
--- - fk: user_group_id → user_groups(id) ON DELETE CASCADE
--- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
--- - fk: assigned_by → users(id) ON DELETE SET NULL
--- - fk: removed_by → users(id) ON DELETE SET NULL
-
--- USER_PERMISSION_GROUPS TABLE CONSTRAINTS (defined inline):
--- - fk: user_id → users(id) ON DELETE CASCADE
--- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
--- - fk: assigned_by → users(id) ON DELETE SET NULL
--- - fk: removed_by → users(id) ON DELETE SET NULL
-
--- PERMISSION_GROUP_PROJECT_CATALOG TABLE CONSTRAINTS (defined inline):
--- - fk: permission_group_id → global_permission_groups(id) ON DELETE CASCADE
--- - fk: project_id → projects(id) ON DELETE CASCADE
--- - fk: added_by → users(id) ON DELETE SET NULL
--- - fk: removed_by → users(id) ON DELETE SET NULL
-
--- Note: All Rev2 permission assignment constraints are implemented inline
--- in the table definitions for clarity and immediate validation during table creation. 

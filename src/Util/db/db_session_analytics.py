@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from src.Util.db_config import get_connection, redis_client
+from src.Util.db_error_wrapper import handle_db_operation
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -71,28 +72,33 @@ def get_session_statistics() -> Dict[str, Any]:
 
 def get_user_status(user_id: str) -> Optional[bool]:
     """
-    Get user's active status
+    Get user's active status.
     
     Args:
         user_id: User ID
         
     Returns:
         User's active status or None if not found
+        
+    Raises:
+        DatabaseError: On database operation errors
     """
-    try:
+    def _get():
         with get_connection() as con:
             cur = con.cursor()
-            cur.execute("SELECT is_active FROM users WHERE id = %s", [user_id])
+            cur.callproc('sp_get_user_status', [user_id])
             result = cur.fetchone()
             return bool(result[0]) if result else None
-    except Exception as e:
-        logger.error(f"Failed to get user status: {str(e)}")
-        return None
+    
+    return handle_db_operation(
+        _get,
+        error_context=f"get_user_status(user_id={user_id})"
+    )
 
 
 def set_user_status(user_id: str, is_active: bool, updated_by: Optional[str] = None) -> bool:
     """
-    Set user's active status
+    Set user's active status.
     
     Args:
         user_id: User ID
@@ -100,101 +106,98 @@ def set_user_status(user_id: str, is_active: bool, updated_by: Optional[str] = N
         updated_by: ID of user making the change
         
     Returns:
-        Success status
+        True if status set successfully
+        
+    Raises:
+        NotFoundError: If user not found
+        DatabaseError: On database operation errors
     """
-    try:
+    def _set():
         with get_connection() as con:
             cur = con.cursor()
-            cur.execute("""
-                        UPDATE users
-                        SET is_active  = %s,
-                            updated_at = NOW()
-                        WHERE id = %s
-                        """, [is_active, user_id])
+            cur.callproc('sp_set_user_status', [user_id, is_active])
+            con.commit()
+            success = True
 
-            success = cur.rowcount > 0
-            if success:
-                con.commit()
-
-                # Log the status change
-                try:
-                    from src.Util.activity_logger import ActivityType, log_activity
-                    log_activity(
-                        user_id=updated_by,
-                        activity_type=ActivityType.USER_STATUS_CHANGE.value,
-                        details={
-                            "target_user_id": user_id,
-                            "new_status": "active" if is_active else "inactive",
-                            "action": "activate" if is_active else "deactivate"
-                        },
-                        target_user_id=user_id
-                    )
-                except:
-                    pass  # Don't fail if activity logging fails
+            # Log the status change
+            try:
+                from src.Util.activity_logger import ActivityType, log_activity
+                log_activity(
+                    user_id=updated_by,
+                    activity_type=ActivityType.USER_STATUS_CHANGE.value,
+                    details={
+                        "target_user_id": user_id,
+                        "new_status": "active" if is_active else "inactive",
+                        "action": "activate" if is_active else "deactivate"
+                    },
+                    target_user_id=user_id
+                )
+            except:
+                pass  # Don't fail if activity logging fails
 
             return success
-
-    except Exception as e:
-        logger.error(f"Failed to set user status: {str(e)}")
-        return False
+    
+    return handle_db_operation(
+        _set,
+        error_context=f"set_user_status(user_id={user_id}, is_active={is_active})"
+    )
 
 
 def get_recent_users_count(days: int = 30) -> int:
     """
-    Get count of users created in the last N days
+    Get count of users created in the last N days.
     
     Args:
         days: Number of days to look back
         
     Returns:
-        Count of recent users
+        Count of recent users (0 on error)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns 0 on error to prevent breaking analytics dashboards.
     """
-    try:
+    def _count():
         with get_connection() as con:
             cur = con.cursor()
-            cur.execute("""
-                        SELECT COUNT(*)
-                        FROM users
-                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                          AND is_active = 1
-                        """, [days])
+            cur.callproc('sp_get_recent_users_count', [days])
             result = cur.fetchone()
             return result[0] if result else 0
-    except Exception as e:
-        logger.error(f"Failed to get recent users count: {str(e)}")
-        return 0
+    
+    return handle_db_operation(
+        _count,
+        error_context=f"get_recent_users_count(days={days})",
+        default_return=0
+    )
 
 
 def get_user_login_statistics(days: int = 30) -> Dict[str, Any]:
     """
-    Get user login statistics
+    Get user login statistics.
     
     Args:
         days: Number of days to look back
         
     Returns:
-        Dictionary with login statistics
+        Dictionary with login statistics (error dict on failure)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns safe error dict to prevent breaking analytics dashboards.
     """
-    try:
+    def _get():
         with get_connection() as con:
             cur = con.cursor()
 
             # Try to get login stats from activity logs (if table exists)
             try:
-                cur.execute("""
-                            SELECT COUNT(*)
-                            FROM activity_logs
-                            WHERE activity_type = 'user_login'
-                              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                            """, [days])
+                cur.callproc('sp_get_login_statistics', [days])
                 login_count = cur.fetchone()[0]
-
-                cur.execute("""
-                            SELECT COUNT(DISTINCT user_id)
-                            FROM activity_logs
-                            WHERE activity_type = 'user_login'
-                              AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                            """, [days])
+                cur.nextset()
                 unique_users = cur.fetchone()[0]
 
                 return {
@@ -218,77 +221,66 @@ def get_user_login_statistics(days: int = 30) -> Dict[str, Any]:
                     "period_days": days,
                     "source": "estimated"
                 }
-
-    except Exception as e:
-        logger.error(f"Failed to get login statistics: {str(e)}")
-        return {"total_logins": 0, "unique_users": 0, "period_days": days, "source": "error"}
+    
+    return handle_db_operation(
+        _get,
+        error_context=f"get_user_login_statistics(days={days})",
+        default_return={"total_logins": 0, "unique_users": 0, "period_days": days, "source": "error"}
+    )
 
 
 # =================== PROJECT ANALYTICS ===================
 
 def get_recent_projects_count(days: int = 30) -> int:
     """
-    Get count of projects created in the last N days
+    Get count of projects created in the last N days.
     
     Args:
         days: Number of days to look back
         
     Returns:
-        Count of recent projects
+        Count of recent projects (0 on error)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns 0 on error to prevent breaking analytics dashboards.
     """
-    try:
+    def _count():
         with get_connection() as con:
             cur = con.cursor()
-            cur.execute("""
-                        SELECT COUNT(*)
-                        FROM projects
-                        WHERE project_created >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                          AND is_active = 1
-                        """, [days])
+            cur.callproc('sp_get_recent_projects_count', [days])
             result = cur.fetchone()
             return result[0] if result else 0
-    except Exception as e:
-        logger.error(f"Failed to get recent projects count: {str(e)}")
-        return 0
+    
+    return handle_db_operation(
+        _count,
+        error_context=f"get_recent_projects_count(days={days})",
+        default_return=0
+    )
 
 
 def get_project_members(project_id: str) -> List[Dict[str, Any]]:
-    """Get all members of a project with their access details
+    """
+    Get all members of a project with their access details.
     
     Args:
         project_id: Project ID
         
     Returns:
-        List of project members with details
+        List of project members with details (empty list on error)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns empty list on error to prevent breaking dashboards.
     """
-    try:
+    def _get():
         with get_connection() as con:
             cur = con.cursor()
-
-            # Query to get all users with access to this project through user groups
-            cur.execute("""
-                        SELECT DISTINCT u.id,
-                                        u.user_hash,
-                                        u.username,
-                                        u.email,
-                                        u.user_type,
-                                        u.is_active,
-                                        u.created_at,
-                                        ugp.granted_at,
-                                        ugp.granted_by,
-                                        ug.group_name
-                        FROM users u
-                        LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
-                        LEFT JOIN user_group_projects ugp ON ugm.user_group_id = ugp.user_group_id AND ugp.project_id = %s AND ugp.is_active = 1
-                        LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
-                        WHERE u.is_active = 1
-                          AND (
-                            u.user_type = 'root' OR
-                            ugp.user_group_id IS NOT NULL
-                          )
-                        ORDER BY u.user_type, u.username
-                        """, [project_id])
-
+            cur.callproc('sp_get_project_members', [project_id])
             results = cur.fetchall()
 
             members = []
@@ -309,15 +301,17 @@ def get_project_members(project_id: str) -> List[Dict[str, Any]]:
                 members.append(member)
 
             return members
-
-    except Exception as e:
-        logger.error(f"Failed to get project members: {str(e)}")
-        return []
+    
+    return handle_db_operation(
+        _get,
+        error_context=f"get_project_members(project_id={project_id})",
+        default_return=[]
+    )
 
 
 def add_user_to_project(user_id: str, project_id: str, assigned_by: Optional[str] = None) -> bool:
     """
-    Add a user to a project (for consumer users)
+    Add a user to a project (for consumer users).
     
     Args:
         user_id: User ID
@@ -325,9 +319,14 @@ def add_user_to_project(user_id: str, project_id: str, assigned_by: Optional[str
         assigned_by: ID of user making the assignment
         
     Returns:
-        Success status
+        True if added successfully
+        
+    Raises:
+        NotFoundError: If user not found
+        ValidationError: If user type invalid
+        DatabaseError: On database operation errors
     """
-    try:
+    def _add():
         # Import here to avoid circular imports
         from src.Util.db import grant_user_project_access, get_user_by_id
 
@@ -387,25 +386,29 @@ def add_user_to_project(user_id: str, project_id: str, assigned_by: Optional[str
 
         # Root users automatically have access to all projects
         return user.user_type == 'root'
-
-    except Exception as e:
-        logger.error(f"Failed to add user to project: {str(e)}")
-        return False
+    
+    return handle_db_operation(
+        _add,
+        error_context=f"add_user_to_project(user_id={user_id}, project_id={project_id})"
+    )
 
 
 # =================== SYSTEM HEALTH ===================
 
 def check_database_health() -> Dict[str, Any]:
     """
-    Check database connectivity and health
+    Check database connectivity and health.
     
     Returns:
-        Database health information
+        Database health information (never raises exceptions)
+        
+    Note:
+        Always returns a dict with health status, never fails.
     """
-    try:
+    def _check():
         with get_connection() as con:
             cur = con.cursor()
-            cur.execute("SELECT 1")
+            cur.callproc('sp_check_database_health', [])
             cur.fetchone()
 
         return {
@@ -413,20 +416,27 @@ def check_database_health() -> Dict[str, Any]:
             "message": "Database accessible",
             "timestamp": datetime.utcnow().isoformat()
         }
-    except Exception as e:
-        return {
+    
+    return handle_db_operation(
+        _check,
+        error_context="check_database_health()",
+        default_return={
             "status": "unhealthy",
-            "message": f"Database error: {str(e)}",
+            "message": "Database error",
             "timestamp": datetime.utcnow().isoformat()
         }
+    )
 
 
 def check_redis_health() -> Dict[str, Any]:
     """
-    Check Redis connectivity and health
+    Check Redis connectivity and health.
     
     Returns:
-        Redis health information
+        Redis health information (never raises exceptions)
+        
+    Note:
+        Always returns a dict with health status, never fails.
     """
     try:
         redis_client.ping()
@@ -447,30 +457,36 @@ def check_redis_health() -> Dict[str, Any]:
 
 def get_recent_activity_count(days: int = 7) -> int:
     """
-    Get count of recent activities
+    Get count of recent activities.
     
     Args:
         days: Number of days to look back
         
     Returns:
-        Count of recent activities
+        Count of recent activities (0 on error)
+        
+    Note:
+        Returns 0 on error to prevent breaking dashboards.
     """
-    try:
+    def _count():
         # Try to use activity logs if available
-        from src.Util.activity_logger import count_activity_logs
-        return count_activity_logs(days=days)
-    except Exception:
-        # Fallback: estimate based on user and project activity
         try:
+            from src.Util.activity_logger import count_activity_logs
+            return count_activity_logs(days=days)
+        except Exception:
+            # Fallback: estimate based on user and project activity
             recent_users = get_recent_users_count(days)
             recent_projects = get_recent_projects_count(days)
             active_sessions = count_active_sessions()
 
             # Rough estimate of activity
             return recent_users + recent_projects + (active_sessions // 10)
-        except Exception as e:
-            logger.error(f"Failed to get recent activity count: {str(e)}")
-            return 0
+    
+    return handle_db_operation(
+        _count,
+        error_context=f"get_recent_activity_count(days={days})",
+        default_return=0
+    )
 
 
 def initialize_activity_logs_table() -> bool:

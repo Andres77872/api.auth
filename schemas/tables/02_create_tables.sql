@@ -1,6 +1,10 @@
+-- ===================================================================================
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
 -- Table Creation Script (Restructured for Group-Based Access)
+-- ===================================================================================
+-- This script creates all tables needed for the authentication system
 -- MySQL Database
+-- ===================================================================================
 
 USE magic_auth;
 
@@ -16,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_type ENUM('root', 'admin', 'consumer') NOT NULL DEFAULT 'consumer',
     role_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login DATETIME NULL,
     updated_at DATETIME,
     created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -127,7 +132,6 @@ CREATE TABLE IF NOT EXISTS project_group_members (
     UNIQUE KEY uk_project_group_member (project_id, project_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-
 -- =================== USER_SESSIONS TABLE ===================
 -- Session management - simplified to work with user groups
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -210,8 +214,6 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     INDEX idx_activity_catalog (activity_catalog_id),
     FOREIGN KEY (activity_catalog_id) REFERENCES activity_catalog(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== ADDITIONAL ENHANCEMENT TABLES ===================
 
 -- =================== USER_PASSWORD_RESETS TABLE ===================
 CREATE TABLE IF NOT EXISTS user_password_resets (
@@ -518,3 +520,8 @@ CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
     FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== TABLE CREATION COMPLETE ===================
+SELECT 'All tables created successfully!' as status, 
+       '39 tables created for complete authentication system' as details;
+

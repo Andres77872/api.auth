@@ -20,6 +20,11 @@ from src.Util.bulk_operations import (
     bulk_assign_roles, bulk_add_users_to_group
 )
 from src.Util.db import validate_session, get_user_by_hash
+from src.Util.error_handler import (
+    AuthenticationError, AuthorizationError, ValidationError,
+    NotFoundError, InternalError, ErrorCode, mask_uuid
+)
+from src.Util.db_error_wrapper import handle_db_operation
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -55,77 +60,103 @@ async def bulk_update_users_endpoint(
     Returns:
         Success/error count with details
     """
-    try:
-        session_token = credentials.credentials
-        session_data = validate_session(session_token)
+    session_token = credentials.credentials
+    session_data = handle_db_operation(
+        lambda: validate_session(session_token),
+        error_context="session validation for bulk update"
+    )
 
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
-
-        # Check admin permissions
-        current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
-
-        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required for bulk operations")
-
-        # Validate input
-        if not user_hashes:
-            raise HTTPException(status_code=400, detail="At least one user hash is required")
-
-        if len(user_hashes) > 100:
-            raise HTTPException(status_code=400, detail="Maximum 100 users can be updated at once")
-
-        # Validate user type if provided
-        if user_type and user_type not in ['root', 'admin', 'consumer']:
-            raise HTTPException(status_code=400, detail="Invalid user type")
-
-        # Build updates dictionary
-        updates = {}
-        if is_active is not None:
-            updates['is_active'] = is_active
-        if user_type:
-            updates['user_type'] = user_type
-        if force_password_reset is not None:
-            updates['force_password_reset'] = force_password_reset
-
-        if not updates:
-            raise HTTPException(status_code=400, detail="At least one update field is required")
-
-        # Perform bulk update
-        result = bulk_update_users(user_hashes, updates, current_user.id)
-
-        # Log the activity
-        ActivityLogger.log_bulk_user_update(
-            current_user.id,
-            count=result['success_count'],
-            project_id=getattr(session_data, 'project_id', None)
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
         )
 
-        logger.info(
-            f"Bulk user update by {current_user.username}: {result['success_count']} succeeded, {result['error_count']} failed")
+    # Check admin permissions
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(session_data.user_hash),
+        error_context="get current user for bulk update",
+        not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
+    )
+    user_permissions = getattr(session_data, 'permissions', [])
 
-        return {
-            "success": True,
-            "message": f"Bulk update completed: {result['success_count']} succeeded, {result['error_count']} failed",
-            "summary": {
-                "total_requested": len(user_hashes),
-                "success_count": result['success_count'],
-                "error_count": result['error_count'],
-                "skipped_count": result.get('skipped_count', 0)
-            },
-            "updates_applied": updates,
-            "results": result['results'],
-            "errors": result.get('errors', []),
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
-        }
+    if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+        raise AuthorizationError(
+            message="Admin permission required for bulk operations",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_permission": "admin or manage_users"}
+        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk update error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Bulk update failed")
+    # Validate input
+    if not user_hashes:
+        raise ValidationError(
+            message="At least one user hash is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"field": "user_hashes"}
+        )
+
+    if len(user_hashes) > 100:
+        raise ValidationError(
+            message="Maximum 100 users can be updated at once",
+            error_code=ErrorCode.INVALID_LENGTH,
+            details={"max_length": 100, "provided_length": len(user_hashes)}
+        )
+
+    # Validate user type if provided
+    if user_type and user_type not in ['root', 'admin', 'consumer']:
+        raise ValidationError(
+            message="Invalid user type",
+            error_code=ErrorCode.INVALID_ENUM_VALUE,
+            details={"field": "user_type", "allowed_values": ["root", "admin", "consumer"]}
+        )
+
+    # Build updates dictionary
+    updates = {}
+    if is_active is not None:
+        updates['is_active'] = is_active
+    if user_type:
+        updates['user_type'] = user_type
+    if force_password_reset is not None:
+        updates['force_password_reset'] = force_password_reset
+
+    if not updates:
+        raise ValidationError(
+            message="At least one update field is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"required_fields": ["is_active", "user_type", "force_password_reset"]}
+        )
+
+    # Perform bulk update
+    result = handle_db_operation(
+        lambda: bulk_update_users(user_hashes, updates, current_user.id),
+        error_context="bulk user update operation"
+    )
+
+    # Log the activity
+    ActivityLogger.log_bulk_user_update(
+        current_user.id,
+        count=result['success_count'],
+        project_id=getattr(session_data, 'project_id', None)
+    )
+
+    logger.info(
+        f"Bulk user update by {current_user.username}: {result['success_count']} succeeded, {result['error_count']} failed")
+
+    return {
+        "success": True,
+        "message": f"Bulk update completed: {result['success_count']} succeeded, {result['error_count']} failed",
+        "summary": {
+            "total_requested": len(user_hashes),
+            "success_count": result['success_count'],
+            "error_count": result['error_count'],
+            "skipped_count": result.get('skipped_count', 0)
+        },
+        "updates_applied": updates,
+        "results": result['results'],
+        "errors": result.get('errors', []),
+        "performed_by": current_user.username,
+        "performed_at": datetime.utcnow().isoformat()
+    }
 
 
 @router.post("/users/bulk-delete")
@@ -147,64 +178,86 @@ async def bulk_delete_users_endpoint(
     Returns:
         Deletion count and any errors
     """
-    try:
-        session_token = credentials.credentials
-        session_data = validate_session(session_token)
+    session_token = credentials.credentials
+    session_data = handle_db_operation(
+        lambda: validate_session(session_token),
+        error_context="session validation for bulk delete"
+    )
 
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
-
-        # Check admin permissions
-        current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
-
-        if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required for bulk operations")
-
-        # Safety checks
-        if not confirm_deletion:
-            raise HTTPException(status_code=400, detail="Deletion must be explicitly confirmed")
-
-        if not user_hashes:
-            raise HTTPException(status_code=400, detail="At least one user hash is required")
-
-        if len(user_hashes) > 50:
-            raise HTTPException(status_code=400, detail="Maximum 50 users can be deleted at once")
-
-        # Perform bulk deletion
-        result = bulk_delete_users(user_hashes, current_user.id)
-
-        # Log the activity
-        ActivityLogger.log_bulk_user_delete(
-            current_user.id,
-            count=result['success_count'],
-            project_id=getattr(session_data, 'project_id', None)
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
         )
 
-        logger.info(
-            f"Bulk user deletion by {current_user.username}: {result['success_count']} succeeded, {result['error_count']} failed")
+    # Check admin permissions
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(session_data.user_hash),
+        error_context="get current user for bulk delete",
+        not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
+    )
+    user_permissions = getattr(session_data, 'permissions', [])
 
-        return {
-            "success": True,
-            "message": f"Bulk deletion completed: {result['success_count']} deleted, {result['error_count']} failed",
-            "summary": {
-                "total_requested": len(user_hashes),
-                "success_count": result['success_count'],
-                "error_count": result['error_count'],
-                "protected_count": result.get('protected_count', 0)
-            },
-            "results": result['results'],
-            "errors": result.get('errors', []),
-            "warnings": result.get('warnings', []),
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
-        }
+    if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
+        raise AuthorizationError(
+            message="Admin permission required for bulk operations",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_permission": "admin or manage_users"}
+        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk deletion error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Bulk deletion failed")
+    # Safety checks
+    if not confirm_deletion:
+        raise ValidationError(
+            message="Deletion must be explicitly confirmed",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={"field": "confirm_deletion", "required_value": True}
+        )
+
+    if not user_hashes:
+        raise ValidationError(
+            message="At least one user hash is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"field": "user_hashes"}
+        )
+
+    if len(user_hashes) > 50:
+        raise ValidationError(
+            message="Maximum 50 users can be deleted at once",
+            error_code=ErrorCode.INVALID_LENGTH,
+            details={"max_length": 50, "provided_length": len(user_hashes)}
+        )
+
+    # Perform bulk deletion
+    result = handle_db_operation(
+        lambda: bulk_delete_users(user_hashes, current_user.id),
+        error_context="bulk user deletion operation"
+    )
+
+    # Log the activity
+    ActivityLogger.log_bulk_user_delete(
+        current_user.id,
+        count=result['success_count'],
+        project_id=getattr(session_data, 'project_id', None)
+    )
+
+    logger.info(
+        f"Bulk user deletion by {current_user.username}: {result['success_count']} succeeded, {result['error_count']} failed")
+
+    return {
+        "success": True,
+        "message": f"Bulk deletion completed: {result['success_count']} deleted, {result['error_count']} failed",
+        "summary": {
+            "total_requested": len(user_hashes),
+            "success_count": result['success_count'],
+            "error_count": result['error_count'],
+            "protected_count": result.get('protected_count', 0)
+        },
+        "results": result['results'],
+        "errors": result.get('errors', []),
+        "warnings": result.get('warnings', []),
+        "performed_by": current_user.username,
+        "performed_at": datetime.utcnow().isoformat()
+    }
 
 
 @router.post("/projects/{project_hash}/bulk-assign-roles")
@@ -228,72 +281,92 @@ async def bulk_assign_roles_to_project_users(
     Returns:
         Assignment results with success/error counts
     """
-    try:
-        session_token = credentials.credentials
-        session_data = validate_session(session_token)
+    session_token = credentials.credentials
+    session_data = handle_db_operation(
+        lambda: validate_session(session_token),
+        error_context="session validation for bulk role assignment"
+    )
 
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
-
-        # Check admin permissions
-        current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
-
-        if 'admin' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required for bulk role assignments")
-
-        # Validate input
-        if not user_hashes or not role_names:
-            raise HTTPException(status_code=400, detail="User hashes and role names are required")
-
-        if len(user_hashes) > 100:
-            raise HTTPException(status_code=400, detail="Maximum 100 users can be assigned at once")
-
-        # Get project
-        from src.Util.db import get_project_by_hash
-        project = get_project_by_hash(project_hash)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        # Perform bulk role assignment
-        role_assignments = [{"user_hash": user_hash, "role_name": role_name} for user_hash in user_hashes for role_name
-                            in role_names]
-        result = bulk_assign_roles(project.project_hash, role_assignments, current_user.id)
-
-        # Log the activity
-        ActivityLogger.log_bulk_role_assignment(
-            current_user.id,
-            count=result['success_count'],
-            project_id=project.id
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
         )
 
-        logger.info(
-            f"Bulk role assignment by {current_user.username} in project {project.project_name}: {result['success_count']} succeeded")
+    # Check admin permissions
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(session_data.user_hash),
+        error_context="get current user for bulk role assignment",
+        not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
+    )
+    user_permissions = getattr(session_data, 'permissions', [])
 
-        return {
-            "success": True,
-            "message": f"Bulk role assignment completed: {result['success_count']} succeeded, {result['error_count']} failed",
-            "project": {
-                "project_hash": project.project_hash,
-                "project_name": project.project_name
-            },
-            "roles_assigned": role_names,
-            "summary": {
-                "total_requested": len(user_hashes),
-                "success_count": result['success_count'],
-                "error_count": result['error_count']
-            },
-            "results": result['results'],
-            "errors": result.get('errors', []),
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
-        }
+    if 'admin' not in user_permissions:
+        raise AuthorizationError(
+            message="Admin permission required for bulk role assignments",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_permission": "admin"}
+        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk role assignment error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Bulk role assignment failed")
+    # Validate input
+    if not user_hashes or not role_names:
+        raise ValidationError(
+            message="User hashes and role names are required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"required_fields": ["user_hashes", "role_names"]}
+        )
+
+    if len(user_hashes) > 100:
+        raise ValidationError(
+            message="Maximum 100 users can be assigned at once",
+            error_code=ErrorCode.INVALID_LENGTH,
+            details={"max_length": 100, "provided_length": len(user_hashes)}
+        )
+
+    # Get project
+    from src.Util.db import get_project_by_hash
+    project = handle_db_operation(
+        lambda: get_project_by_hash(project_hash),
+        error_context="get project for bulk role assignment",
+        not_found_message=f"Project not found: {mask_uuid(project_hash)}"
+    )
+
+    # Perform bulk role assignment
+    role_assignments = [{"user_hash": user_hash, "role_name": role_name} for user_hash in user_hashes for role_name
+                        in role_names]
+    result = handle_db_operation(
+        lambda: bulk_assign_roles(project.project_hash, role_assignments, current_user.id),
+        error_context="bulk role assignment operation"
+    )
+
+    # Log the activity
+    ActivityLogger.log_bulk_role_assignment(
+        current_user.id,
+        count=result['success_count'],
+        project_id=project.id
+    )
+
+    logger.info(
+        f"Bulk role assignment by {current_user.username} in project {project.project_name}: {result['success_count']} succeeded")
+
+    return {
+        "success": True,
+        "message": f"Bulk role assignment completed: {result['success_count']} succeeded, {result['error_count']} failed",
+        "project": {
+            "project_hash": project.project_hash,
+            "project_name": project.project_name
+        },
+        "roles_assigned": role_names,
+        "summary": {
+            "total_requested": len(user_hashes),
+            "success_count": result['success_count'],
+            "error_count": result['error_count']
+        },
+        "results": result['results'],
+        "errors": result.get('errors', []),
+        "performed_by": current_user.username,
+        "performed_at": datetime.utcnow().isoformat()
+    }
 
 
 @router.post("/user-groups/bulk-assign")
@@ -315,64 +388,82 @@ async def bulk_assign_users_to_groups(
     Returns:
         Assignment results with success/error counts
     """
-    try:
-        session_token = credentials.credentials
-        session_data = validate_session(session_token)
+    session_token = credentials.credentials
+    session_data = handle_db_operation(
+        lambda: validate_session(session_token),
+        error_context="session validation for bulk group assignment"
+    )
 
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Invalid session")
-
-        # Check admin permissions
-        current_user = get_user_by_hash(session_data.user_hash)
-        user_permissions = getattr(session_data, 'permissions', [])
-
-        if 'admin' not in user_permissions:
-            raise HTTPException(status_code=403, detail="Admin permission required for bulk group assignments")
-
-        # Validate input
-        if not user_hashes or not group_names:
-            raise HTTPException(status_code=400, detail="User hashes and group names are required")
-
-        if len(user_hashes) > 100:
-            raise HTTPException(status_code=400, detail="Maximum 100 users can be assigned at once")
-
-        # Perform bulk group assignment
-        result = {}
-        for group_name in group_names:
-            group_result = bulk_add_users_to_group(group_name, user_hashes, current_user.id)
-            if not result:
-                result = group_result
-            else:
-                result['success_count'] += group_result.get('success_count', 0)
-                result['error_count'] += group_result.get('error_count', 0)
-
-        # Log the activity
-        ActivityLogger.log_bulk_group_assignment(
-            current_user.id,
-            count=result['success_count'],
-            project_id=getattr(session_data, 'project_id', None)
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
         )
 
-        logger.info(
-            f"Bulk group assignment by {current_user.username}: {result['success_count']} users assigned to groups")
+    # Check admin permissions
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(session_data.user_hash),
+        error_context="get current user for bulk group assignment",
+        not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
+    )
+    user_permissions = getattr(session_data, 'permissions', [])
 
-        return {
-            "success": True,
-            "message": f"Bulk group assignment completed: {result['success_count']} succeeded, {result['error_count']} failed",
-            "groups_assigned": group_names,
-            "summary": {
-                "total_requested": len(user_hashes),
-                "success_count": result['success_count'],
-                "error_count": result['error_count']
-            },
-            "results": result['results'],
-            "errors": result.get('errors', []),
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
-        }
+    if 'admin' not in user_permissions:
+        raise AuthorizationError(
+            message="Admin permission required for bulk group assignments",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_permission": "admin"}
+        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk group assignment error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Bulk group assignment failed")
+    # Validate input
+    if not user_hashes or not group_names:
+        raise ValidationError(
+            message="User hashes and group names are required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"required_fields": ["user_hashes", "group_names"]}
+        )
+
+    if len(user_hashes) > 100:
+        raise ValidationError(
+            message="Maximum 100 users can be assigned at once",
+            error_code=ErrorCode.INVALID_LENGTH,
+            details={"max_length": 100, "provided_length": len(user_hashes)}
+        )
+
+    # Perform bulk group assignment
+    result = {}
+    for group_name in group_names:
+        group_result = handle_db_operation(
+            lambda: bulk_add_users_to_group(group_name, user_hashes, current_user.id),
+            error_context=f"bulk assignment to group {group_name}"
+        )
+        if not result:
+            result = group_result
+        else:
+            result['success_count'] += group_result.get('success_count', 0)
+            result['error_count'] += group_result.get('error_count', 0)
+
+    # Log the activity
+    ActivityLogger.log_bulk_group_assignment(
+        current_user.id,
+        count=result['success_count'],
+        project_id=getattr(session_data, 'project_id', None)
+    )
+
+    logger.info(
+        f"Bulk group assignment by {current_user.username}: {result['success_count']} users assigned to groups")
+
+    return {
+        "success": True,
+        "message": f"Bulk group assignment completed: {result['success_count']} succeeded, {result['error_count']} failed",
+        "groups_assigned": group_names,
+        "summary": {
+            "total_requested": len(user_hashes),
+            "success_count": result['success_count'],
+            "error_count": result['error_count']
+        },
+        "results": result['results'],
+        "errors": result.get('errors', []),
+        "performed_by": current_user.username,
+        "performed_at": datetime.utcnow().isoformat()
+    }

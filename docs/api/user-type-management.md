@@ -625,7 +625,7 @@ curl -X PUT "http://localhost:8000/user-types/$ADMIN_HASH/type" \
 ```
 
 ---
-
+0
 ## 🛡️ Security Considerations
 
 ### Access Control Matrix

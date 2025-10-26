@@ -51,6 +51,8 @@ from src.Util.db.db_user_groups import (
 # Global role system permission resolver
 from src.Util.db_config import redis_client as client
 
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Re-export database connection for backward compatibility
 
@@ -177,10 +179,12 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
             return None  # user not part of any group that grants project access
 
         # Resolve effective permissions via global role system
+        # Graceful degradation: if global roles fail, continue with empty permissions
         try:
             from src.Util.db.db_global_roles import get_user_permissions
             permission_names = get_user_permissions(user.id)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load global role permissions for user {user.id}: {str(e)}")
             permission_names = []
 
         # Prepare convenience collections ----------------------------------
@@ -338,10 +342,12 @@ def enhanced_register(
     if user_type == "consumer":
         # For new consumer, we know their group and can get permissions from global role system
         groups = [user_group.group_name]
+        # Graceful degradation: if global roles fail, continue with empty permissions
         try:
             from src.Util.db.db_global_roles import get_user_permissions
             permissions = get_user_permissions(user.id)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load global role permissions for user {user.id}: {str(e)}")
             permissions = []
         session_data.update({'groups': groups, 'permissions': permissions})
         # Get all projects accessible to the user
@@ -453,10 +459,12 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
 
         groups = [g.group_name for g in groups_objs]
         # Get permissions from global role system
+        # Graceful degradation: if global roles fail, continue with empty permissions
         try:
             from src.Util.db.db_global_roles import get_user_permissions
             permissions = get_user_permissions(session_data['user_id'])
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load global role permissions for user {session_data['user_id']}: {str(e)}")
             permissions = []
         available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
     else:

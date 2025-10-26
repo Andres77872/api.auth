@@ -1,256 +1,303 @@
-# Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
+# Database Schema - Magic Auth System
 
-This folder contains the MySQL database schema for the enhanced authentication system with 3-tier user types:
+**Enhanced 3-Tier User Type Multi-Project Authentication System**
 
-- **ROOT USERS**: Super administrators with unrestricted global access
-- **ADMIN USERS**: Project-specific administrators limited to assigned projects
-- **CONSUMER USERS**: End users with RBAC-based permissions through groups
+---
 
-## Files Overview
+## 📁 Folder Structure
 
-### Core Schema Files (Execute in Order)
+```
+schemas/
+├── tables/              # All table definitions and initialization
+│   ├── 01_create_database.sql
+│   ├── 02_create_tables.sql
+│   ├── 03_create_indexes.sql
+│   ├── 04_add_constraints.sql
+│   ├── 05_initialize_data.sql
+│   └── 06_create_views.sql
+│
+├── stored_procedures/   # All stored procedures organized by domain
+│   ├── 01_user_management.sql
+│   ├── 02_user_groups.sql
+│   ├── 03_projects.sql
+│   ├── 04_project_groups.sql
+│   ├── 05_global_roles.sql
+│   ├── 06_permission_assignments.sql
+│   ├── 07_sessions_analytics.sql
+│   ├── 08_admin_operations.sql
+│   └── 09_system_maintenance.sql
+│
+└── README.md           # This file
+```
 
-1. **01_create_database.sql** - Creates the database and sets proper character encoding
-2. **02_create_tables.sql** - Creates all tables (Rev1 + Rev2 permission assignment tables)
-3. **03_create_index.sql** - Creates performance indexes for all tables
-4. **04_add_constraints.sql** - Adds foreign key constraints, relationships, and triggers
-5. **05_initialize_data.sql** - Inserts initial data including default users and permissions
-6. **06_performance_optimization.sql** - Additional performance optimizations
-7. **07_stored_procedures.sql** - Core stored procedures for application logic
-8. **08_permission_assignment_procedures.sql** - Rev2 permission assignment stored procedures
+---
 
-### Deprecated Files (Do Not Use)
+## 🚀 Quick Start
 
-- ~~**08_permission_assignments.sql**~~ - DEPRECATED: Content moved to 02, 03, 04
-- ~~**09_permission_assignment_procedures.sql**~~ - DEPRECATED: Renamed to 08_permission_assignment_procedures.sql
-
-## Installation Instructions
-
-### Method 1: Sequential Execution (Recommended)
-
-Execute each SQL file in order:
+### Using Python Scripts (Recommended)
 
 ```bash
-# Create database
-mysql -u root -p < 01_create_database.sql
+# Create database from scratch
+python scripts/create_database.py
 
-# Create tables (includes Rev2 permission assignment tables)
-mysql -u root -p magic_auth < 02_create_tables.sql
-
-# Create indexes
-mysql -u root -p magic_auth < 03_create_index.sql
-
-# Add constraints and triggers
-mysql -u root -p magic_auth < 04_add_constraints.sql
-
-# Initialize data (optional but recommended)
-mysql -u root -p magic_auth < 05_initialize_data.sql
-
-# Add performance optimizations (recommended)
-mysql -u root -p magic_auth < 06_performance_optimization.sql
-
-# Add core stored procedures
-mysql -u root -p magic_auth < 07_stored_procedures.sql
-
-# Add Rev2 permission assignment procedures
-mysql -u root -p magic_auth < 08_permission_assignment_procedures.sql
+# Recreate database (drops and recreates everything)
+python scripts/recreate_database.py
 ```
 
-### Method 2: Single Command
-
-Execute all files at once:
+### Manual Setup (Execute in Order)
 
 ```bash
-# Concatenate and execute all files
-cat 01_create_database.sql \
-    02_create_tables.sql \
-    03_create_index.sql \
-    04_add_constraints.sql \
-    05_initialize_data.sql \
-    06_performance_optimization.sql \
-    07_stored_procedures.sql \
-    08_permission_assignment_procedures.sql \
-    | mysql -u root -p
+# 1. TABLES - Create database structure
+mysql -u root -p < schemas/tables/01_create_database.sql
+mysql -u root -p < schemas/tables/02_create_tables.sql
+mysql -u root -p < schemas/tables/03_create_indexes.sql
+mysql -u root -p < schemas/tables/04_add_constraints.sql
+mysql -u root -p < schemas/tables/05_initialize_data.sql
+mysql -u root -p < schemas/tables/06_create_views.sql
+
+# 2. STORED PROCEDURES - Create all procedures
+mysql -u root -p < schemas/stored_procedures/01_user_management.sql
+mysql -u root -p < schemas/stored_procedures/02_user_groups.sql
+mysql -u root -p < schemas/stored_procedures/03_projects.sql
+mysql -u root -p < schemas/stored_procedures/04_project_groups.sql
+mysql -u root -p < schemas/stored_procedures/05_global_roles.sql
+mysql -u root -p < schemas/stored_procedures/06_permission_assignments.sql
+mysql -u root -p < schemas/stored_procedures/07_sessions_analytics.sql
+mysql -u root -p < schemas/stored_procedures/08_admin_operations.sql
+mysql -u root -p < schemas/stored_procedures/09_system_maintenance.sql
 ```
 
-### Method 3: Using MySQL Workbench or phpMyAdmin
+---
 
-1. Open your MySQL client
-2. Execute each SQL file in numerical order
-3. Verify successful execution after each step
+## 📚 Tables Folder (`tables/`)
 
-## Default Users
+Contains all table definitions, indexes, constraints, and initialization data.
 
-After running the initialization script, you'll have these users:
+| File | Description | Details |
+|------|-------------|---------|
+| `01_create_database.sql` | Creates `magic_auth` database | Database setup with UTF-8 collation |
+| `02_create_tables.sql` | All table definitions | 39 tables (users, projects, groups, roles, permissions, etc.) |
+| `03_create_indexes.sql` | Performance indexes | 80+ performance indexes |
+| `04_add_constraints.sql` | Foreign keys and triggers | 30+ constraints, 12 triggers |
+| `05_initialize_data.sql` | Initial data | Root user + 40 activity types |
+| `06_create_views.sql` | Performance views | 6 optimization views |
 
-| Username | Password | User Type | Description |
-|----------|----------|-----------|-------------|
-| root | admin123 | Root | Super administrator with global access |
-| admin | admin123 | Admin | Project administrator for Default Project |
-| user | user123 | Consumer | Regular user with Contributor role |
+### Key Tables Overview
 
-## Database Tables
+#### Core Tables
+- **users** - User accounts (root, admin, consumer)
+- **projects** - Applications/systems in multi-project architecture
+- **user_groups** - Global user groups spanning projects
+- **user_group_members** - User-to-group assignments
+- **user_group_projects** - Group-to-project access grants
 
-### Core Tables
+#### Global Role System
+- **roles** - Global roles (one per user)
+- **global_permissions** - Permission definitions
+- **global_permission_groups** - Reusable permission containers
+- **role_permission_groups** - Role-to-permission-group links
+- **global_permission_group_permissions** - Permission-group contents
 
-1. **users** - User accounts with 3-tier user types
-2. **projects** - Applications/systems in the multi-project architecture
-3. **user_projects** - Links consumer users to projects
-4. **admin_project_assignments** - Multi-project assignments for admin users
+#### Permission Assignment System
+- **user_group_permission_groups** - Assign permission groups to user groups
+- **user_permission_groups** - Direct permission group assignments to users
 
-### Permission System Tables
+#### Session & Activity
+- **user_sessions** - Session management
+- **activity_catalog** - Activity type definitions
+- **activity_logs** - User and system activity tracking
+- **permission_audit_log** - Audit trail for permission changes
 
-1. **permissions** - Project-specific permission definitions
-2. **permission_groups** - Role definitions (collections of permissions)
-3. **permission_group_permissions** - Links permissions to roles
-4. **user_project_permission_groups** - User role assignments per project
+#### Supporting Tables
+- **project_groups** - Permission group sets for projects
+- **project_group_members** - Project-to-group memberships
+- **permission_cache** - Performance caching
+- **bulk_operations_log** - Bulk operation tracking
 
-### Group Management Tables
+---
 
-1. **user_groups** - Global user groups for organizing users
-2. **user_group_members** - User membership in groups
-3. **user_group_projects** - Project access for user groups
-4. **project_groups** - Permission groups at project level
-5. **project_group_members** - Project membership in groups
+## 🔧 Stored Procedures Folder (`stored_procedures/`)
 
-### Support Tables
+Contains 112+ stored procedures organized by functional domain.
 
-1. **user_sessions** - Session management
-2. **permission_audit_log** - Audit trail for all permission changes
-3. **user_project_groups** - Legacy table for backward compatibility
+| File | Procedures | Description |
+|------|-----------|-------------|
+| `01_user_management.sql` | 21 | User auth, CRUD, type management, admin access |
+| `02_user_groups.sql` | 26 | Group CRUD, membership, project access |
+| `03_projects.sql` | 12 | Project CRUD, stats, member management |
+| `04_project_groups.sql` | 12 | Project group CRUD and membership |
+| `05_global_roles.sql` | 19 | Role, permission, and permission group management |
+| `06_permission_assignments.sql` | 11 | User/group permission assignments |
+| `07_sessions_analytics.sql` | 5 | Activity logging and statistics |
+| `08_admin_operations.sql` | 1 | Admin operations and audit logs |
+| `09_system_maintenance.sql` | 5 | Cleanup, health checks |
 
-## Key Features
+### Procedure Categories
 
-### User Type Hierarchy
+#### User Management (01)
+- **Authentication**: `sp_user_login`
+- **CRUD**: `sp_get_user_by_*`, `sp_create_*_user`, `sp_update_user`, `sp_delete_user`
+- **Listing**: `sp_list_users`, `sp_count_users`, `sp_search_users`
+- **Status**: `sp_get_user_status`, `sp_set_user_status`
+- **Admin**: `sp_get_admin_assigned_projects`, `sp_check_admin_multi_project_access`
 
-1. **Root Users**
-   - Unrestricted access to all projects and features
-   - Can create other root, admin, and consumer users
-   - No project assignment needed
+#### User Groups (02)
+- **Group Management**: `sp_create_user_group`, `sp_get_user_group_by_*`, `sp_update_user_group`
+- **Membership**: `sp_assign_user_to_group`, `sp_remove_user_from_group`, `sp_get_users_in_group`
+- **Project Access**: `sp_grant_group_project_access`, `sp_revoke_group_project_access`
+- **Utilities**: `sp_find_default_user_group_for_project`, `sp_find_admin_group_for_project`
 
-2. **Admin Users**
-   - Limited to assigned projects only
-   - Can manage users, roles, and permissions within their projects
-   - Support for multi-project assignments
+#### Projects (03)
+- **CRUD**: `sp_create_project`, `sp_get_project_by_*`, `sp_update_project`, `sp_delete_project`
+- **Listing**: `sp_list_all_projects`, `sp_search_projects`, `sp_count_projects`
+- **Stats**: `sp_get_project_stats`, `sp_get_project_statistics`, `sp_get_project_members`
 
-3. **Consumer Users**
-   - Access controlled through RBAC permissions
-   - Must be granted project access explicitly
-   - Permissions assigned through roles
+#### Global Roles (05)
+- **Roles**: `sp_global_create_role`, `sp_global_get_role_by_hash`, `sp_global_list_roles`
+- **Permission Groups**: `sp_global_create_permission_group`, `sp_global_list_permission_groups`
+- **Permissions**: `sp_global_create_permission`, `sp_global_list_permissions`
+- **Assignments**: `sp_global_assign_permission_group_to_role`, `sp_global_assign_role_to_user`
+- **Checking**: `sp_global_check_user_has_permission`, `sp_global_get_user_permissions`
 
-### RBAC Implementation
+#### Permission Assignments (06)
+- **User Group Assignments**: `sp_assign_permission_group_to_user_group`, `sp_get_user_group_permission_groups`
+- **Direct User Assignments**: `sp_assign_permission_group_to_user`, `sp_get_user_permission_groups`
+- **Resolution**: `sp_get_user_all_permissions`, `sp_check_user_has_permission_extended`
 
-- Each project has its own permission catalog
-- Roles are project-specific
-- Users are assigned roles within projects
-- Complete audit trail for all permission changes
+#### System Maintenance (09)
+- **Cleanup**: `sp_cleanup_expired_sessions`, `sp_cleanup_permission_cache`, `sp_cleanup_orphaned_records`
+- **Health**: `sp_system_health_check`, `sp_check_database_health`
 
-### Multi-Project Architecture
+---
 
-- Projects are isolated from each other
-- Users can have different roles in different projects
-- Admin users can be assigned to multiple projects
-- Consumer users access projects through group memberships
+## 📊 Performance Views
 
-### Rev2: Permission Assignment System (NEW)
+Created by `tables/06_create_views.sql`:
 
-The Rev2 system adds flexible permission group assignments:
+| View | Purpose |
+|------|---------|
+| `v_user_project_access` | User project access through groups (includes root access) |
+| `v_user_project_access_summary` | User access summary with group counts |
+| `v_active_user_sessions` | Active sessions with group context |
+| `user_summary_view` | Enhanced user summary for dashboards |
+| `project_health_view` | Project monitoring and activity levels |
+| `v_user_group_hierarchy` | Recursive hierarchical group structure |
 
-1. **User Group Assignments (Primary)**
-   - Assign permission groups to entire user groups
-   - All group members inherit the permissions
-   - Scalable for organizational management
+---
 
-2. **Direct User Assignments (Secondary)**
-   - Assign permission groups directly to individual users
-   - For special cases and overrides
-   - Documented with notes field
+## 🏗️ Database Architecture
 
-3. **Permission Group Project Catalog (Metadata)**
-   - Optional metadata for UI organization
-   - Suggests which permission groups are relevant per project
-   - NOT used in authorization logic
+### User Type System (3-Tier)
+1. **Root** - Super admin, access to everything
+2. **Admin** - Project administrators, group-based access
+3. **Consumer** - Regular users, group-based access
 
-**Tables Added:**
-- `user_group_permission_groups` - Links user groups to permission groups
-- `user_permission_groups` - Links users directly to permission groups
-- `permission_group_project_catalog` - Organizational metadata (UI only)
+### Access Control Model
+- **NO direct project assignments** - All access through groups
+- Users → User Groups → Projects
+- Users get permissions through:
+  1. Global Role (one per user)
+  2. User Group Permission Groups
+  3. Direct Permission Group Assignments
 
-**See:** `/docs/rev2/` for complete Rev2 documentation
+### Permission Flow
+```
+User → Role → Permission Groups → Permissions
+User → User Groups → Permission Groups → Permissions
+User → Direct Permission Groups → Permissions
+```
 
-## Troubleshooting
+---
 
-### Common Issues
+## 🔑 Initial Credentials
 
-1. **Foreign key constraint errors**
-   - Ensure you're running the scripts in the correct order
-   - Check that referenced tables exist before adding constraints
+After running `05_initialize_data.sql`:
 
-2. **Duplicate key errors**
-   - The database may already exist with data
-   - Drop the database first: `DROP DATABASE IF EXISTS magic_auth;`
+```
+Username: root
+Password: admin123
+Email: root@system.local
+Type: root
+```
 
-3. **Character set issues**
-   - Ensure your MySQL server supports utf8mb4
-   - Check server configuration if you get charset errors
+**⚠️ Change this password immediately in production!**
 
-### Verification Queries
+---
 
-Check if installation was successful:
+## 📈 Performance Tips
 
+1. **Indexes**: All critical indexes are created by `03_create_indexes.sql`
+2. **Views**: Use performance views for complex queries
+3. **Caching**: `permission_cache` table for expensive permission checks
+4. **Maintenance**: Run `sp_cleanup_*` procedures regularly
+5. **Health Checks**: Use `sp_system_health_check()` to monitor issues
+
+---
+
+## 🧪 Testing
+
+### Check Database Setup
 ```sql
--- Check user types
-SELECT user_type, COUNT(*) FROM users GROUP BY user_type;
+-- Check tables
+SELECT COUNT(*) FROM information_schema.tables 
+WHERE table_schema = 'magic_auth';
 
--- Check projects
-SELECT * FROM projects;
+-- Check stored procedures
+SELECT COUNT(*) FROM information_schema.routines 
+WHERE routine_schema = 'magic_auth' AND routine_type = 'PROCEDURE';
 
--- Check permissions
-SELECT COUNT(*) as permission_count FROM permissions;
+-- Check views
+SELECT COUNT(*) FROM information_schema.views 
+WHERE table_schema = 'magic_auth';
 
--- Check roles
-SELECT * FROM permission_groups ORDER BY group_priority DESC;
+-- System health check
+CALL sp_system_health_check();
 ```
 
-## Customization
+---
 
-### Adding New Permissions
+## 🛠️ Maintenance
 
+### Regular Tasks
+- **Daily**: Check `sp_system_health_check()`
+- **Weekly**: Run `sp_cleanup_expired_sessions()`, `sp_cleanup_permission_cache()`
+- **Monthly**: Run `sp_cleanup_orphaned_records()`, review audit logs
+- **Quarterly**: Review and optimize indexes, update statistics
+
+### Monitoring
 ```sql
-INSERT INTO permissions (permission_hash, project_id, permission_name, permission_display_name, 
-                        permission_description, permission_category, created_by)
-VALUES (CONCAT('PERM-', UUID()), @project_id, 'custom_permission', 'Custom Permission', 
-        'Description of the permission', 'custom', @user_id);
+-- Check system health
+CALL sp_system_health_check();
+
+-- Check recent activity
+CALL sp_get_activity_logs(100, 0, NULL, NULL, NULL, 7);
+
+-- Check session count
+SELECT COUNT(*) FROM user_sessions WHERE is_active = 1 AND expires_at > NOW();
+
+-- Check user statistics
+SELECT user_type, COUNT(*) as count FROM users WHERE is_active = 1 GROUP BY user_type;
 ```
 
-### Creating New Roles
+---
 
-```sql
-INSERT INTO permission_groups (group_hash, project_id, group_name, group_display_name, 
-                              group_description, group_priority, created_by)
-VALUES (CONCAT('ROLE-', UUID()), @project_id, 'custom_role', 'Custom Role', 
-        'Description of the role', 50, @user_id);
-```
+## 📝 Additional Documentation
 
-### Password Hashing
+- **Architecture**: See `docs/ARCHITECTURE/` folder
+- **API Endpoints**: See `docs/api/` folder
+- **Error Handling**: See `docs/ERROR_HANDLER/` folder
+- **Usage Examples**: See `docs/USAGE/` folder
 
-The system uses SHA256 for password hashing. To generate a password hash:
+---
 
-```sql
-SELECT UPPER(SHA2('your_password', 256));
-```
+## 📞 Support
 
-## Security Notes
+For issues, questions, or contributions:
+- Check the documentation in `docs/` folder
+- Contact the development team
 
-1. Change default passwords immediately after installation
-2. Use strong passwords for all accounts
-3. Regularly audit permission assignments
-4. Enable MySQL query logging for security monitoring
-5. Implement proper backup procedures
+---
 
-## Support
-
-For issues or questions about the schema:
-1. Check the SQL comments for detailed explanations
-2. Review the Models.py file for data structure definitions
-3. Examine the db module files for usage examples 
+**Last Updated**: October 26, 2025  
+**Version**: 3.0 (Clean Structure)  
+**Database**: MySQL 8.0+

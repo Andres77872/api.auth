@@ -3,18 +3,26 @@ Enhanced Error Handling System
 
 Provides centralized error handling with:
 - UUID masking for security
-- Detailed error descriptions
+- Detailed error descriptions with full traceback (DEBUG_MODE only)
 - Standardized error responses
 - Error categorization
+- Database-specific error details
+- API error cause tracking
+- DEBUG_MODE support for detailed error information including traces
 """
 
+import os
 import re
 import traceback
+import sys
 import logging
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+# Check if DEBUG_MODE is enabled (default: False)
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
 
 
 class ErrorCategory(str, Enum):
@@ -30,7 +38,20 @@ class ErrorCategory(str, Enum):
 
 
 class ErrorCode(str, Enum):
-    """Standardized error codes"""
+    """
+    Standardized error codes catalog
+    
+    Error code format: CATEGORY_NNNN
+    - AUTH_1xxx: Authentication errors
+    - AUTHZ_2xxx: Authorization errors
+    - VAL_3xxx: Validation errors
+    - NF_4xxx: Not Found errors
+    - CONF_5xxx: Conflict errors
+    - DB_6xxx: Database errors
+    - INT_7xxx: Internal errors
+    - EXT_8xxx: External service errors
+    """
+    
     # Authentication errors (1xxx)
     INVALID_CREDENTIALS = "AUTH_1001"
     SESSION_EXPIRED = "AUTH_1002"
@@ -38,6 +59,9 @@ class ErrorCode(str, Enum):
     TOKEN_INVALID = "AUTH_1004"
     ACCOUNT_INACTIVE = "AUTH_1005"
     ACCOUNT_LOCKED = "AUTH_1006"
+    PASSWORD_RESET_REQUIRED = "AUTH_1007"
+    MFA_REQUIRED = "AUTH_1008"
+    MFA_INVALID = "AUTH_1009"
     
     # Authorization errors (2xxx)
     ACCESS_DENIED = "AUTHZ_2001"
@@ -45,6 +69,8 @@ class ErrorCode(str, Enum):
     PROJECT_ACCESS_DENIED = "AUTHZ_2003"
     GROUP_ACCESS_DENIED = "AUTHZ_2004"
     RESOURCE_ACCESS_DENIED = "AUTHZ_2005"
+    ROLE_ASSIGNMENT_DENIED = "AUTHZ_2006"
+    PERMISSION_DENIED = "AUTHZ_2007"
     
     # Validation errors (3xxx)
     INVALID_INPUT = "VAL_3001"
@@ -54,6 +80,11 @@ class ErrorCode(str, Enum):
     INVALID_EMAIL = "VAL_3005"
     INVALID_USERNAME = "VAL_3006"
     WEAK_PASSWORD = "VAL_3007"
+    INVALID_DATE = "VAL_3008"
+    INVALID_RANGE = "VAL_3009"
+    INVALID_LENGTH = "VAL_3010"
+    INVALID_TYPE = "VAL_3011"
+    INVALID_ENUM_VALUE = "VAL_3012"
     
     # Not Found errors (4xxx)
     USER_NOT_FOUND = "NF_4001"
@@ -62,23 +93,37 @@ class ErrorCode(str, Enum):
     RESOURCE_NOT_FOUND = "NF_4004"
     PERMISSION_NOT_FOUND = "NF_4005"
     SESSION_NOT_FOUND = "NF_4006"
+    ROLE_NOT_FOUND = "NF_4007"
+    ENDPOINT_NOT_FOUND = "NF_4008"
+    USER_TYPE_NOT_FOUND = "NF_4009"
     
     # Conflict errors (5xxx)
     USERNAME_EXISTS = "CONF_5001"
     EMAIL_EXISTS = "CONF_5002"
     RESOURCE_EXISTS = "CONF_5003"
     DUPLICATE_ENTRY = "CONF_5004"
+    STATE_CONFLICT = "CONF_5005"
+    VERSION_CONFLICT = "CONF_5006"
     
     # Database errors (6xxx)
     DATABASE_ERROR = "DB_6001"
     CONNECTION_ERROR = "DB_6002"
     QUERY_ERROR = "DB_6003"
     TRANSACTION_ERROR = "DB_6004"
+    CONSTRAINT_VIOLATION = "DB_6005"
+    DEADLOCK = "DB_6006"
     
     # Internal errors (7xxx)
     INTERNAL_ERROR = "INT_7001"
     CONFIGURATION_ERROR = "INT_7002"
     SERVICE_UNAVAILABLE = "INT_7003"
+    TIMEOUT = "INT_7004"
+    RATE_LIMIT_EXCEEDED = "INT_7005"
+    
+    # External service errors (8xxx)
+    EXTERNAL_SERVICE_ERROR = "EXT_8001"
+    EXTERNAL_API_ERROR = "EXT_8002"
+    EXTERNAL_TIMEOUT = "EXT_8003"
 
 
 def mask_uuid(uuid_str: str, prefix: Optional[str] = None) -> str:
@@ -192,6 +237,7 @@ class AppException(Exception):
     Base application exception with enhanced error details.
     
     All custom exceptions should inherit from this class.
+    Automatically captures traceback and detailed error context.
     """
     
     def __init__(
@@ -201,7 +247,8 @@ class AppException(Exception):
         category: ErrorCategory,
         status_code: int = 500,
         details: Optional[Dict[str, Any]] = None,
-        original_error: Optional[Exception] = None
+        original_error: Optional[Exception] = None,
+        error_context: Optional[str] = None
     ):
         self.message = sanitize_error_message(message)
         self.error_code = error_code
@@ -209,6 +256,17 @@ class AppException(Exception):
         self.status_code = status_code
         self.details = details or {}
         self.original_error = original_error
+        self.error_context = error_context  # Store function context string
+        
+        # Capture traceback at exception creation time
+        self.traceback_str = ''.join(traceback.format_stack()[:-1])  # Exclude this __init__ frame
+        self.exc_info = sys.exc_info()
+        
+        # If there's an active exception, capture its traceback too
+        if self.exc_info[0] is not None:
+            self.full_traceback = ''.join(traceback.format_exception(*self.exc_info))
+        else:
+            self.full_traceback = self.traceback_str
         
         # Sanitize details
         if self.details:
@@ -234,20 +292,221 @@ class AppException(Exception):
         return sanitized
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert exception to dictionary for API response"""
-        result = {
-            "success": False,
+        """
+        Convert exception to dictionary for API response.
+        
+        Response structure (Production):
+        {
+            "status": "error",
             "error": {
-                "code": self.error_code.value,
-                "category": self.category.value,
-                "message": self.message,
+                "code": "ERROR_CODE",
+                "category": "category",
+                "message": "User-friendly message"
             }
         }
         
-        if self.details:
-            result["error"]["details"] = self.details
+        Response structure (DEBUG_MODE):
+        {
+            "status": "error",
+            "error": {
+                "code": "ERROR_CODE",
+                "category": "category",
+                "message": "User-friendly message",
+                "details": {
+                    "context": {...},
+                    "database_error": {...},  # if database error
+                    "api_error": {...},       # if API error
+                    "original_error": {...},
+                    "trace": "..."            # full traceback
+                }
+            }
+        }
+        """
+        error_dict = {
+            "code": self.error_code.value,
+            "category": self.category.value,
+            "message": self.message,
+        }
         
-        return result
+        # Include details and trace only if DEBUG_MODE is enabled
+        if DEBUG_MODE:
+            error_dict["details"] = self._build_detailed_error()
+            error_dict["trace"] = self.full_traceback
+        
+        return {
+            "status": "error",
+            "error": error_dict
+        }
+    
+    def _build_detailed_error(self) -> Dict[str, Any]:
+        """
+        Build detailed error information for DEBUG_MODE.
+        
+        Returns comprehensive error context including:
+        - Context information (operation, parameters, etc.)
+        - Function context (name and parameters)
+        - Database error details (for database errors)
+        - API error details (endpoint, method, etc.)
+        - Original error (only for non-database errors to avoid redundancy)
+        - Error metadata
+        """
+        detailed_info = {}
+        
+        # Include user-provided details
+        if self.details:
+            detailed_info["context"] = self.details.copy()
+        
+        # Extract and include function context if available
+        function_context = self._extract_function_context()
+        if function_context:
+            detailed_info["function"] = function_context
+        
+        # Track if we have database error (to avoid redundancy)
+        has_database_error = False
+        
+        # Include original error information with detailed breakdown
+        if self.original_error:
+            # For database errors (pymysql), extract detailed information
+            if 'pymysql' in type(self.original_error).__module__:
+                import pymysql
+                has_database_error = True
+                
+                if isinstance(self.original_error, pymysql.IntegrityError):
+                    error_code = self.original_error.args[0] if self.original_error.args else None
+                    error_msg = self.original_error.args[1] if len(self.original_error.args) > 1 else str(self.original_error)
+                    
+                    detailed_info["database_error"] = {
+                        "error_type": "IntegrityError",
+                        "mysql_error_code": error_code,
+                        "mysql_error_message": sanitize_error_message(error_msg),
+                        "constraint_type": self._identify_constraint_type(error_code, error_msg)
+                    }
+                    
+                elif isinstance(self.original_error, (pymysql.OperationalError, pymysql.ProgrammingError, pymysql.DatabaseError)):
+                    error_code = self.original_error.args[0] if self.original_error.args else None
+                    error_msg = self.original_error.args[1] if len(self.original_error.args) > 1 else str(self.original_error)
+                    
+                    detailed_info["database_error"] = {
+                        "error_type": type(self.original_error).__name__,
+                        "mysql_error_code": error_code,
+                        "mysql_error_message": sanitize_error_message(error_msg),
+                        "severity": self._get_db_error_severity(error_code)
+                    }
+            
+            # Only include original_error for non-database errors to avoid redundancy
+            # Database errors already have all info in database_error field
+            if not has_database_error:
+                detailed_info["original_error"] = {
+                    "type": type(self.original_error).__name__,
+                    "message": sanitize_error_message(str(self.original_error)),
+                    "args": [sanitize_error_message(str(arg)) for arg in self.original_error.args] if hasattr(self.original_error, 'args') else []
+                }
+        
+        # Add error metadata
+        detailed_info["error_metadata"] = {
+            "error_class": self.__class__.__name__,
+            "error_code": self.error_code.value,
+            "category": self.category.value,
+            "status_code": self.status_code
+        }
+        
+        return detailed_info
+    
+    def _extract_function_context(self) -> Optional[Dict[str, Any]]:
+        """
+        Extract function name and parameters from error context.
+        
+        Parses error_context strings like:
+        - "create_user(username='john', email='john@example.com')"
+        - "get_user_by_id(user_id=usr-abc123...def789)"
+        - "update_project(project_id='123')"
+        
+        Returns:
+            Dictionary with 'name' and 'params' or None if parsing fails
+        """
+        # Use error_context if provided, otherwise try to extract from details['context']
+        context = self.error_context
+        if not context and isinstance(self.details, dict):
+            context = self.details.get('context')
+        
+        if not context or not isinstance(context, str):
+            return None
+        
+        # Pattern: function_name(param1=value1, param2=value2, ...)
+        pattern = r'^([a-zA-Z_][a-zA-Z0-9_]*)\((.*)\)$'
+        match = re.match(pattern, context.strip())
+        
+        if not match:
+            return None
+        
+        function_name = match.group(1)
+        params_str = match.group(2)
+        
+        # Parse parameters
+        params = {}
+        if params_str:
+            # Split by comma, but be careful with nested structures
+            # Simple parsing: split by ', ' and then by '='
+            param_parts = []
+            current_part = []
+            depth = 0
+            
+            for char in params_str + ',':
+                if char in '([{':
+                    depth += 1
+                    current_part.append(char)
+                elif char in ')]}':
+                    depth -= 1
+                    current_part.append(char)
+                elif char == ',' and depth == 0:
+                    if current_part:
+                        param_parts.append(''.join(current_part).strip())
+                        current_part = []
+                else:
+                    current_part.append(char)
+            
+            # Parse each parameter
+            for part in param_parts:
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    params[key.strip()] = value.strip().strip("'\"")
+        
+        return {
+            "name": function_name,
+            "params": params
+        }
+    
+    def _identify_constraint_type(self, error_code: Optional[int], error_msg: str) -> str:
+        """Identify the type of database constraint violation"""
+        if error_code == 1062 or "Duplicate entry" in error_msg:
+            return "duplicate_key"
+        elif error_code == 1451:
+            return "foreign_key_delete_restrict"
+        elif error_code == 1452:
+            return "foreign_key_invalid_reference"
+        elif error_code == 1048:
+            return "not_null_violation"
+        elif "foreign key" in error_msg.lower():
+            return "foreign_key_constraint"
+        else:
+            return "integrity_constraint"
+    
+    def _get_db_error_severity(self, error_code: Optional[int]) -> str:
+        """Determine the severity of a database error"""
+        if not error_code:
+            return "unknown"
+        
+        # Critical errors (connection, server issues)
+        if error_code in (2002, 2003, 2006, 2013):
+            return "critical"
+        # Syntax/programming errors
+        elif error_code in (1064, 1146, 1054):
+            return "high"
+        # Constraint violations
+        elif error_code in (1062, 1451, 1452, 1048):
+            return "medium"
+        else:
+            return "low"
 
 
 # =================== SPECIFIC EXCEPTION CLASSES ===================
@@ -255,93 +514,105 @@ class AppException(Exception):
 class AuthenticationError(AppException):
     """Authentication related errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INVALID_CREDENTIALS, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INVALID_CREDENTIALS, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.AUTHENTICATION,
             status_code=401,
-            details=details
+            details=details,
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class AuthorizationError(AppException):
     """Authorization/Permission related errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.ACCESS_DENIED, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.ACCESS_DENIED, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.AUTHORIZATION,
             status_code=403,
-            details=details
+            details=details,
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class ValidationError(AppException):
     """Input validation errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INVALID_INPUT, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INVALID_INPUT, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.VALIDATION,
             status_code=400,
-            details=details
+            details=details,
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class NotFoundError(AppException):
     """Resource not found errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.RESOURCE_NOT_FOUND, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.RESOURCE_NOT_FOUND, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.NOT_FOUND,
             status_code=404,
-            details=details
+            details=details,
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class ConflictError(AppException):
     """Resource conflict errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.RESOURCE_EXISTS, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.RESOURCE_EXISTS, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.CONFLICT,
             status_code=409,
-            details=details
+            details=details,
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class DatabaseError(AppException):
     """Database operation errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.DATABASE_ERROR, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.DATABASE_ERROR, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.DATABASE,
             status_code=500,
             details=details,
-            original_error=original_error
+            original_error=original_error,
+            error_context=error_context
         )
 
 
 class InternalError(AppException):
     """Internal server errors"""
     
-    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INTERNAL_ERROR, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None):
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INTERNAL_ERROR, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
         super().__init__(
             message=message,
             error_code=error_code,
             category=ErrorCategory.INTERNAL,
             status_code=500,
             details=details,
-            original_error=original_error
+            original_error=original_error,
+            error_context=error_context
         )
 
 
@@ -349,33 +620,83 @@ class InternalError(AppException):
 
 def build_error_response(
     error: Exception,
-    include_traceback: bool = False
+    include_traceback: bool = True
 ) -> Dict[str, Any]:
     """
     Build standardized error response from exception.
     
     Args:
         error: Exception object
-        include_traceback: Whether to include stack trace (dev mode only)
+        include_traceback: Whether to include stack trace (only if DEBUG_MODE is enabled, defaults to True)
         
     Returns:
-        Standardized error response dictionary
+        Standardized error response dictionary with structure:
+        
+        Production Mode:
+        {
+            "status": "error",
+            "error": {
+                "code": "ERROR_CODE",
+                "category": "category",
+                "message": "User-friendly message"
+            }
+        }
+        
+        DEBUG_MODE:
+        {
+            "status": "error",
+            "error": {
+                "code": "ERROR_CODE",
+                "category": "category",
+                "message": "User-friendly message",
+                "details": {
+                    "error_type": "...",
+                    "context": {...},
+                    "database_error": {...},  # if applicable
+                    "original_error": {...}
+                },
+                "trace": "..."  # full traceback
+            }
+        }
     """
     if isinstance(error, AppException):
+        # AppException already handles DEBUG_MODE and includes trace
         response = error.to_dict()
     else:
         # Handle unexpected exceptions
-        response = {
-            "success": False,
-            "error": {
-                "code": ErrorCode.INTERNAL_ERROR.value,
-                "category": ErrorCategory.INTERNAL.value,
-                "message": sanitize_error_message(str(error)),
-            }
+        error_dict = {
+            "code": ErrorCode.INTERNAL_ERROR.value,
+            "category": ErrorCategory.INTERNAL.value,
+            "message": sanitize_error_message(str(error)),
         }
-    
-    if include_traceback:
-        response["error"]["traceback"] = traceback.format_exc()
+        
+        # Add detailed information and trace if DEBUG_MODE is enabled
+        if DEBUG_MODE:
+            error_dict["details"] = {
+                "error_type": type(error).__name__,
+                "error_message": sanitize_error_message(str(error)),
+                "error_module": type(error).__module__
+            }
+            
+            # Include exception args if available
+            if hasattr(error, 'args') and error.args:
+                error_dict["details"]["error_args"] = [
+                    sanitize_error_message(str(arg)) for arg in error.args
+                ]
+            
+            # Always include trace in DEBUG_MODE
+            if include_traceback:
+                # Get current traceback or format the exception
+                exc_info = sys.exc_info()
+                if exc_info[0] is not None:
+                    error_dict["trace"] = ''.join(traceback.format_exception(*exc_info))
+                else:
+                    error_dict["trace"] = traceback.format_exc()
+        
+        response = {
+            "status": "error",
+            "error": error_dict
+        }
     
     return response
 

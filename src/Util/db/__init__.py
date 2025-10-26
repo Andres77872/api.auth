@@ -169,6 +169,7 @@ from src.Util.db.db_permission_assignments import (
 )
 # Import core database connection
 from src.Util.db_config import redis_client as client, get_connection
+from src.Util.db_error_wrapper import handle_db_operation
 
 
 # =================== USER TYPE HELPER FUNCTIONS ===================
@@ -181,9 +182,15 @@ def get_user_type_info(user_id: str) -> dict:
         user_id: User ID
         
     Returns:
-        Dictionary with user type information
+        Dictionary with user type information (error dict on failure)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns error dict to prevent breaking callers.
     """
-    try:
+    def _get():
         user = get_user_by_id(user_id)
         if not user:
             return {"user_type": None, "error": "User not found"}
@@ -245,9 +252,12 @@ def get_user_type_info(user_id: str) -> dict:
             result["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
 
         return result
-
-    except Exception as e:
-        return {"user_type": None, "error": str(e)}
+    
+    return handle_db_operation(
+        _get,
+        error_context=f"get_user_type_info(user_id={user_id})",
+        default_return={"user_type": None, "error": "Error retrieving user type info"}
+    )
 
 
 def check_user_type_permission(user_id: str, operation: str, project_id: str = None) -> bool:
@@ -260,9 +270,15 @@ def check_user_type_permission(user_id: str, operation: str, project_id: str = N
         project_id: Project ID (required for admin and consumer users)
         
     Returns:
-        Boolean indicating permission
+        Boolean indicating permission (False on error)
+        
+    Raises:
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns False on error to prevent unauthorized access.
     """
-    try:
+    def _check():
         user_type = get_user_type(user_id)
 
         # Root users can do anything
@@ -286,10 +302,12 @@ def check_user_type_permission(user_id: str, operation: str, project_id: str = N
                 return False
 
         return False
-
-    except Exception as e:
-        print(f"Permission check error: {e}")
-        return False
+    
+    return handle_db_operation(
+        _check,
+        error_context=f"check_user_type_permission(user_id={user_id}, operation={operation})",
+        default_return=False
+    )
 
 
 # =================== USER TYPE AWARE SESSION MANAGEMENT ===================
@@ -304,9 +322,16 @@ def create_user_type_session(user_id: str, project_id: str, session_length: int 
         session_length: Session duration in seconds
         
     Returns:
-        Session information with user type context
+        Session information with user type context (None on error)
+        
+    Raises:
+        NotFoundError: If user not found
+        DatabaseError: On database operation errors
+        
+    Note:
+        Returns None on error to indicate session creation failure.
     """
-    try:
+    def _create():
         user = get_user_by_id(user_id)
         user_type = get_user_type(user_id)
 
@@ -338,10 +363,11 @@ def create_user_type_session(user_id: str, project_id: str, session_length: int 
                 session_data["permissions"] = []
 
         return session_data
-
-    except Exception as e:
-        print(f"Session creation error: {e}")
-        return None
+    
+    return handle_db_operation(
+        _create,
+        error_context=f"create_user_type_session(user_id={user_id}, project_id={project_id})"
+    )
 
 
 
