@@ -390,8 +390,9 @@ def get_user_by_id(user_id: str) -> Optional[User]:
                     user_type=result[5],
                     assigned_project_id=None,
                     created_at=result[7],
-                    last_login=None,
-                    is_active=bool(result[9])
+                    updated_at=result[9],
+                    last_login=result[8],
+                    is_active=bool(result[10])
                 )
             return None
     
@@ -436,6 +437,7 @@ def get_user_by_hash(user_hash: str, include_inactive: bool = False) -> Optional
                     user_type=result[5],
                     assigned_project_id=None,
                     created_at=result[7],
+                    updated_at=result[9],
                     last_login=result[8],
                     is_active=bool(result[10])
                 )
@@ -688,8 +690,8 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
                     user_type=row[4],
                     assigned_project_id=None,
                     created_at=row[6],
-                    last_login=None,
-                    is_active=bool(row[7])
+                    last_login=row[7],
+                    is_active=bool(row[8])
                 ))
 
             return results

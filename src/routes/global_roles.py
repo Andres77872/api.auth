@@ -526,88 +526,8 @@ async def get_permission(permission_hash: str, session_data=Depends(require_vali
 
 
 # =============================================================================
-# USER ROLE ASSIGNMENT ENDPOINTS
-# =============================================================================
-
-@router.put("/users/{user_hash}/role")
-async def assign_role_to_user(
-    user_hash: str,
-    role_hash: str = Form(..., description="Role hash to assign"),
-    session_data=Depends(require_admin)
-):
-    """Assign a role to a user"""
-    # Check if user exists (including inactive)
-    user = get_user_by_hash(user_hash, include_inactive=True)
-    if not user:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND,
-            details={"user_hash": user_hash}
-        )
-    
-    # Check if user is active
-    if not user.is_active:
-        raise AuthorizationError(
-            message="Cannot assign role to inactive user",
-            error_code=ErrorCode.ACCOUNT_INACTIVE,
-            details={"user_hash": user_hash}
-        )
-    
-    role = global_roles.get_role_by_hash(role_hash)
-    if not role:
-        raise NotFoundError(
-            message="Role not found",
-            error_code=ErrorCode.ROLE_NOT_FOUND,
-            details={"role_hash": role_hash}
-        )
-    
-    success = global_roles.assign_role_to_user(user.id, role['id'])
-    if not success:
-        raise InternalError(
-            message="Failed to assign role",
-            error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "assign_role_to_user"}
-        )
-    
-    return {
-        "success": True,
-        "message": f"Role '{role['role_name']}' assigned to user '{user.username}'",
-        "user": {"user_hash": user_hash, "username": user.username},
-        "role": {"role_hash": role_hash, "role_name": role['role_name']}
-    }
-
-
-@router.get("/users/{user_hash}/role")
-async def get_user_role(user_hash: str, session_data=Depends(require_valid_session)):
-    """Get user's role"""
-    # Check if user exists (including inactive)
-    user = get_user_by_hash(user_hash, include_inactive=True)
-    if not user:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND,
-            details={"user_hash": user_hash}
-        )
-    
-    # Check if user is active
-    if not user.is_active:
-        raise AuthorizationError(
-            message="User account is inactive",
-            error_code=ErrorCode.ACCOUNT_INACTIVE,
-            details={"user_hash": user_hash}
-        )
-    
-    role = global_roles.get_user_role(user.id)
-    
-    return {
-        "success": True,
-        "user": {"user_hash": user_hash, "username": user.username},
-        "role": role
-    }
-
-
-# =============================================================================
 # USER PERMISSION QUERY ENDPOINTS (GLOBAL - NO PROJECT CONTEXT)
+# NOTE: /users/me/* routes MUST come BEFORE /users/{user_hash}/* routes
 # =============================================================================
 
 @router.get("/users/me/role")
@@ -715,6 +635,87 @@ async def check_my_permission(permission_name: str, session_data=Depends(require
         "permission": permission_name,
         "has_permission": has_permission,
         "checked_at": datetime.utcnow().isoformat()
+    }
+
+
+# =============================================================================
+# USER ROLE ASSIGNMENT ENDPOINTS
+# =============================================================================
+
+@router.put("/users/{user_hash}/role")
+async def assign_role_to_user(
+    user_hash: str,
+    role_hash: str = Form(..., description="Role hash to assign"),
+    session_data=Depends(require_admin)
+):
+    """Assign a role to a user"""
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="Cannot assign role to inactive user",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": user_hash}
+        )
+    
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    success = global_roles.assign_role_to_user(user.id, role['id'])
+    if not success:
+        raise InternalError(
+            message="Failed to assign role",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "assign_role_to_user"}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Role '{role['role_name']}' assigned to user '{user.username}'",
+        "user": {"user_hash": user_hash, "username": user.username},
+        "role": {"role_hash": role_hash, "role_name": role['role_name']}
+    }
+
+
+@router.get("/users/{user_hash}/role")
+async def get_user_role(user_hash: str, session_data=Depends(require_valid_session)):
+    """Get user's role"""
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="User account is inactive",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": user_hash}
+        )
+    
+    role = global_roles.get_user_role(user.id)
+    
+    return {
+        "success": True,
+        "user": {"user_hash": user_hash, "username": user.username},
+        "role": role
     }
 
 

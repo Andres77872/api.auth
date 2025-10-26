@@ -591,7 +591,7 @@ Assign a user to a user group.
 **Path Parameters:**
 - `group_hash`: User group identifier
 
-**Request Body** (form-data or JSON):
+**Request Body** (Form):
 - `user_hash` (required): User hash to assign
 
 **Example Request:**
@@ -824,7 +824,7 @@ Grant a user group access to a project.
 **Path Parameters:**
 - `group_hash`: User group identifier
 
-**Request Body** (form-data or JSON):
+**Request Body** (Form):
 - `project_hash` (required): Project hash to grant access to
 
 **Example Request:**
@@ -1059,7 +1059,7 @@ Assign a project to a project group, giving it the group's permission set.
 **Path Parameters:**
 - `group_hash`: Project group identifier
 
-**Request Body** (form-data or JSON):
+**Request Body** (Form):
 - `project_hash` (required): Project hash to assign
 
 **Example Request:**

@@ -52,14 +52,17 @@ curl -X POST "http://localhost:8000/roles/roles" \
   "success": true,
   "message": "Role 'content_editor' created successfully",
   "role": {
-    "id": 5,
+    "id": "role_abc123def456",
     "role_hash": "role_abc123...",
     "role_name": "content_editor",
     "role_display_name": "Content Editor",
     "role_description": "Can edit and publish content",
     "role_priority": 60,
     "is_system_role": false,
-    "created_at": "2024-01-01T12:00:00Z"
+    "created_at": "2024-01-01T12:00:00Z",
+    "updated_at": null,
+    "created_by": "user_xyz789",
+    "is_active": true
   }
 }
 ```
@@ -88,24 +91,30 @@ curl -X GET "http://localhost:8000/roles/roles?limit=20&offset=0" \
   "success": true,
   "roles": [
     {
-      "id": 1,
+      "id": "role_admin001",
       "role_hash": "role_admin123",
       "role_name": "admin",
       "role_display_name": "Administrator",
       "role_description": "Full system access",
       "role_priority": 100,
       "is_system_role": true,
-      "created_at": "2024-01-01T00:00:00Z"
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": null,
+      "created_by": null,
+      "is_active": true
     },
     {
-      "id": 2,
+      "id": "role_editor002",
       "role_hash": "role_editor456",
       "role_name": "editor",
       "role_display_name": "Editor",
       "role_description": "Content management access",
       "role_priority": 60,
       "is_system_role": false,
-      "created_at": "2024-01-01T00:00:00Z"
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": null,
+      "created_by": "user_xyz789",
+      "is_active": true
     }
   ],
   "pagination": {
@@ -115,6 +124,8 @@ curl -X GET "http://localhost:8000/roles/roles?limit=20&offset=0" \
   }
 }
 ```
+
+**Note:** The `total` field in pagination represents the number of items returned in this response, not the total count in the database. Use `limit` and `offset` to paginate through results.
 
 ---
 
@@ -138,19 +149,30 @@ curl -X GET "http://localhost:8000/roles/roles/role_abc123..." \
 {
   "success": true,
   "role": {
-    "id": 5,
+    "id": "role_abc123def456",
     "role_hash": "role_abc123...",
     "role_name": "content_editor",
     "role_display_name": "Content Editor",
     "role_description": "Can edit and publish content",
     "role_priority": 60,
-    "is_system_role": false
+    "is_system_role": false,
+    "created_at": "2024-01-01T12:00:00Z",
+    "updated_at": null,
+    "created_by": "user_xyz789",
+    "is_active": true
   },
   "permission_groups": [
     {
+      "id": "pgrp_xyz001",
       "group_hash": "pgrp_xyz789",
       "group_name": "content_management",
-      "group_display_name": "Content Management"
+      "group_display_name": "Content Management",
+      "group_description": "Permissions for managing content",
+      "group_category": "general",
+      "created_at": "2024-01-01T10:00:00Z",
+      "updated_at": null,
+      "created_by": "user_admin001",
+      "is_active": true
     }
   ]
 }
@@ -186,10 +208,17 @@ curl -X PUT "http://localhost:8000/roles/roles/role_abc123..." \
   "success": true,
   "message": "Role updated successfully",
   "role": {
+    "id": "role_abc123def456",
     "role_hash": "role_abc123...",
     "role_name": "content_editor",
     "role_display_name": "Senior Content Editor",
-    "role_priority": 70
+    "role_description": "Can edit and publish content",
+    "role_priority": 70,
+    "is_system_role": false,
+    "created_at": "2024-01-01T12:00:00Z",
+    "updated_at": "2024-01-02T10:30:00Z",
+    "created_by": "user_xyz789",
+    "is_active": true
   }
 }
 ```
@@ -314,6 +343,8 @@ curl -X GET "http://localhost:8000/roles/permission-groups?category=admin&limit=
   }
 }
 ```
+
+**Note:** The `total` field represents the number of items returned in this response.
 
 ---
 
@@ -510,6 +541,8 @@ curl -X GET "http://localhost:8000/roles/permissions?category=admin&limit=20" \
   }
 }
 ```
+
+**Note:** The `total` field represents the number of items returned in this response.
 
 ---
 

@@ -484,10 +484,13 @@ def get_users_in_group(user_group_id: str) -> List[User]:
                     user_hash=row[1],
                     username=row[2],
                     email=row[3],
-                    password_hash=row[4],
-                    created_at=row[5],
-                    updated_at=row[6],
-                    is_active=bool(row[7])
+                    password_hash="",  # Not returned by stored procedure for security
+                    user_type=row[4],
+                    assigned_project_id=None,
+                    created_at=row[6],
+                    updated_at=row[7],
+                    last_login=None,
+                    is_active=bool(row[8])
                 ))
 
             return users

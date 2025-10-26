@@ -246,11 +246,53 @@ BEGIN
     ) as has_permission;
 END$$
 
+-- ===================================================================================
+-- PROJECT CATALOG MANAGEMENT (METADATA ONLY - NOT FOR AUTHORIZATION)
+-- ===================================================================================
+
+DROP PROCEDURE IF EXISTS sp_global_add_role_to_project_catalog$$
+CREATE PROCEDURE sp_global_add_role_to_project_catalog(
+    IN p_catalog_id VARCHAR(64), IN p_role_id VARCHAR(64), IN p_project_id VARCHAR(64),
+    IN p_catalog_purpose VARCHAR(255), IN p_notes TEXT, IN p_added_by VARCHAR(64)
+)
+BEGIN
+    INSERT INTO role_project_catalog (id, role_id, project_id, catalog_purpose, notes, added_by, added_at, is_active)
+    VALUES (p_catalog_id, p_role_id, p_project_id, p_catalog_purpose, p_notes, p_added_by, NOW(), TRUE)
+    ON DUPLICATE KEY UPDATE 
+        is_active = TRUE, 
+        catalog_purpose = COALESCE(p_catalog_purpose, catalog_purpose),
+        notes = COALESCE(p_notes, notes),
+        added_at = NOW(), 
+        added_by = p_added_by,
+        removed_at = NULL,
+        removed_by = NULL;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_get_project_cataloged_roles$$
+CREATE PROCEDURE sp_global_get_project_cataloged_roles(IN p_project_id VARCHAR(64))
+BEGIN
+    SELECT 
+        r.role_hash,
+        r.role_name,
+        r.role_display_name,
+        r.role_description,
+        r.role_priority,
+        rpc.catalog_purpose,
+        rpc.notes,
+        rpc.added_at,
+        rpc.added_by
+    FROM role_project_catalog rpc
+    JOIN roles r ON rpc.role_id = r.id AND r.is_active = TRUE
+    WHERE rpc.project_id = p_project_id AND rpc.is_active = TRUE
+    ORDER BY r.role_priority DESC, r.role_name ASC;
+END$$
+
 DELIMITER ;
 
 -- ===================================================================================
 -- GLOBAL ROLE SYSTEM PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Global role system stored procedures created successfully!' as status,
-       '17 procedures for role and permission management' as details;
+       '19 procedures for role and permission management (including catalog)' as details;
 

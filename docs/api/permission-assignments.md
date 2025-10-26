@@ -54,17 +54,15 @@ Assign a permission group to a user group. All members inherit the permissions.
 **Path Parameters:**
 - `group_hash`: User group identifier
 
-**Request Body** (JSON):
+**Request Body** (Form):
 - `permission_group_hash` (required): Permission group hash to assign
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/v1/admin/user-groups/grp-abc123/permission-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "permission_group_hash": "pgrp-xyz789"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=pgrp-xyz789"
 ```
 
 **Response (200):**
@@ -176,15 +174,15 @@ Bulk assign multiple permission groups to a user group.
 **Path Parameters:**
 - `group_hash`: User group identifier
 
-**Request Body** (JSON):
-- Raw JSON array of permission group hashes (required)
+**Request Body** (Form):
+- `permission_group_hashes` (required): List of permission group hashes
 
 **Example Request:**
 ```bash
 curl -X POST "http://localhost:8000/v1/admin/user-groups/grp-abc123/permission-groups/bulk" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '["pgrp-xyz789", "pgrp-def456", "pgrp-ghi012"]'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hashes=pgrp-xyz789&permission_group_hashes=pgrp-def456&permission_group_hashes=pgrp-ghi012"
 ```
 
 **Response (200):**
@@ -230,7 +228,7 @@ Assign a permission group directly to a user (for individual overrides).
 **Path Parameters:**
 - `user_hash`: User identifier
 
-**Request Body** (JSON):
+**Request Body** (Form):
 - `permission_group_hash` (required): Permission group hash to assign
 - `notes` (optional): Reason for direct assignment
 
@@ -238,11 +236,8 @@ Assign a permission group directly to a user (for individual overrides).
 ```bash
 curl -X POST "http://localhost:8000/v1/users/usr-abc123/permission-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "permission_group_hash": "pgrp-xyz789",
-    "notes": "Temporary elevated access for project migration"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=pgrp-xyz789&notes=Temporary%20elevated%20access%20for%20project%20migration"
 ```
 
 **Response (200):**
@@ -508,7 +503,7 @@ Add permission group to project catalog (metadata for UI).
 - `project_hash`: Project identifier
 - `pg_hash`: Permission group identifier
 
-**Request Body** (JSON):
+**Request Body** (Form):
 - `catalog_purpose` (optional): Purpose description
 - `notes` (optional): Additional notes
 
@@ -516,11 +511,8 @@ Add permission group to project catalog (metadata for UI).
 ```bash
 curl -X POST "http://localhost:8000/v1/projects/proj-abc123/permission-group-catalog/pgrp-xyz789" \
   -H "Authorization: Bearer YOUR_ADMIN_SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "catalog_purpose": "Recommended for content editors",
-    "notes": "Provides standard content management capabilities"
-  }'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "catalog_purpose=Recommended%20for%20content%20editors&notes=Provides%20standard%20content%20management%20capabilities"
 ```
 
 **Response (200):**
@@ -772,8 +764,8 @@ ADMIN_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
 echo "1. Assign permission group to user group..."
 curl -X POST "http://localhost:8000/v1/admin/user-groups/GROUP_HASH/permission-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"permission_group_hash": "PERM_GROUP_HASH"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=PERM_GROUP_HASH"
 
 echo -e "\n2. Check user group permission groups..."
 curl -X GET "http://localhost:8000/v1/admin/user-groups/GROUP_HASH/permission-groups" \
@@ -782,8 +774,8 @@ curl -X GET "http://localhost:8000/v1/admin/user-groups/GROUP_HASH/permission-gr
 echo -e "\n3. Assign permission group directly to user..."
 curl -X POST "http://localhost:8000/v1/users/USER_HASH/permission-groups" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"permission_group_hash": "PERM_GROUP_HASH", "notes": "Temporary access"}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=PERM_GROUP_HASH&notes=Temporary%20access"
 
 echo -e "\n4. Check user permissions..."
 curl -X GET "http://localhost:8000/v1/users/me/permissions" \
