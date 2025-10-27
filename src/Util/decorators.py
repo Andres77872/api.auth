@@ -333,16 +333,29 @@ def log_unauthenticated_operation(
                     )
                     
                     # Log to activity logger if user_id is available in result
-                    if activity_type and isinstance(result, dict):
+                    if activity_type:
                         user_id = None
-                        if 'user_id' in result:
-                            user_id = str(result['user_id'])
-                        elif 'user' in result and isinstance(result['user'], dict):
-                            user_id = str(result['user'].get('id') or result['user'].get('user_id'))
+                        project_id = None
+                        
+                        # Handle both Pydantic models and dicts
+                        if isinstance(result, dict):
+                            user_id = result.get('user_id')
+                            project_id = result.get('project_id')
+                            if not user_id and 'user' in result and isinstance(result['user'], dict):
+                                user_id = str(result['user'].get('id') or result['user'].get('user_id'))
+                        elif hasattr(result, 'user_id'):
+                            # Pydantic model with user_id attribute
+                            user_id = getattr(result, 'user_id', None)
+                            # Try to get project_id from project object or directly
+                            if hasattr(result, 'project') and result.project:
+                                if hasattr(result.project, 'id'):
+                                    project_id = result.project.id
+                                elif isinstance(result.project, dict):
+                                    project_id = result.project.get('id')
                         
                         if user_id:
                             ActivityLogger.log_activity(
-                                user_id=user_id,
+                                user_id=str(user_id),
                                 activity_type=activity_type.value,
                                 details={
                                     "operation": operation_name,
@@ -350,6 +363,7 @@ def log_unauthenticated_operation(
                                     "duration_seconds": duration,
                                     "request_id": request_id
                                 },
+                                project_id=project_id,
                                 ip_address=log_context.ip_address,
                                 user_agent=log_context.user_agent
                             )

@@ -14,7 +14,8 @@ schemas/
 │   ├── 03_create_indexes.sql
 │   ├── 04_add_constraints.sql
 │   ├── 05_initialize_data.sql
-│   └── 06_create_views.sql
+│   ├── 06_create_views.sql
+│   └── 07_error_logs.sql
 │
 ├── stored_procedures/   # All stored procedures organized by domain
 │   ├── 01_user_management.sql
@@ -25,7 +26,8 @@ schemas/
 │   ├── 06_permission_assignments.sql
 │   ├── 07_sessions_analytics.sql
 │   ├── 08_admin_operations.sql
-│   └── 09_system_maintenance.sql
+│   ├── 09_system_maintenance.sql
+│   └── 10_error_logging.sql
 │
 └── README.md           # This file
 ```
@@ -65,6 +67,7 @@ mysql -u root -p < schemas/stored_procedures/06_permission_assignments.sql
 mysql -u root -p < schemas/stored_procedures/07_sessions_analytics.sql
 mysql -u root -p < schemas/stored_procedures/08_admin_operations.sql
 mysql -u root -p < schemas/stored_procedures/09_system_maintenance.sql
+mysql -u root -p < schemas/stored_procedures/10_error_logging.sql
 ```
 
 ---
@@ -76,11 +79,12 @@ Contains all table definitions, indexes, constraints, and initialization data.
 | File | Description | Details |
 |------|-------------|---------|
 | `01_create_database.sql` | Creates `magic_auth` database | Database setup with UTF-8 collation |
-| `02_create_tables.sql` | All table definitions | 39 tables (users, projects, groups, roles, permissions, etc.) |
+| `02_create_tables.sql` | All table definitions | 42 tables (users, projects, groups, roles, permissions, error logging, etc.) |
 | `03_create_indexes.sql` | Performance indexes | 80+ performance indexes |
 | `04_add_constraints.sql` | Foreign keys and triggers | 30+ constraints, 12 triggers |
 | `05_initialize_data.sql` | Initial data | Root user + 40 activity types |
 | `06_create_views.sql` | Performance views | 6 optimization views |
+| `07_error_logs.sql` | Error logging system | 3 tables + 4 views for comprehensive error tracking |
 
 ### Key Tables Overview
 
@@ -114,11 +118,16 @@ Contains all table definitions, indexes, constraints, and initialization data.
 - **permission_cache** - Performance caching
 - **bulk_operations_log** - Bulk operation tracking
 
+#### Error Logging Tables
+- **error_logs** - Comprehensive error logging (ALWAYS logs, regardless of DEBUG_MODE)
+- **error_log_statistics** - Aggregated error statistics for monitoring
+- **error_log_alerts** - Error patterns requiring immediate attention
+
 ---
 
 ## 🔧 Stored Procedures Folder (`stored_procedures/`)
 
-Contains 112+ stored procedures organized by functional domain.
+Contains 126+ stored procedures organized by functional domain.
 
 | File | Procedures | Description |
 |------|-----------|-------------|
@@ -131,6 +140,7 @@ Contains 112+ stored procedures organized by functional domain.
 | `07_sessions_analytics.sql` | 5 | Activity logging and statistics |
 | `08_admin_operations.sql` | 1 | Admin operations and audit logs |
 | `09_system_maintenance.sql` | 5 | Cleanup, health checks |
+| `10_error_logging.sql` | 14 | Error logging, statistics, alerts, monitoring |
 
 ### Procedure Categories
 
@@ -167,6 +177,13 @@ Contains 112+ stored procedures organized by functional domain.
 #### System Maintenance (09)
 - **Cleanup**: `sp_cleanup_expired_sessions`, `sp_cleanup_permission_cache`, `sp_cleanup_orphaned_records`
 - **Health**: `sp_system_health_check`, `sp_check_database_health`
+
+#### Error Logging (10)
+- **Logging**: `sp_log_error` - Logs all errors to database (ALWAYS, regardless of DEBUG_MODE)
+- **Retrieval**: `sp_get_error_logs`, `sp_get_error_by_id`, `sp_get_critical_errors`
+- **Statistics**: `sp_get_error_statistics`, `sp_get_error_trends`, `sp_get_error_log_summary`
+- **Alerts**: `sp_create_error_alert`, `sp_get_active_alerts`, `sp_acknowledge_alert`, `sp_resolve_alert`
+- **Maintenance**: `sp_cleanup_old_error_logs`
 
 ---
 

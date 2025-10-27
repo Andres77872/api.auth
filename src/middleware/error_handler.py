@@ -25,8 +25,53 @@ from src.Util.error_handler import (
     log_error,
     mask_uuid
 )
+from src.Util.db.db_error_logger import log_app_exception_to_db, log_generic_exception_to_db
 
 logger = logging.getLogger(__name__)
+
+
+def extract_user_context_from_request(request: Request) -> Dict[str, Optional[str]]:
+    """
+    Extract user context (user_id, project_id, session_id) from request.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        Dictionary with user_id, project_id, session_id (all optional)
+    """
+    context = {
+        "user_id": None,
+        "project_id": None,
+        "session_id": None
+    }
+    
+    try:
+        # Try to get user context from request state (if authentication middleware set it)
+        if hasattr(request.state, 'user_id'):
+            context["user_id"] = request.state.user_id
+        
+        if hasattr(request.state, 'project_id'):
+            context["project_id"] = request.state.project_id
+        
+        if hasattr(request.state, 'session_id'):
+            session_id = request.state.session_id
+            # Truncate session_id to 256 characters to fit database column
+            # (session_id may be a JWT token which is much longer)
+            if session_id:
+                context["session_id"] = session_id[:256]
+        
+        # Alternative: try to get from session data if available
+        if hasattr(request.state, 'session_data'):
+            session_data = request.state.session_data
+            if hasattr(session_data, 'user_id'):
+                context["user_id"] = session_data.user_id
+            if hasattr(session_data, 'project_id'):
+                context["project_id"] = session_data.project_id
+    except Exception as e:
+        logger.debug(f"Failed to extract user context from request: {e}")
+    
+    return context
 
 
 def extract_function_context_from_exception() -> Optional[Dict[str, Any]]:
@@ -126,6 +171,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
         "method": request.method,
         "client": request.client.host if request.client else "unknown",
         "query_params": dict(request.query_params) if request.query_params else {},
+        "user_agent": request.headers.get("user-agent")
     }
     
     # Automatically extract function context if not already provided
@@ -143,6 +189,16 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     
     # Log the error with request context
     log_error(exc, request_context)
+    
+    # ALWAYS log to database (regardless of DEBUG_MODE)
+    user_context = extract_user_context_from_request(request)
+    log_app_exception_to_db(
+        exception=exc,
+        request_context=request_context,
+        user_id=user_context.get("user_id"),
+        project_id=user_context.get("project_id"),
+        session_id=user_context.get("session_id")
+    )
     
     # Get error response
     response_data = exc.to_dict()
@@ -339,15 +395,30 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     Returns:
         JSONResponse with standardized error format
     """
+    # Build request context
+    request_context = {
+        "path": request.url.path,
+        "method": request.method,
+        "client": request.client.host if request.client else "unknown",
+        "query_params": dict(request.query_params) if request.query_params else {},
+        "user_agent": request.headers.get("user-agent")
+    }
+    
     # Log the full error with traceback
     logger.error(
         f"Unhandled exception on {request.url.path}: {str(exc)}",
         exc_info=True,
-        extra={
-            "path": request.url.path,
-            "method": request.method,
-            "client": request.client.host if request.client else "unknown"
-        }
+        extra=request_context
+    )
+    
+    # ALWAYS log to database (regardless of DEBUG_MODE)
+    user_context = extract_user_context_from_request(request)
+    log_generic_exception_to_db(
+        exception=exc,
+        request_context=request_context,
+        user_id=user_context.get("user_id"),
+        project_id=user_context.get("project_id"),
+        session_id=user_context.get("session_id")
     )
     
     # Build sanitized response (traceback included only if DEBUG_MODE is True)

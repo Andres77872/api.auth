@@ -1,0 +1,153 @@
+-- ===================================================================================
+-- Activity Logging and Audit System Tables
+-- ===================================================================================
+-- Tables for comprehensive activity logging and audit trail
+-- MySQL Database
+-- ===================================================================================
+
+USE magic_auth;
+
+-- =================== ACTIVITY CATALOG TABLE ===================
+-- Defines all possible activity types in the system
+CREATE TABLE IF NOT EXISTS activity_catalog (
+    id VARCHAR(64) NOT NULL,
+    activity_code VARCHAR(50) NOT NULL,
+    activity_name VARCHAR(100) NOT NULL,
+    activity_description TEXT,
+    activity_category VARCHAR(50) NOT NULL DEFAULT 'general',
+    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
+    requires_audit BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_activity_code (activity_code),
+    INDEX idx_category (activity_category),
+    INDEX idx_severity (severity_level),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== ACTIVITY LOGS TABLE ===================
+-- Stores actual audit log entries
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64),
+    activity_type VARCHAR(50) NOT NULL,
+    activity_catalog_id VARCHAR(64),
+    details TEXT,
+    project_id VARCHAR(64),
+    user_group_id VARCHAR(64),
+    target_user_id VARCHAR(64),
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    metadata JSON,
+    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_user_activity (user_id, created_at DESC),
+    INDEX idx_project_activity (project_id, created_at DESC),
+    INDEX idx_activity_type (activity_type, created_at DESC),
+    INDEX idx_severity (severity_level, created_at DESC),
+    INDEX idx_target_user (target_user_id, created_at DESC),
+    INDEX idx_activity_catalog (activity_catalog_id),
+    INDEX idx_created_at (created_at DESC),
+    FOREIGN KEY (activity_catalog_id) REFERENCES activity_catalog(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== PERMISSION AUDIT LOG TABLE ===================
+-- Specialized audit trail for permission-related changes
+CREATE TABLE IF NOT EXISTS permission_audit_log (
+    id VARCHAR(64) NOT NULL,
+    action_type VARCHAR(50) NOT NULL,
+    project_id VARCHAR(64),
+    target_user_id VARCHAR(64),
+    user_group_id VARCHAR(64),
+    permission_id VARCHAR(64),
+    permission_group_id VARCHAR(64),
+    performed_by VARCHAR(64),
+    old_values JSON,
+    new_values JSON,
+    action_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    performed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    table_name VARCHAR(100),
+    record_id VARCHAR(64),
+    PRIMARY KEY (id),
+    INDEX idx_action_timestamp (action_timestamp DESC),
+    INDEX idx_performed_by (performed_by, action_timestamp DESC),
+    INDEX idx_target_user (target_user_id, action_timestamp DESC),
+    INDEX idx_project (project_id, action_timestamp DESC),
+    INDEX idx_action_type (action_type, action_timestamp DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== POPULATE ACTIVITY CATALOG ===================
+-- Insert predefined activity types
+
+-- Authentication Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-001', 'user_login', 'User Login', 'User successfully logged in', 'authentication', 'info', TRUE, TRUE),
+('act-cat-002', 'user_logout', 'User Logout', 'User logged out', 'authentication', 'info', TRUE, TRUE),
+('act-cat-003', 'user_login_failed', 'Login Failed', 'User login attempt failed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-004', 'session_created', 'Session Created', 'New user session created', 'authentication', 'info', FALSE, TRUE),
+('act-cat-005', 'session_expired', 'Session Expired', 'User session expired', 'authentication', 'info', FALSE, TRUE);
+
+-- User Management Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-006', 'user_registration', 'User Registration', 'New user registered', 'user_management', 'info', TRUE, TRUE),
+('act-cat-007', 'user_update', 'User Updated', 'User profile updated', 'user_management', 'info', TRUE, TRUE),
+('act-cat-008', 'user_status_change', 'User Status Changed', 'User status changed (active/inactive)', 'user_management', 'warning', TRUE, TRUE),
+('act-cat-009', 'user_password_reset', 'Password Reset', 'User password was reset', 'user_management', 'warning', TRUE, TRUE),
+('act-cat-010', 'user_type_changed', 'User Type Changed', 'User type changed (root/admin/consumer)', 'user_management', 'critical', TRUE, TRUE),
+('act-cat-011', 'user_deleted', 'User Deleted', 'User account deleted', 'user_management', 'critical', TRUE, TRUE);
+
+-- Project Management Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-012', 'project_creation', 'Project Created', 'New project created', 'project_management', 'info', TRUE, TRUE),
+('act-cat-013', 'project_update', 'Project Updated', 'Project details updated', 'project_management', 'info', TRUE, TRUE),
+('act-cat-014', 'project_delete', 'Project Deleted', 'Project deleted', 'project_management', 'critical', TRUE, TRUE),
+('act-cat-015', 'project_archived', 'Project Archived', 'Project archived', 'project_management', 'warning', TRUE, TRUE),
+('act-cat-016', 'project_unarchived', 'Project Unarchived', 'Project unarchived', 'project_management', 'info', TRUE, TRUE),
+('act-cat-017', 'project_ownership_transferred', 'Ownership Transferred', 'Project ownership transferred to another user', 'project_management', 'critical', TRUE, TRUE);
+
+-- Project Members Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-018', 'project_member_add', 'Member Added', 'User added to project', 'project_members', 'info', TRUE, TRUE),
+('act-cat-019', 'project_member_remove', 'Member Removed', 'User removed from project', 'project_members', 'warning', TRUE, TRUE),
+('act-cat-020', 'project_member_removed', 'Member Left', 'User removed from project', 'project_members', 'info', TRUE, TRUE);
+
+-- Group Management Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-021', 'group_creation', 'Group Created', 'New user group created', 'group_management', 'info', TRUE, TRUE),
+('act-cat-022', 'group_update', 'Group Updated', 'User group details updated', 'group_management', 'info', TRUE, TRUE),
+('act-cat-023', 'group_delete', 'Group Deleted', 'User group deleted', 'group_management', 'critical', TRUE, TRUE),
+('act-cat-024', 'user_group_assign', 'User Assigned to Group', 'User assigned to user group', 'group_management', 'info', TRUE, TRUE),
+('act-cat-025', 'user_group_remove', 'User Removed from Group', 'User removed from user group', 'group_management', 'warning', TRUE, TRUE),
+('act-cat-026', 'group_project_access_granted', 'Group Project Access', 'User group granted access to project', 'group_management', 'warning', TRUE, TRUE),
+('act-cat-027', 'group_project_access_revoked', 'Group Access Revoked', 'User group access to project revoked', 'group_management', 'warning', TRUE, TRUE);
+
+-- Permission Management Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-028', 'permission_grant', 'Permission Granted', 'Permission granted to user', 'permission_management', 'warning', TRUE, TRUE),
+('act-cat-029', 'permission_revoke', 'Permission Revoked', 'Permission revoked from user', 'permission_management', 'warning', TRUE, TRUE),
+('act-cat-030', 'role_removed', 'Role Removed', 'Role removed from user', 'permission_management', 'warning', TRUE, TRUE),
+('act-cat-031', 'role_assigned', 'Role Assigned', 'Role assigned to user', 'permission_management', 'warning', TRUE, TRUE),
+('act-cat-032', 'permission_group_assigned', 'Permission Group Assigned', 'Permission group assigned', 'permission_management', 'warning', TRUE, TRUE),
+('act-cat-033', 'permission_group_revoked', 'Permission Group Revoked', 'Permission group revoked', 'permission_management', 'warning', TRUE, TRUE);
+
+-- Bulk Operations Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-034', 'bulk_role_assignment', 'Bulk Role Assignment', 'Multiple roles assigned at once', 'bulk_operations', 'critical', TRUE, TRUE),
+('act-cat-035', 'bulk_group_assignment', 'Bulk Group Assignment', 'Multiple users assigned to groups', 'bulk_operations', 'warning', TRUE, TRUE),
+('act-cat-036', 'bulk_user_update', 'Bulk User Update', 'Multiple users updated at once', 'bulk_operations', 'warning', TRUE, TRUE),
+('act-cat-037', 'bulk_user_delete', 'Bulk User Delete', 'Multiple users deleted at once', 'bulk_operations', 'critical', TRUE, TRUE);
+
+-- Admin and System Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-038', 'admin_action', 'Admin Action', 'General administrative action', 'admin', 'warning', TRUE, TRUE),
+('act-cat-039', 'system_event', 'System Event', 'System-level event', 'system', 'info', TRUE, TRUE),
+('act-cat-040', 'security_alert', 'Security Alert', 'Security-related alert or event', 'security', 'critical', TRUE, TRUE);
+
+-- =================== TABLE CREATION COMPLETE ===================
+SELECT 'Activity logging tables created successfully!' as status, 
+       '3 tables created: activity_catalog, activity_logs, permission_audit_log' as details;

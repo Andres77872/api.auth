@@ -62,38 +62,19 @@ CREATE INDEX idx_active_sessions ON user_sessions (is_active, expires_at);
 CREATE INDEX idx_user_sessions_token_expires ON user_sessions (session_token, is_active, expires_at);
 CREATE INDEX idx_sessions_token_active ON user_sessions (session_token, is_active, expires_at);
 
--- =================== PERMISSION_AUDIT_LOG TABLE INDEXES ===================
-CREATE INDEX idx_audit_timestamp ON permission_audit_log (action_timestamp DESC);
-CREATE INDEX idx_audit_project ON permission_audit_log (project_id, action_timestamp DESC);
-CREATE INDEX idx_audit_user ON permission_audit_log (target_user_id, action_timestamp DESC);
-CREATE INDEX idx_audit_performer ON permission_audit_log (performed_by, action_timestamp DESC);
-CREATE INDEX idx_audit_action ON permission_audit_log (action_type);
-CREATE INDEX idx_audit_user_group ON permission_audit_log (user_group_id, action_timestamp DESC);
-CREATE INDEX idx_audit_log_project_time ON permission_audit_log (project_id, action_timestamp);
-CREATE INDEX idx_audit_log_user_time ON permission_audit_log (target_user_id, action_timestamp);
-CREATE INDEX idx_audit_log_action_type ON permission_audit_log (action_type, action_timestamp);
-
--- =================== ACTIVITY_CATALOG TABLE INDEXES ===================
-CREATE INDEX idx_activity_catalog_code ON activity_catalog (activity_code);
-CREATE INDEX idx_activity_catalog_category ON activity_catalog (activity_category);
-CREATE INDEX idx_activity_catalog_active ON activity_catalog (is_active);
-CREATE INDEX idx_activity_catalog_severity ON activity_catalog (severity_level);
-
--- =================== ACTIVITY_LOGS TABLE INDEXES ===================
-CREATE INDEX idx_activity_user_id ON activity_logs (user_id);
-CREATE INDEX idx_activity_type ON activity_logs (activity_type);
-CREATE INDEX idx_activity_project_id ON activity_logs (project_id);
-CREATE INDEX idx_activity_created_at ON activity_logs (created_at DESC);
-CREATE INDEX idx_activity_target_user_id ON activity_logs (target_user_id);
-CREATE INDEX idx_activity_user_group_id ON activity_logs (user_group_id);
-CREATE INDEX idx_activity_ip_address ON activity_logs (ip_address);
-CREATE INDEX idx_activity_severity ON activity_logs (severity_level);
-CREATE INDEX idx_activity_compound ON activity_logs (user_id, project_id, activity_type);
-CREATE INDEX idx_activity_recent ON activity_logs (created_at DESC, activity_type);
-CREATE INDEX idx_activity_log_user_type_time ON activity_logs (user_id, activity_type, created_at);
-CREATE INDEX idx_activity_log_project_time ON activity_logs (project_id, created_at);
-CREATE INDEX idx_activity_log_target_user_time ON activity_logs (target_user_id, created_at);
-CREATE INDEX idx_activity_log_type_time ON activity_logs (activity_type, created_at);
+-- =================== API_AUDIT_LOG TABLE INDEXES ===================
+-- Note: Most indexes are defined inline in the table creation (02_create_tables.sql)
+-- The following indexes are defined in the table:
+--   - idx_timestamp (request_timestamp DESC)
+--   - idx_user_time (user_id, request_timestamp DESC)
+--   - idx_endpoint (endpoint_path, http_method)
+--   - idx_status (response_status, request_timestamp DESC)
+--   - idx_user_endpoint (user_id, endpoint_path)
+--   - idx_success (is_success, request_timestamp DESC)
+--   - idx_project (project_id, request_timestamp DESC)
+--   - idx_request_id (request_id)
+--   - idx_security (security_event, request_timestamp DESC)
+--   - idx_audit_required (requires_audit, request_timestamp DESC)
 
 -- =================== USER_PASSWORD_RESETS TABLE INDEXES ===================
 CREATE INDEX idx_user_password_resets_user_id ON user_password_resets (user_id);

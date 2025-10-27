@@ -46,6 +46,8 @@ TABLE_FILES = [
     'tables/04_add_constraints.sql',
     'tables/05_initialize_data.sql',
     'tables/06_create_views.sql',
+    'tables/07_error_logs.sql',
+    'tables/08_activity_logging_tables.sql',
 ]
 
 STORED_PROCEDURE_FILES = [
@@ -58,6 +60,8 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/07_sessions_analytics.sql',
     'stored_procedures/08_admin_operations.sql',
     'stored_procedures/09_system_maintenance.sql',
+    'stored_procedures/10_error_logging.sql',
+    'stored_procedures/11_activity_logging.sql',
 ]
 
 

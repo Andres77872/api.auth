@@ -30,10 +30,10 @@ from pathlib import Path
 
 # Database configuration
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', '192.168.1.90'),
+    'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', 'qkY3w4wJQbD367RD'),
+    'password': os.getenv('DB_PASSWORD', None),
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor,
     'autocommit': False
@@ -51,6 +51,8 @@ TABLE_FILES = [
     'tables/04_add_constraints.sql',
     'tables/05_initialize_data.sql',
     'tables/06_create_views.sql',
+    'tables/07_error_logs.sql',
+    'tables/08_activity_logging_tables.sql',
 ]
 
 STORED_PROCEDURE_FILES = [
@@ -63,6 +65,8 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/07_sessions_analytics.sql',
     'stored_procedures/08_admin_operations.sql',
     'stored_procedures/09_system_maintenance.sql',
+    'stored_procedures/10_error_logging.sql',
+    'stored_procedures/11_activity_logging.sql',
 ]
 
 

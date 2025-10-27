@@ -73,29 +73,13 @@ ALTER TABLE user_sessions
     ADD CONSTRAINT fk_user_sessions_project FOREIGN KEY (project_id) 
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
--- =================== PERMISSION_AUDIT_LOG TABLE CONSTRAINTS ===================
-ALTER TABLE permission_audit_log
-    ADD CONSTRAINT fk_audit_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_audit_target_user FOREIGN KEY (target_user_id) 
+-- =================== API_AUDIT_LOG TABLE CONSTRAINTS ===================
+-- Foreign keys for api_audit_log (optional - audit logs can exist without referenced records)
+ALTER TABLE api_audit_log
+    ADD CONSTRAINT fk_api_audit_user FOREIGN KEY (user_id) 
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_audit_user_group FOREIGN KEY (user_group_id) 
-        REFERENCES user_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_audit_performed_by FOREIGN KEY (performed_by) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
-
--- =================== ACTIVITY_LOGS TABLE CONSTRAINTS ===================
-ALTER TABLE activity_logs
-    ADD CONSTRAINT fk_activity_logs_catalog FOREIGN KEY (activity_catalog_id) 
-        REFERENCES activity_catalog(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_activity_logs_user FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_activity_logs_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_activity_logs_user_group FOREIGN KEY (user_group_id) 
-        REFERENCES user_groups(id) ON DELETE SET NULL ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_activity_logs_target_user FOREIGN KEY (target_user_id) 
-        REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
+    ADD CONSTRAINT fk_api_audit_project FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- =================== PERFORMANCE OPTIMIZATION TABLE CONSTRAINTS ===================
 ALTER TABLE permission_cache
@@ -194,14 +178,6 @@ END$$
 -- Trigger to automatically update updated_at field for project_groups table
 CREATE TRIGGER tr_project_groups_updated_at
 BEFORE UPDATE ON project_groups
-FOR EACH ROW
-BEGIN
-    SET NEW.updated_at = NOW();
-END$$
-
--- Trigger to automatically update updated_at field for activity_catalog table
-CREATE TRIGGER tr_activity_catalog_updated_at
-BEFORE UPDATE ON activity_catalog
 FOR EACH ROW
 BEGIN
     SET NEW.updated_at = NOW();

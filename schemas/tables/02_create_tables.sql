@@ -146,73 +146,76 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     UNIQUE KEY uk_session_token (session_token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== PERMISSION_AUDIT_LOG TABLE ===================
--- Audit trail for permission-related actions
-CREATE TABLE IF NOT EXISTS permission_audit_log (
+-- =================== API AUDIT LOG TABLE ===================
+-- Comprehensive API request/response audit logging
+-- Captures all API calls with complete request and response context
+CREATE TABLE IF NOT EXISTS api_audit_log (
     id VARCHAR(64) NOT NULL,
-    action_type VARCHAR(50) NOT NULL,
-    project_id VARCHAR(64),
-    target_user_id VARCHAR(64),
-    user_group_id VARCHAR(64),
-    permission_id VARCHAR(64),
-    permission_group_id VARCHAR(64),
-    performed_by VARCHAR(64),
-    old_values JSON,
-    new_values JSON,
-    action_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    performed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ip_address VARCHAR(45),
-    user_agent TEXT,
-    table_name VARCHAR(100),
-    record_id VARCHAR(64),
+    
+    -- Request identification
+    request_id VARCHAR(64),                    -- Unique request ID for tracing
+    
+    -- Endpoint information
+    http_method VARCHAR(10) NOT NULL,          -- GET, POST, PUT, DELETE, PATCH
+    endpoint_path VARCHAR(512) NOT NULL,       -- /api/v1/users/{hash}
+    route_pattern VARCHAR(512),                -- Matched route pattern
+    
+    -- User context
+    user_id VARCHAR(64),                       -- Authenticated user (NULL if unauthenticated)
+    user_type ENUM('root', 'admin', 'consumer'),  -- User type at time of request
+    session_id VARCHAR(256),                    -- Session identifier
+    
+    -- Request details
+    request_headers JSON,                      -- Request headers (filtered, no sensitive data)
+    request_body JSON,                         -- Request body (filtered, no passwords)
+    request_query JSON,                        -- Query parameters
+    request_size_bytes INT,                    -- Request payload size
+    
+    -- Response details
+    response_status INT NOT NULL,              -- HTTP status code (200, 404, 500, etc.)
+    response_body JSON,                        -- Response body (filtered, no sensitive data)
+    response_headers JSON,                     -- Response headers (filtered)
+    response_size_bytes INT,                   -- Response payload size
+    
+    -- Timing and performance
+    request_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    response_timestamp DATETIME,
+    duration_ms INT,                           -- Request processing time in milliseconds
+    
+    -- Network information
+    client_ip VARCHAR(45),                     -- Client IP address
+    user_agent TEXT,                           -- User agent string
+    referer VARCHAR(512),                      -- HTTP referer
+    
+    -- Result classification
+    is_success BOOLEAN,                        -- TRUE if 2xx status, FALSE otherwise
+    error_code VARCHAR(50),                    -- Application error code if failed
+    error_message TEXT,                        -- Error message if failed
+    
+    -- Context
+    project_id VARCHAR(64),                    -- Project context if applicable
+    target_resource_type VARCHAR(50),          -- Resource type (user, project, group, etc.)
+    target_resource_id VARCHAR(64),            -- Resource ID being accessed/modified
+    
+    -- Metadata
+    metadata JSON,                             -- Additional context-specific data
+    tags JSON,                                 -- Searchable tags (e.g., ["admin_action", "critical"])
+    
+    -- Security flags
+    requires_audit BOOLEAN DEFAULT TRUE,       -- Mark for compliance auditing
+    security_event BOOLEAN DEFAULT FALSE,      -- Flag security-related events
+    
     PRIMARY KEY (id),
-    INDEX idx_project_action (project_id, action_type),
-    INDEX idx_performed_by (performed_by),
-    INDEX idx_timestamp (action_timestamp),
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE SET NULL,
-    FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== ACTIVITY_CATALOG TABLE ===================
--- Catalog of all possible activity types
-CREATE TABLE IF NOT EXISTS activity_catalog (
-    id VARCHAR(64) NOT NULL,
-    activity_code VARCHAR(50) NOT NULL,
-    activity_name VARCHAR(100) NOT NULL,
-    activity_description TEXT,
-    activity_category VARCHAR(50) NOT NULL DEFAULT 'general',
-    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
-    requires_audit BOOLEAN NOT NULL DEFAULT FALSE,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_activity_code (activity_code),
-    INDEX idx_activity_category (activity_category),
-    INDEX idx_activity_code (activity_code, is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== ACTIVITY_LOGS TABLE ===================
--- Activity logging for user and system activities
-CREATE TABLE IF NOT EXISTS activity_logs (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64),
-    activity_type VARCHAR(50) NOT NULL,
-    activity_catalog_id VARCHAR(64),
-    details TEXT,
-    project_id VARCHAR(64),
-    user_group_id VARCHAR(64),
-    target_user_id VARCHAR(64),
-    ip_address VARCHAR(45),
-    user_agent TEXT,
-    metadata JSON NULL,
-    severity_level ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    INDEX idx_activity_catalog (activity_catalog_id),
-    FOREIGN KEY (activity_catalog_id) REFERENCES activity_catalog(id) ON DELETE SET NULL
+    INDEX idx_timestamp (request_timestamp DESC),
+    INDEX idx_user_time (user_id, request_timestamp DESC),
+    INDEX idx_endpoint (endpoint_path, http_method),
+    INDEX idx_status (response_status, request_timestamp DESC),
+    INDEX idx_user_endpoint (user_id, endpoint_path),
+    INDEX idx_success (is_success, request_timestamp DESC),
+    INDEX idx_project (project_id, request_timestamp DESC),
+    INDEX idx_request_id (request_id),
+    INDEX idx_security (security_event, request_timestamp DESC),
+    INDEX idx_audit_required (requires_audit, request_timestamp DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_PASSWORD_RESETS TABLE ===================
@@ -524,4 +527,5 @@ CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
 -- =================== TABLE CREATION COMPLETE ===================
 SELECT 'All tables created successfully!' as status, 
        '39 tables created for complete authentication system' as details;
+-- NOTE: Error logging tables are in 07_error_logs.sql
 

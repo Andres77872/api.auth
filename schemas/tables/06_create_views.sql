@@ -106,13 +106,13 @@ SELECT
     u.created_at,
     COUNT(DISTINCT ugm.user_group_id) as total_groups,
     COUNT(DISTINCT vupa.project_id) as total_projects,
-    MAX(al.created_at) as last_activity,
+    MAX(al.request_timestamp) as last_activity,
     GROUP_CONCAT(DISTINCT ug.group_name ORDER BY ug.group_name) as group_memberships
 FROM users u
 LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
 LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
 LEFT JOIN v_user_project_access vupa ON u.id = vupa.user_id
-LEFT JOIN activity_logs al ON u.id = al.user_id
+LEFT JOIN api_audit_log al ON u.id = al.user_id
 WHERE u.is_active = 1
 GROUP BY u.id;
 
@@ -126,7 +126,7 @@ SELECT
     p.owner_id,
     COUNT(DISTINCT vupa.user_id) as member_count,
     COUNT(DISTINCT ug.id) as user_groups_with_access,
-    MAX(al.created_at) as last_activity,
+    MAX(al.request_timestamp) as last_activity,
     CASE 
         WHEN COUNT(DISTINCT vupa.user_id) = 0 THEN 'inactive'
         WHEN COUNT(DISTINCT vupa.user_id) < 5 THEN 'low'
@@ -137,7 +137,7 @@ FROM projects p
 LEFT JOIN v_user_project_access vupa ON p.id = vupa.project_id
 LEFT JOIN user_group_projects ugp ON p.id = ugp.project_id AND ugp.is_active = 1
 LEFT JOIN user_groups ug ON ugp.user_group_id = ug.id AND ug.is_active = 1
-LEFT JOIN activity_logs al ON p.id = al.project_id
+LEFT JOIN api_audit_log al ON p.id = al.project_id
 WHERE p.is_active = 1
 GROUP BY p.id;
 

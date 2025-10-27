@@ -289,6 +289,7 @@ class LoginResponse(BaseResponse):
     project: Optional[ProjectInfo] = None
     accessible_projects: List[ProjectInfo] = Field(default_factory=list)
     expires_at: Optional[datetime] = None
+    user_id: Optional[str] = None  # Internal field for logging, not exposed in API docs
 
 
 class RegisterResponse(BaseResponse):
