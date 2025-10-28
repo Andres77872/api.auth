@@ -168,6 +168,29 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             # Extract error information if present
             error_code = None
             error_message = None
+            response_body_data = None
+            
+            # Try to read response body for error details (only for errors)
+            if status_code >= 400:
+                try:
+                    # For StreamingResponse, we can't read the body without consuming it
+                    # So we'll only read for regular Response objects
+                    if hasattr(response, 'body') and not isinstance(response, StreamingResponse):
+                        response_body = response.body
+                        if response_body:
+                            try:
+                                response_body_data = json.loads(response_body.decode('utf-8'))
+                                # Extract error details from standardized error response
+                                if isinstance(response_body_data, dict) and 'error' in response_body_data:
+                                    error_info = response_body_data['error']
+                                    if isinstance(error_info, dict):
+                                        error_code = error_info.get('code')
+                                        error_message = error_info.get('message')
+                            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                                # Body is not JSON or can't be decoded, skip
+                                pass
+                except Exception as e:
+                    logger.debug(f"Could not extract error details from response: {e}")
             
             # Extract resource info from path
             resource_type, resource_id = APIAuditLogger.extract_resource_info(
@@ -204,10 +227,15 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             
             # Create background task for response logging
             async def log_response_task():
+                # Log error response body for debugging (filtered)
+                filtered_response_body = None
+                if status_code >= 400 and response_body_data:
+                    filtered_response_body = APIAuditLogger.filter_sensitive_data(response_body_data)
+                
                 APIAuditLogger.log_response(
                     audit_id=audit_id,
                     response_status=status_code,
-                    response_body=None,  # We don't log response body by default (can be enabled)
+                    response_body=filtered_response_body,  # Log error responses for debugging
                     response_headers=response_headers,
                     response_size_bytes=response_size_bytes,
                     error_code=error_code,

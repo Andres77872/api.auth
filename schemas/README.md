@@ -15,7 +15,8 @@ schemas/
 │   ├── 04_add_constraints.sql
 │   ├── 05_initialize_data.sql
 │   ├── 06_create_views.sql
-│   └── 07_error_logs.sql
+│   ├── 07_error_logs.sql
+│   └── 08_activity_logging_tables.sql
 │
 ├── stored_procedures/   # All stored procedures organized by domain
 │   ├── 01_user_management.sql
@@ -27,7 +28,12 @@ schemas/
 │   ├── 07_sessions_analytics.sql
 │   ├── 08_admin_operations.sql
 │   ├── 09_system_maintenance.sql
-│   └── 10_error_logging.sql
+│   ├── 10_error_logging.sql
+│   └── 11_activity_logging.sql
+│
+├── triggers/            # Database triggers for automatic activity logging
+│   ├── 01_activity_logging_triggers.sql      # Core entity triggers
+│   └── 02_permission_activity_triggers.sql   # Permission/role triggers
 │
 └── README.md           # This file
 ```
@@ -56,6 +62,8 @@ mysql -u root -p < schemas/tables/03_create_indexes.sql
 mysql -u root -p < schemas/tables/04_add_constraints.sql
 mysql -u root -p < schemas/tables/05_initialize_data.sql
 mysql -u root -p < schemas/tables/06_create_views.sql
+mysql -u root -p < schemas/tables/07_error_logs.sql
+mysql -u root -p < schemas/tables/08_activity_logging_tables.sql
 
 # 2. STORED PROCEDURES - Create all procedures
 mysql -u root -p < schemas/stored_procedures/01_user_management.sql
@@ -68,6 +76,11 @@ mysql -u root -p < schemas/stored_procedures/07_sessions_analytics.sql
 mysql -u root -p < schemas/stored_procedures/08_admin_operations.sql
 mysql -u root -p < schemas/stored_procedures/09_system_maintenance.sql
 mysql -u root -p < schemas/stored_procedures/10_error_logging.sql
+mysql -u root -p < schemas/stored_procedures/11_activity_logging.sql
+
+# 3. TRIGGERS - Create automatic activity logging triggers
+mysql -u root -p < schemas/triggers/01_activity_logging_triggers.sql
+mysql -u root -p < schemas/triggers/02_permission_activity_triggers.sql
 ```
 
 ---
@@ -85,6 +98,7 @@ Contains all table definitions, indexes, constraints, and initialization data.
 | `05_initialize_data.sql` | Initial data | Root user + 40 activity types |
 | `06_create_views.sql` | Performance views | 6 optimization views |
 | `07_error_logs.sql` | Error logging system | 3 tables + 4 views for comprehensive error tracking |
+| `08_activity_logging_tables.sql` | Activity logging system | 3 tables (activity_catalog, activity_logs, permission_audit_log) + 40 activity types |
 
 ### Key Tables Overview
 
@@ -127,7 +141,7 @@ Contains all table definitions, indexes, constraints, and initialization data.
 
 ## 🔧 Stored Procedures Folder (`stored_procedures/`)
 
-Contains 126+ stored procedures organized by functional domain.
+Contains 137+ stored procedures organized by functional domain.
 
 | File | Procedures | Description |
 |------|-----------|-------------|
@@ -141,6 +155,7 @@ Contains 126+ stored procedures organized by functional domain.
 | `08_admin_operations.sql` | 1 | Admin operations and audit logs |
 | `09_system_maintenance.sql` | 5 | Cleanup, health checks |
 | `10_error_logging.sql` | 14 | Error logging, statistics, alerts, monitoring |
+| `11_activity_logging.sql` | 11 | Activity logging, querying, analytics, cleanup |
 
 ### Procedure Categories
 
@@ -184,6 +199,13 @@ Contains 126+ stored procedures organized by functional domain.
 - **Statistics**: `sp_get_error_statistics`, `sp_get_error_trends`, `sp_get_error_log_summary`
 - **Alerts**: `sp_create_error_alert`, `sp_get_active_alerts`, `sp_acknowledge_alert`, `sp_resolve_alert`
 - **Maintenance**: `sp_cleanup_old_error_logs`
+
+#### Activity Logging (11)
+- **Logging**: `sp_log_activity` - Log user actions and system events
+- **Retrieval**: `sp_get_activity_logs`, `sp_get_activity_by_code`, `sp_get_activity_catalog`
+- **Analytics**: `sp_get_activity_stats`, `sp_get_user_activity_summary`, `sp_get_recent_security_events`
+- **Specialized**: `sp_log_permission_change` - Permission audit logging
+- **Maintenance**: `sp_cleanup_old_activity_logs`
 
 ---
 
@@ -298,11 +320,34 @@ SELECT user_type, COUNT(*) as count FROM users WHERE is_active = 1 GROUP BY user
 
 ---
 
+## 🔄 Triggers Folder (`triggers/`)
+
+Contains 28 database triggers for automatic activity logging.
+
+| File | Triggers | Description |
+|------|---------|-------------|
+| `01_activity_logging_triggers.sql` | 14 | Core entity triggers (users, projects, groups) |
+| `02_permission_activity_triggers.sql` | 14 | Permission/role triggers (roles, permissions, assignments) |
+
+### Trigger Coverage
+- **Users**: INSERT, UPDATE, DELETE (automatic logging of user changes)
+- **Projects**: INSERT, UPDATE, DELETE (automatic logging of project changes)
+- **User Groups**: INSERT, UPDATE, DELETE (automatic logging of group changes)
+- **Membership**: INSERT, DELETE (automatic logging of group assignments)
+- **Permissions**: INSERT, UPDATE, DELETE (automatic logging of permission changes)
+- **Roles**: INSERT, UPDATE, DELETE (automatic logging of role changes)
+- **Sessions**: INSERT, UPDATE (automatic logging of login/logout)
+
+See `docs/ACTIVITY_LOG/` for comprehensive documentation.
+
+---
+
 ## 📝 Additional Documentation
 
 - **Architecture**: See `docs/ARCHITECTURE/` folder
 - **API Endpoints**: See `docs/api/` folder
 - **Error Handling**: See `docs/ERROR_HANDLER/` folder
+- **Activity Logging**: See `docs/ACTIVITY_LOG/` folder
 - **Usage Examples**: See `docs/USAGE/` folder
 
 ---

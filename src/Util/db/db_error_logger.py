@@ -257,6 +257,175 @@ def log_app_exception_to_db(
         return None
 
 
+def log_http_exception_to_db(
+    exception,
+    error_code: str,
+    error_category: str,
+    request_context: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None
+) -> Optional[str]:
+    """
+    Log an HTTPException (FastAPI/Starlette) to the database.
+    
+    Args:
+        exception: HTTPException instance
+        error_code: Error code to use
+        error_category: Error category to use
+        request_context: Request context dict
+        user_id: User ID (if authenticated)
+        project_id: Project ID (if available)
+        session_id: Session ID (if available)
+        
+    Returns:
+        Error ID if successful, None if logging failed
+    """
+    from src.Util.error_handler import DEBUG_MODE, sanitize_error_message
+    import traceback
+    
+    try:
+        # Extract request context
+        request_context = request_context or {}
+        request_path = request_context.get('path')
+        request_method = request_context.get('method')
+        query_params = request_context.get('query_params')
+        client_ip = request_context.get('client')
+        user_agent = request_context.get('user_agent')
+        
+        # Get sanitized error message
+        error_message = sanitize_error_message(str(exception.detail))
+        
+        # Get stack trace
+        stack_trace = traceback.format_exc()
+        
+        # Determine severity based on status code
+        if exception.status_code >= 500:
+            severity_level = "critical"
+        elif exception.status_code >= 400:
+            severity_level = "error"
+        else:
+            severity_level = "warning"
+        
+        # Log to database
+        return log_error_to_database(
+            error_code=error_code,
+            error_category=error_category,
+            error_message=error_message,
+            status_code=exception.status_code,
+            severity_level=severity_level,
+            user_id=user_id,
+            project_id=project_id,
+            session_id=session_id,
+            request_path=request_path,
+            request_method=request_method,
+            request_query_params=query_params,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            function_name=None,
+            function_params=None,
+            error_context=None,
+            error_details={
+                "error_type": type(exception).__name__,
+                "status_code": exception.status_code
+            },
+            database_error=None,
+            original_error_type=type(exception).__name__,
+            original_error_message=str(exception.detail),
+            stack_trace=stack_trace,
+            debug_mode=DEBUG_MODE
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to log HTTPException to database: {str(e)}", exc_info=True)
+        return None
+
+
+def log_validation_exception_to_db(
+    exception,
+    request_context: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None
+) -> Optional[str]:
+    """
+    Log a RequestValidationError to the database.
+    
+    Args:
+        exception: RequestValidationError instance
+        request_context: Request context dict
+        user_id: User ID (if authenticated)
+        project_id: Project ID (if available)
+        session_id: Session ID (if available)
+        
+    Returns:
+        Error ID if successful, None if logging failed
+    """
+    from src.Util.error_handler import ErrorCode, ErrorCategory, DEBUG_MODE
+    import traceback
+    
+    try:
+        # Extract request context
+        request_context = request_context or {}
+        request_path = request_context.get('path')
+        request_method = request_context.get('method')
+        query_params = request_context.get('query_params')
+        client_ip = request_context.get('client')
+        user_agent = request_context.get('user_agent')
+        
+        # Extract validation errors
+        validation_errors = []
+        for error in exception.errors():
+            field = ".".join(str(loc) for loc in error.get("loc", []))
+            message = error.get("msg", "Validation error")
+            error_type = error.get("type", "value_error")
+            validation_errors.append({
+                "field": field,
+                "message": message,
+                "type": error_type
+            })
+        
+        # Build error message
+        error_message = "Request validation failed"
+        if validation_errors:
+            error_message += f": {validation_errors[0]['field']} - {validation_errors[0]['message']}"
+        
+        # Get stack trace
+        stack_trace = traceback.format_exc()
+        
+        # Log to database
+        return log_error_to_database(
+            error_code=ErrorCode.INVALID_INPUT.value,
+            error_category=ErrorCategory.VALIDATION.value,
+            error_message=error_message,
+            status_code=400,
+            severity_level="error",
+            user_id=user_id,
+            project_id=project_id,
+            session_id=session_id,
+            request_path=request_path,
+            request_method=request_method,
+            request_query_params=query_params,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            function_name=None,
+            function_params=None,
+            error_context=None,
+            error_details={
+                "validation_errors": validation_errors
+            },
+            database_error=None,
+            original_error_type=type(exception).__name__,
+            original_error_message="Request validation failed",
+            stack_trace=stack_trace,
+            debug_mode=DEBUG_MODE
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to log validation exception to database: {str(e)}", exc_info=True)
+        return None
+
+
 def log_generic_exception_to_db(
     exception: Exception,
     request_context: Optional[Dict[str, Any]] = None,

@@ -25,7 +25,12 @@ from src.Util.error_handler import (
     log_error,
     mask_uuid
 )
-from src.Util.db.db_error_logger import log_app_exception_to_db, log_generic_exception_to_db
+from src.Util.db.db_error_logger import (
+    log_app_exception_to_db, 
+    log_generic_exception_to_db,
+    log_http_exception_to_db,
+    log_validation_exception_to_db
+)
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +307,25 @@ async def http_exception_handler(request: Request, exc: Union[HTTPException, Sta
         }
     )
     
+    # Log to database
+    request_context = {
+        "path": request.url.path,
+        "method": request.method,
+        "client": request.client.host if request.client else "unknown",
+        "query_params": dict(request.query_params) if request.query_params else {},
+        "user_agent": request.headers.get("user-agent")
+    }
+    user_context = extract_user_context_from_request(request)
+    log_http_exception_to_db(
+        exception=exc,
+        error_code=error_code.value,
+        error_category=category.value,
+        request_context=request_context,
+        user_id=user_context.get("user_id"),
+        project_id=user_context.get("project_id"),
+        session_id=user_context.get("session_id")
+    )
+    
     return JSONResponse(
         status_code=status_code,
         content=response
@@ -376,6 +400,23 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "method": request.method,
             "errors": validation_errors
         }
+    )
+    
+    # Log to database
+    request_context = {
+        "path": request.url.path,
+        "method": request.method,
+        "client": request.client.host if request.client else "unknown",
+        "query_params": dict(request.query_params) if request.query_params else {},
+        "user_agent": request.headers.get("user-agent")
+    }
+    user_context = extract_user_context_from_request(request)
+    log_validation_exception_to_db(
+        exception=exc,
+        request_context=request_context,
+        user_id=user_context.get("user_id"),
+        project_id=user_context.get("project_id"),
+        session_id=user_context.get("session_id")
     )
     
     return JSONResponse(
