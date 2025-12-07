@@ -86,37 +86,14 @@ def get_user_type(user_id: str) -> Optional[str]:
     )
 
 
-def get_admin_assigned_project(user_id: str) -> Optional[str]:
-    """
-    Get assigned project for admin user through user groups.
-    
-    Args:
-        user_id: Admin user ID
-        
-    Returns:
-        First assigned project ID or None
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        assigned_projects = get_admin_assigned_projects(user_id)
-        return assigned_projects[0] if assigned_projects else None
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_admin_assigned_project(user_id={user_id})"
-    )
-
-
-def update_user_type(user_id: str, new_user_type: str, assigned_project_id: str = None, updated_by: str = None) -> bool:
+def update_user_type(user_id: str, new_user_type: str, project_id: str = None, updated_by: str = None) -> bool:
     """
     Update user type and project assignment.
     
     Args:
         user_id: User ID to update
         new_user_type: New user type (root, admin, consumer)
-        assigned_project_id: Project to assign if admin (optional)
+        project_id: Project to assign if admin (optional, ignored for root/consumer)
         updated_by: User ID who performed update
         
     Returns:
@@ -130,13 +107,11 @@ def update_user_type(user_id: str, new_user_type: str, assigned_project_id: str 
         with get_connection() as con:
             cur = con.cursor()
 
-            if new_user_type in ['root', 'consumer']:
-                assigned_project_id = None
-
             cur.callproc('sp_update_user_type', [user_id, new_user_type])
             
-            if new_user_type == 'admin' and assigned_project_id:
-                add_admin_to_project(user_id, assigned_project_id, assigned_by=updated_by)
+            # Only assign project for admin users
+            if new_user_type == 'admin' and project_id:
+                add_admin_to_project(user_id, project_id, assigned_by=updated_by)
 
             con.commit()
             cache_manager.invalidate_user_cache(user_id)
@@ -174,12 +149,12 @@ def create_root_user(username: str, password: str, email: str = None, created_by
     def _create():
         password_hash = hash_password(password)
         user_hash = generate_user_hash()
+        user_id = generate_user_id()
 
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_create_root_user', [user_hash, username, email, password_hash, created_by])
-
-            user_id = con.insert_id()
+            # SP params: (p_user_id, p_user_hash, p_username, p_email, p_password_hash, p_created_by)
+            cur.callproc('sp_create_root_user', [user_id, user_hash, username, email, password_hash, created_by])
             con.commit()
 
             return User(
@@ -563,10 +538,16 @@ def delete_user(user_id: str, deleted_by: str = None) -> bool:
             cur = con.cursor()
             cur.callproc('sp_delete_user', [user_id])
 
-            success = cur.rowcount > 0
-            if success:
+            # SP returns: SELECT ROW_COUNT() as rows_affected
+            result = cur.fetchone()
+            rows_affected = result[0] if result else 0
+            
+            if rows_affected > 0:
                 con.commit()
-            return success
+                # Invalidate cache for deleted user
+                cache_manager.invalidate_user_cache(user_id)
+                return True
+            return False
     
     return handle_db_operation(
         _delete,
@@ -810,22 +791,41 @@ def get_user_projects(user_id: str) -> List[Tuple[Project, Any]]:
 
 
 def revoke_user_project_access(user_id: str, project_id: str, revoked_by: str = None) -> bool:
-    """Revoke user's access to a project by removing them from all groups with access"""
-    from src.Util.db.db_user_groups import remove_user_from_group
+    """
+    Revoke user's access to a project by removing them from all groups with access.
     
-    with get_connection() as con:
-        cur = con.cursor()
+    Args:
+        user_id: User ID to revoke access from
+        project_id: Project ID to revoke access to
+        revoked_by: User ID of revoker
         
-        # Find all user groups that give access to this project
-        cur.callproc('sp_find_user_groups_for_project_access', [user_id, project_id])
-        groups = cur.fetchall()
-        success = False
+    Returns:
+        True if access was revoked from at least one group
         
-        for (group_id,) in groups:
-            if remove_user_from_group(user_id, group_id, revoked_by):
-                success = True
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _revoke():
+        from src.Util.db.db_user_groups import remove_user_from_group
         
-        return success
+        with get_connection() as con:
+            cur = con.cursor()
+            
+            # Find all user groups that give access to this project
+            cur.callproc('sp_find_user_groups_for_project_access', [user_id, project_id])
+            groups = cur.fetchall()
+            success = False
+            
+            for (group_id,) in groups:
+                if remove_user_from_group(user_id, group_id, revoked_by):
+                    success = True
+            
+            return success
+    
+    return handle_db_operation(
+        _revoke,
+        error_context=f"revoke_user_project_access(user_id={user_id}, project_id={project_id})"
+    )
 
 
 # =================== USER GROUP MANAGEMENT (Updated for New Schema) ===================
@@ -1128,7 +1128,6 @@ def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assi
             # Import the user group functions
             from src.Util.db.db_user_groups import (
                 assign_user_to_group,
-                grant_group_project_access,
                 get_user_groups_for_user
             )
 
@@ -1385,9 +1384,12 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
     def _create():
         password_hash = hash_password(password)
         user_hash = generate_user_hash()
+        user_id = generate_user_id()
 
+        # Determine project assignments
         if assigned_project_id and not assigned_project_ids:
             assigned_project_ids_list = [assigned_project_id]
+            assigned_project_id_value = assigned_project_id
         elif assigned_project_ids:
             assigned_project_ids_list = assigned_project_ids
             assigned_project_id_value = assigned_project_ids[0] if assigned_project_ids else None
@@ -1400,8 +1402,8 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
 
             con.begin()
 
-            cur.callproc('sp_create_admin_user', [user_hash, username, email, password_hash, created_by])
-            user_id = cur.fetchone()[0]
+            # SP params: (p_user_id, p_user_hash, p_username, p_email, p_password_hash, p_created_by)
+            cur.callproc('sp_create_admin_user', [user_id, user_hash, username, email, password_hash, created_by])
 
             if assigned_project_ids_list:
                 from src.Util.db.db_user_groups import assign_user_to_group
@@ -1423,7 +1425,7 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
                 email=email,
                 password_hash=password_hash,
                 user_type='admin',
-                assigned_project_id=assigned_project_id_value if 'assigned_project_id_value' in locals() else assigned_project_id,
+                assigned_project_id=assigned_project_id_value,
                 created_at=datetime.now(),
                 last_login=None,
                 is_active=True

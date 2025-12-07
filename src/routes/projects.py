@@ -9,14 +9,14 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form, Body
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.Models import (
     ListProjectsResponse, CreateProjectResponse, ProjectDetailsResponse,
     UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
-    ProjectInfo, PaginationInfo, ListUserGroupsResponse, GrantGroupProjectAccessResponse, UserGroupInfo
+    ProjectInfo, PaginationInfo, ListUserGroupsResponse, UserGroupInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.error_handler import (
@@ -30,11 +30,10 @@ from src.Util.db import (
     update_project, delete_project, search_projects,
     get_project_stats, get_user_accessible_projects,
     get_user_project_permissions, get_user_groups_for_user,
-    get_admin_assigned_projects, grant_user_project_access, add_admin_to_project,
-    revoke_user_project_access,
-    # NEW imports for group-project management
-    get_user_group_by_hash, get_user_groups_for_project,
-    grant_group_project_access, revoke_group_project_access
+    # Group-project management
+    get_user_groups_for_project,
+    # Project groups for groups-of-groups architecture
+    get_permission_groups_for_project
 )
 
 # Configure logging
@@ -195,7 +194,7 @@ async def create_new_project(
         )
 
     # Create project - db layer handles errors
-    new_project = create_project(project_name, project_description)
+    new_project = create_project(project_name, project_description, created_by=user_data.id, owner_id=user_data.id)
 
     if not new_project:
         raise InternalError(
@@ -272,6 +271,17 @@ async def get_project_details(
     # Get user groups that have access to this project
     user_groups = get_user_groups_for_user(user_data.id)
 
+    # Get project_groups this project belongs to (groups-of-groups architecture)
+    project_groups = get_permission_groups_for_project(project.id)
+    project_groups_info = [
+        {
+            "group_hash": pg.group_hash,
+            "group_name": pg.group_name,
+            "description": getattr(pg, 'group_description', None)
+        }
+        for pg in project_groups
+    ]
+
     project_info = ProjectInfo(
         project_hash=project.project_hash,
         project_name=project.project_name,
@@ -290,7 +300,8 @@ async def get_project_details(
         success=True,
         project=project_info,
         user_access=user_access,
-        statistics=project_stats or {}
+        statistics=project_stats or {},
+        project_groups=project_groups_info
     )
 
 @router.put("/{project_hash}", response_model=UpdateProjectResponse)
@@ -1005,69 +1016,19 @@ async def list_project_user_groups(
         pagination=pagination
     )
 
-@router.post("/{project_hash}/groups", response_model=GrantGroupProjectAccessResponse)
-async def assign_group_to_project(
-        project_hash: str = Path(..., description="Project identifier"),
-        group_hash: str = Form(..., description="User group identifier"),
-        credentials: HTTPAuthorizationCredentials = Depends(security)) -> GrantGroupProjectAccessResponse:
-    """Assign an existing user group to a project (admin only)."""
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
-    if not session_data:
-        raise AuthenticationError(
-            message="Invalid or expired session",
-            error_code=ErrorCode.SESSION_INVALID
-        )
 
-    # Admin permission check
-    user_permissions = getattr(session_data, 'permissions', [])
-    if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-        raise AuthorizationError(
-            message="Admin permission required to assign group to project",
-            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
-            details={"required_permission": "admin or manage_users"}
-        )
-
-    # Resolve entities
-    project = get_project_by_hash(project_hash)
-    if not project:
-        raise NotFoundError(
-            message="Project not found",
-            error_code=ErrorCode.PROJECT_NOT_FOUND,
-            details={"project_hash": project_hash}
-        )
-
-    user_group = get_user_group_by_hash(group_hash)
-    if not user_group:
-        raise NotFoundError(
-            message="User group not found",
-            error_code=ErrorCode.GROUP_NOT_FOUND,
-            details={"group_hash": group_hash}
-        )
-
-    # Current user (for audit trail)
-    current_user = get_user_by_hash(session_data.user_hash)
-
-    # Grant access
-    access = grant_group_project_access(user_group.id, project.id, granted_by=current_user.id)
-    if not access:
-        raise ValidationError(
-            message="Failed to grant group access to project or already granted",
-            error_code=ErrorCode.INVALID_OPERATION,
-            details={"group_hash": group_hash, "project_hash": project_hash}
-        )
-
-    access_details = {
-        "group_hash": user_group.group_hash,
-        "group_name": user_group.group_name,
-        "project_hash": project.project_hash,
-        "project_name": project.project_name,
-        "granted_by": current_user.username,
-        "granted_at": access.granted_at.isoformat()
-    }
-
-    return GrantGroupProjectAccessResponse(
-        success=True,
-        message=f"Group '{user_group.group_name}' granted access to project '{project.project_name}'",
-        access_details=access_details
-    )
+# ===================================================================================
+# GROUPS-OF-GROUPS ARCHITECTURE NOTE
+# ===================================================================================
+# Direct user group → project assignment is NOT supported.
+# The system uses GROUPS-OF-GROUPS architecture:
+#
+#   USER → USER_GROUP → PROJECT_GROUP → PROJECT
+#
+# To grant a user group access to a project:
+#   1. Create/use a Project Group: POST /admin/project-groups
+#   2. Add project to Project Group: POST /admin/project-groups/{hash}/projects
+#   3. Grant User Group access to Project Group: POST /admin/user-groups/{hash}/project-groups
+#
+# This ensures proper access control hierarchy and scalability.
+# ===================================================================================

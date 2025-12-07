@@ -9,16 +9,19 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form, Body
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.Util.Models import (
     ListUserGroupsResponse, CreateUserGroupResponse, UserGroupDetailsResponse,
     UpdateUserGroupResponse, DeleteUserGroupResponse, AssignUserToGroupResponse,
-    RemoveUserFromGroupResponse, GrantGroupProjectAccessResponse, RevokeGroupProjectAccessResponse,
-    UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo, GroupMembersPaginatedResponse,
-    BulkAddUsersToGroupResponse, UserGroupsForUserResponse
+    RemoveUserFromGroupResponse, UserInfo, UserGroupInfo, ProjectInfo, PaginationInfo, 
+    GroupMembersPaginatedResponse, BulkAddUsersToGroupRequest, BulkAddUsersToGroupResponse, 
+    UserGroupsForUserResponse,
+    # Groups-of-Groups Architecture models
+    GrantUserGroupProjectGroupAccessResponse, RevokeUserGroupProjectGroupAccessResponse,
+    ListProjectGroupsForUserGroupResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
@@ -28,9 +31,13 @@ from src.Util.db import (
     list_all_user_groups, update_user_group,
     delete_user_group, assign_user_to_user_group,
     remove_user_from_user_group, get_users_in_group,
-    grant_group_project_access, revoke_group_project_access,
-    get_projects_for_user_group, get_project_by_hash, get_user_groups_for_user,
-    get_total_user_groups_count
+    get_projects_for_user_group, get_user_groups_for_user,
+    get_total_user_groups_count,
+    # Groups-of-Groups Architecture functions
+    grant_user_group_project_group_access, revoke_user_group_project_group_access,
+    get_project_groups_for_user_group,
+    # Project group functions
+    get_project_permission_group_by_hash
 )
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
@@ -184,11 +191,13 @@ async def get_user_group_details(
     """
     Get detailed user group information (admin only).
     
+    Includes both legacy direct project access AND groups-of-groups architecture data.
+    
     Args:
         group_hash: User group identifier
         
     Returns:
-        User group details with members and project access
+        User group details with members, project access, and project groups
     """
     # Get user group
     user_group = get_user_group_by_hash(group_hash)
@@ -202,8 +211,11 @@ async def get_user_group_details(
     # Get members
     members = get_users_in_group(user_group.id)
 
-    # Get accessible projects
+    # Get directly accessible projects (legacy)
     accessible_projects = get_projects_for_user_group(user_group.id)
+
+    # Get project groups (groups-of-groups architecture)
+    project_groups = get_project_groups_for_user_group(user_group.id)
 
     group_info = UserGroupInfo(
         group_hash=user_group.group_hash,
@@ -220,6 +232,7 @@ async def get_user_group_details(
         ) for member in members
     ]
 
+    # Legacy direct project access
     project_list = [
         ProjectInfo(
             project_hash=project[1],
@@ -227,9 +240,13 @@ async def get_user_group_details(
         ) for project in accessible_projects
     ]
 
+    # Note: project_count is not available from the stored procedure
+    # total_derived_projects would require a separate query to count projects in each project group
     statistics_info = {
         "total_members": len(members),
-        "total_projects": len(accessible_projects)
+        "total_projects": len(accessible_projects),
+        "total_project_groups": len(project_groups),
+        "total_derived_projects": 0  # Would require separate query to calculate
     }
 
     return UserGroupDetailsResponse(
@@ -237,6 +254,8 @@ async def get_user_group_details(
         user_group=group_info,
         members=member_list,
         accessible_projects=project_list,
+        accessible_project_groups=project_groups,
+        derived_projects=[],  # Could be populated with actual derived projects if needed
         statistics=statistics_info
     )
 
@@ -457,24 +476,30 @@ async def remove_user_from_group_endpoint(
             details={"operation": "remove_user_from_user_group"}
         )
 
-@router.post("/{group_hash}/projects", response_model=GrantGroupProjectAccessResponse)
-async def grant_group_project_access_endpoint(
+# =================== GROUPS-OF-GROUPS ARCHITECTURE ENDPOINTS ===================
+# These endpoints follow the correct architecture: USER → USER_GROUP → PROJECT_GROUP → PROJECT
+
+@router.post("/{group_hash}/project-groups", response_model=GrantUserGroupProjectGroupAccessResponse)
+async def grant_user_group_project_group_access_endpoint(
         group_hash: str = Path(...),
-        project_hash: str = Form(...),
+        project_group_hash: str = Form(...),
         session_data=Depends(require_admin)
-) -> GrantGroupProjectAccessResponse:
+) -> GrantUserGroupProjectGroupAccessResponse:
     """
-    Grant a user group access to a project (admin only).
+    Grant a user group access to a project group (admin only).
+    
+    **Correct Architecture**: This endpoint follows the groups-of-groups pattern:
+    USER → USER_GROUP → PROJECT_GROUP → PROJECT
+    
+    All users in the user_group will gain access to all projects in the project_group.
     
     Args:
         group_hash: User group identifier
-        project_hash: Project hash
+        project_group_hash: Project group identifier
         
     Returns:
-        Access grant confirmation
+        Access grant confirmation with details
     """
-    target_project_hash = project_hash
-
     # Get user group
     user_group = get_user_group_by_hash(group_hash)
     if not user_group:
@@ -484,22 +509,22 @@ async def grant_group_project_access_endpoint(
             details={"group_hash": group_hash}
         )
 
-    # Get target project
-    target_project = get_project_by_hash(target_project_hash)
-    if not target_project:
+    # Get project group
+    project_group = get_project_permission_group_by_hash(project_group_hash)
+    if not project_group:
         raise NotFoundError(
-            message="Target project not found",
-            error_code=ErrorCode.PROJECT_NOT_FOUND,
-            details={"project_hash": target_project_hash}
+            message="Project group not found",
+            error_code=ErrorCode.NOT_FOUND,
+            details={"project_group_hash": project_group_hash}
         )
 
     # Get current user for audit trail
     current_user = get_user_by_hash(session_data.user_hash)
 
-    # Grant access
-    access_result = grant_group_project_access(
+    # Grant access via groups-of-groups architecture
+    access_result = grant_user_group_project_group_access(
         user_group.id,
-        target_project.id,
+        project_group.id,
         granted_by=current_user.id
     )
 
@@ -507,39 +532,40 @@ async def grant_group_project_access_endpoint(
         raise InternalError(
             message="Access grant failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "grant_group_project_access"}
+            details={"operation": "grant_user_group_project_group_access"}
         )
 
-    access_details = {
-        "user_group": {
+    return GrantUserGroupProjectGroupAccessResponse(
+        success=True,
+        message=f"User group \"{user_group.group_name}\" granted access to project group \"{project_group.group_name}\"",
+        access_details=access_result,
+        user_group={
             "group_hash": user_group.group_hash,
             "group_name": user_group.group_name
         },
-        "project": {
-            "project_hash": target_project.project_hash,
-            "project_name": target_project.project_name
-        },
-        "granted_by": current_user.username
-    }
-
-    return GrantGroupProjectAccessResponse(
-        success=True,
-        message=f"User group \"{user_group.group_name}\" granted access to project \"{target_project.project_name}\"",
-        access_details=access_details
+        project_group={
+            "group_hash": project_group.group_hash,
+            "group_name": project_group.group_name
+        }
     )
 
-@router.delete("/{group_hash}/projects/{project_hash}", response_model=RevokeGroupProjectAccessResponse)
-async def revoke_group_project_access_endpoint(
+
+@router.delete("/{group_hash}/project-groups/{project_group_hash}", response_model=RevokeUserGroupProjectGroupAccessResponse)
+async def revoke_user_group_project_group_access_endpoint(
         group_hash: str = Path(...),
-        project_hash: str = Path(...),
+        project_group_hash: str = Path(...),
         session_data=Depends(require_admin)
-) -> RevokeGroupProjectAccessResponse:
+) -> RevokeUserGroupProjectGroupAccessResponse:
     """
-    Revoke a user group's access to a project (admin only).
+    Revoke a user group's access to a project group (admin only).
+    
+    **Correct Architecture**: This endpoint follows the groups-of-groups pattern.
+    All users in the user_group will lose access to all projects in the project_group
+    (unless they have access through another user_group → project_group link).
     
     Args:
         group_hash: User group identifier
-        project_hash: Project identifier
+        project_group_hash: Project group identifier
         
     Returns:
         Revocation confirmation
@@ -553,30 +579,75 @@ async def revoke_group_project_access_endpoint(
             details={"group_hash": group_hash}
         )
 
-    # Get project
-    project = get_project_by_hash(project_hash)
-    if not project:
+    # Get project group
+    project_group = get_project_permission_group_by_hash(project_group_hash)
+    if not project_group:
         raise NotFoundError(
-            message="Project not found",
-            error_code=ErrorCode.PROJECT_NOT_FOUND,
-            details={"project_hash": project_hash}
+            message="Project group not found",
+            error_code=ErrorCode.NOT_FOUND,
+            details={"project_group_hash": project_group_hash}
         )
 
     # Get current user for audit trail
     current_user = get_user_by_hash(session_data.user_hash)
 
     # Revoke access
-    if revoke_group_project_access(user_group.id, project.id, revoked_by=current_user.id):
-        return RevokeGroupProjectAccessResponse(
+    if revoke_user_group_project_group_access(user_group.id, project_group.id, revoked_by=current_user.id):
+        return RevokeUserGroupProjectGroupAccessResponse(
             success=True,
-            message=f"User group \"{user_group.group_name}\" access to project \"{project.project_name}\" revoked"
+            message=f"User group \"{user_group.group_name}\" access to project group \"{project_group.group_name}\" revoked"
         )
     else:
         raise InternalError(
             message="Revocation failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "revoke_group_project_access"}
+            details={"operation": "revoke_user_group_project_group_access"}
         )
+
+
+@router.get("/{group_hash}/project-groups", response_model=ListProjectGroupsForUserGroupResponse)
+async def list_project_groups_for_user_group(
+        group_hash: str = Path(...),
+        session_data=Depends(require_admin)
+) -> ListProjectGroupsForUserGroupResponse:
+    """
+    List all project groups that a user group has access to (admin only).
+    
+    **Correct Architecture**: Shows the groups-of-groups structure:
+    USER_GROUP → [PROJECT_GROUPS] → [PROJECTS]
+    
+    Args:
+        group_hash: User group identifier
+        
+    Returns:
+        List of project groups with their project counts
+    """
+    # Get user group
+    user_group = get_user_group_by_hash(group_hash)
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+
+    # Get project groups for this user group
+    project_groups = get_project_groups_for_user_group(user_group.id)
+
+    user_group_info = UserGroupInfo(
+        group_hash=user_group.group_hash,
+        group_name=user_group.group_name,
+        description=user_group.group_description
+    )
+
+    return ListProjectGroupsForUserGroupResponse(
+        success=True,
+        user_group=user_group_info,
+        project_groups=project_groups,
+        total_project_groups=len(project_groups),
+        total_derived_projects=0  # Would require separate query to calculate
+    )
+
 
 @router.get("/{group_hash}/members", response_model=GroupMembersPaginatedResponse)
 async def get_group_members_with_pagination(
@@ -617,13 +688,16 @@ async def get_group_members_with_pagination(
     # Format member data
     members_data = []
     for member in paginated_members:
+        # Use assigned_at from the membership record as joined_at
+        # This is set by get_users_in_group from sp_get_users_in_group stored procedure
+        joined_date = getattr(member, 'assigned_at', None)
         member_info = {
             "user_hash": member.user_hash,
             "username": member.username,
             "email": member.email,
             "user_type": getattr(member, 'user_type', 'consumer'),
             "is_active": getattr(member, 'is_active', True),
-            "joined_group_at": getattr(member, 'created_at', None)
+            "joined_at": joined_date.isoformat() if joined_date else None  # API uses joined_at for membership date
         }
         members_data.append(member_info)
 
@@ -655,7 +729,7 @@ async def get_group_members_with_pagination(
 @router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
 async def bulk_add_users_to_group(
         group_hash: str = Path(...),
-        user_hashes: List[str] = Form(...),
+        request: BulkAddUsersToGroupRequest = Body(...),
         session_data=Depends(require_admin)
 ) -> BulkAddUsersToGroupResponse:
     """
@@ -663,9 +737,11 @@ async def bulk_add_users_to_group(
     
     **Phase 2 Implementation**: Bulk add users to group
     
+    **Note**: This endpoint uses JSON body (not Form data) to properly handle the list of user hashes.
+    
     Args:
         group_hash: User group identifier
-        user_hashes: List of user hashes to add to group
+        request: Request body containing list of user hashes
         
     Returns:
         Bulk assignment results
@@ -682,20 +758,8 @@ async def bulk_add_users_to_group(
     # Get current user for audit trail
     current_user = get_user_by_hash(session_data.user_hash)
 
-    # Validate input
-    if not user_hashes:
-        raise ValidationError(
-            message="At least one user hash is required",
-            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
-            details={"field": "user_hashes"}
-        )
-
-    if len(user_hashes) > 100:
-        raise ValidationError(
-            message="Maximum 100 users can be assigned at once",
-            error_code=ErrorCode.INVALID_LENGTH,
-            details={"max_length": 100, "provided_length": len(user_hashes)}
-        )
+    # Get user hashes from request
+    user_hashes = request.user_hashes
 
     # Perform bulk assignment
     results = []
@@ -803,11 +867,13 @@ async def get_user_groups(
     # Format group data
     groups_data = []
     for group in user_groups:
+        # Use joined_at from membership record (set by get_user_groups_for_user)
+        joined_date = getattr(group, 'joined_at', None)
         group_info = {
             "group_hash": group.group_hash,
             "group_name": group.group_name,
             "description": group.group_description,
-            "joined_at": getattr(group, 'created_at', None)
+            "joined_at": joined_date.isoformat() if joined_date else None
         }
         groups_data.append(group_info)
 

@@ -52,11 +52,10 @@ def create_project_group(group_name: str, permissions: List[str], group_descript
     def _create():
         group_id = generate_project_group_id()
         group_hash = secrets.token_hex(32).upper()
-        permissions_json = json.dumps(permissions)
 
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_create_project_group', [group_id, group_hash, group_name, group_description, permissions_json])
+            cur.callproc('sp_create_project_group', [group_id, group_hash, group_name, group_description, created_by])
             
             # Clean up result sets
             while cur.nextset():
@@ -108,15 +107,15 @@ def get_project_group_by_id(group_id: str) -> Optional[ProjectGroup]:
                 pass
             
             if result:
-                permissions = json.loads(result[4]) if result[4] else []
+                # SP returns: id, group_hash, group_name, group_description, created_at, updated_at, created_by, is_active
                 return ProjectGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=permissions,
-                    created_at=result[5],
-                    updated_at=result[6],
+                    permissions=[],  # Permissions not included in SP
+                    created_at=result[4],
+                    updated_at=result[5],
                     is_active=bool(result[7])
                 )
         return None
@@ -152,15 +151,15 @@ def get_project_group_by_hash(group_hash: str) -> Optional[ProjectGroup]:
                 pass
             
             if result:
-                permissions = json.loads(result[4]) if result[4] else []
+                # SP returns: id, group_hash, group_name, group_description, created_at, updated_at, created_by, is_active
                 return ProjectGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=permissions,
-                    created_at=result[5],
-                    updated_at=result[6],
+                    permissions=[],  # Permissions not included in SP
+                    created_at=result[4],
+                    updated_at=result[5],
                     is_active=bool(result[7])
                 )
         return None
@@ -196,15 +195,15 @@ def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
                 pass
             
             if result:
-                permissions = json.loads(result[4]) if result[4] else []
+                # SP returns: id, group_hash, group_name, group_description, created_at, updated_at, created_by, is_active
                 return ProjectGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=permissions,
-                    created_at=result[5],
-                    updated_at=result[6],
+                    permissions=[],  # Permissions not included in SP
+                    created_at=result[4],
+                    updated_at=result[5],
                     is_active=bool(result[7])
                 )
         return None
@@ -215,13 +214,22 @@ def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
     )
 
 
-def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGroup]:
+def list_all_project_groups(
+    limit: int = 100, 
+    offset: int = 0,
+    sort_by: str = 'group_name',
+    sort_order: str = 'ASC',
+    search: str = None
+) -> List[ProjectGroup]:
     """
     List all active project groups with pagination using stored procedure.
     
     Args:
         limit: Maximum number of results
         offset: Number of results to skip
+        sort_by: Column to sort by (group_name, created_at, updated_at)
+        sort_order: Sort direction (ASC or DESC)
+        search: Optional search term for group name
         
     Returns:
         List of ProjectGroup objects
@@ -232,20 +240,20 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
     def _list():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_list_all_project_groups', [limit, offset])
+            cur.callproc('sp_list_all_project_groups', [limit, offset, sort_by, sort_order, search])
             
             results = []
             for row in cur.fetchall():
-                permissions = json.loads(row[4]) if row[4] else []
+                # SP returns: id, group_hash, group_name, group_description, created_at, updated_at, is_active
                 results.append(ProjectGroup(
                     id=row[0],
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    permissions=permissions,
-                    created_at=row[5],
-                    updated_at=row[6],
-                    is_active=bool(row[7])
+                    permissions=[],  # Not returned by SP
+                    created_at=row[4],
+                    updated_at=row[5],
+                    is_active=bool(row[6])
                 ))
             
             # Clean up result sets
@@ -256,7 +264,7 @@ def list_all_project_groups(limit: int = 100, offset: int = 0) -> List[ProjectGr
     
     return handle_db_operation(
         _list,
-        error_context=f"list_all_project_groups(limit={limit}, offset={offset})"
+        error_context=f"list_all_project_groups(limit={limit}, offset={offset}, sort_by={sort_by})"
     )
 
 
@@ -498,16 +506,17 @@ def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
             
             groups = []
             for row in cur.fetchall():
-                permissions = json.loads(row[4]) if row[4] else []
+                # SP returns: id, group_hash, group_name, group_description,
+                #             created_at, updated_at, is_active, assigned_at, assigned_by
                 groups.append(ProjectGroup(
                     id=row[0],
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    permissions=permissions,
-                    created_at=row[5],
-                    updated_at=row[6],
-                    is_active=bool(row[7])
+                    permissions=[],  # Not returned by SP, use default
+                    created_at=row[4],
+                    updated_at=row[5],
+                    is_active=bool(row[6])
                 ))
             
             # Clean up result sets
@@ -538,7 +547,7 @@ def get_projects_in_group(project_group_id: str) -> List[Project]:
     def _get():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_get_projects_in_group', [project_group_id])
+            cur.callproc('sp_get_projects_in_project_group', [project_group_id])
             
             projects = []
             for row in cur.fetchall():
@@ -716,15 +725,15 @@ def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGrou
             
             results = []
             for row in cur.fetchall():
-                permissions = json.loads(row[4]) if row[4] else []
+                # SP should return: id, group_hash, group_name, group_description, created_at, updated_at, created_by, is_active
                 results.append(ProjectGroup(
                     id=row[0],
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    permissions=permissions,
-                    created_at=row[5],
-                    updated_at=row[6],
+                    permissions=[],  # Permissions not included in SP
+                    created_at=row[4],
+                    updated_at=row[5],
                     is_active=bool(row[7])
                 ))
             

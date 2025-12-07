@@ -1,307 +1,277 @@
-# 🔐 3-Tier User Type Multi-Project Authentication System
-A comprehensive authentication system with **3-tier user management** (Root/Admin/Consumer) and **complete RBAC** capabilities for enterprise-grade access control.
+# 🔐 Group-Based Multi-Project Authentication System
 
-> **⚠️ IMPORTANT API UPDATE (October 2025)**: All API endpoints now use **Form Data** (`application/x-www-form-urlencoded`) instead of JSON for request bodies. See [FORM_DATA_MIGRATION_SUMMARY.md](./FORM_DATA_MIGRATION_SUMMARY.md) for complete migration guide and examples.
+A comprehensive authentication system with **hierarchical group-based access control** and **complete RBAC** capabilities for enterprise-grade access control.
 
-## 🌟 What This System Does
-
-**3-Tier Architecture** for clear privilege separation:
+## 🏗️ Groups-of-Groups Architecture
 
 ```
-🔴 ROOT USERS     → Unrestricted Global Access (Super Admins)
-🟡 ADMIN USERS    → Multi-Project Admin Access (Project Managers - NEW: Multiple Projects)  
-🟢 CONSUMER USERS → RBAC-Based Access (End Users with Group Permissions)
+USER → USER_GROUP → PROJECT_GROUP → PROJECTS
+                 ↘
+                   PERMISSION_GROUP → PERMISSIONS
 ```
 
-**Complete Access Flow:** Users → User Types → Groups → Projects → RBAC Permissions
+**Key Concepts:**
+- **Users** belong to **User Groups** (organizational teams)
+- **User Groups** have access to **Project Groups** (project containers)
+- **Project Groups** contain related **Projects**
+- **User Groups** also have **Permission Groups** assigned
+- **Permission Groups** contain individual **Permissions**
 
-**Perfect for:** Enterprise systems, multi-tenant SaaS, complex organizational structures, or any application requiring sophisticated access control.
+## 🌟 User Types
 
-## ✨ Features Ready to Use
+| Type | Description | Access Level |
+|------|-------------|--------------|
+| 🔴 `root` | System administrators | Full global access |
+| 🟡 `admin` | Project administrators | Manage users in their projects |
+| 🟢 `consumer` | Regular users | Self-service + project access via groups |
 
-### 👑 **3-Tier User Type Management**
-- ✅ **ROOT USERS**: Create/manage other root users, global system administration
-- ✅ **ADMIN USERS**: Multi-project administration with complete project isolation
-- ✅ **CONSUMER USERS**: RBAC-based access through user groups
-- ✅ User type promotion/demotion with full audit trail
-- ✅ Automatic privilege enforcement at database level
-- 🆕 **Multi-Project Admin Support**: Admins can manage multiple projects while maintaining isolation
+## ✨ Features
 
-### 🔐 **Advanced Authentication**
-- ✅ User registration and login with user type context
-- ✅ Secure JWT-based session management (3-day sessions with type information)
-- ✅ Project switching based on user type and group access
-- ✅ Session validation with comprehensive user context
-- ✅ Availability checking for usernames/emails
+### 🔐 Authentication & Sessions
+- JWT-based session management with HTTP-only cookies
+- Multi-project login and project switching
+- Session validation and token refresh
+- Username/email availability checking
 
-### 🎭 **Complete RBAC Management**
-- ✅ **Permission Management**: Create/manage granular permissions per project
-- ✅ **Role Management**: Create roles with specific permission sets
-- ✅ **User-Role Assignments**: Assign users to roles in specific projects
-- ✅ **Permission Checking**: Real-time permission validation
-- ✅ **RBAC Initialization**: Auto-setup default permissions and roles
-- ✅ **Audit Trails**: Complete tracking of all RBAC operations
-- ✅ **RBAC Summary**: Comprehensive permission overviews
+### 👥 Hierarchical Group Management
+- **User Groups**: Organize users globally
+- **Project Groups**: Container for related projects
+- **Permission Groups**: Reusable permission templates
+- Groups-of-groups architecture for scalable access control
 
-### 👥 **Hierarchical Group Management**
-- ✅ **User Groups**: Global groups that define project access
-- ✅ **Project Groups**: Permission sets that define capabilities in projects
-- ✅ Group-based project access control
-- ✅ Multi-level group assignments
-- ✅ Flexible permission inheritance
+### 🎭 Complete RBAC Management
+- **Global Roles**: Job function-based permission assignment
+- **Permission Groups**: Create reusable permission templates
+- **Permissions**: Granular individual permissions
+- Real-time permission validation
 
-### 📁 **Advanced Project Management**
-- ✅ Create projects with automatic RBAC initialization
-- ✅ Project-specific permission and role management
-- ✅ Access control based on user types and groups
-- ✅ Project isolation with admin boundaries
-- ✅ Comprehensive project statistics and monitoring
+### 📁 Project Management
+- Project CRUD with group-based access
+- Project members and statistics
+- Activity tracking and audit logs
+- Archive functionality
 
-### 🛡️ **Enterprise Security Features**
-- ✅ **Multi-Layer Security**: Transport, authentication, authorization, data isolation
-- ✅ **UUID-Based User Identification**: Secure, unpredictable user hashes with `usr-{UUID4}` format
-- ✅ **Audit Trails**: Complete tracking of user type changes and permission modifications
-- ✅ **JWT Session Security**: Cryptographically signed tokens with type context
-- ✅ **Access Control**: Hierarchical permission resolution
-- ✅ **Data Isolation**: Users only see what their type/groups allow
+### 🛡️ Enterprise Security
+- Multi-layer security (transport, auth, authorization, data isolation)
+- UUID-based identification (`usr-{UUID4}`, `proj-{UUID4}`)
+- Comprehensive audit trails
+- Redis-based session caching
 
-### 🔧 **Developer & Admin Features**
-- ✅ **Comprehensive REST API**: 60+ endpoints across 8 major areas
-- ✅ **System Monitoring**: Health checks, performance metrics, diagnostics
-- ✅ **Complete Documentation**: 150+ pages of detailed API documentation
-- ✅ **SDK Examples**: Python and JavaScript integration examples
-- ✅ **Testing Suite**: Comprehensive test scripts for all functionality
-- 🆕 **Multi-Project Admin APIs**: New endpoints for managing admin access to multiple projects
-
-### 🏗️ **Production-Ready Architecture**
-- ✅ **Scalable Design**: Supports thousands of users across multiple projects
-- ✅ **Performance Optimized**: Redis caching with strategic indexing
-- ✅ **Docker Deployment**: Complete containerization
-- ✅ **Database Schema**: Comprehensive MySQL schema with relationships
-- ✅ **Monitoring Ready**: Built-in health checks and performance metrics
+### 🔧 Admin Features
+- Dashboard statistics and monitoring
+- Activity feed with filtering
+- System health checks
+- Cache management
+- Bulk operations (update, delete, assign)
 
 ## 🚀 Quick Start
 
-Get the complete 3-tier system running in 15 minutes:
-
 ```bash
-# 1. Clone the project
+# 1. Clone and install
 git clone <repository-url>
 cd api.auth
-
-# 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Set up environment variables
+# 2. Set environment variables
 export DB_MYSQL_PASSWORD=your_mysql_password
 export DB_REDIS_PASSWORD=your_redis_password
 
-# 4. Initialize database
-python rbac_migration_script.py --initialize-system
+# 3. Initialize database
+python scripts/recreate_database.py
 
-# 5. Start the server
+# 4. Start the server
 python -m uvicorn src.main:app --reload
 
-# 6. Test the 3-tier system
-curl http://localhost:8000/system/info
+# 5. Test the system
+curl http://localhost:8000/system/ping
 ```
 
-**What you get:** Complete 3-tier user system with root admin, sample projects, user groups, and RBAC permissions ready to use.
+## 📡 Complete API Reference
 
-## 📚 Complete API Overview
+### Authentication (`/auth`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/login` | POST | User login |
+| `/auth/register` | POST | New user registration |
+| `/auth/validate` | GET | Validate current session |
+| `/auth/logout` | POST | End session |
+| `/auth/refresh` | POST | Refresh token |
+| `/auth/switch-project` | POST | Switch project context |
+| `/auth/check-availability` | POST | Check username/email availability |
 
-### **Core APIs (60+ Endpoints)**
-| API Area | Endpoints | Purpose |
-|----------|-----------|---------|
-| **Authentication** | 6 endpoints | Login, registration, session management |
-| **User Type Management** | 15 endpoints | 3-tier user system + multi-project admin management |
-| **RBAC Management** | 12 endpoints | Permissions, roles, assignments, auditing |
-| **Project Management** | 5 endpoints | Project CRUD with access control |
-| **User Groups Admin** | 8 endpoints | Global user group management |
-| **Project Groups Admin** | 6 endpoints | Permission group management |
-| **System Monitoring** | 4 endpoints | Health, stats, performance |
-| **User Operations** | 4 endpoints | Profile and access management |
+### Users (`/users`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/users/profile` | GET | Get current user profile |
+| `/users/profile` | PUT | Update current user profile |
+| `/users/access-summary` | GET | Get hierarchical access summary |
+| `/users/list` | GET | List users with filters (admin) |
+| `/users/search/query` | GET | Search users (admin) |
+| `/users/{user_hash}` | GET | Get user details |
+| `/users/{user_hash}/status` | PUT | Update user status |
+| `/users/{user_hash}/reset-password` | POST | Reset password (admin) |
+| `/users/{user_hash}` | DELETE | Delete user (admin) |
 
-### **Key Endpoints by User Type**
+### Projects (`/projects`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/projects` | POST | Create project |
+| `/projects` | GET | List projects |
+| `/projects/{hash}` | GET | Get project details |
+| `/projects/{hash}` | PUT | Update project |
+| `/projects/{hash}` | DELETE | Delete project |
+| `/projects/{hash}/members` | GET | Get project members |
+| `/projects/{hash}/groups` | GET | Get project groups |
+| `/projects/{hash}/activity` | GET | Get project activity |
+| `/projects/{hash}/stats` | GET | Get project statistics |
+| `/projects/{hash}/owner` | PUT | Change project owner |
+| `/projects/{hash}/archive` | POST | Archive project |
 
-#### 🔴 **ROOT USER Endpoints**
+### User Groups (`/admin/user-groups`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/user-groups` | POST | Create user group |
+| `/admin/user-groups` | GET | List user groups |
+| `/admin/user-groups/{hash}` | GET | Get group details |
+| `/admin/user-groups/{hash}` | PUT | Update group |
+| `/admin/user-groups/{hash}` | DELETE | Delete group |
+| `/admin/user-groups/{hash}/members` | GET | Get members |
+| `/admin/user-groups/{hash}/members` | POST | Add member |
+| `/admin/user-groups/{hash}/members/bulk` | POST | Bulk add members |
+| `/admin/user-groups/{hash}/members/{user}` | DELETE | Remove member |
+| `/admin/user-groups/{hash}/project-groups` | GET | Get project group access |
+| `/admin/user-groups/{hash}/project-groups` | POST | Grant project group access |
+| `/admin/user-groups/{hash}/project-groups/{pg}` | DELETE | Revoke access |
+
+### Project Groups (`/admin/project-groups`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/project-groups` | POST | Create project group |
+| `/admin/project-groups` | GET | List project groups |
+| `/admin/project-groups/{hash}` | GET | Get group details |
+| `/admin/project-groups/{hash}` | PUT | Update group |
+| `/admin/project-groups/{hash}` | DELETE | Delete group |
+| `/admin/project-groups/{hash}/projects` | GET | Get projects in group |
+| `/admin/project-groups/{hash}/projects` | POST | Add project |
+| `/admin/project-groups/{hash}/projects/{proj}` | DELETE | Remove project |
+
+### Roles (`/roles`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/roles/roles` | POST | Create role |
+| `/roles/roles` | GET | List roles |
+| `/roles/roles/{hash}` | GET | Get role details |
+| `/roles/roles/{hash}` | PUT | Update role |
+| `/roles/roles/{hash}` | DELETE | Delete role |
+| `/roles/roles/{hash}/permission-groups/{pg}` | POST | Add permission group |
+| `/roles/roles/{hash}/permission-groups/{pg}` | DELETE | Remove permission group |
+| `/roles/users/{user_hash}/role` | GET | Get user's role |
+| `/roles/users/{user_hash}/role` | POST | Assign role |
+| `/roles/users/me/role` | GET | Get my role |
+
+### Permission Groups (`/roles/permission-groups`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/roles/permission-groups` | POST | Create permission group |
+| `/roles/permission-groups` | GET | List permission groups |
+| `/roles/permission-groups/{hash}` | GET | Get group details |
+| `/roles/permission-groups/{hash}` | PUT | Update group |
+| `/roles/permission-groups/{hash}` | DELETE | Delete group |
+| `/roles/permission-groups/{hash}/permissions` | GET | Get permissions |
+| `/roles/permission-groups/{hash}/permissions` | POST | Add permission |
+| `/roles/permission-groups/{hash}/permissions/{p}` | DELETE | Remove permission |
+
+### Permissions (`/permissions`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/roles/permissions` | GET | List all permissions |
+| `/permissions/users/me/permissions` | GET | Get my permissions |
+| `/permissions/users/me/permissions/check` | POST | Check specific permission |
+| `/permissions/users/me/permission-groups` | GET | Get my direct permission groups |
+| `/permissions/users/me/sources` | GET | Get permission sources |
+| `/permissions/admin/user-groups/{hash}/permission-groups` | POST | Assign to user group |
+| `/permissions/users/{user}/permission-groups` | POST | Assign to user |
+
+### System (`/system`)
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/system/info` | GET | No | System information |
+| `/system/health` | GET | No | Health check |
+| `/system/ping` | GET | No | Simple ping |
+| `/system/cache/stats` | GET | Yes | Cache statistics |
+| `/system/cache/clear` | POST | Admin | Clear all cache |
+| `/system/cache/invalidate/user/{hash}` | POST | Admin | Invalidate user cache |
+| `/system/cache/invalidate/project/{id}` | POST | Admin | Invalidate project cache |
+
+### Admin Dashboard (`/admin`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/dashboard/stats` | GET | Dashboard statistics |
+| `/admin/activity` | GET | Activity feed |
+| `/admin/activity/types` | GET | Activity type list |
+| `/admin/health` | GET | Detailed health check |
+| `/admin/users/statistics` | GET | User statistics |
+| `/admin/projects/statistics` | GET | Project statistics |
+| `/admin/system/overview` | GET | System overview |
+
+### Bulk Operations (`/admin`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/users/bulk-update` | POST | Bulk update users |
+| `/admin/users/bulk-delete` | POST | Bulk delete users |
+| `/admin/projects/{hash}/bulk-assign-roles` | POST | Bulk assign roles |
+| `/admin/user-groups/bulk-assign` | POST | Bulk assign to groups |
+
+## 💡 API Usage
+
+### Authentication
 ```bash
-# Create other root users
-POST /user-types/root
-
-# Create admin users with multi-project support
-POST /user-types/admin
-
-# Manage user types
-PUT /user-types/{user_hash}/type
-PUT /user-types/admin/{user_hash}/projects
-
-# Global system access
-GET /user-types/users/{user_type}
-GET /user-types/stats
-```
-
-#### 🟡 **ADMIN USER Endpoints** 
-```bash
-# Multi-project management
-GET /user-types/admin/{user_hash}/projects
-POST /user-types/admin/{user_hash}/projects/add
-DELETE /user-types/admin/{user_hash}/projects/{project_id}
-
-# Project administration
-POST /projects
-PUT /projects/{project_hash}
-DELETE /projects/{project_hash}
-
-# RBAC management
-POST /rbac/projects/{project_hash}/permissions
-POST /rbac/projects/{project_hash}/roles
-POST /rbac/users/{user_hash}/projects/{project_hash}/roles
-```
-
-#### 🟢 **CONSUMER USER Endpoints**
-```bash
-# Authentication
-POST /auth/login
-POST /auth/register
-GET /auth/validate
-POST /auth/switch-project
-
-# Profile management
-GET /users/profile
-PUT /users/profile
-GET /users/access-summary
-
-# Project access
-GET /projects
-GET /projects/{project_hash}
-```
-
-## 🔐 Authentication Examples
-
-### **Root User Login**
-```bash
-# Create root session (can access any project)
+# Login
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=root_admin&password=secure123&project_hash=any_project"
+  -d "username=john_doe&password=SecurePass123!"
+
+# Use token for authenticated requests
+curl -X GET "http://localhost:8000/users/profile" \
+  -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-### **Admin User Multi-Project Management**
-```bash
-# Assign admin to multiple projects
-curl -X PUT "http://localhost:8000/user-types/admin/usr-123/projects" \
-  -H "Authorization: Bearer ROOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"assigned_project_ids": [1, 2, 3]}'
+### Request Format
+- Most endpoints use **Form data** (`application/x-www-form-urlencoded`)
+- Bulk operations use **JSON** (`application/json`)
+
+### Response Format
+```json
+{
+  "success": true,
+  "message": "Operation completed successfully",
+  "data": { ... }
+}
 ```
 
-### **Consumer User RBAC Access**
-```bash
-# Check user permissions
-curl -X GET "http://localhost:8000/rbac/users/usr-456/projects/prj-789/permissions" \
-  -H "Authorization: Bearer USER_TOKEN"
-```
+## 📚 Documentation
 
-## 🏗️ System Architecture
+### Usage Guides
+| Document | Description |
+|----------|-------------|
+| [Authentication](docs/USAGE/authentication-usage-cases.md) | Login, sessions, project switching |
+| [Users](docs/USAGE/users-usage-cases.md) | Profile, admin operations |
+| [Groups](docs/USAGE/groups-usage-cases.md) | User groups, project groups |
+| [Projects](docs/USAGE/projects-usage-cases.md) | Project management |
+| [Permissions](docs/USAGE/permissions-usage-cases.md) | Roles, permissions |
+| [Admin](docs/USAGE/admin-usage-cases.md) | Dashboard, bulk ops, cache |
 
-### **3-Tier User Type Hierarchy**
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        ROOT USERS                           │
-│              ┌─────────────────────────────────┐            │
-│              │     🔴 Global Admin Access      │            │
-│              │  • Create/manage all users      │            │
-│              │  • Access all projects          │            │
-│              │  • System administration        │            │
-│              └─────────────────────────────────┘            │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│                     ADMIN USERS                             │
-│    ┌─────────────────────────┐  ┌─────────────────────────┐ │
-│    │  🟡 Project Admin #1    │  │  🟡 Project Admin #2    │ │
-│    │ • Assigned Projects:    │  │ • Assigned Projects:    │ │
-│    │   - Project A, B        │  │   - Project C, D, E     │ │
-│    │ • Manage users/groups   │  │ • Manage users/groups   │ │
-│    │ • RBAC administration   │  │ • RBAC administration   │ │
-│    └─────────────────────────┘  └─────────────────────────┘ │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│                   CONSUMER USERS                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │🟢 User Type │  │🟢 User Type │  │  🟢 User Type       │  │
-│  │• User Groups│  │• User Groups│  │  • User Groups      │  │
-│  │• RBAC Roles │  │• RBAC Roles │  │  • RBAC Roles       │  │
-│  │• Permissions│  │• Permissions│  │  • Permissions      │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### **Database Layer (300KB+ of Code)**
-- **8 Major Modules**: Users, Projects, RBAC, Groups, Sessions, User Types
-- **Comprehensive Functions**: 200+ database operations
-- **Performance Optimized**: Strategic indexing and Redis caching
-
-## 🆕 Latest Updates & Improvements
-
-### **Version 2.1.0 - Multi-Project Admin Support**
-- ✅ **Enhanced Admin Users**: Support for multiple project assignments
-- ✅ **Improved APIs**: New endpoints for multi-project admin management
-- ✅ **Better Isolation**: Enhanced project boundaries and access control
-- ✅ **Audit Improvements**: Complete tracking of admin project assignments
-
-### **Recent Fixes & Enhancements**
-- ✅ **Import Optimization**: Fixed module import issues for better performance
-- ✅ **JWT Security**: Enhanced session token management
-- ✅ **RBAC Integration**: Improved role-based access control system
-- ✅ **Error Handling**: Better error messages and status codes
-
-## 🧪 Testing & Development
-
-### **Sample Users (if using test data)**
-```bash
-# Root User
-Username: root_admin / Password: root123
-Type: ROOT - Global access to everything
-
-# Admin Users
-Username: project_admin_1 / Password: admin123
-Type: ADMIN - Access to assigned projects
-
-# Consumer Users  
-Username: john_doe / Password: user123
-Type: CONSUMER - RBAC-based permissions
-```
-
-### **Health Checks**
-```bash
-# System health
-curl http://localhost:8000/system/health
-
-# Component status
-curl http://localhost:8000/system/info
-
-# User type statistics
-curl -H "Authorization: Bearer TOKEN" http://localhost:8000/user-types/stats
-```
-
-## 📊 Performance & Scalability
-
-- **Concurrent Users**: 1000+ simultaneous sessions
-- **Projects**: Unlimited with automatic RBAC initialization
-- **Permissions**: Granular control with real-time validation
-- **Response Time**: <50ms for authentication operations
-- **Cache Hit Rate**: >95% with Redis optimization
+### Architecture
+- [Architecture Overview](docs/ARCHITECTURE/README.md)
+- [Database Schema](schemas/README.md)
 
 ## 🐳 Docker Deployment
 
 ```bash
-# Build and run with docker-compose
 docker-compose up -d
+```
 
-# Environment variables in docker-compose.yml
+```yaml
 services:
   api-auth:
     environment:
@@ -310,96 +280,53 @@ services:
       - JWT_SECRET_KEY=your_jwt_secret
 ```
 
-## 📚 Complete Documentation Suite
-
-### 📖 **Getting Started** (45 min total)
-- [Quick Start Guide](docs/quick-start.md) - 15 minutes to running system
-- [Setup Guide](docs/setup-guide.md) - Complete installation and configuration
-- [Architecture Documentation](docs/ARCHITECTURE/README.md) - Comprehensive system architecture
-
-### 📡 **API Documentation** (150+ pages)
-- [Authentication API](docs/api/authentication.md) - Login, logout, session management
-- [User Type Management API](docs/api/user-type-management.md) - 3-tier user system
-- [RBAC Management API](docs/api/rbac-management.md) - Complete permission system
-- [Project Management API](docs/api/project-management.md) - Project operations
-- [Admin API](docs/api/admin.md) - Group and system administration
-- [System API](docs/api/system.md) - Monitoring and health checks
-- [Errors & Responses](docs/api/errors-and-responses.md) - Error handling reference
-
 ## 🔧 Configuration
 
-### **Environment Variables**
 ```bash
-# Database Configuration
+# Database
 DB_MYSQL_PASSWORD=your_mysql_password
-DB_REDIS_PASSWORD=your_redis_password
 DB_HOST=192.168.1.90
 DB_DATABASE=magic-auth
 
-# JWT Configuration
+# JWT
 JWT_SECRET_KEY=your_secure_jwt_secret_key
 JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_HOURS=72
 
-# Redis Configuration
+# Redis
+DB_REDIS_PASSWORD=your_redis_password
 REDIS_HOST=192.168.1.90
 REDIS_PORT=6379
-REDIS_DB=0
 ```
+
+## 📊 Performance
+
+- **Concurrent Users**: 1000+ simultaneous sessions
+- **Response Time**: <50ms for authentication operations
+- **Cache Hit Rate**: >95% with Redis optimization
+- **Projects**: Unlimited with group-based access
 
 ## 🆘 Troubleshooting
 
-### **Common Issues & Solutions**
 | Problem | Solution |
 |---------|----------|
-| 3-tier system not working | Run initialization script with --initialize-system |
-| RBAC permissions failing | Check project RBAC initialization |
-| User type errors | Verify user type database constraints |
-| Database errors | Verify MySQL is running with correct schema |
-| Redis cache issues | Check Redis connection and restart if needed |
-| Import errors | Ensure all dependencies are installed |
+| Session expired | Re-authenticate via `/auth/login` |
+| Access denied | Check user group membership and project group access |
+| Permission denied | Verify permission groups assigned to user/group |
+| Database errors | Verify MySQL connection and schema |
+| Cache issues | Use `/system/cache/clear` to reset |
 
-### **Quick Diagnostics**
+### Quick Diagnostics
 ```bash
-# Test database connection
+# Test system
+curl http://localhost:8000/system/health
+
+# Test database
 python -c "from src.Util.db import get_connection; print('✓ DB Connected')"
 
-# Test Redis connection
-python -c "from src.Util.db import client; client.ping(); print('✓ Redis OK')"
-
-# Verify user types
-curl http://localhost:8000/user-types/stats
+# Test Redis
+python -c "from src.Util.db_config import redis_client; redis_client.ping(); print('✓ Redis OK')"
 ```
-
-## 🎉 Why Choose This 3-Tier System?
-
-### ✅ **Enterprise-Grade Architecture**
-- **Hierarchical Control**: Clear separation of privileges and responsibilities
-- **Scalable Design**: From small teams to large organizations
-- **Security First**: Multi-layer security with comprehensive auditing
-
-### ✅ **Complete RBAC Implementation**
-- **Granular Permissions**: Fine-grained access control
-- **Flexible Roles**: Customizable permission sets
-- **Real-time Validation**: Instant permission checking
-
-### ✅ **Production-Proven**
-- **Comprehensive Testing**: Test suites for all functionality
-- **Performance Optimized**: Redis caching and database optimization
-- **Monitoring Ready**: Built-in health checks and metrics
-
-### ✅ **Developer Excellence**
-- **150+ Pages Documentation**: Complete API reference
-- **Multiple SDKs**: Python and JavaScript examples
-- **Easy Integration**: RESTful design with comprehensive examples
-
-## 💝 Support This Project
-
-This comprehensive 3-tier authentication system with full RBAC is free and open for everyone!
-
-**[Support on Patreon](https://patreon.com/findit_moe)** 🙏
-
-Your support enables continued development of advanced enterprise features.
 
 ## 👨‍💻 Author
 
@@ -409,6 +336,4 @@ Your support enables continued development of advanced enterprise features.
 
 ---
 
-**🚀 Ready for enterprise-grade authentication?** Follow the [Quick Start Guide](#-quick-start) and have your 3-tier system running in 15 minutes!
-
-**📞 Need advanced features?** Check the comprehensive documentation covering all 60+ endpoints and advanced use cases. 
+**🚀 Ready to start?** Check the [Usage Documentation](docs/USAGE/README.md) for complete guides and examples.

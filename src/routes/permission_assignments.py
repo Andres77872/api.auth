@@ -46,7 +46,7 @@ from src.Util.error_handler import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/v1", tags=["Permission Assignments"])
+router = APIRouter(prefix="/permissions", tags=["Permission Assignments"])
 security = HTTPBearerOrCookie()
 
 

@@ -1,8 +1,16 @@
 """
 Admin Project Group Management Routes
 
-Handles project group (permission group) administration including creation,
-management, and permission control for the group-based multi-project authentication system.
+Handles project group administration including creation, management,
+and project membership for the group-based multi-project authentication system.
+
+Project groups are containers that group projects together. Users gain access
+to projects through the groups-of-groups architecture:
+
+    USER → USER_GROUP → PROJECT_GROUP → PROJECT
+
+Note: Project groups do NOT have permissions attached to them directly.
+Permissions are managed through global_permission_groups and user_group assignments.
 """
 
 import logging
@@ -66,8 +74,11 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
 
 @router.get("", response_model=ListProjectGroupsResponse)
 async def list_project_groups(
-        limit: int = Query(50, ge=1, le=100),
+        limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        sort_by: str = Query('group_name', description="Sort by field (group_name, created_at, updated_at)"),
+        sort_order: str = Query('ASC', description="Sort order (ASC or DESC)"),
+        search: str = Query(None, description="Search term for group name"),
         session_data=Depends(require_admin)
 ) -> ListProjectGroupsResponse:
     """
@@ -78,7 +89,7 @@ async def list_project_groups(
     """
     # Get all project groups
     project_groups = handle_db_operation(
-        lambda: list_all_project_permission_groups(limit, offset),
+        lambda: list_all_project_permission_groups(limit, offset, sort_by, sort_order, search),
         error_context="list project permission groups"
     )
 
@@ -93,8 +104,7 @@ async def list_project_groups(
         group_info = ProjectGroupInfo(
             group_hash=group.group_hash,
             group_name=group.group_name,
-            description=group.description,
-            permissions=group.permissions,
+            description=group.group_description,
             project_count=len(projects),
             created_at=group.created_at
         )
@@ -116,16 +126,17 @@ async def list_project_groups(
 @router.post("", response_model=CreateProjectGroupResponse)
 async def create_project_group_endpoint(
         group_name: str = Form(...),
-        permissions: List[str] = Form(None),
         description: Optional[str] = Form(None),
         session_data=Depends(require_admin)
 ) -> CreateProjectGroupResponse:
     """
-    Create a new project permission group (admin only).
+    Create a new project group (admin only).
+    
+    Project groups are containers for grouping projects together.
+    Users gain access to projects through: USER → USER_GROUP → PROJECT_GROUP → PROJECT
     
     Args:
         group_name: Group name
-        permissions: Permissions list
         description: Group description
         
     Returns:
@@ -139,7 +150,6 @@ async def create_project_group_endpoint(
     )
 
     create_name = group_name
-    create_permissions = permissions or []
     create_description = description
 
     if not create_name:
@@ -149,11 +159,11 @@ async def create_project_group_endpoint(
             details={"field": "group_name"}
         )
 
-    # Create project group
+    # Create project group (permissions parameter kept for backwards compatibility with DB layer)
     new_group = handle_db_operation(
         lambda: create_project_permission_group(
             create_name,
-            create_permissions,
+            [],  # Empty permissions - project_groups are containers, not permission holders
             create_description,
             created_by=user_data.id
         ),
@@ -170,8 +180,8 @@ async def create_project_group_endpoint(
     group_info = ProjectGroupInfo(
         group_hash=new_group.group_hash,
         group_name=new_group.group_name,
-        description=new_group.description,
-        permissions=new_group.permissions,
+        description=new_group.group_description,
+        project_count=0,
         created_at=new_group.created_at
     )
 
@@ -213,8 +223,8 @@ async def get_project_group_details(
     group_info = ProjectGroupInfo(
         group_hash=project_group.group_hash,
         group_name=project_group.group_name,
-        description=project_group.description,
-        permissions=project_group.permissions,
+        description=project_group.group_description,
+        project_count=len(assigned_projects),
         created_at=project_group.created_at
     )
 
@@ -227,8 +237,7 @@ async def get_project_group_details(
     ]
 
     statistics_info = {
-        "total_projects": len(assigned_projects),
-        "total_permissions": len(project_group.permissions)
+        "total_projects": len(assigned_projects)
     }
 
     return ProjectGroupDetailsResponse(
@@ -243,17 +252,17 @@ async def get_project_group_details(
 async def update_project_group_endpoint(
         group_hash: str = Path(...),
         group_name: Optional[str] = Form(None),
-        permissions: Optional[List[str]] = Form(None),
         description: Optional[str] = Form(None),
         session_data=Depends(require_admin)
 ) -> UpdateProjectGroupResponse:
     """
     Update project group information (admin only).
     
+    Project groups are containers for grouping projects together.
+    
     Args:
         group_hash: Project group identifier
         group_name: Group name
-        permissions: Permissions list
         description: Group description
         
     Returns:
@@ -267,16 +276,15 @@ async def update_project_group_endpoint(
     )
 
     update_name = group_name
-    update_permissions = permissions
     update_description = description
 
-    # Update group
+    # Update group (permissions parameter omitted - project_groups are containers)
     updated_group = handle_db_operation(
         lambda: update_project_permission_group(
             project_group.id,
             group_name=update_name,
             group_description=update_description,
-            permissions=update_permissions
+            permissions=None  # Don't update permissions
         ),
         error_context="update project permission group"
     )
@@ -291,8 +299,7 @@ async def update_project_group_endpoint(
     group_info = ProjectGroupInfo(
         group_hash=updated_group.group_hash,
         group_name=updated_group.group_name,
-        description=updated_group.description,
-        permissions=updated_group.permissions
+        description=updated_group.group_description
     )
 
     return UpdateProjectGroupResponse(
@@ -413,8 +420,7 @@ async def assign_project_to_group_endpoint(
         },
         "group": {
             "group_hash": project_group.group_hash,
-            "group_name": project_group.group_name,
-            "permissions": project_group.permissions
+            "group_name": project_group.group_name
         },
         "assigned_by": current_user.username
     }

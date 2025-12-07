@@ -67,6 +67,12 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/09_system_maintenance.sql',
     'stored_procedures/10_error_logging.sql',
     'stored_procedures/11_activity_logging.sql',
+    'stored_procedures/12_activity_context.sql',
+]
+
+TRIGGER_FILES = [
+    'triggers/01_activity_logging_triggers.sql',
+    'triggers/02_permission_activity_triggers.sql',
 ]
 
 
@@ -224,7 +230,7 @@ def recreate_database():
             sys.exit(1)
         
         # Calculate total steps
-        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES)
+        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES) + len(TRIGGER_FILES)
         current_step = 0
         
         # Execute table files
@@ -257,6 +263,21 @@ def recreate_database():
                 print("\n✗ Failed to execute stored procedure file. Aborting.")
                 sys.exit(1)
         
+        # Execute trigger files
+        print_header("Creating Activity Logging Triggers")
+        for file_name in TRIGGER_FILES:
+            current_step += 1
+            file_path = SCHEMAS_DIR / file_name
+            
+            if not file_path.exists():
+                print(f"✗ File not found: {file_path}")
+                sys.exit(1)
+            
+            print_step(current_step, total_steps, f"Processing {file_name}")
+            if not execute_sql_file(connection, file_path):
+                print("\n✗ Failed to execute trigger file. Aborting.")
+                sys.exit(1)
+        
         # Verify database creation
         print_header("Verification")
         cursor = connection.cursor()
@@ -287,6 +308,15 @@ def recreate_database():
         """)
         view_count = cursor.fetchone()['count']
         print(f"  Views created: {view_count}")
+        
+        # Check triggers
+        cursor.execute("""
+            SELECT COUNT(*) as count 
+            FROM information_schema.triggers 
+            WHERE trigger_schema = 'magic_auth'
+        """)
+        trigger_count = cursor.fetchone()['count']
+        print(f"  Triggers created: {trigger_count}")
         
         cursor.close()
         connection.close()

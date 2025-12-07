@@ -23,8 +23,9 @@ from src.Util.db import (
     count_users, count_projects, count_active_sessions,
     get_recent_users_count, get_recent_projects_count,
     get_recent_activity_count, check_database_health, check_redis_health,
-    is_root_user, get_user_type
+    is_root_user, get_user_type, count_user_groups
 )
+from src.Util.db.db_project_groups import count_project_groups
 from src.Util.system_metrics import get_user_statistics, get_project_statistics, get_system_overview
 
 # Create router
@@ -64,6 +65,10 @@ async def get_dashboard_stats(
     total_users = count_users()
     total_projects = count_projects()
     active_sessions = count_active_sessions()
+    
+    # Get group counts (groups-of-groups architecture)
+    total_user_groups = count_user_groups()
+    total_project_groups = count_project_groups()
 
     # Get recent activity counts (last 7 days)
     recent_users = get_recent_users_count(days=7)
@@ -87,6 +92,8 @@ async def get_dashboard_stats(
         "totals": {
             "users": total_users,
             "projects": total_projects,
+            "user_groups": total_user_groups,
+            "project_groups": total_project_groups,
             "active_sessions": active_sessions,
             "recent_activities": recent_activity
         },
@@ -99,6 +106,12 @@ async def get_dashboard_stats(
             "root_users": root_users,
             "admin_users": admin_users,
             "consumer_users": consumer_users
+        },
+        "groups_summary": {
+            "total_user_groups": total_user_groups,
+            "total_project_groups": total_project_groups,
+            "avg_users_per_group": round(total_users / max(total_user_groups, 1), 2),
+            "avg_projects_per_group": round(total_projects / max(total_project_groups, 1), 2)
         },
         "growth": {
             "user_growth_7d": user_growth,

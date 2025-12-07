@@ -8,7 +8,9 @@ Complete practical guide for managing user groups and project groups to control 
 
 - [Understanding Groups](#understanding-groups)
 - [User Groups (Access Control)](#user-groups-access-control)
-- [Project Groups (Permission Templates)](#project-groups-permission-templates)
+- [Project Groups (Project Containers)](#project-groups-project-containers)
+- [Permission Groups (Permission Templates)](#permission-groups-permission-templates)
+- [Groups-of-Groups Architecture](#groups-of-groups-architecture)
 - [Common Scenarios](#common-scenarios)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -17,36 +19,43 @@ Complete practical guide for managing user groups and project groups to control 
 
 ## Understanding Groups
 
-The system uses **two types of groups** that work together to control access:
+The system uses **three types of groups** that work together to control access:
 
 ### 1. **User Groups** (Global Organization)
-- **Purpose**: Organize users and control which projects they can access
+- **Purpose**: Organize users and control which project groups they can access
 - **Scope**: Global across all projects
-- **Function**: Determines **WHO** can access **WHICH** projects
+- **Function**: Determines **WHO** can access projects (through project groups)
 
-### 2. **Project Groups** (Permission Templates)
-- **Purpose**: Define sets of permissions for projects
-- **Scope**: Applied to specific projects
-- **Function**: Determines **WHAT** users can do in projects
+### 2. **Project Groups** (Project Containers)
+- **Purpose**: Group related projects together
+- **Scope**: Contains multiple projects
+- **Function**: Determines **WHICH** projects are accessible as a unit
 
-### How They Work Together
+### 3. **Permission Groups** (Permission Templates)
+- **Purpose**: Define sets of permissions
+- **Scope**: Global - can be assigned to user groups or users directly
+- **Function**: Determines **WHAT** users can do
+
+### How They Work Together (Groups-of-Groups Architecture)
 
 ```
-User → User Group → Project Access → Project Group → Permissions
+USER → USER_GROUP → PROJECT_GROUP → PROJECTS
+                 ↘
+                   PERMISSION_GROUP → PERMISSIONS
 ```
 
 **Example Flow:**
 1. John is added to the "developers" user group
-2. The "developers" user group is granted access to "API v2" project
-3. The "API v2" project is assigned to the "full-access" project group
-4. The "full-access" project group has permissions: [admin, read, write, delete]
-5. **Result**: John can access "API v2" with full admin permissions
+2. The "developers" user group is granted access to "backend-services" project group
+3. The "backend-services" project group contains: API v2, Auth Service, Data API
+4. The "developers" user group also has "content_management" permission group assigned
+5. **Result**: John can access all 3 projects with content management permissions
 
 ---
 
 ## User Groups (Access Control)
 
-User groups organize users globally and control which projects they can access.
+User groups organize users globally and control which project groups they can access.
 
 ### Creating a User Group
 
@@ -73,6 +82,34 @@ curl -X POST "http://localhost:8000/admin/user-groups" \
 }
 ```
 
+### Listing User Groups
+
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups?limit=50&offset=0&sort_by=group_name&sort_order=asc" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "user_groups": [
+    {
+      "group_hash": "grp-mob123...",
+      "group_name": "mobile_developers",
+      "description": "Mobile application development team",
+      "member_count": 5,
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "total": 10
+  }
+}
+```
+
 ### Adding Users to a User Group
 
 **Scenario**: Add team members to the mobile developers group.
@@ -85,40 +122,140 @@ curl -X POST "http://localhost:8000/admin/user-groups/grp-mob123.../members" \
   -d "user_hash=usr-abc123"
 ```
 
-**Multiple Users (Bulk):**
+**Multiple Users (Bulk) - Uses JSON body:**
 ```bash
 curl -X POST "http://localhost:8000/admin/user-groups/grp-mob123.../members/bulk" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-abc123&user_hashes=usr-def456&user_hashes=usr-ghi789"
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_hashes": ["usr-abc123", "usr-def456", "usr-ghi789"]
+  }'
 ```
 
-### Granting Project Access to a User Group
+**Bulk Response:**
+```json
+{
+  "success": true,
+  "message": "Bulk assignment completed: 3 succeeded, 0 failed",
+  "user_group": {
+    "group_hash": "grp-mob123...",
+    "group_name": "mobile_developers"
+  },
+  "summary": {
+    "total_requested": 3,
+    "success_count": 3,
+    "error_count": 0
+  },
+  "results": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "status": "success",
+      "message": "Added to group successfully"
+    }
+  ]
+}
+```
 
-**Scenario**: Give mobile developers access to the Mobile API project.
+### Granting Project Group Access to a User Group
+
+**Scenario**: Give mobile developers access to all mobile-related projects.
 
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups/grp-mob123.../projects" \
+curl -X POST "http://localhost:8000/admin/user-groups/grp-mob123.../project-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=proj-mobile456"
+  -d "project_group_hash=prjgrp-mobile456..."
 ```
 
-**Result**: All users in the "mobile_developers" group can now access the Mobile API project.
+**Response:**
+```json
+{
+  "success": true,
+  "message": "User group \"mobile_developers\" granted access to project group \"mobile_apps\"",
+  "user_group": {
+    "group_hash": "grp-mob123...",
+    "group_name": "mobile_developers"
+  },
+  "project_group": {
+    "group_hash": "prjgrp-mobile456...",
+    "group_name": "mobile_apps"
+  }
+}
+```
+
+**Result**: All users in the "mobile_developers" group can now access all projects in the "mobile_apps" project group.
 
 ### Viewing User Group Details
 
-**Scenario**: Check which users are in a group and which projects they can access.
+**Scenario**: Check which users are in a group and which project groups they can access.
 
 ```bash
 curl -X GET "http://localhost:8000/admin/user-groups/grp-mob123..." \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-**Response shows:**
-- All members in the group
-- All projects the group can access
-- Statistics (member count, project count)
+**Response:**
+```json
+{
+  "success": true,
+  "user_group": {
+    "group_hash": "grp-mob123...",
+    "group_name": "mobile_developers",
+    "description": "Mobile application development team",
+    "created_at": "2024-01-15T10:30:00Z"
+  },
+  "members": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "email": "john@example.com"
+    }
+  ],
+  "accessible_projects": [],
+  "accessible_project_groups": [
+    {
+      "group_hash": "prjgrp-mobile456...",
+      "group_name": "mobile_apps",
+      "project_count": 3
+    }
+  ],
+  "statistics": {
+    "total_members": 5,
+    "total_projects": 0,
+    "total_project_groups": 1,
+    "total_derived_projects": 3
+  }
+}
+```
+
+### Viewing User Group's Project Groups
+
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups/grp-mob123.../project-groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "user_group": {
+    "group_hash": "grp-mob123...",
+    "group_name": "mobile_developers",
+    "description": "Mobile application development team"
+  },
+  "project_groups": [
+    {
+      "group_hash": "prjgrp-mobile456...",
+      "group_name": "mobile_apps",
+      "project_count": 3
+    }
+  ],
+  "total_project_groups": 1,
+  "total_derived_projects": 3
+}
+```
 
 ### Viewing a User's Groups
 
@@ -129,6 +266,76 @@ curl -X GET "http://localhost:8000/admin/user-groups/users/usr-abc123/groups" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
+**Response:**
+```json
+{
+  "success": true,
+  "user": {
+    "user_hash": "usr-abc123",
+    "username": "john_doe",
+    "email": "john@example.com",
+    "user_type": "consumer"
+  },
+  "groups": [
+    {
+      "group_hash": "grp-mob123...",
+      "group_name": "mobile_developers",
+      "description": "Mobile application development team",
+      "joined_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "statistics": {
+    "total_groups": 1
+  },
+  "generated_at": "2024-01-15T12:00:00Z"
+}
+```
+
+**Note:** The `joined_at` field indicates when the user was added to the group (not `created_at`).
+
+### Listing Group Members with Pagination
+
+**Scenario**: List members of a group with pagination.
+
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups/grp-mob123.../members?limit=50&offset=0" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "user_group": {
+    "group_hash": "grp-mob123...",
+    "group_name": "mobile_developers",
+    "description": "Mobile application development team"
+  },
+  "members": [
+    {
+      "user_hash": "usr-abc123",
+      "username": "john_doe",
+      "email": "john@example.com",
+      "user_type": "consumer",
+      "is_active": true,
+      "joined_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "total": 5,
+    "has_more": false
+  },
+  "statistics": {
+    "total_members": 5,
+    "members_shown": 5
+  }
+}
+```
+
+**Note:** The `joined_at` field indicates when the user was added to the group. This is the `assigned_at` timestamp from the `user_group_members` table.
+
 ### Removing Access
 
 **Remove User from Group:**
@@ -137,83 +344,291 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/grp-mob123.../members/us
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-**Revoke Project Access:**
+**Revoke Project Group Access:**
 ```bash
-curl -X DELETE "http://localhost:8000/admin/user-groups/grp-mob123.../projects/proj-mobile456" \
+curl -X DELETE "http://localhost:8000/admin/user-groups/grp-mob123.../project-groups/prjgrp-mobile456..." \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ---
 
-## Project Groups (Permission Templates)
+## Project Groups (Project Containers)
 
-Project groups define reusable permission sets that can be applied to projects.
+Project groups are containers that group related projects together. Users gain access to all projects in a project group through their user group memberships.
 
 ### Creating a Project Group
 
-**Scenario**: Create a "read-only" permission template for viewing projects without modification rights.
+**Scenario**: Create a project group for all mobile-related projects.
 
 ```bash
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=read-only&permissions=read&permissions=view_audit&description=View-only access without modification rights"
+  -d "group_name=mobile_apps&description=All mobile application projects"
 ```
 
-**Common Permission Templates:**
-
-**Full Access:**
-```bash
--d "group_name=full-access&permissions=admin&permissions=read&permissions=write&permissions=delete&permissions=manage_users&permissions=manage_roles&description=Complete project control"
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Project group \"mobile_apps\" created successfully",
+  "project_group": {
+    "group_hash": "prjgrp-mobile456...",
+    "group_name": "mobile_apps",
+    "description": "All mobile application projects",
+    "project_count": 0,
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
 ```
 
-**API Access:**
-```bash
--d "group_name=api-access&permissions=api_access&permissions=read&permissions=write&description=API usage with read/write capabilities"
-```
+### Listing Project Groups
 
-**Editor:**
 ```bash
--d "group_name=editor&permissions=read&permissions=write&permissions=update&permissions=create&description=Content editing without deletion"
+curl -X GET "http://localhost:8000/admin/project-groups?limit=50&offset=0" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ### Assigning Projects to Project Groups
 
-**Scenario**: Apply the "read-only" permission template to the Reports Dashboard project.
+**Scenario**: Add the iOS App project to the mobile_apps project group.
 
 ```bash
-curl -X POST "http://localhost:8000/admin/project-groups/prjgrp-readonly789.../projects" \
+curl -X POST "http://localhost:8000/admin/project-groups/prjgrp-mobile456.../projects" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=proj-reports123"
+  -d "project_hash=proj-ios-app-123"
 ```
 
-**Result**: The Reports Dashboard now has read-only permissions defined by the project group.
-
-### Updating Project Group Permissions
-
-**Scenario**: Add "export_data" permission to the read-only template.
-
-```bash
-curl -X PUT "http://localhost:8000/admin/project-groups/prjgrp-readonly789..." \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permissions=read&permissions=view_audit&permissions=export_data"
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Project \"iOS Mobile App\" assigned to group \"mobile_apps\"",
+  "assignment": {
+    "project": {
+      "project_hash": "proj-ios-app-123",
+      "project_name": "iOS Mobile App"
+    },
+    "group": {
+      "group_hash": "prjgrp-mobile456...",
+      "group_name": "mobile_apps"
+    },
+    "assigned_by": "admin_user"
+  }
+}
 ```
 
-**Important**: All projects assigned to this group will inherit the updated permissions.
+**Result**: All user groups with access to "mobile_apps" project group now have access to the iOS App project.
 
 ### Viewing Project Group Details
 
 ```bash
-curl -X GET "http://localhost:8000/admin/project-groups/prjgrp-readonly789..." \
+curl -X GET "http://localhost:8000/admin/project-groups/prjgrp-mobile456..." \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-**Response shows:**
-- Permission list
-- All projects using this permission template
-- Statistics
+**Response:**
+```json
+{
+  "success": true,
+  "project_group": {
+    "group_hash": "prjgrp-mobile456...",
+    "group_name": "mobile_apps",
+    "description": "All mobile application projects",
+    "project_count": 3,
+    "created_at": "2024-01-15T10:30:00Z"
+  },
+  "assigned_projects": [
+    {
+      "project_hash": "proj-ios-app-123",
+      "project_name": "iOS Mobile App",
+      "project_description": "iOS application for customers"
+    },
+    {
+      "project_hash": "proj-android-app-456",
+      "project_name": "Android Mobile App",
+      "project_description": "Android application for customers"
+    }
+  ],
+  "statistics": {
+    "total_projects": 3
+  }
+}
+```
+
+### Removing Project from Project Group
+
+```bash
+curl -X DELETE "http://localhost:8000/admin/project-groups/prjgrp-mobile456.../projects/proj-ios-app-123" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+---
+
+## Permission Groups (Permission Templates)
+
+Permission groups define reusable permission sets that can be assigned to user groups or individual users.
+
+### Creating a Permission Group
+
+**Scenario**: Create a "content_management" permission group.
+
+```bash
+curl -X POST "http://localhost:8000/roles/permission-groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=content_management&group_display_name=Content Management&group_description=Full content creation and editing&group_category=content"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Permission group 'content_management' created successfully",
+  "permission_group": {
+    "group_hash": "pg-content123...",
+    "group_name": "content_management",
+    "group_display_name": "Content Management",
+    "group_description": "Full content creation and editing",
+    "group_category": "content",
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### Adding Permissions to Permission Group
+
+```bash
+curl -X POST "http://localhost:8000/roles/permission-groups/pg-content123.../permissions/perm-read-456" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+### Assigning Permission Group to User Group
+
+```bash
+curl -X POST "http://localhost:8000/permissions/admin/user-groups/grp-mob123.../permission-groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=pg-content123..."
+```
+
+**Response:**
+```json
+{
+  "message": "Permission group assigned to user group successfully",
+  "user_group": {
+    "hash": "grp-mob123...",
+    "name": "mobile_developers"
+  },
+  "permission_group": {
+    "hash": "pg-content123...",
+    "name": "content_management"
+  }
+}
+```
+
+**Result**: All users in "mobile_developers" now have content management permissions.
+
+### Viewing User Group's Permission Groups
+
+```bash
+curl -X GET "http://localhost:8000/permissions/admin/user-groups/grp-mob123.../permission-groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+---
+
+## Groups-of-Groups Architecture
+
+The complete access control flow follows this architecture:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    GROUPS-OF-GROUPS ARCHITECTURE                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  USER ──► USER_GROUP ──┬──► PROJECT_GROUP ──► PROJECTS                  │
+│                         │                                                 │
+│                         └──► PERMISSION_GROUP ──► PERMISSIONS            │
+│                                                                           │
+│  Access Flow:                                                             │
+│  1. User belongs to one or more USER_GROUPs                              │
+│  2. USER_GROUPs have access to PROJECT_GROUPs                            │
+│  3. PROJECT_GROUPs contain one or more PROJECTS                          │
+│  4. USER_GROUPs also have PERMISSION_GROUPs assigned                     │
+│  5. PERMISSION_GROUPs contain individual PERMISSIONS                     │
+│                                                                           │
+│  Final Result = User can access PROJECTS with PERMISSIONS                 │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Complete Setup Example
+
+**Goal**: Give the QA team access to all testing projects with QA permissions.
+
+**Step 1: Create User Group**
+```bash
+curl -X POST "http://localhost:8000/admin/user-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=qa_team&description=Quality assurance team"
+```
+
+**Step 2: Create Project Group**
+```bash
+curl -X POST "http://localhost:8000/admin/project-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=testing_projects&description=All testing and QA projects"
+```
+
+**Step 3: Add Projects to Project Group**
+```bash
+curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_hash=$TEST_PROJECT_1"
+
+curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_hash=$TEST_PROJECT_2"
+```
+
+**Step 4: Grant User Group Access to Project Group**
+```bash
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$PROJECT_GROUP_HASH"
+```
+
+**Step 5: Create Permission Group (if needed)**
+```bash
+curl -X POST "http://localhost:8000/roles/permission-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=qa_testing&group_display_name=QA Testing&group_category=testing"
+```
+
+**Step 6: Assign Permission Group to User Group**
+```bash
+curl -X POST "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "permission_group_hash=$PERMISSION_GROUP_HASH"
+```
+
+**Step 7: Add Team Members**
+```bash
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/bulk" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_hashes": ["usr-qa1", "usr-qa2", "usr-qa3"]
+  }'
+```
 
 ---
 
@@ -223,222 +638,138 @@ curl -X GET "http://localhost:8000/admin/project-groups/prjgrp-readonly789..." \
 
 **Goal**: Set up access for a new QA team.
 
-**Step 1: Create User Group**
 ```bash
+# Step 1: Create User Group
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "group_name=qa_team&description=Quality assurance team"
-```
 
-**Step 2: Create Project Group (if needed)**
-```bash
+# Step 2: Create Project Group (if needed)
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "group_name=qa-access&permissions=read&permissions=write&permissions=create&description=QA testing permissions"
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=qa_projects&description=QA testing projects"
 
-**Step 3: Assign Projects to Project Group**
-```bash
+# Step 3: Add Projects to Project Group
 curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "project_hash=$TEST_PROJECT_HASH"
-```
 
-**Step 4: Grant User Group Access to Projects**
-```bash
-curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/projects" \
+# Step 4: Grant User Group Access to Project Group
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$TEST_PROJECT_HASH"
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$PROJECT_GROUP_HASH"
 
-**Step 5: Add Team Members**
-```bash
+# Step 5: Add Team Members
 curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "user_hashes=usr-qa1&user_hashes=usr-qa2&user_hashes=usr-qa3"
+  -H "Content-Type: application/json" \
+  -d '{"user_hashes": ["usr-qa1", "usr-qa2", "usr-qa3"]}'
 ```
 
 ### Scenario 2: Temporary Contractor Access
 
 **Goal**: Grant limited access to contractors for 3 months.
 
-**Step 1: Create Temporary User Group**
 ```bash
+# Step 1: Create Temporary User Group
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "group_name=contractors_q1_2024&description=Q1 2024 contractors with limited access"
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "group_name=contractors_q1_2024&description=Q1 2024 contractors - expires Mar 31"
 
-**Step 2: Use Existing Limited Project Group**
-```bash
-# Use existing "contractor-limited" project group with permissions: [read, write]
-curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/projects" \
+# Step 2: Grant Access to Existing Project Group
+curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PROJECT_HASH"
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$LIMITED_PROJECT_GROUP_HASH"
 
-**Step 3: Add Contractors**
-```bash
+# Step 3: Add Contractors
 curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "user_hashes=usr-contractor1&user_hashes=usr-contractor2"
-```
+  -H "Content-Type: application/json" \
+  -d '{"user_hashes": ["usr-contractor1", "usr-contractor2"]}'
 
-**Step 4: After Contract Ends - Revoke All Access**
-```bash
-# Single command removes all contractors' access
-curl -X DELETE "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/projects/$PROJECT_HASH" \
+# Step 4: After Contract Ends - Revoke All Access
+curl -X DELETE "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/project-groups/$LIMITED_PROJECT_GROUP_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Scenario 3: Cross-Functional Platform Team
 
-**Goal**: Team needs access to multiple related projects.
+**Goal**: Team needs access to multiple project groups.
 
-**Step 1: Create Platform Team User Group**
 ```bash
+# Step 1: Create Platform Team User Group
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "group_name=platform_team&description=Platform infrastructure team"
-```
 
-**Step 2: Grant Access to Multiple Projects**
-```bash
-# Auth API
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/projects" \
+# Step 2: Grant Access to Multiple Project Groups
+curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$AUTH_API_HASH"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$AUTH_SERVICES_GROUP"
 
-# Data API
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/projects" \
+curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$DATA_API_HASH"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$DATA_SERVICES_GROUP"
 
-# Admin Portal
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/projects" \
+curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$ADMIN_PORTAL_HASH"
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$ADMIN_PORTALS_GROUP"
 
-**Step 3: Add Team Members Once**
-```bash
+# Step 3: Add Team Members Once
 curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "user_hashes=usr-platform1&user_hashes=usr-platform2&user_hashes=usr-platform3"
+  -H "Content-Type: application/json" \
+  -d '{"user_hashes": ["usr-platform1", "usr-platform2", "usr-platform3"]}'
 ```
 
-**Result**: All platform team members automatically get access to all three projects.
+**Result**: All platform team members automatically get access to all projects in all three project groups.
 
-### Scenario 4: Changing Permission Levels
-
-**Goal**: Upgrade a project from read-only to read-write access.
-
-**Step 1: Check Current Project Group**
-```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Step 2: Remove from Read-Only Group**
-```bash
-curl -X DELETE "http://localhost:8000/admin/project-groups/$READONLY_GROUP_HASH/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Step 3: Assign to Read-Write Group**
-```bash
-curl -X POST "http://localhost:8000/admin/project-groups/$READWRITE_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PROJECT_HASH"
-```
-
-**Result**: All users with access to the project now have read-write permissions.
-
-### Scenario 5: Department Reorganization
+### Scenario 4: Department Reorganization
 
 **Goal**: Merge two teams into one group.
 
-**Step 1: Create New Combined Group**
 ```bash
+# Step 1: Create New Combined Group
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "group_name=engineering_unified&description=Unified engineering team"
-```
 
-**Step 2: Get Members from Old Groups**
-```bash
-# Get team A members
-TEAM_A_MEMBERS=$(curl -X GET "http://localhost:8000/admin/user-groups/$TEAM_A_HASH/members" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.members[].user_hash')
+# Step 2: Get Members from Old Groups
+TEAM_A_MEMBERS=$(curl -s -X GET "http://localhost:8000/admin/user-groups/$TEAM_A_HASH/members" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '[.members[].user_hash]')
 
-# Get team B members
-TEAM_B_MEMBERS=$(curl -X GET "http://localhost:8000/admin/user-groups/$TEAM_B_HASH/members" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.members[].user_hash')
-```
+TEAM_B_MEMBERS=$(curl -s -X GET "http://localhost:8000/admin/user-groups/$TEAM_B_HASH/members" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '[.members[].user_hash]')
 
-**Step 3: Add All Members to New Group**
-```bash
-# Bulk add all members
+# Step 3: Add All Members to New Group (combine arrays)
 curl -X POST "http://localhost:8000/admin/user-groups/$NEW_GROUP_HASH/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "user_hashes=$TEAM_A_MEMBERS&user_hashes=$TEAM_B_MEMBERS"
-```
+  -H "Content-Type: application/json" \
+  -d "{\"user_hashes\": $COMBINED_MEMBERS}"
 
-**Step 4: Grant Combined Project Access**
-```bash
-# Grant access to all projects from both old groups
-curl -X POST "http://localhost:8000/admin/user-groups/$NEW_GROUP_HASH/projects" \
+# Step 4: Grant Combined Project Group Access
+curl -X POST "http://localhost:8000/admin/user-groups/$NEW_GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PROJECT1_HASH"
-# Repeat for all projects
-```
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "project_group_hash=$COMBINED_PROJECT_GROUP"
 
-**Step 5: Archive Old Groups (Optional)**
-```bash
+# Step 5: Archive Old Groups (Optional)
 curl -X DELETE "http://localhost:8000/admin/user-groups/$TEAM_A_HASH" \
   -H "Authorization: Bearer $TOKEN"
 
 curl -X DELETE "http://localhost:8000/admin/user-groups/$TEAM_B_HASH" \
   -H "Authorization: Bearer $TOKEN"
-```
-
-### Scenario 6: External API Partners
-
-**Goal**: Give external partners API-only access to specific endpoints.
-
-**Step 1: Create API Partners User Group**
-```bash
-curl -X POST "http://localhost:8000/admin/user-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "group_name=api_partners&description=External API integration partners"
-```
-
-**Step 2: Create/Use API-Only Project Group**
-```bash
-curl -X POST "http://localhost:8000/admin/project-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "group_name=api-only&permissions=api_access&permissions=read&description=API access only"
-```
-
-**Step 3: Assign Public API Project**
-```bash
-curl -X POST "http://localhost:8000/admin/project-groups/$API_ONLY_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PUBLIC_API_HASH"
-```
-
-**Step 4: Grant Partner Group Access**
-```bash
-curl -X POST "http://localhost:8000/admin/user-groups/$API_PARTNERS_HASH/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PUBLIC_API_HASH"
-```
-
-**Step 5: Add Partner Accounts**
-```bash
-curl -X POST "http://localhost:8000/admin/user-groups/$API_PARTNERS_HASH/members" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "user_hash=$PARTNER_USER_HASH"
 ```
 
 ---
@@ -461,51 +792,32 @@ curl -X POST "http://localhost:8000/admin/user-groups/$API_PARTNERS_HASH/members
 
 ### Project Group Organization
 
-**Standard Permission Templates:**
+**Recommended Project Groups:**
 ```
-full-access: admin, read, write, delete, manage_users, manage_roles
-admin-access: admin, read, write, manage_users, view_audit
-read-write: read, write, create, update
-read-only: read
-api-access: api_access, read, write
-viewer: read, view_audit
+backend_services: Auth API, User API, Data API
+frontend_apps: Web App, Mobile App, Admin Portal
+infrastructure: Logging, Monitoring, CI/CD
+testing: Staging Env, QA Env, Load Testing
 ```
 
 ### Group Management Workflow
 
-1. **Plan First**: Map out teams, projects, and required permissions
-2. **Create Templates**: Set up project groups for reusable permission sets
-3. **Organize Users**: Create user groups for teams/departments
-4. **Grant Access**: Connect user groups to projects
-5. **Document**: Document the purpose of each group
-6. **Review Regularly**: Quarterly access reviews
+1. **Plan First**: Map out teams, project groups, and permission groups
+2. **Create Project Groups**: Organize projects into logical groups
+3. **Create Permission Groups**: Set up permission templates
+4. **Create User Groups**: Create user groups for teams/departments
+5. **Grant Access**: Connect user groups to project groups and permission groups
+6. **Add Members**: Add users to appropriate user groups
+7. **Document**: Document the purpose of each group
+8. **Review Regularly**: Quarterly access reviews
 
 ### Security Best Practices
 
-1. **Least Privilege**: Grant minimum required permissions
+1. **Least Privilege**: Grant minimum required access
 2. **Regular Audits**: Review memberships monthly
 3. **Time-Limited Access**: Use dated group names for temporary access
 4. **Separation of Duties**: Don't give everyone full-access
 5. **Document Changes**: Log why groups were created/modified
-
-### Scaling Considerations
-
-**Small Teams (< 50 users):**
-- 3-5 user groups (by role)
-- 3-4 project groups (permission levels)
-- Manual management is fine
-
-**Medium Teams (50-200 users):**
-- 10-15 user groups (by department/team)
-- 5-8 project groups (varied permission sets)
-- Consider automation for onboarding
-
-**Large Organizations (200+ users):**
-- 20+ user groups (by department, location, function)
-- 10+ project groups (granular permission control)
-- Automate onboarding/offboarding
-- Implement approval workflows
-- Regular automated audits
 
 ---
 
@@ -521,80 +833,30 @@ curl -X GET "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-2. **Check Group Has Project Access**
+2. **Check Group Has Project Group Access**
 ```bash
-curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-# Look at "accessible_projects" field
-```
-
-3. **Verify Project Has Project Group**
-```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH" \
+curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-4. **Check Project Group Permissions**
+3. **Verify Project is in Project Group**
 ```bash
 curl -X GET "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
   -H "Authorization: Bearer $TOKEN"
-```
-
-### User Has Wrong Permissions
-
-**Check Steps:**
-
-1. **Identify Current Project Group**
-```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-2. **Check Project Group Permissions**
-```bash
-curl -X GET "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-3. **Solution A: Update Project Group Permissions**
-```bash
-curl -X PUT "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "permissions=read&permissions=write&permissions=new_permission"
-```
-
-4. **Solution B: Move Project to Different Group**
-```bash
-# Remove from current group
-curl -X DELETE "http://localhost:8000/admin/project-groups/$OLD_GROUP_HASH/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Add to new group
-curl -X POST "http://localhost:8000/admin/project-groups/$NEW_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "project_hash=$PROJECT_HASH"
 ```
 
 ### Changes Not Taking Effect
 
 **Common Causes:**
 
-1. **Cache Not Cleared**: Wait 30-60 minutes or clear cache
-```bash
-curl -X POST "http://localhost:8000/system/cache/clear" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
+1. **Cache Not Cleared**: Wait 30-60 seconds or clear cache
 2. **User Needs to Re-Login**: Session might have cached old permissions
-- User should logout and login again
-
 3. **Database Replication Lag**: Wait a few seconds and retry
 
 ### Bulk Operation Failures
 
 **Check Response Details:**
-```bash
-# Look at "results" array for specific failures
+```json
 {
   "summary": {
     "total_requested": 10,
@@ -615,27 +877,6 @@ curl -X POST "http://localhost:8000/system/cache/clear" \
 - User not found: Check user_hash is correct
 - Already member: User is already in the group
 - Permission denied: Admin token required
-- Invalid project: Project_hash doesn't exist
-
-### Group Deletion Issues
-
-**Error**: "Cannot delete group with active members"
-
-**Solution**: Remove all members first or use force delete (if implemented)
-
-```bash
-# Get all members
-curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/members" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Remove each member
-curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH/members/$USER_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Then delete group
-curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
 
 ---
 
@@ -653,10 +894,11 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
 | Add member | `/admin/user-groups/{hash}/members` | POST |
 | Remove member | `/admin/user-groups/{hash}/members/{user_hash}` | DELETE |
 | List members | `/admin/user-groups/{hash}/members` | GET |
-| Bulk add members | `/admin/user-groups/{hash}/members/bulk` | POST |
+| Bulk add members | `/admin/user-groups/{hash}/members/bulk` | POST (JSON) |
 | Get user's groups | `/admin/user-groups/users/{user_hash}/groups` | GET |
-| Grant project access | `/admin/user-groups/{hash}/projects` | POST |
-| Revoke project access | `/admin/user-groups/{hash}/projects/{project_hash}` | DELETE |
+| Grant project group access | `/admin/user-groups/{hash}/project-groups` | POST |
+| Revoke project group access | `/admin/user-groups/{hash}/project-groups/{pg_hash}` | DELETE |
+| List project groups | `/admin/user-groups/{hash}/project-groups` | GET |
 
 ### Project Group Operations
 
@@ -670,16 +912,37 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
 | Assign project | `/admin/project-groups/{hash}/projects` | POST |
 | Remove project | `/admin/project-groups/{hash}/projects/{project_hash}` | DELETE |
 
+### Permission Group Operations
+
+| Operation | Endpoint | Method |
+|-----------|----------|--------|
+| Create permission group | `/roles/permission-groups` | POST |
+| List permission groups | `/roles/permission-groups` | GET |
+| Get permission group | `/roles/permission-groups/{hash}` | GET |
+| Add permission to group | `/roles/permission-groups/{hash}/permissions/{perm_hash}` | POST |
+| Get group permissions | `/roles/permission-groups/{hash}/permissions` | GET |
+| Assign to user group | `/permissions/admin/user-groups/{hash}/permission-groups` | POST |
+| Remove from user group | `/permissions/admin/user-groups/{hash}/permission-groups/{pg_hash}` | DELETE |
+
+### Catalog Operations (Metadata Only)
+
+| Operation | Endpoint | Method |
+|-----------|----------|--------|
+| Add role to project catalog | `/roles/projects/{hash}/catalog/roles/{role_hash}` | POST |
+| Get project cataloged roles | `/roles/projects/{hash}/catalog/roles` | GET |
+| Remove role from catalog | `/roles/projects/{hash}/catalog/roles/{role_hash}` | DELETE |
+| Add permission group to catalog | `/permissions/projects/{hash}/permission-group-catalog/{pg_hash}` | POST |
+| Get project cataloged groups | `/permissions/projects/{hash}/permission-group-catalog` | GET |
+| Remove from permission catalog | `/permissions/projects/{hash}/permission-group-catalog/{pg_hash}` | DELETE |
+
 ---
 
 ## Related Documentation
 
-- **[API Documentation - Admin Endpoints](../api/admin.md)** - Complete API specifications
-- **[Architecture - Group System](../ARCHITECTURE/02_group_system.md)** - Technical design details
 - **[Project Usage Cases](projects-usage-cases.md)** - Project management scenarios
-- **[Database Schema](../../schemas/02_create_tables.sql)** - Group table structures
+- **[Permissions Usage Cases](permissions-usage-cases.md)** - Permission management scenarios
 
 ---
 
-**Last Updated**: 2024
-**Document Version**: 1.0
+**Last Updated**: December 2024
+**Document Version**: 2.0

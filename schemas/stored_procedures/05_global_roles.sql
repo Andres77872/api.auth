@@ -110,6 +110,32 @@ BEGIN
     END IF;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_global_update_permission_group$$
+CREATE PROCEDURE sp_global_update_permission_group(
+    IN p_group_id VARCHAR(64), IN p_group_display_name VARCHAR(255),
+    IN p_group_description TEXT, IN p_group_category VARCHAR(50)
+)
+BEGIN
+    UPDATE global_permission_groups 
+    SET group_display_name = COALESCE(p_group_display_name, group_display_name),
+        group_description = COALESCE(p_group_description, group_description),
+        group_category = COALESCE(p_group_category, group_category),
+        updated_at = NOW()
+    WHERE id = p_group_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_delete_permission_group$$
+CREATE PROCEDURE sp_global_delete_permission_group(IN p_group_id VARCHAR(64))
+BEGIN
+    -- Soft delete the permission group
+    UPDATE global_permission_groups SET is_active = FALSE, updated_at = NOW() WHERE id = p_group_id;
+    -- Also soft delete all permission assignments in this group
+    UPDATE global_permission_group_permissions SET is_active = FALSE, removed_at = NOW() 
+    WHERE permission_group_id = p_group_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
 -- ===================================================================================
 -- PERMISSION MANAGEMENT
 -- ===================================================================================
@@ -145,6 +171,32 @@ BEGIN
         SELECT * FROM global_permissions WHERE is_active = TRUE 
         ORDER BY permission_name ASC LIMIT p_limit OFFSET p_offset;
     END IF;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_update_permission$$
+CREATE PROCEDURE sp_global_update_permission(
+    IN p_permission_id VARCHAR(64), IN p_permission_display_name VARCHAR(255),
+    IN p_permission_description TEXT, IN p_permission_category VARCHAR(50)
+)
+BEGIN
+    UPDATE global_permissions 
+    SET permission_display_name = COALESCE(p_permission_display_name, permission_display_name),
+        permission_description = COALESCE(p_permission_description, permission_description),
+        permission_category = COALESCE(p_permission_category, permission_category),
+        updated_at = NOW()
+    WHERE id = p_permission_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_delete_permission$$
+CREATE PROCEDURE sp_global_delete_permission(IN p_permission_id VARCHAR(64))
+BEGIN
+    -- Soft delete the permission
+    UPDATE global_permissions SET is_active = FALSE, updated_at = NOW() WHERE id = p_permission_id;
+    -- Also soft delete all group assignments for this permission
+    UPDATE global_permission_group_permissions SET is_active = FALSE, removed_at = NOW() 
+    WHERE permission_id = p_permission_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
 END$$
 
 -- ===================================================================================
@@ -197,6 +249,30 @@ BEGIN
     ORDER BY gp.permission_name;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_global_remove_permission_from_group$$
+CREATE PROCEDURE sp_global_remove_permission_from_group(
+    IN p_permission_group_id VARCHAR(64), IN p_permission_id VARCHAR(64)
+)
+BEGIN
+    -- Soft delete the permission from the group
+    UPDATE global_permission_group_permissions 
+    SET is_active = FALSE, removed_at = NOW()
+    WHERE permission_group_id = p_permission_group_id AND permission_id = p_permission_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_remove_permission_group_from_role$$
+CREATE PROCEDURE sp_global_remove_permission_group_from_role(
+    IN p_role_id VARCHAR(64), IN p_permission_group_id VARCHAR(64)
+)
+BEGIN
+    -- Soft delete the permission group from the role
+    UPDATE role_permission_groups 
+    SET is_active = FALSE, removed_at = NOW()
+    WHERE role_id = p_role_id AND permission_group_id = p_permission_group_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
 -- ===================================================================================
 -- USER ROLE ASSIGNMENT
 -- ===================================================================================
@@ -214,6 +290,14 @@ BEGIN
     SELECT r.* FROM roles r
     JOIN users u ON r.id = u.role_id
     WHERE u.id = p_user_id AND u.is_active = TRUE AND r.is_active = TRUE;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_remove_role_from_user$$
+CREATE PROCEDURE sp_global_remove_role_from_user(IN p_user_id VARCHAR(64))
+BEGIN
+    -- Remove role assignment from user (set role_id to NULL)
+    UPDATE users SET role_id = NULL, updated_at = NOW() WHERE id = p_user_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
 END$$
 
 -- ===================================================================================
@@ -273,19 +357,34 @@ DROP PROCEDURE IF EXISTS sp_global_get_project_cataloged_roles$$
 CREATE PROCEDURE sp_global_get_project_cataloged_roles(IN p_project_id VARCHAR(64))
 BEGIN
     SELECT 
+        r.id,
         r.role_hash,
         r.role_name,
         r.role_display_name,
         r.role_description,
         r.role_priority,
+        r.is_system_role,
         rpc.catalog_purpose,
         rpc.notes,
         rpc.added_at,
-        rpc.added_by
+        rpc.added_by,
+        u.username as added_by_username
     FROM role_project_catalog rpc
     JOIN roles r ON rpc.role_id = r.id AND r.is_active = TRUE
+    LEFT JOIN users u ON rpc.added_by = u.id
     WHERE rpc.project_id = p_project_id AND rpc.is_active = TRUE
     ORDER BY r.role_priority DESC, r.role_name ASC;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_global_remove_role_from_project_catalog$$
+CREATE PROCEDURE sp_global_remove_role_from_project_catalog(
+    IN p_role_id VARCHAR(64), IN p_project_id VARCHAR(64), IN p_removed_by VARCHAR(64)
+)
+BEGIN
+    UPDATE role_project_catalog 
+    SET is_active = FALSE, removed_at = NOW(), removed_by = p_removed_by
+    WHERE role_id = p_role_id AND project_id = p_project_id AND is_active = TRUE;
+    SELECT ROW_COUNT() as rows_affected;
 END$$
 
 DELIMITER ;
@@ -294,5 +393,5 @@ DELIMITER ;
 -- GLOBAL ROLE SYSTEM PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Global role system stored procedures created successfully!' as status,
-       '19 procedures for role and permission management (including catalog)' as details;
+       '26 procedures for role and permission management (including catalog)' as details;
 

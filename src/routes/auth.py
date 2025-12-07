@@ -6,7 +6,7 @@ for the group-based multi-project authentication system.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 import json
 import secrets
 from datetime import timedelta
@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
     LoginResponse, RegisterResponse, ValidateSessionResponse, LogoutResponse,
-    SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo
+    SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo, UserGroupInfo
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors, log_unauthenticated_operation
@@ -51,7 +51,7 @@ from src.Util.db_config import redis_client  # Central redis client
 from src.Util.JWT_Security import JWTTokenHandler
 
 # NEW: helpers aligned with the group-based schema
-from src.Util.db.db_user_groups import get_user_accessible_projects
+from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project
 from src.Util.db.db_projects import get_project_by_hash
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def _get_session(token: str) -> Optional[dict]:
     raw = redis_client.get(f"session:{token}")
     return json.loads(raw.decode()) if raw else None
 
-def _create_session(user: "User", project: Optional["Project"] = None) -> tuple[str, int]:
+def _create_session(user: Any, project: Optional[Any] = None) -> tuple[str, int]:
     """Generate JWT & persist session payload. Returns (token, ttl_seconds)."""
     session_id = secrets.randbelow(2 ** 31)
 
@@ -89,6 +89,11 @@ def _create_session(user: "User", project: Optional["Project"] = None) -> tuple[
         expires_delta=timedelta(hours=SESSION_EXPIRE_HOURS),
     )
 
+    # Get user groups for caching in session (groups-of-groups architecture)
+    user_groups = get_user_groups_for_user(user.id) if user.user_type != "root" else []
+    user_group_ids = [str(g.id) for g in user_groups]
+    user_group_names = [g.group_name for g in user_groups]
+
     payload = {
         "session_id": session_id,
         "user_id": user.id,
@@ -97,6 +102,8 @@ def _create_session(user: "User", project: Optional["Project"] = None) -> tuple[
         "project_id": getattr(project, "id", None),
         "project_hash": getattr(project, "project_hash", ""),
         "project_name": getattr(project, "project_name", "Global Root Access" if user.user_type == "root" else None),
+        "user_group_ids": user_group_ids,
+        "user_group_names": user_group_names,
     }
 
     # Persist
@@ -189,6 +196,7 @@ async def login(
             ),
             project=None,
             accessible_projects=accessible_projects_info,
+            user_groups=[],  # Root users don't use groups
             user_id=user_record.id
         )
 
@@ -261,6 +269,17 @@ async def login(
         for p in accessible
     ]
 
+    # Get user groups for response (groups-of-groups architecture)
+    user_groups = get_user_groups_for_user(user_record.id)
+    user_groups_info = [
+        UserGroupInfo(
+            group_hash=g.group_hash,
+            group_name=g.group_name,
+            description=getattr(g, 'group_description', None),
+        )
+        for g in user_groups
+    ]
+
     return LoginResponse(
         success=True,
         message="Login successful",
@@ -273,6 +292,7 @@ async def login(
         ),
         project=project_info,
         accessible_projects=accessible_projects_info,
+        user_groups=user_groups_info,
         user_id=user_record.id
     )
 
@@ -435,12 +455,16 @@ async def validate_user_session(
             project_description="Unrestricted global access for root user",
         )
 
+    # Get user groups from session (cached during login)
+    user_group_names = raw.get("user_group_names", [])
+
     return ValidateSessionResponse(
         success=True,
         valid=True,
         user=user_info,
         project=project_info,
         session={"created_at": None, "is_global_session": raw.get("project_hash") == ""},
+        user_groups=user_group_names,
     )
 
 
@@ -536,6 +560,28 @@ async def refresh_token(
             project_description=current_project.project_description,
         )
 
+    # Get accessible projects
+    accessible = get_user_accessible_projects(user_data.id)
+    accessible_projects_info = [
+        ProjectInfo(
+            project_hash=p.project_hash,
+            project_name=p.project_name,
+            project_description=p.project_description,
+        )
+        for p in accessible
+    ]
+
+    # Get user groups for response
+    user_groups = get_user_groups_for_user(user_data.id) if user_data.user_type != "root" else []
+    user_groups_info = [
+        UserGroupInfo(
+            group_hash=g.group_hash,
+            group_name=g.group_name,
+            description=getattr(g, 'group_description', None),
+        )
+        for g in user_groups
+    ]
+
     return LoginResponse(
         success=True,
         message="Token refreshed successfully",
@@ -547,7 +593,8 @@ async def refresh_token(
             user_type=user_data.user_type,
         ),
         project=project_info,
-        accessible_projects=[],
+        accessible_projects=accessible_projects_info,
+        user_groups=user_groups_info,
     )
 
 
@@ -623,12 +670,16 @@ async def switch_project(
         project_description=new_project.project_description,
     )
 
+    # Get user groups that have access to this project (groups-of-groups)
+    user_groups_in_project = get_user_groups_in_project(user_data.id, new_project.id)
+    user_group_names = [g.group_name for g in user_groups_in_project]
+
     return SwitchProjectResponse(
         success=True,
         message=f"Successfully switched to project: {new_project.project_name}",
         session_token=new_token,
         project=project_info,
-        user_groups=[],
+        user_groups=user_group_names,
     )
 
 

@@ -1,12 +1,18 @@
 -- ===================================================================================
 -- Enhanced 3-Tier User Type Multi-Project Authentication Database Schema
--- Table Creation Script (Restructured for Group-Based Access)
+-- Table Creation Script - GROUPS OF GROUPS Architecture
 -- ===================================================================================
 -- This script creates all tables needed for the authentication system
+-- PHILOSOPHY: Users → User Groups → Project Groups → Projects
+-- NO direct user-to-project or user-group-to-project assignments
 -- MySQL Database
 -- ===================================================================================
 
 USE magic_auth;
+
+-- ===================================================================================
+-- CORE ENTITY TABLES
+-- ===================================================================================
 
 -- =================== USERS TABLE ===================
 -- Supports 3-tier user types: root, admin, consumer
@@ -49,27 +55,33 @@ CREATE TABLE IF NOT EXISTS projects (
     UNIQUE KEY uk_project_hash (project_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ===================================================================================
+-- USER GROUPS - Groups of Users (Hierarchical)
+-- ===================================================================================
+
 -- =================== USER_GROUPS TABLE ===================
--- Global user groups that can span multiple projects
+-- Global user groups that can span multiple project groups
 -- Can have hierarchical structure (parent-child relationships)
+-- ROOT DETECTION: parent_group_id IS NULL means root group
 CREATE TABLE IF NOT EXISTS user_groups (
     id VARCHAR(64) NOT NULL,
     group_hash VARCHAR(255) NOT NULL,
     group_name VARCHAR(100) NOT NULL,
     group_description TEXT,
-    parent_group_id VARCHAR(64) NULL, -- For hierarchical groups
-    group_level INT NOT NULL DEFAULT 0, -- Hierarchy level (0 = root level)
+    parent_group_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
     created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_hash (group_hash),
-    UNIQUE KEY uk_group_name (group_name) -- Global unique group names
+    UNIQUE KEY uk_group_name (group_name),
+    INDEX idx_parent_group (parent_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== USER_GROUP_MEMBERS TABLE ===================
 -- Links users to user groups (many-to-many)
+-- User → User Group relationship
 CREATE TABLE IF NOT EXISTS user_group_members (
     id VARCHAR(64) NOT NULL,
     user_id VARCHAR(64) NOT NULL,
@@ -83,42 +95,34 @@ CREATE TABLE IF NOT EXISTS user_group_members (
     UNIQUE KEY uk_user_group_member (user_id, user_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== USER_GROUP_PROJECTS TABLE ===================
--- Links user groups to projects they have access to (many-to-many)
--- This is how users get access to projects - through their groups
-CREATE TABLE IF NOT EXISTS user_group_projects (
-    id VARCHAR(64) NOT NULL,
-    user_group_id VARCHAR(64) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    granted_by VARCHAR(64),
-    revoked_at DATETIME,
-    revoked_by VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_group_project (user_group_id, project_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ===================================================================================
+-- PROJECT GROUPS - Groups of Projects
+-- ===================================================================================
 
 -- =================== PROJECT_GROUPS TABLE ===================
--- Project groups that define sets of permissions
--- Used for organizing projects with similar permission sets
+-- Project groups organize projects together
+-- User groups connect to project groups (NOT directly to projects)
+-- Supports hierarchical structure (parent-child relationships)
+-- ROOT DETECTION: parent_group_id IS NULL means root group
 CREATE TABLE IF NOT EXISTS project_groups (
     id VARCHAR(64) NOT NULL,
     group_hash VARCHAR(255) NOT NULL,
     group_name VARCHAR(100) NOT NULL,
     group_description TEXT,
-    permissions JSON,
+    parent_group_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
+    created_by VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (id),
     UNIQUE KEY uk_project_group_hash (group_hash),
-    UNIQUE KEY uk_project_group_name (group_name)
+    UNIQUE KEY uk_project_group_name (group_name),
+    INDEX idx_parent_project_group (parent_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== PROJECT_GROUP_MEMBERS TABLE ===================
 -- Links projects to project groups (many-to-many)
--- Projects can belong to multiple groups to inherit different permission sets
+-- Project Group → Project relationship
 CREATE TABLE IF NOT EXISTS project_group_members (
     id VARCHAR(64) NOT NULL,
     project_id VARCHAR(64) NOT NULL,
@@ -132,8 +136,35 @@ CREATE TABLE IF NOT EXISTS project_group_members (
     UNIQUE KEY uk_project_group_member (project_id, project_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ===================================================================================
+-- GROUPS OF GROUPS - User Groups → Project Groups
+-- This is the KEY table for "groups of groups" philosophy
+-- ===================================================================================
+
+-- =================== USER_GROUP_PROJECT_GROUPS TABLE ===================
+-- Links user groups to project groups (many-to-many)
+-- THIS IS HOW USERS GET ACCESS TO PROJECTS:
+-- User → User Group → Project Group → Project
+CREATE TABLE IF NOT EXISTS user_group_project_groups (
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_group_id VARCHAR(64) NOT NULL,
+    granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    granted_by VARCHAR(64),
+    revoked_at DATETIME,
+    revoked_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_usergroup_projectgroup (user_group_id, project_group_id),
+    INDEX idx_user_group (user_group_id),
+    INDEX idx_project_group (project_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===================================================================================
+-- SESSION MANAGEMENT
+-- ===================================================================================
+
 -- =================== USER_SESSIONS TABLE ===================
--- Session management - simplified to work with user groups
 CREATE TABLE IF NOT EXISTS user_sessions (
     id VARCHAR(64) NOT NULL,
     user_id VARCHAR(64) NOT NULL,
@@ -146,65 +177,44 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     UNIQUE KEY uk_session_token (session_token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ===================================================================================
+-- AUDIT & LOGGING TABLES
+-- ===================================================================================
+
 -- =================== API AUDIT LOG TABLE ===================
--- Comprehensive API request/response audit logging
--- Captures all API calls with complete request and response context
 CREATE TABLE IF NOT EXISTS api_audit_log (
     id VARCHAR(64) NOT NULL,
-    
-    -- Request identification
-    request_id VARCHAR(64),                    -- Unique request ID for tracing
-    
-    -- Endpoint information
-    http_method VARCHAR(10) NOT NULL,          -- GET, POST, PUT, DELETE, PATCH
-    endpoint_path VARCHAR(512) NOT NULL,       -- /api/v1/users/{hash}
-    route_pattern VARCHAR(512),                -- Matched route pattern
-    
-    -- User context
-    user_id VARCHAR(64),                       -- Authenticated user (NULL if unauthenticated)
-    user_type ENUM('root', 'admin', 'consumer'),  -- User type at time of request
-    session_id VARCHAR(256),                    -- Session identifier
-    
-    -- Request details
-    request_headers JSON,                      -- Request headers (filtered, no sensitive data)
-    request_body JSON,                         -- Request body (filtered, no passwords)
-    request_query JSON,                        -- Query parameters
-    request_size_bytes INT,                    -- Request payload size
-    
-    -- Response details
-    response_status INT NOT NULL,              -- HTTP status code (200, 404, 500, etc.)
-    response_body JSON,                        -- Response body (filtered, no sensitive data)
-    response_headers JSON,                     -- Response headers (filtered)
-    response_size_bytes INT,                   -- Response payload size
-    
-    -- Timing and performance
+    request_id VARCHAR(64),
+    http_method VARCHAR(10) NOT NULL,
+    endpoint_path VARCHAR(512) NOT NULL,
+    route_pattern VARCHAR(512),
+    user_id VARCHAR(64),
+    user_type ENUM('root', 'admin', 'consumer'),
+    session_id VARCHAR(256),
+    request_headers JSON,
+    request_body JSON,
+    request_query JSON,
+    request_size_bytes INT,
+    response_status INT NOT NULL,
+    response_body JSON,
+    response_headers JSON,
+    response_size_bytes INT,
     request_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     response_timestamp DATETIME,
-    duration_ms INT,                           -- Request processing time in milliseconds
-    
-    -- Network information
-    client_ip VARCHAR(45),                     -- Client IP address
-    user_agent TEXT,                           -- User agent string
-    referer VARCHAR(512),                      -- HTTP referer
-    
-    -- Result classification
-    is_success BOOLEAN,                        -- TRUE if 2xx status, FALSE otherwise
-    error_code VARCHAR(50),                    -- Application error code if failed
-    error_message TEXT,                        -- Error message if failed
-    
-    -- Context
-    project_id VARCHAR(64),                    -- Project context if applicable
-    target_resource_type VARCHAR(50),          -- Resource type (user, project, group, etc.)
-    target_resource_id VARCHAR(64),            -- Resource ID being accessed/modified
-    
-    -- Metadata
-    metadata JSON,                             -- Additional context-specific data
-    tags JSON,                                 -- Searchable tags (e.g., ["admin_action", "critical"])
-    
-    -- Security flags
-    requires_audit BOOLEAN DEFAULT TRUE,       -- Mark for compliance auditing
-    security_event BOOLEAN DEFAULT FALSE,      -- Flag security-related events
-    
+    duration_ms INT,
+    client_ip VARCHAR(45),
+    user_agent TEXT,
+    referer VARCHAR(512),
+    is_success BOOLEAN,
+    error_code VARCHAR(50),
+    error_message TEXT,
+    project_id VARCHAR(64),
+    target_resource_type VARCHAR(50),
+    target_resource_id VARCHAR(64),
+    metadata JSON,
+    tags JSON,
+    requires_audit BOOLEAN DEFAULT TRUE,
+    security_event BOOLEAN DEFAULT FALSE,
     PRIMARY KEY (id),
     INDEX idx_timestamp (request_timestamp DESC),
     INDEX idx_user_time (user_id, request_timestamp DESC),
@@ -232,18 +242,28 @@ CREATE TABLE IF NOT EXISTS user_password_resets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ROLE_ASSIGNMENT_HISTORY TABLE ===================
+-- Flexible history table: supports role, permission group, and scoped assignments
+-- Nullable FKs allow logging different assignment types:
+--   - Role to user: only user_id and role_id filled
+--   - Permission group to user group: user_group_id and permission_group_id filled
+--   - Scoped permission: user_group_id, project_group_id, and permission_group_id filled
 CREATE TABLE IF NOT EXISTS role_assignment_history (
     id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    user_group_id VARCHAR(64) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    permission_group_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NULL,
+    user_group_id VARCHAR(64) NULL,
+    project_group_id VARCHAR(64) NULL,
+    permission_group_id VARCHAR(64) NULL,
+    role_id VARCHAR(64) NULL,
+    assignment_type ENUM('role_to_user', 'permission_group_to_user', 'permission_group_to_user_group', 'scoped_permission') NOT NULL,
     action ENUM('assigned', 'removed', 'modified') NOT NULL,
     performed_by VARCHAR(64) NOT NULL,
     performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     details TEXT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    PRIMARY KEY (id)
+    old_values JSON NULL,
+    new_values JSON NULL,
+    PRIMARY KEY (id),
+    INDEX idx_assignment_type (assignment_type),
+    INDEX idx_performed_at (performed_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== SYSTEM_METRICS TABLE ===================
@@ -271,9 +291,11 @@ CREATE TABLE IF NOT EXISTS bulk_operations_log (
     PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== PERFORMANCE OPTIMIZATION TABLES ===================
+-- ===================================================================================
+-- PERFORMANCE OPTIMIZATION TABLES
+-- ===================================================================================
 
--- Table for caching expensive permission calculations
+-- =================== PERMISSION_CACHE TABLE ===================
 CREATE TABLE IF NOT EXISTS permission_cache (
     user_id VARCHAR(64) NOT NULL,
     project_id VARCHAR(64) NOT NULL,
@@ -284,7 +306,7 @@ CREATE TABLE IF NOT EXISTS permission_cache (
     PRIMARY KEY (user_id, project_id, permission_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Table for query performance tracking
+-- =================== QUERY_PERFORMANCE_LOG TABLE ===================
 CREATE TABLE IF NOT EXISTS query_performance_log (
     id VARCHAR(64) NOT NULL PRIMARY KEY,
     query_hash VARCHAR(64),
@@ -295,12 +317,11 @@ CREATE TABLE IF NOT EXISTS query_performance_log (
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== GLOBAL ROLE SYSTEM TABLES ===================
--- Global roles, permissions, and permission groups that work across all projects
--- ==================================================================================
+-- ===================================================================================
+-- GLOBAL ROLE SYSTEM TABLES
+-- ===================================================================================
 
--- =================== GLOBAL ROLES TABLE ===================
--- Global roles - each user has ONE role that works everywhere
+-- =================== ROLES TABLE ===================
 CREATE TABLE IF NOT EXISTS roles (
     id VARCHAR(64) NOT NULL,
     role_hash VARCHAR(255) NOT NULL,
@@ -317,12 +338,10 @@ CREATE TABLE IF NOT EXISTS roles (
     UNIQUE KEY uk_role_hash (role_hash),
     UNIQUE KEY uk_role_name (role_name),
     INDEX idx_role_priority (role_priority),
-    INDEX idx_role_name (role_name, is_active),
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_role_name (role_name, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== GLOBAL PERMISSION GROUPS TABLE ===================
--- Global permission groups - reusable containers of permissions
+-- =================== GLOBAL_PERMISSION_GROUPS TABLE ===================
 CREATE TABLE IF NOT EXISTS global_permission_groups (
     id VARCHAR(64) NOT NULL,
     group_hash VARCHAR(255) NOT NULL,
@@ -338,12 +357,10 @@ CREATE TABLE IF NOT EXISTS global_permission_groups (
     UNIQUE KEY uk_perm_group_hash (group_hash),
     UNIQUE KEY uk_perm_group_name (group_name),
     INDEX idx_category (group_category),
-    INDEX idx_group_name (group_name, is_active),
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_group_name (group_name, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== GLOBAL PERMISSIONS TABLE ===================
--- Global permission definitions - defined once, used everywhere
+-- =================== GLOBAL_PERMISSIONS TABLE ===================
 CREATE TABLE IF NOT EXISTS global_permissions (
     id VARCHAR(64) NOT NULL,
     permission_hash VARCHAR(255) NOT NULL,
@@ -359,12 +376,10 @@ CREATE TABLE IF NOT EXISTS global_permissions (
     UNIQUE KEY uk_permission_hash (permission_hash),
     UNIQUE KEY uk_permission_name (permission_name),
     INDEX idx_category (permission_category),
-    INDEX idx_permission_name (permission_name, is_active),
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_permission_name (permission_name, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== ROLE PERMISSION GROUPS LINK TABLE ===================
--- Links roles to permission groups - defines role composition
+-- =================== ROLE_PERMISSION_GROUPS TABLE ===================
 CREATE TABLE IF NOT EXISTS role_permission_groups (
     id VARCHAR(64) NOT NULL,
     role_id VARCHAR(64) NOT NULL,
@@ -377,15 +392,10 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
     PRIMARY KEY (id),
     UNIQUE KEY uk_role_perm_group (role_id, permission_group_id),
     INDEX idx_role (role_id),
-    INDEX idx_perm_group (permission_group_id),
-    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_perm_group (permission_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== PERMISSION GROUP PERMISSIONS LINK TABLE ===================
--- Links permission groups to permissions - defines permission group content
+-- =================== GLOBAL_PERMISSION_GROUP_PERMISSIONS TABLE ===================
 CREATE TABLE IF NOT EXISTS global_permission_group_permissions (
     id VARCHAR(64) NOT NULL,
     permission_group_id VARCHAR(64) NOT NULL,
@@ -398,15 +408,97 @@ CREATE TABLE IF NOT EXISTS global_permission_group_permissions (
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_permission (permission_group_id, permission_id),
     INDEX idx_perm_group (permission_group_id),
-    INDEX idx_permission (permission_id),
-    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_id) REFERENCES global_permissions(id) ON DELETE CASCADE,
-    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_permission (permission_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== ROLE PROJECT CATALOG TABLE (METADATA ONLY) ===================
--- METADATA ONLY - Suggests which roles are relevant to projects (NOT used for authorization)
+-- ===================================================================================
+-- PERMISSION ASSIGNMENT TABLES
+-- ===================================================================================
+
+-- =================== USER_GROUP_PERMISSION_GROUPS TABLE ===================
+-- Links user groups to permission groups (global permissions)
+CREATE TABLE IF NOT EXISTS user_group_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_usergroup_permgroup (user_group_id, permission_group_id),
+    INDEX idx_user_group (user_group_id),
+    INDEX idx_perm_group (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== USER_PERMISSION_GROUPS TABLE ===================
+-- Direct user to permission group (for exceptions only)
+CREATE TABLE IF NOT EXISTS user_permission_groups (
+    id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN DEFAULT TRUE,
+    notes TEXT,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_permgroup (user_id, permission_group_id),
+    INDEX idx_user (user_id),
+    INDEX idx_perm_group (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== USER_GROUP_PROJECT_GROUP_PERMISSIONS TABLE ===================
+-- Scoped permissions: User Group gets Permission Group ONLY for specific Project Group
+-- Supports grant/deny with priority for conflict resolution
+CREATE TABLE IF NOT EXISTS user_group_project_group_permissions (
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_group_id VARCHAR(64) NOT NULL,
+    permission_group_id VARCHAR(64) NOT NULL,
+    permission_type ENUM('grant', 'deny') NOT NULL DEFAULT 'grant',
+    priority INT NOT NULL DEFAULT 0,
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ug_pg_permg (user_group_id, project_group_id, permission_group_id),
+    INDEX idx_user_group (user_group_id),
+    INDEX idx_project_group (project_group_id),
+    INDEX idx_permission_group (permission_group_id),
+    INDEX idx_permission_type_priority (permission_type, priority DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =================== USER_GROUP_PROJECT_GROUP_ROLES TABLE ===================
+-- Project-scoped roles: User Group gets a Role ONLY for specific Project Group
+-- This allows users to have different roles in different project contexts
+CREATE TABLE IF NOT EXISTS user_group_project_group_roles (
+    id VARCHAR(64) NOT NULL,
+    user_group_id VARCHAR(64) NOT NULL,
+    project_group_id VARCHAR(64) NOT NULL,
+    role_id VARCHAR(64) NOT NULL,
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    assigned_by VARCHAR(64),
+    removed_at DATETIME,
+    removed_by VARCHAR(64),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ug_pg_role (user_group_id, project_group_id, role_id),
+    INDEX idx_ugpgr_user_group (user_group_id),
+    INDEX idx_ugpgr_project_group (project_group_id),
+    INDEX idx_ugpgr_role (role_id),
+    INDEX idx_ugpgr_lookup (user_group_id, project_group_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===================================================================================
+-- CATALOG TABLES (METADATA ONLY - NOT FOR AUTHORIZATION)
+-- ===================================================================================
+
+-- =================== ROLE_PROJECT_CATALOG TABLE ===================
 CREATE TABLE IF NOT EXISTS role_project_catalog (
     id VARCHAR(64) NOT NULL,
     role_id VARCHAR(64) NOT NULL,
@@ -421,15 +513,10 @@ CREATE TABLE IF NOT EXISTS role_project_catalog (
     PRIMARY KEY (id),
     UNIQUE KEY uk_role_project (role_id, project_id),
     INDEX idx_project_roles (project_id),
-    INDEX idx_role_projects (role_id),
-    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_role_projects (role_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== PERMISSION PROJECT CATALOG TABLE (METADATA ONLY) ===================
--- METADATA ONLY - Shows which permissions are relevant to projects (NOT used for authorization)
+-- =================== PERMISSION_PROJECT_CATALOG TABLE ===================
 CREATE TABLE IF NOT EXISTS permission_project_catalog (
     id VARCHAR(64) NOT NULL,
     permission_id VARCHAR(64) NOT NULL,
@@ -444,70 +531,15 @@ CREATE TABLE IF NOT EXISTS permission_project_catalog (
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_project (permission_id, project_id),
     INDEX idx_project_permissions (project_id),
-    INDEX idx_permission_projects (permission_id),
-    FOREIGN KEY (permission_id) REFERENCES global_permissions(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_permission_projects (permission_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== REV2: PERMISSION ASSIGNMENT SYSTEM TABLES ===================
--- Direct assignment of permission groups to users and user groups
--- ==================================================================================
-
--- =================== USER GROUP PERMISSION GROUPS TABLE ===================
--- Links user groups to permission groups (many-to-many) - PRIMARY assignment model
--- This allows entire user groups to receive permission groups
-CREATE TABLE IF NOT EXISTS user_group_permission_groups (
-    id VARCHAR(64) NOT NULL,
-    user_group_id VARCHAR(64) NOT NULL,
-    permission_group_id VARCHAR(64) NOT NULL,
-    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    assigned_by VARCHAR(64),
-    removed_at DATETIME,
-    removed_by VARCHAR(64),
-    is_active BOOLEAN DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_usergroup_permgroup (user_group_id, permission_group_id),
-    INDEX idx_user_group (user_group_id),
-    INDEX idx_perm_group (permission_group_id),
-    FOREIGN KEY (user_group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== USER PERMISSION GROUPS TABLE ===================
--- Links users directly to permission groups (many-to-many) - SECONDARY assignment model
--- This allows individual users to receive specific permission groups
-CREATE TABLE IF NOT EXISTS user_permission_groups (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    permission_group_id VARCHAR(64) NOT NULL,
-    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    assigned_by VARCHAR(64),
-    removed_at DATETIME,
-    removed_by VARCHAR(64),
-    is_active BOOLEAN DEFAULT TRUE,
-    notes TEXT,  -- Why this user needs direct assignment
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_user_permgroup (user_id, permission_group_id),
-    INDEX idx_user (user_id),
-    INDEX idx_perm_group (permission_group_id),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== PERMISSION GROUP PROJECT CATALOG TABLE ===================
--- METADATA ONLY - Organizational metadata for UI suggestions
--- NEVER used for permission validation or authorization logic
+-- =================== PERMISSION_GROUP_PROJECT_CATALOG TABLE ===================
 CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
     id VARCHAR(64) NOT NULL,
     permission_group_id VARCHAR(64) NOT NULL,
     project_id VARCHAR(64) NOT NULL,
-    catalog_purpose VARCHAR(255),  -- Why this group is relevant to this project
+    catalog_purpose VARCHAR(255),
     notes TEXT,
     added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     added_by VARCHAR(64),
@@ -517,15 +549,11 @@ CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
     PRIMARY KEY (id),
     UNIQUE KEY uk_permgroup_project (permission_group_id, project_id),
     INDEX idx_project_permgroups (project_id),
-    INDEX idx_permgroup_projects (permission_group_id),
-    FOREIGN KEY (permission_group_id) REFERENCES global_permission_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (removed_by) REFERENCES users(id) ON DELETE SET NULL
+    INDEX idx_permgroup_projects (permission_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =================== TABLE CREATION COMPLETE ===================
+-- ===================================================================================
+-- TABLE CREATION COMPLETE
+-- ===================================================================================
 SELECT 'All tables created successfully!' as status, 
-       '39 tables created for complete authentication system' as details;
--- NOTE: Error logging tables are in 07_error_logs.sql
-
+       'Groups of Groups architecture implemented' as details;

@@ -47,7 +47,7 @@ def create_user_group(group_name: str, group_description: str = None, created_by
         group_id = generate_user_group_id()
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_create_user_group', [group_id, group_hash, group_name, group_description])
+            cur.callproc('sp_create_user_group', [group_id, group_hash, group_name, group_description, None, created_by])
             con.commit()
 
             return UserGroup(
@@ -84,14 +84,15 @@ def get_user_group_by_id(group_id: str) -> Optional[UserGroup]:
             cur.callproc('sp_get_user_group_by_id', [group_id])
             result = cur.fetchone()
             if result:
+                # SP returns: id, group_hash, group_name, group_description, parent_group_id, created_at, updated_at, created_by, is_active
                 return UserGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    created_at=result[4],
-                    updated_at=result[5],
-                    is_active=bool(result[6])
+                    created_at=result[5],
+                    updated_at=result[6],
+                    is_active=bool(result[8])
                 )
             return None
     
@@ -120,14 +121,15 @@ def get_user_group_by_hash(group_hash: str) -> Optional[UserGroup]:
             cur.callproc('sp_get_user_group_by_hash', [group_hash])
             result = cur.fetchone()
             if result:
+                # SP returns: id, group_hash, group_name, group_description, parent_group_id, created_at, updated_at, created_by, is_active
                 return UserGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    created_at=result[4],
-                    updated_at=result[5],
-                    is_active=bool(result[6])
+                    created_at=result[5],
+                    updated_at=result[6],
+                    is_active=bool(result[8])
                 )
             return None
     
@@ -156,14 +158,15 @@ def get_user_group_by_name(group_name: str) -> Optional[UserGroup]:
             cur.callproc('sp_get_user_group_by_name', [group_name])
             result = cur.fetchone()
             if result:
+                # SP returns: id, group_hash, group_name, group_description, parent_group_id, created_at, updated_at, created_by, is_active
                 return UserGroup(
                     id=result[0],
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    created_at=result[4],
-                    updated_at=result[5],
-                    is_active=bool(result[6])
+                    created_at=result[5],
+                    updated_at=result[6],
+                    is_active=bool(result[8])
                 )
             return None
     
@@ -207,14 +210,15 @@ def list_all_user_groups(limit: int = 100, offset: int = 0, sort_by: str = 'grou
 
             results = []
             for row in cur.fetchall():
+                # SP returns: id, group_hash, group_name, group_description, parent_group_id, created_at, updated_at, is_active
                 results.append(UserGroup(
                     id=row[0],
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    created_at=row[4],
-                    updated_at=row[5],
-                    is_active=bool(row[6])
+                    created_at=row[5],
+                    updated_at=row[6],
+                    is_active=bool(row[7])
                 ))
             return results
     
@@ -426,13 +430,13 @@ def get_user_group_membership(user_id: str, user_group_id: str) -> Optional[User
 def get_user_groups_for_user(user_id: str) -> List[UserGroup]:
     """
     Get all user groups a user belongs to.
-    
+
     Args:
         user_id: User ID to get groups for
-        
+
     Returns:
-        List of UserGroup objects
-        
+        List of UserGroup objects with joined_at attribute set
+
     Raises:
         DatabaseError: On database operation errors
     """
@@ -442,18 +446,23 @@ def get_user_groups_for_user(user_id: str) -> List[UserGroup]:
             cur.callproc('sp_get_user_groups_for_user', [user_id])
             groups = []
             for row in cur.fetchall():
-                groups.append(UserGroup(
+                # Stored procedure returns: id, group_hash, group_name, group_description,
+                # parent_group_id, created_at, updated_at, is_active, joined_at
+                group = UserGroup(
                     id=row[0],
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    created_at=row[4],
-                    updated_at=row[5],
-                    is_active=bool(row[6])
-                ))
+                    created_at=row[5],  # Index 5 after parent_group_id
+                    updated_at=row[6],
+                    is_active=bool(row[7])
+                )
+                # Add joined_at from membership record (assigned_at in the SP)
+                group.joined_at = row[8] if len(row) > 8 else None
+                groups.append(group)
 
             return groups
-    
+
     return handle_db_operation(
         _get,
         error_context=f"get_user_groups_for_user(user_id={user_id})"
@@ -468,7 +477,7 @@ def get_users_in_group(user_group_id: str) -> List[User]:
         user_group_id: Group ID to get users for
         
     Returns:
-        List of User objects
+        List of User objects with assigned_at attribute set
         
     Raises:
         DatabaseError: On database operation errors
@@ -479,7 +488,9 @@ def get_users_in_group(user_group_id: str) -> List[User]:
             cur.callproc('sp_get_users_in_group', [user_group_id])
             users = []
             for row in cur.fetchall():
-                users.append(User(
+                # Stored procedure returns: id, user_hash, username, email, user_type, 
+                # role_id, created_at, updated_at, is_active, assigned_at, assigned_by
+                user = User(
                     id=row[0],
                     user_hash=row[1],
                     username=row[2],
@@ -491,7 +502,11 @@ def get_users_in_group(user_group_id: str) -> List[User]:
                     updated_at=row[7],
                     last_login=None,
                     is_active=bool(row[8])
-                ))
+                )
+                # Add assigned_at from membership record (index 9)
+                # This is when the user joined the group
+                user.assigned_at = row[9] if len(row) > 9 else None
+                users.append(user)
 
             return users
     
@@ -501,113 +516,20 @@ def get_users_in_group(user_group_id: str) -> List[User]:
     )
 
 
-# =================== PROJECT ACCESS MANAGEMENT ===================
-
-def grant_group_project_access(user_group_id: str, project_id: str, granted_by: str = None) -> Optional[UserGroupProject]:
-    """
-    Grant a user group access to a project (or reactivate if already exists).
-    
-    Args:
-        user_group_id: Group ID to grant access to
-        project_id: Project ID to grant access for
-        granted_by: User ID who granted the access
-        
-    Returns:
-        UserGroupProject object
-        
-    Raises:
-        ConflictError: If grant fails due to constraint violation
-        DatabaseError: On database operation errors
-        
-    Note:
-        Automatically reactivates access if it was previously granted
-    """
-    def _grant():
-        with get_connection() as con:
-            cur = con.cursor()
-            access_id = generate_user_group_project_id()
-            cur.callproc('sp_grant_group_project_access', [access_id, user_group_id, project_id, granted_by])
-            con.commit()
-            
-            return UserGroupProject(
-                id=access_id,
-                user_group_id=user_group_id,
-                project_id=project_id,
-                granted_at=datetime.now(),
-                granted_by=granted_by,
-                is_active=True
-            )
-    
-    return handle_db_operation(
-        _grant,
-        error_context=f"grant_group_project_access(user_group_id={user_group_id}, project_id={project_id})"
-    )
-
-
-def revoke_group_project_access(user_group_id: str, project_id: str, revoked_by: str = None) -> bool:
-    """
-    Revoke a user group's access to a project (soft delete).
-    
-    Args:
-        user_group_id: Group ID to revoke access from
-        project_id: Project ID to revoke access for
-        revoked_by: User ID who revoked the access
-        
-    Returns:
-        True if revoked successfully, False if access not found
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _revoke():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_revoke_group_project_access', [user_group_id, project_id, revoked_by])
-            con.commit()
-            return True
-    
-    return handle_db_operation(
-        _revoke,
-        error_context=f"revoke_group_project_access(user_group_id={user_group_id}, project_id={project_id})"
-    )
-
-
-def get_group_project_access(user_group_id: str, project_id: str) -> Optional[UserGroupProject]:
-    """
-    Get specific group project access.
-    
-    Args:
-        user_group_id: Group ID to check
-        project_id: Project ID to check
-        
-    Returns:
-        UserGroupProject object if found, None if not found
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_get_group_project_access', [user_group_id, project_id])
-            result = cur.fetchone()
-            if result:
-                return UserGroupProject(
-                    id=result[0],
-                    user_group_id=result[1],
-                    project_id=result[2],
-                    granted_at=result[3],
-                    granted_by=result[4],
-                    revoked_at=result[5],
-                    revoked_by=result[6],
-                    is_active=bool(result[7])
-                )
-            return None
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_group_project_access(user_group_id={user_group_id}, project_id={project_id})"
-    )
+# ===================================================================================
+# PROJECT ACCESS VIA PROJECT GROUPS (Groups-of-Groups Architecture)
+# ===================================================================================
+# Direct user group → project access is NOT supported.
+# Access is managed through PROJECT GROUPS:
+#
+#   USER → USER_GROUP → PROJECT_GROUP → PROJECT
+#
+# To grant a user group access to projects:
+#   1. Use grant_user_group_project_group_access() to link user group to project group
+#   2. Projects in that project group become accessible to all users in the user group
+#
+# See: db_project_groups.py for project group management
+# ===================================================================================
 
 
 def get_projects_for_user_group(user_group_id: str) -> List[Tuple[int, str, str]]:
@@ -844,4 +766,145 @@ def get_user_groups_in_project_by_hash(user_id: str, project_hash: str) -> List[
     return handle_db_operation(
         _get,
         error_context=f"get_user_groups_in_project_by_hash(user_id={user_id}, project_hash={mask_uuid(project_hash)})"
+    )
+
+
+# =================== PROJECT GROUP ACCESS (Groups-of-Groups Architecture) ===================
+
+def grant_user_group_project_group_access(user_group_id: str, project_group_id: str, granted_by: str = None) -> Optional[dict]:
+    """
+    Grant a user group access to a project group (groups-of-groups architecture).
+    
+    This is the correct way to grant project access in the groups-of-groups architecture:
+    USER → USER_GROUP → PROJECT_GROUP → PROJECT
+    
+    Args:
+        user_group_id: User group ID to grant access to
+        project_group_id: Project group ID to grant access for
+        granted_by: User ID who granted the access
+        
+    Returns:
+        Dictionary with access details or None on failure
+        
+    Raises:
+        ConflictError: If access already exists
+        DatabaseError: On database operation errors
+    """
+    def _grant():
+        with get_connection() as con:
+            cur = con.cursor()
+            access_id = generate_user_group_project_id()
+            cur.callproc('sp_grant_user_group_project_group_access', [access_id, user_group_id, project_group_id, granted_by])
+            con.commit()
+            
+            return {
+                "access_id": access_id,
+                "user_group_id": user_group_id,
+                "project_group_id": project_group_id,
+                "granted_by": granted_by,
+                "granted_at": datetime.now()
+            }
+    
+    return handle_db_operation(
+        _grant,
+        error_context=f"grant_user_group_project_group_access(user_group_id={user_group_id}, project_group_id={project_group_id})"
+    )
+
+
+def revoke_user_group_project_group_access(user_group_id: str, project_group_id: str, revoked_by: str = None) -> bool:
+    """
+    Revoke a user group's access to a project group.
+    
+    Args:
+        user_group_id: User group ID to revoke access from
+        project_group_id: Project group ID to revoke access for
+        revoked_by: User ID who revoked the access
+        
+    Returns:
+        True if revoked successfully, False if access not found
+        
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _revoke():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_revoke_user_group_project_group_access', [user_group_id, project_group_id, revoked_by])
+            con.commit()
+            return True
+    
+    return handle_db_operation(
+        _revoke,
+        error_context=f"revoke_user_group_project_group_access(user_group_id={user_group_id}, project_group_id={project_group_id})"
+    )
+
+
+def get_project_groups_for_user_group(user_group_id: str) -> List[dict]:
+    """
+    Get all project groups that a user group has access to.
+    
+    This follows the groups-of-groups architecture:
+    USER_GROUP → PROJECT_GROUP → PROJECT
+    
+    Args:
+        user_group_id: User group ID to get project groups for
+        
+    Returns:
+        List of dictionaries with project group info including:
+        - group_id, group_hash, group_name, group_description
+        - created_at, is_active, granted_at, granted_by
+        
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _get():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_get_project_groups_for_user_group', [user_group_id])
+            project_groups = []
+            for row in cur.fetchall():
+                # SP returns: pg.id, pg.group_hash, pg.group_name, pg.group_description,
+                #             pg.created_at, pg.is_active, ugpg.granted_at, ugpg.granted_by
+                project_groups.append({
+                    "group_id": row[0],
+                    "group_hash": row[1],
+                    "group_name": row[2],
+                    "group_description": row[3] if len(row) > 3 else None,
+                    "created_at": row[4] if len(row) > 4 else None,
+                    "is_active": bool(row[5]) if len(row) > 5 else True,
+                    "granted_at": row[6] if len(row) > 6 else None,
+                    "granted_by": row[7] if len(row) > 7 else None
+                })
+            return project_groups
+    
+    return handle_db_operation(
+        _get,
+        error_context=f"get_project_groups_for_user_group(user_group_id={user_group_id})"
+    )
+
+
+def check_user_group_project_group_access(user_group_id: str, project_group_id: str) -> bool:
+    """
+    Check if a user group has access to a project group.
+    
+    Args:
+        user_group_id: User group ID to check
+        project_group_id: Project group ID to check
+        
+    Returns:
+        True if user group has access, False otherwise
+        
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _check():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_check_user_group_project_group_access', [user_group_id, project_group_id])
+            result = cur.fetchone()
+            return bool(result[0]) if result else False
+    
+    return handle_db_operation(
+        _check,
+        error_context=f"check_user_group_project_group_access(user_group_id={user_group_id}, project_group_id={project_group_id})"
     )

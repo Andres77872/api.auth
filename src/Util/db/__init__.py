@@ -103,14 +103,17 @@ from src.Util.db.db_user_groups import (
     get_user_group_membership,
     get_user_groups_for_user,
     get_users_in_group,
-    grant_group_project_access,
-    revoke_group_project_access,
-    get_group_project_access,
+    # Project access via Groups-of-Groups architecture
     get_projects_for_user_group,
     get_user_groups_for_project,
     get_user_accessible_projects,
     get_user_groups_in_project,
-    get_user_groups_in_project_by_hash
+    get_user_groups_in_project_by_hash,
+    # Groups-of-Groups Architecture: User Group → Project Group access
+    grant_user_group_project_group_access,
+    revoke_user_group_project_group_access,
+    get_project_groups_for_user_group,
+    check_user_group_project_group_access
 )
 # Import user management functions
 from src.Util.db.db_users import (
@@ -463,12 +466,15 @@ __all__ = [
     'get_user_group_membership',
     'get_user_groups_for_user',
     'get_users_in_group',
-    'grant_group_project_access',
-    'revoke_group_project_access',
-    'get_group_project_access',
+    # Project access via Groups-of-Groups architecture
     'get_projects_for_user_group',
     'get_user_groups_for_project',
     'get_user_accessible_projects',
+    # Groups-of-Groups Architecture: User Group → Project Group access
+    'grant_user_group_project_group_access',
+    'revoke_user_group_project_group_access',
+    'get_project_groups_for_user_group',
+    'check_user_group_project_group_access',
 
     # Project group management
     'create_project_permission_group',

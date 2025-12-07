@@ -178,6 +178,62 @@ def list_permission_groups(category: Optional[str] = None, limit: int = 50, offs
     )
 
 
+def update_permission_group(group_id: str, group_display_name: Optional[str] = None,
+                           group_description: Optional[str] = None, group_category: Optional[str] = None):
+    """Update permission group details"""
+    def _update():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Build dynamic update query
+            updates = []
+            params = []
+            
+            if group_display_name is not None:
+                updates.append("group_display_name = %s")
+                params.append(group_display_name)
+            if group_description is not None:
+                updates.append("group_description = %s")
+                params.append(group_description)
+            if group_category is not None:
+                updates.append("group_category = %s")
+                params.append(group_category)
+            
+            if not updates:
+                return True  # Nothing to update
+            
+            updates.append("updated_at = NOW()")
+            params.append(group_id)
+            
+            query = f"UPDATE global_permission_groups SET {', '.join(updates)} WHERE id = %s AND is_active = 1"
+            cur.execute(query, params)
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _update,
+        error_context=f"update_permission_group(group_id='{group_id}')"
+    )
+
+
+def delete_permission_group(group_id: str) -> bool:
+    """Soft delete a permission group"""
+    def _delete():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Soft delete - set is_active = 0
+            cur.execute(
+                "UPDATE global_permission_groups SET is_active = 0, updated_at = NOW() WHERE id = %s",
+                (group_id,)
+            )
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _delete,
+        error_context=f"delete_permission_group(group_id='{group_id}')"
+    )
+
+
 # =================== PERMISSION MANAGEMENT ===================
 
 def create_permission(permission_name: str, permission_display_name: str, permission_description: Optional[str] = None,
@@ -230,6 +286,62 @@ def list_permissions(category: Optional[str] = None, limit: int = 50, offset: in
     return handle_db_operation(
         _list,
         error_context=f"list_permissions(category='{category}')"
+    )
+
+
+def update_permission(permission_id: str, permission_display_name: Optional[str] = None,
+                     permission_description: Optional[str] = None, permission_category: Optional[str] = None):
+    """Update permission details"""
+    def _update():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Build dynamic update query
+            updates = []
+            params = []
+            
+            if permission_display_name is not None:
+                updates.append("permission_display_name = %s")
+                params.append(permission_display_name)
+            if permission_description is not None:
+                updates.append("permission_description = %s")
+                params.append(permission_description)
+            if permission_category is not None:
+                updates.append("permission_category = %s")
+                params.append(permission_category)
+            
+            if not updates:
+                return True  # Nothing to update
+            
+            updates.append("updated_at = NOW()")
+            params.append(permission_id)
+            
+            query = f"UPDATE global_permissions SET {', '.join(updates)} WHERE id = %s AND is_active = 1"
+            cur.execute(query, params)
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _update,
+        error_context=f"update_permission(permission_id='{permission_id}')"
+    )
+
+
+def delete_permission(permission_id: str) -> bool:
+    """Soft delete a permission"""
+    def _delete():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Soft delete - set is_active = 0
+            cur.execute(
+                "UPDATE global_permissions SET is_active = 0, updated_at = NOW() WHERE id = %s",
+                (permission_id,)
+            )
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _delete,
+        error_context=f"delete_permission(permission_id='{permission_id}')"
     )
 
 
@@ -300,6 +412,62 @@ def get_permission_group_permissions(permission_group_id: str):
     return handle_db_operation(
         _get,
         error_context=f"get_permission_group_permissions(group_id='{permission_group_id}')"
+    )
+
+
+def remove_permission_from_group(permission_group_id: str, permission_id: str) -> bool:
+    """Remove a permission from a permission group"""
+    def _remove():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Soft delete - set is_active = 0 instead of hard delete
+            cur.execute(
+                "UPDATE global_permission_group_permissions SET is_active = 0, removed_at = NOW() WHERE permission_group_id = %s AND permission_id = %s AND is_active = 1",
+                (permission_group_id, permission_id)
+            )
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _remove,
+        error_context=f"remove_permission_from_group(group_id='{permission_group_id}', permission_id='{permission_id}')"
+    )
+
+
+def remove_permission_group_from_role(role_id: str, permission_group_id: str) -> bool:
+    """Remove a permission group from a role"""
+    def _remove():
+        with get_connection() as con:
+            cur = con.cursor()
+            # Soft delete - set is_active = 0 instead of hard delete
+            cur.execute(
+                "UPDATE role_permission_groups SET is_active = 0, removed_at = NOW() WHERE role_id = %s AND permission_group_id = %s AND is_active = 1",
+                (role_id, permission_group_id)
+            )
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _remove,
+        error_context=f"remove_permission_group_from_role(role_id='{role_id}', permission_group_id='{permission_group_id}')"
+    )
+
+
+def remove_role_from_user(user_id: str) -> bool:
+    """Remove role from a user (unassign their role)"""
+    def _remove():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.execute(
+                "UPDATE users SET role_id = NULL WHERE id = %s",
+                (user_id,)
+            )
+            con.commit()
+            return cur.rowcount > 0
+    
+    return handle_db_operation(
+        _remove,
+        error_context=f"remove_role_from_user(user_id='{user_id}')"
     )
 
 
@@ -407,3 +575,23 @@ def get_project_cataloged_roles(project_id: str):
         error_context=f"get_project_cataloged_roles(project_id='{project_id}')"
     )
     return result if result else []
+
+
+def remove_role_from_project_catalog(role_id: str, project_id: str, removed_by: Optional[str] = None) -> bool:
+    """Remove role from project catalog using stored procedure (METADATA ONLY - NOT used for permission checks)"""
+    def _remove():
+        with get_connection() as con:
+            cur = con.cursor(pymysql.cursors.DictCursor)
+            
+            cur.callproc('sp_global_remove_role_from_project_catalog', (
+                role_id, project_id, removed_by
+            ))
+            
+            result = cur.fetchone()
+            con.commit()
+            return result and result.get('rows_affected', 0) > 0
+    
+    return handle_db_operation(
+        _remove,
+        error_context=f"remove_role_from_project_catalog(role_id='{role_id}', project_id='{project_id}')"
+    )

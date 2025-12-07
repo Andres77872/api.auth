@@ -296,6 +296,47 @@ async def get_role_permission_groups(role_hash: str, session_data=Depends(requir
     }
 
 
+@router.delete("/roles/{role_hash}/permission-groups/{group_hash}")
+async def remove_permission_group_from_role(
+    role_hash: str,
+    group_hash: str,
+    session_data=Depends(require_admin)
+):
+    """Remove a permission group from a role"""
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    success = global_roles.remove_permission_group_from_role(
+        role_id=role['id'],
+        permission_group_id=group['id']
+    )
+    
+    if not success:
+        raise NotFoundError(
+            message="Permission group is not assigned to this role",
+            error_code=ErrorCode.NOT_FOUND,
+            details={"role_hash": role_hash, "group_hash": group_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission group '{group['group_name']}' removed from role '{role['role_name']}'"
+    }
+
+
 # =============================================================================
 # PERMISSION GROUP MANAGEMENT
 # =============================================================================
@@ -377,6 +418,70 @@ async def get_permission_group(group_hash: str, session_data=Depends(require_val
     }
 
 
+@router.put("/permission-groups/{group_hash}")
+async def update_permission_group(
+    group_hash: str,
+    group_display_name: Optional[str] = Form(None, description="Display name"),
+    group_description: Optional[str] = Form(None, description="Description"),
+    group_category: Optional[str] = Form(None, description="Category: general, admin, api, data"),
+    session_data=Depends(require_admin)
+):
+    """Update permission group information"""
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    success = global_roles.update_permission_group(
+        group_id=group['id'],
+        group_display_name=group_display_name,
+        group_description=group_description,
+        group_category=group_category
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to update permission group",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "update_permission_group", "group_hash": group_hash}
+        )
+    
+    updated_group = global_roles.get_permission_group_by_hash(group_hash)
+    return {
+        "success": True,
+        "message": "Permission group updated successfully",
+        "permission_group": updated_group
+    }
+
+
+@router.delete("/permission-groups/{group_hash}")
+async def delete_permission_group(group_hash: str, session_data=Depends(require_admin)):
+    """Soft delete a permission group"""
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    success = global_roles.delete_permission_group(group['id'])
+    if not success:
+        raise InternalError(
+            message="Failed to delete permission group",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "delete_permission_group", "group_hash": group_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission group '{group['group_name']}' deleted successfully"
+    }
+
+
 # =============================================================================
 # PERMISSION GROUP-PERMISSION MANAGEMENT
 # =============================================================================
@@ -447,6 +552,47 @@ async def get_permission_group_permissions(group_hash: str, session_data=Depends
         "success": True,
         "permission_group": {"group_hash": group_hash, "group_name": group['group_name']},
         "permissions": permissions
+    }
+
+
+@router.delete("/permission-groups/{group_hash}/permissions/{permission_hash}")
+async def remove_permission_from_group(
+    group_hash: str,
+    permission_hash: str,
+    session_data=Depends(require_admin)
+):
+    """Remove a permission from a permission group"""
+    group = global_roles.get_permission_group_by_hash(group_hash)
+    if not group:
+        raise NotFoundError(
+            message="Permission group not found",
+            error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
+            details={"group_hash": group_hash}
+        )
+    
+    permission = global_roles.get_permission_by_hash(permission_hash)
+    if not permission:
+        raise NotFoundError(
+            message="Permission not found",
+            error_code=ErrorCode.PERMISSION_NOT_FOUND,
+            details={"permission_hash": permission_hash}
+        )
+    
+    success = global_roles.remove_permission_from_group(
+        permission_group_id=group['id'],
+        permission_id=permission['id']
+    )
+    
+    if not success:
+        raise NotFoundError(
+            message="Permission is not assigned to this group",
+            error_code=ErrorCode.NOT_FOUND,
+            details={"group_hash": group_hash, "permission_hash": permission_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission '{permission['permission_name']}' removed from group '{group['group_name']}'"
     }
 
 
@@ -523,6 +669,70 @@ async def get_permission(permission_hash: str, session_data=Depends(require_vali
         )
     
     return {"success": True, "permission": permission}
+
+
+@router.put("/permissions/{permission_hash}")
+async def update_permission(
+    permission_hash: str,
+    permission_display_name: Optional[str] = Form(None, description="Display name"),
+    permission_description: Optional[str] = Form(None, description="Description"),
+    permission_category: Optional[str] = Form(None, description="Category"),
+    session_data=Depends(require_admin)
+):
+    """Update permission information"""
+    permission = global_roles.get_permission_by_hash(permission_hash)
+    if not permission:
+        raise NotFoundError(
+            message="Permission not found",
+            error_code=ErrorCode.PERMISSION_NOT_FOUND,
+            details={"permission_hash": permission_hash}
+        )
+    
+    success = global_roles.update_permission(
+        permission_id=permission['id'],
+        permission_display_name=permission_display_name,
+        permission_description=permission_description,
+        permission_category=permission_category
+    )
+    
+    if not success:
+        raise InternalError(
+            message="Failed to update permission",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "update_permission", "permission_hash": permission_hash}
+        )
+    
+    updated_permission = global_roles.get_permission_by_hash(permission_hash)
+    return {
+        "success": True,
+        "message": "Permission updated successfully",
+        "permission": updated_permission
+    }
+
+
+@router.delete("/permissions/{permission_hash}")
+async def delete_permission(permission_hash: str, session_data=Depends(require_admin)):
+    """Soft delete a permission"""
+    permission = global_roles.get_permission_by_hash(permission_hash)
+    if not permission:
+        raise NotFoundError(
+            message="Permission not found",
+            error_code=ErrorCode.PERMISSION_NOT_FOUND,
+            details={"permission_hash": permission_hash}
+        )
+    
+    success = global_roles.delete_permission(permission['id'])
+    if not success:
+        raise InternalError(
+            message="Failed to delete permission",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "delete_permission", "permission_hash": permission_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Permission '{permission['permission_name']}' deleted successfully"
+    }
 
 
 # =============================================================================
@@ -719,6 +929,45 @@ async def get_user_role(user_hash: str, session_data=Depends(require_valid_sessi
     }
 
 
+@router.delete("/users/{user_hash}/role")
+async def remove_role_from_user(user_hash: str, session_data=Depends(require_admin)):
+    """Remove/unassign role from a user"""
+    # Check if user exists (including inactive)
+    user = get_user_by_hash(user_hash, include_inactive=True)
+    if not user:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": user_hash}
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise AuthorizationError(
+            message="Cannot modify role of inactive user",
+            error_code=ErrorCode.ACCOUNT_INACTIVE,
+            details={"user_hash": user_hash}
+        )
+    
+    # Get current role before removing
+    current_role = global_roles.get_user_role(user.id)
+    
+    success = global_roles.remove_role_from_user(user.id)
+    if not success:
+        raise InternalError(
+            message="Failed to remove role from user",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            details={"operation": "remove_role_from_user", "user_hash": user_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Role removed from user '{user.username}'",
+        "user": {"user_hash": user_hash, "username": user.username},
+        "previous_role": current_role
+    }
+
+
 # =============================================================================
 # CATALOG ENDPOINTS (METADATA ONLY - NOT FOR AUTHORIZATION)
 # =============================================================================
@@ -731,7 +980,10 @@ async def add_role_to_project_catalog(
     notes: Optional[str] = Form(None, description="Additional notes"),
     session_data=Depends(require_admin)
 ):
-    """Add role to project catalog (METADATA ONLY - for UI suggestions)"""
+    """
+    Add role to project catalog (METADATA ONLY - for UI suggestions).
+    This is for organizational purposes, NOT used for authorization.
+    """
     project = get_project_by_hash(project_hash)
     if not project:
         raise NotFoundError(
@@ -765,22 +1017,35 @@ async def add_role_to_project_catalog(
     )
     
     if not success:
-        raise InternalError(
-            message="Failed to add to catalog",
-            error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "add_role_to_catalog"}
+        raise ConflictError(
+            message="Role is already in the project catalog",
+            error_code=ErrorCode.ALREADY_EXISTS,
+            details={"role_hash": role_hash, "project_hash": project_hash}
         )
     
     return {
         "success": True,
-        "message": f"Role '{role['role_name']}' added to project catalog",
-        "note": "This is METADATA ONLY - does not affect permissions"
+        "message": "Role added to project catalog successfully",
+        "note": "This is METADATA ONLY - not used for authorization",
+        "project": {
+            "hash": project.project_hash,
+            "name": project.project_name
+        },
+        "role": {
+            "role_hash": role['role_hash'],
+            "role_name": role['role_name'],
+            "role_display_name": role['role_display_name']
+        },
+        "catalog_purpose": catalog_purpose
     }
 
 
 @router.get("/projects/{project_hash}/catalog/roles")
 async def get_project_cataloged_roles(project_hash: str, session_data=Depends(require_valid_session)):
-    """Get roles cataloged for a project (METADATA - for UI suggestions)"""
+    """
+    Get roles cataloged for a project (METADATA - for UI suggestions).
+    This does NOT restrict which roles can be used.
+    """
     project = get_project_by_hash(project_hash)
     if not project:
         raise NotFoundError(
@@ -793,7 +1058,72 @@ async def get_project_cataloged_roles(project_hash: str, session_data=Depends(re
     
     return {
         "success": True,
-        "project": {"project_hash": project_hash, "project_name": project.project_name},
+        "project": {
+            "hash": project.project_hash,
+            "name": project.project_name
+        },
         "cataloged_roles": cataloged_roles,
-        "note": "These are suggestions only - any role can be used with this project"
+        "count": len(cataloged_roles),
+        "note": "This is METADATA ONLY - any role can be assigned to users"
+    }
+
+
+@router.delete("/projects/{project_hash}/catalog/roles/{role_hash}")
+async def remove_role_from_project_catalog(
+    project_hash: str,
+    role_hash: str,
+    session_data=Depends(require_admin)
+):
+    """
+    Remove role from project catalog (METADATA ONLY).
+    This removes the role suggestion, NOT any actual role assignments.
+    """
+    project = get_project_by_hash(project_hash)
+    if not project:
+        raise NotFoundError(
+            message="Project not found",
+            error_code=ErrorCode.PROJECT_NOT_FOUND,
+            details={"project_hash": project_hash}
+        )
+    
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+    
+    user_data = get_user_by_hash(session_data.user_hash)
+    if not user_data:
+        raise NotFoundError(
+            message="User not found",
+            error_code=ErrorCode.USER_NOT_FOUND,
+            details={"user_hash": session_data.user_hash}
+        )
+    
+    success = global_roles.remove_role_from_project_catalog(
+        role_id=role['id'],
+        project_id=project.id,
+        removed_by=user_data.id
+    )
+    
+    if not success:
+        raise NotFoundError(
+            message="Role is not in the project catalog",
+            error_code=ErrorCode.NOT_FOUND,
+            details={"role_hash": role_hash, "project_hash": project_hash}
+        )
+    
+    return {
+        "success": True,
+        "message": "Role removed from project catalog successfully",
+        "project": {
+            "hash": project.project_hash,
+            "name": project.project_name
+        },
+        "role": {
+            "role_hash": role['role_hash'],
+            "role_name": role['role_name']
+        }
     }

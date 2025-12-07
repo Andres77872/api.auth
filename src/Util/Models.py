@@ -249,11 +249,14 @@ class UserGroupInfo(BaseModelConfig):
 
 
 class ProjectGroupInfo(BaseModelConfig):
-    """Project group information for responses"""
+    """Project group information for responses.
+    
+    Project groups are containers that group projects together.
+    Access flow: USER → USER_GROUP → PROJECT_GROUP → PROJECT
+    """
     group_hash: str
     group_name: str
     description: Optional[str] = None
-    permissions: List[str] = Field(default_factory=list)
     project_count: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -288,6 +291,7 @@ class LoginResponse(BaseResponse):
     user: Optional[UserInfo] = None
     project: Optional[ProjectInfo] = None
     accessible_projects: List[ProjectInfo] = Field(default_factory=list)
+    user_groups: List[UserGroupInfo] = Field(default_factory=list, description="User groups the user belongs to")
     expires_at: Optional[datetime] = None
     user_id: Optional[str] = None  # Internal field for logging, not exposed in API docs
 
@@ -304,6 +308,7 @@ class ValidateSessionResponse(BaseResponse):
     user: Optional[UserInfo] = None
     project: Optional[ProjectInfo] = None
     session: Optional[Dict[str, Any]] = None
+    user_groups: List[str] = Field(default_factory=list, description="User group names from session")
 
 
 class LogoutResponse(BaseResponse):
@@ -327,10 +332,18 @@ class CheckAvailabilityResponse(BaseResponse):
 # =================== USER MANAGEMENT RESPONSES ===================
 
 class UserProfileResponse(BaseResponse):
-    """User profile response"""
-    user: Optional[UserInfo] = None
-    accessible_projects: List[ProjectInfo] = Field(default_factory=list)
-    current_project: Optional[ProjectInfo] = None
+    """User profile response with comprehensive user information"""
+    user_hash: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    user_type: Optional[str] = None
+    user_type_info: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
+    is_active: Optional[bool] = None
+    groups: List[Dict[str, Any]] = Field(default_factory=list)
+    projects: List[ProjectInfo] = Field(default_factory=list)
 
 
 class UpdateProfileResponse(BaseResponse):
@@ -361,8 +374,35 @@ class GetUserDetailsResponse(BaseResponse):
 
 class UpdateUserStatusResponse(BaseResponse):
     """Update user status response"""
+    user_hash: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ChangeUserTypeResponse(BaseResponse):
+    """Change user type response"""
+    user_hash: Optional[str] = None
+    previous_type: Optional[str] = None
+    new_type: Optional[str] = None
+
+
+class DeleteUserResponse(BaseResponse):
+    """Delete user response"""
+    user_hash: Optional[str] = None
+    username: Optional[str] = None
+    deleted_at: Optional[str] = None
+
+
+class SearchUsersResponse(BaseResponse):
+    """Search users response"""
+    users: List[Dict[str, Any]] = Field(default_factory=list)
+    search_term: Optional[str] = None
+    total_results: Optional[int] = None
+
+
+class CreateConsumerUserResponse(BaseResponse):
+    """Create consumer user response"""
     user: Optional[UserInfo] = None
-    status_change: Optional[Dict[str, Any]] = None
+    assigned_groups: List[str] = Field(default_factory=list)
 
 
 # =================== PROJECT MANAGEMENT RESPONSES ===================
@@ -393,6 +433,7 @@ class ProjectDetailsResponse(BaseResponse):
     project: Optional[ProjectInfo] = None
     user_access: Optional[Dict[str, Any]] = None
     statistics: Optional[Dict[str, Any]] = None
+    project_groups: List[Dict[str, Any]] = Field(default_factory=list, description="Project groups this project belongs to")
 
 
 class UpdateProjectResponse(BaseResponse):
@@ -453,26 +494,49 @@ class UserTypeStatsResponse(BaseResponse):
     statistics: Optional[Dict[str, Any]] = None
 
 
+# =================== ADMIN PROJECT MANAGEMENT RESPONSES ===================
+
+class AdminProjectInfo(BaseModelConfig):
+    """Admin project assignment information"""
+    project_id: str
+    project_hash: str
+    project_name: str
+    project_description: Optional[str] = None
+    assigned_at: Optional[datetime] = None
+    assigned_by: Optional[str] = None
+
+
+class AdminProjectsResponse(BaseResponse):
+    """Get admin user's projects response"""
+    user_hash: str
+    assigned_projects: List[AdminProjectInfo] = Field(default_factory=list)
+
+
 class UpdateAdminProjectsResponse(BaseResponse):
-    """Update admin projects response"""
-    assignment: Optional[Dict[str, Any]] = None
+    """Update admin user's projects response"""
+    user_hash: str
+    assigned_projects: List[AdminProjectInfo] = Field(default_factory=list)
+    total_projects: int = 0
 
 
 class AddAdminToProjectResponse(BaseResponse):
     """Add admin to project response"""
-    assignment: Optional[Dict[str, Any]] = None
+    user_hash: str
+    project_id: str
+    project_hash: Optional[str] = None
+    project_name: Optional[str] = None
 
 
 class RemoveAdminFromProjectResponse(BaseResponse):
     """Remove admin from project response"""
-    removal: Optional[Dict[str, Any]] = None
+    user_hash: str
+    project_id: str
 
 
-class AdminProjectAssignmentsResponse(BaseResponse):
-    """Admin project assignments response"""
+class UpdateUserResponse(BaseResponse):
+    """Update user details response"""
     user: Optional[UserInfo] = None
-    project_assignments: List[Dict[str, Any]] = Field(default_factory=list)
-    summary: Optional[Dict[str, Any]] = None
+    updated_at: Optional[datetime] = None
 
 
 # =================== ADMIN GROUP MANAGEMENT RESPONSES ===================
@@ -493,6 +557,8 @@ class UserGroupDetailsResponse(BaseResponse):
     user_group: Optional[UserGroupInfo] = None
     members: List[UserInfo] = Field(default_factory=list)
     accessible_projects: List[ProjectInfo] = Field(default_factory=list)
+    accessible_project_groups: List[Dict[str, Any]] = Field(default_factory=list)  # Groups-of-Groups architecture
+    derived_projects: List[ProjectInfo] = Field(default_factory=list)  # Projects via project_groups
     statistics: Optional[Dict[str, Any]] = None
 
 
@@ -511,19 +577,31 @@ class AssignUserToGroupResponse(BaseResponse):
     assignment: Optional[Dict[str, Any]] = None
 
 
-class GrantGroupProjectAccessResponse(BaseResponse):
-    """Grant group project access response"""
-    access_details: Optional[Dict[str, Any]] = None
-
-
 class RemoveUserFromGroupResponse(BaseResponse):
     """Remove user from group response"""
     pass
 
 
-class RevokeGroupProjectAccessResponse(BaseResponse):
-    """Revoke group project access response"""
+# =================== PROJECT-GROUP ACCESS RESPONSES (Groups-of-Groups Architecture) ===================
+
+class GrantUserGroupProjectGroupAccessResponse(BaseResponse):
+    """Grant user group access to project group response (groups-of-groups architecture)"""
+    access_details: Optional[Dict[str, Any]] = None
+    user_group: Optional[Dict[str, Any]] = None
+    project_group: Optional[Dict[str, Any]] = None
+
+
+class RevokeUserGroupProjectGroupAccessResponse(BaseResponse):
+    """Revoke user group access to project group response"""
     pass
+
+
+class ListProjectGroupsForUserGroupResponse(BaseResponse):
+    """List project groups that a user group has access to"""
+    user_group: Optional[UserGroupInfo] = None
+    project_groups: List[Dict[str, Any]] = Field(default_factory=list)
+    total_project_groups: int = 0
+    total_derived_projects: int = 0
 
 
 class ListProjectGroupsResponse(BaseResponse):
@@ -882,6 +960,11 @@ class GroupMembersPaginatedResponse(BaseResponse):
     generated_at: Optional[str] = None
 
 
+class BulkAddUsersToGroupRequest(BaseModelConfig):
+    """Request model for bulk adding users to a group"""
+    user_hashes: List[str] = Field(..., min_length=1, max_length=100, description="List of user hashes to add to the group")
+
+
 class BulkAddUsersToGroupResponse(BaseResponse):
     """Response model for bulk adding users to a group"""
     user_group: Optional[Dict[str, Any]] = None
@@ -890,20 +973,6 @@ class BulkAddUsersToGroupResponse(BaseResponse):
     errors: List[str] = Field(default_factory=list)
     performed_by: Optional[str] = None
     performed_at: Optional[str] = None
-
-
-class ChangeUserTypeResponse(BaseResponse):
-    """Response model for user type change operation"""
-    user_hash: str
-    username: str
-    email: Optional[str] = None
-    user_type: str
-    user_type_info: Optional[Dict[str, Any]] = None
-    affected_groups: List[Dict[str, Any]] = Field(default_factory=list)
-    affected_projects: List[Dict[str, Any]] = Field(default_factory=list)
-    previous_type: str
-    changed_by: str
-    changed_at: str
 
 
 class UserGroupsForUserResponse(BaseResponse):

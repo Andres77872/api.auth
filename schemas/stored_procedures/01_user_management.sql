@@ -1,12 +1,12 @@
 -- ===================================================================================
 -- USER MANAGEMENT STORED PROCEDURES
+-- GROUPS OF GROUPS Architecture
 -- ===================================================================================
 -- This file contains all stored procedures related to user management:
 -- - User authentication
 -- - User CRUD operations
 -- - User type management
 -- - User status management
--- - Admin project access
 -- ===================================================================================
 
 USE magic_auth;
@@ -30,6 +30,12 @@ BEGIN
     FROM users
     WHERE is_active = 1 AND (username = p_username_email OR email = p_username_email)
     LIMIT 1;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_update_last_login$$
+CREATE PROCEDURE sp_update_last_login(IN p_user_id VARCHAR(64))
+BEGIN
+    UPDATE users SET last_login = NOW() WHERE id = p_user_id;
 END$$
 
 -- ===================================================================================
@@ -74,8 +80,12 @@ END$$
 
 DROP PROCEDURE IF EXISTS sp_create_consumer_user$$
 CREATE PROCEDURE sp_create_consumer_user(
-    IN p_user_id VARCHAR(64), IN p_user_hash VARCHAR(255), IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255), IN p_password_hash VARCHAR(255), IN p_created_by VARCHAR(64)
+    IN p_user_id VARCHAR(64),
+    IN p_user_hash VARCHAR(255),
+    IN p_username VARCHAR(100),
+    IN p_email VARCHAR(255),
+    IN p_password_hash VARCHAR(255),
+    IN p_created_by VARCHAR(64)
 )
 BEGIN
     INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
@@ -84,8 +94,12 @@ END$$
 
 DROP PROCEDURE IF EXISTS sp_create_admin_user$$
 CREATE PROCEDURE sp_create_admin_user(
-    IN p_user_id VARCHAR(64), IN p_user_hash VARCHAR(255), IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255), IN p_password_hash VARCHAR(255), IN p_created_by VARCHAR(64)
+    IN p_user_id VARCHAR(64),
+    IN p_user_hash VARCHAR(255),
+    IN p_username VARCHAR(100),
+    IN p_email VARCHAR(255),
+    IN p_password_hash VARCHAR(255),
+    IN p_created_by VARCHAR(64)
 )
 BEGIN
     INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
@@ -94,8 +108,12 @@ END$$
 
 DROP PROCEDURE IF EXISTS sp_create_root_user$$
 CREATE PROCEDURE sp_create_root_user(
-    IN p_user_id VARCHAR(64), IN p_user_hash VARCHAR(255), IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255), IN p_password_hash VARCHAR(255), IN p_created_by VARCHAR(64)
+    IN p_user_id VARCHAR(64),
+    IN p_user_hash VARCHAR(255),
+    IN p_username VARCHAR(100),
+    IN p_email VARCHAR(255),
+    IN p_password_hash VARCHAR(255),
+    IN p_created_by VARCHAR(64)
 )
 BEGIN
     INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
@@ -108,8 +126,11 @@ END$$
 
 DROP PROCEDURE IF EXISTS sp_update_user$$
 CREATE PROCEDURE sp_update_user(
-    IN p_user_id VARCHAR(64), IN p_username VARCHAR(100), IN p_email VARCHAR(255),
-    IN p_password_hash VARCHAR(255), IN p_user_type VARCHAR(20)
+    IN p_user_id VARCHAR(64),
+    IN p_username VARCHAR(100),
+    IN p_email VARCHAR(255),
+    IN p_password_hash VARCHAR(255),
+    IN p_user_type VARCHAR(20)
 )
 BEGIN
     UPDATE users
@@ -145,6 +166,7 @@ DROP PROCEDURE IF EXISTS sp_delete_user$$
 CREATE PROCEDURE sp_delete_user(IN p_user_id VARCHAR(64))
 BEGIN
     UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = p_user_id AND is_active = 1;
+    UPDATE user_group_members SET is_active = 0, removed_at = NOW() WHERE user_id = p_user_id AND is_active = 1;
     SELECT ROW_COUNT() as rows_affected;
 END$$
 
@@ -154,9 +176,15 @@ END$$
 
 DROP PROCEDURE IF EXISTS sp_list_users$$
 CREATE PROCEDURE sp_list_users(
-    IN p_limit INT, IN p_offset INT, IN p_sort_by VARCHAR(50), IN p_sort_order VARCHAR(4),
-    IN p_search VARCHAR(255), IN p_user_type_filter VARCHAR(20),
-    IN p_group_filter VARCHAR(255), IN p_project_filter VARCHAR(255), IN p_include_inactive BOOLEAN
+    IN p_limit INT,
+    IN p_offset INT,
+    IN p_sort_by VARCHAR(50),
+    IN p_sort_order VARCHAR(4),
+    IN p_search VARCHAR(255),
+    IN p_user_type_filter VARCHAR(20),
+    IN p_group_filter VARCHAR(255),
+    IN p_project_filter VARCHAR(255),
+    IN p_include_inactive BOOLEAN
 )
 BEGIN
     SET @sort_col := CASE LOWER(p_sort_by)
@@ -166,35 +194,47 @@ BEGIN
         ELSE 'u.username' END;
     SET @dir := IF(LOWER(p_sort_order) = 'desc', 'DESC', 'ASC');
     
-    SET @sql := CONCAT('SELECT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.created_at, u.last_login, u.is_active FROM users u ');
+    SET @sql := CONCAT('SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.created_at, u.last_login, u.is_active FROM users u ');
     
     IF p_group_filter IS NOT NULL OR p_project_filter IS NOT NULL THEN
-        SET @sql := CONCAT(@sql, 'LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1 ',
-                                 'LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1 ');
+        SET @sql := CONCAT(@sql, 
+            'LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1 ',
+            'LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1 ');
     END IF;
     
     IF p_project_filter IS NOT NULL THEN
-        SET @sql := CONCAT(@sql, 'LEFT JOIN user_group_projects ugp ON ug.id = ugp.user_group_id AND ugp.is_active = 1 ',
-                                 'LEFT JOIN projects p ON ugp.project_id = p.id AND p.is_active = 1 ');
+        SET @sql := CONCAT(@sql,
+            'LEFT JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1 ',
+            'LEFT JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1 ',
+            'LEFT JOIN projects p ON pgm.project_id = p.id AND p.is_active = 1 ');
     END IF;
     
     SET @sql := CONCAT(@sql, 'WHERE 1=1 ');
-    IF p_include_inactive = FALSE THEN SET @sql := CONCAT(@sql, 'AND u.is_active = 1 '); END IF;
+    
+    IF p_include_inactive = FALSE THEN
+        SET @sql := CONCAT(@sql, 'AND u.is_active = 1 ');
+    END IF;
+    
     IF p_search IS NOT NULL THEN 
         SET @sql := CONCAT(@sql, 'AND (u.username LIKE ', QUOTE(CONCAT('%', p_search, '%')), 
                                  ' OR u.email LIKE ', QUOTE(CONCAT('%', p_search, '%')), ') '); 
     END IF;
-    IF p_user_type_filter IS NOT NULL THEN SET @sql := CONCAT(@sql, 'AND u.user_type = ', QUOTE(p_user_type_filter), ' '); END IF;
+    
+    IF p_user_type_filter IS NOT NULL THEN
+        SET @sql := CONCAT(@sql, 'AND u.user_type = ', QUOTE(p_user_type_filter), ' ');
+    END IF;
+    
     IF p_group_filter IS NOT NULL THEN 
         SET @sql := CONCAT(@sql, 'AND (ug.group_name = ', QUOTE(p_group_filter), 
                                  ' OR ug.group_hash = ', QUOTE(p_group_filter), ') '); 
     END IF;
+    
     IF p_project_filter IS NOT NULL THEN 
         SET @sql := CONCAT(@sql, 'AND (p.project_name = ', QUOTE(p_project_filter), 
                                  ' OR p.project_hash = ', QUOTE(p_project_filter), ') '); 
     END IF;
     
-    SET @sql := CONCAT(@sql, 'GROUP BY u.id ORDER BY ', @sort_col, ' ', @dir, ' LIMIT ', p_limit, ' OFFSET ', p_offset);
+    SET @sql := CONCAT(@sql, 'ORDER BY ', @sort_col, ' ', @dir, ' LIMIT ', p_limit, ' OFFSET ', p_offset);
     PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 END$$
 
@@ -221,39 +261,29 @@ BEGIN
 
     SET @sql := CONCAT(
         'SELECT ',
-        'u.id, ',
-        'u.user_hash, ',
-        'u.username, ',
-        'u.email, ',
-        'u.user_type, ',
-        'u.created_at, ',
-        'u.last_login, ',
-        'u.is_active, ',
+        'u.id, u.user_hash, u.username, u.email, u.user_type, u.created_at, u.last_login, u.is_active, ',
         'COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT(',
             '''group_hash'', ug.group_hash, ',
             '''group_name'', ug.group_name, ',
             '''group_description'', ug.group_description, ',
-            '''assigned_at'', ugm.assigned_at, ',
-            '''assigned_by'', ugm.assigned_by',
+            '''assigned_at'', ugm.assigned_at',
         ')) ',
         'FROM user_group_members ugm ',
         'JOIN user_groups ug ON ugm.user_group_id = ug.id ',
-        'WHERE ugm.user_id = u.id ',
-          'AND ugm.is_active = 1 ',
-          'AND ug.is_active = 1',
+        'WHERE ugm.user_id = u.id AND ugm.is_active = 1 AND ug.is_active = 1',
         '), JSON_ARRAY()) AS groups_json, ',
         'COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT(',
-            '''project_hash'', p.project_hash, ',
-            '''project_name'', p.project_name, ',
-            '''project_description'', p.project_description',
-        ')) ',
+            '''project_hash'', sub.project_hash, ',
+            '''project_name'', sub.project_name, ',
+            '''project_group'', sub.group_name',
+        ')) FROM (SELECT DISTINCT p.project_hash, p.project_name, pg.group_name ',
         'FROM user_group_members ugm2 ',
-        'JOIN user_group_projects ugp ON ugm2.user_group_id = ugp.user_group_id ',
-        'JOIN projects p ON ugp.project_id = p.id ',
+        'JOIN user_group_project_groups ugpg ON ugm2.user_group_id = ugpg.user_group_id ',
+        'JOIN project_groups pg ON ugpg.project_group_id = pg.id ',
+        'JOIN project_group_members pgm ON pg.id = pgm.project_group_id ',
+        'JOIN projects p ON pgm.project_id = p.id ',
         'WHERE ugm2.user_id = u.id ',
-          'AND ugm2.is_active = 1 ',
-          'AND ugp.is_active = 1 ',
-          'AND p.is_active = 1',
+          'AND ugm2.is_active = 1 AND ugpg.is_active = 1 AND pgm.is_active = 1 AND p.is_active = 1) sub',
         '), JSON_ARRAY()) AS projects_json ',
         'FROM users u WHERE 1=1 '
     );
@@ -263,11 +293,8 @@ BEGIN
     END IF;
 
     IF p_search IS NOT NULL THEN
-        SET @sql := CONCAT(
-            @sql,
-            'AND (u.username LIKE ', QUOTE(CONCAT('%', p_search, '%')),
-            ' OR u.email LIKE ', QUOTE(CONCAT('%', p_search, '%')), ') '
-        );
+        SET @sql := CONCAT(@sql, 'AND (u.username LIKE ', QUOTE(CONCAT('%', p_search, '%')),
+                          ' OR u.email LIKE ', QUOTE(CONCAT('%', p_search, '%')), ') ');
     END IF;
 
     IF p_user_type_filter IS NOT NULL THEN
@@ -275,46 +302,29 @@ BEGIN
     END IF;
 
     IF p_group_filter IS NOT NULL THEN
-        SET @sql := CONCAT(
-            @sql,
+        SET @sql := CONCAT(@sql,
             'AND EXISTS (',
-                'SELECT 1 ',
-                'FROM user_group_members ugm_filter ',
-                'JOIN user_groups ug_filter ON ugm_filter.user_group_id = ug_filter.id ',
-                'WHERE ugm_filter.user_id = u.id ',
-                  'AND ugm_filter.is_active = 1 ',
-                  'AND ug_filter.is_active = 1 ',
-                  'AND (ug_filter.group_name = ', QUOTE(p_group_filter),
-                     ' OR ug_filter.group_hash = ', QUOTE(p_group_filter), ')',
-            ') '
-        );
+                'SELECT 1 FROM user_group_members ugm_f ',
+                'JOIN user_groups ug_f ON ugm_f.user_group_id = ug_f.id ',
+                'WHERE ugm_f.user_id = u.id AND ugm_f.is_active = 1 AND ug_f.is_active = 1 ',
+                'AND (ug_f.group_name = ', QUOTE(p_group_filter), ' OR ug_f.group_hash = ', QUOTE(p_group_filter), ')',
+            ') ');
     END IF;
 
     IF p_project_filter IS NOT NULL THEN
-        SET @sql := CONCAT(
-            @sql,
+        SET @sql := CONCAT(@sql,
             'AND EXISTS (',
-                'SELECT 1 ',
-                'FROM user_group_members ugm_pf ',
-                'JOIN user_group_projects ugp_pf ON ugm_pf.user_group_id = ugp_pf.user_group_id ',
-                'JOIN projects p_pf ON ugp_pf.project_id = p_pf.id ',
-                'WHERE ugm_pf.user_id = u.id ',
-                  'AND ugm_pf.is_active = 1 ',
-                  'AND ugp_pf.is_active = 1 ',
-                  'AND p_pf.is_active = 1 ',
-                  'AND (p_pf.project_name = ', QUOTE(p_project_filter),
-                     ' OR p_pf.project_hash = ', QUOTE(p_project_filter), ')',
-            ') '
-        );
+                'SELECT 1 FROM user_group_members ugm_p ',
+                'JOIN user_group_project_groups ugpg_p ON ugm_p.user_group_id = ugpg_p.user_group_id ',
+                'JOIN project_group_members pgm_p ON ugpg_p.project_group_id = pgm_p.project_group_id ',
+                'JOIN projects p_p ON pgm_p.project_id = p_p.id ',
+                'WHERE ugm_p.user_id = u.id AND ugm_p.is_active = 1 AND ugpg_p.is_active = 1 ',
+                'AND pgm_p.is_active = 1 AND p_p.is_active = 1 ',
+                'AND (p_p.project_name = ', QUOTE(p_project_filter), ' OR p_p.project_hash = ', QUOTE(p_project_filter), ')',
+            ') ');
     END IF;
 
-    SET @sql := CONCAT(
-        @sql,
-        'ORDER BY ', @sort_col, ' ', @dir,
-        ' LIMIT ', p_limit,
-        ' OFFSET ', p_offset
-    );
-
+    SET @sql := CONCAT(@sql, 'ORDER BY ', @sort_col, ' ', @dir, ' LIMIT ', p_limit, ' OFFSET ', p_offset);
     PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 END$$
 
@@ -328,8 +338,11 @@ BEGIN
             SELECT COUNT(*) as count FROM users WHERE user_type = p_user_type AND is_active = 1;
         END IF;
     ELSE
-        IF p_include_inactive THEN SELECT COUNT(*) as count FROM users;
-        ELSE SELECT COUNT(*) as count FROM users WHERE is_active = 1; END IF;
+        IF p_include_inactive THEN
+            SELECT COUNT(*) as count FROM users;
+        ELSE
+            SELECT COUNT(*) as count FROM users WHERE is_active = 1;
+        END IF;
     END IF;
 END$$
 
@@ -337,12 +350,17 @@ DROP PROCEDURE IF EXISTS sp_search_users$$
 CREATE PROCEDURE sp_search_users(IN p_search_term VARCHAR(255), IN p_user_type VARCHAR(20), IN p_limit INT)
 BEGIN
     IF p_user_type IS NOT NULL THEN
-        SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active FROM users
-        WHERE is_active = 1 AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
-          AND user_type = p_user_type ORDER BY username ASC LIMIT p_limit;
+        SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active
+        FROM users
+        WHERE is_active = 1
+          AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
+          AND user_type = p_user_type
+        ORDER BY username ASC LIMIT p_limit;
     ELSE
-        SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active FROM users
-        WHERE is_active = 1 AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
+        SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active
+        FROM users
+        WHERE is_active = 1
+          AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
         ORDER BY username ASC LIMIT p_limit;
     END IF;
 END$$
@@ -371,57 +389,10 @@ BEGIN
     WHERE created_at >= DATE_SUB(NOW(), INTERVAL p_days DAY) AND is_active = 1;
 END$$
 
--- ===================================================================================
--- ADMIN PROJECT ACCESS MANAGEMENT
--- ===================================================================================
-
-DROP PROCEDURE IF EXISTS sp_get_admin_assigned_projects$$
-CREATE PROCEDURE sp_get_admin_assigned_projects(IN p_user_id VARCHAR(64))
-BEGIN
-    SELECT DISTINCT p.id FROM projects p
-    INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-    INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-    INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-    WHERE ugm.user_id = p_user_id AND p.is_active = 1 AND ugp.is_active = 1
-      AND ug.is_active = 1 AND ugm.is_active = 1;
-END$$
-
-DROP PROCEDURE IF EXISTS sp_check_admin_multi_project_access$$
-CREATE PROCEDURE sp_check_admin_multi_project_access(IN p_user_id VARCHAR(64), IN p_project_id VARCHAR(64))
-BEGIN
-    SELECT COUNT(*) > 0 AS has_access FROM user_group_members ugm
-    INNER JOIN user_group_projects ugp ON ugm.user_group_id = ugp.user_group_id
-    WHERE ugm.user_id = p_user_id AND ugp.project_id = p_project_id
-      AND ugm.is_active = 1 AND ugp.is_active = 1;
-END$$
-
-DROP PROCEDURE IF EXISTS sp_get_admin_project_assignments_with_details$$
-CREATE PROCEDURE sp_get_admin_project_assignments_with_details(IN p_user_id VARCHAR(64))
-BEGIN
-    SELECT DISTINCT p.id as project_id,
-                    p.project_hash,
-                    p.project_name,
-                    p.project_description,
-                    ugp.granted_at as assigned_at,
-                    ugp.granted_by as assigned_by,
-                    ug.group_name as access_through_group
-    FROM projects p
-    INNER JOIN user_group_projects ugp ON p.id = ugp.project_id
-    INNER JOIN user_groups ug ON ugp.user_group_id = ug.id
-    INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
-    WHERE ugm.user_id = p_user_id
-      AND p.is_active = 1
-      AND ugp.is_active = 1
-      AND ug.is_active = 1
-      AND ugm.is_active = 1
-    ORDER BY p.project_name;
-END$$
-
 DELIMITER ;
 
 -- ===================================================================================
 -- USER MANAGEMENT PROCEDURES COMPLETE
 -- ===================================================================================
-SELECT 'User management stored procedures created successfully!' as status,
-       '25+ procedures for user operations' as details;
-
+SELECT 'User management stored procedures created!' as status,
+       'Groups of Groups architecture applied' as details;

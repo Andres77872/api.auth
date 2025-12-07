@@ -3,6 +3,18 @@ User Management Routes
 
 Handles user profile management, updates, and access information
 for the group-based multi-project authentication system.
+
+Endpoints:
+- GET /profile - Get current user's profile
+- PUT /profile - Update current user's profile
+- GET /access-summary - Get user's hierarchical access summary
+- GET /list - List all users with filters (admin only)
+- GET /search/query - Search users by username/email (admin only)
+- GET /{user_hash} - Get user details
+- PUT /{user_hash}/status - Update user active status
+- POST /{user_hash}/reset-password - Reset user password (admin only)
+- DELETE /{user_hash} - Delete user (soft delete, admin only)
+- PATCH /{user_hash}/type - Change user type (root only)
 """
 
 import logging
@@ -10,31 +22,31 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, HTTPException, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
     UserProfileResponse, UpdateProfileResponse, AccessSummaryResponse,
     ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
-    ChangeUserTypeResponse, UserInfo, ProjectInfo, PaginationInfo, UserGroup, UserGroupMember
+    ChangeUserTypeResponse, UserInfo, ProjectInfo, PaginationInfo, UpdateUserResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors, log_operation_details
 from src.Util.log_context_models import LogContext, OperationMetadata
-from src.Util.activity_logger import ActivityLogger, ActivityType
+from src.Util.activity_logger import ActivityType
 from src.Util.error_handler import (
-    AuthenticationError, AuthorizationError, ValidationError, NotFoundError,
-    ErrorCode, create_not_found_error, mask_uuid
+    AuthorizationError, ValidationError, NotFoundError, InternalError,
+    ErrorCode, mask_uuid
 )
-from src.Util.db_error_wrapper import handle_db_operation, validate_uuid_format
+from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.db import (
-    validate_session, get_user_by_hash, update_user,
+    get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
-    list_users_with_access, count_users, get_user_permissions_in_project,
+    list_users_with_access, count_users,
     is_root_user, get_user_groups_in_project_by_hash, get_user_effective_permissions,
-    get_user_group_membership, get_user_type_info, check_user_permission,
-    get_user_type, assign_user_to_user_group, remove_user_from_user_group,
-    get_project_by_hash, get_projects_for_user_group
+    get_user_group_membership, get_user_type_info,
+    get_user_type, get_project_by_hash, get_projects_for_user_group,
+    update_user_type, get_project_by_id
 )
 from src.Util.password_generator import create_password_reset_data
 
@@ -855,54 +867,47 @@ async def reset_user_password(
     }
 
 
-@router.patch("/{user_hash}/type", response_model=ChangeUserTypeResponse)
+@router.delete("/{user_hash}")
 @log_and_handle_errors(
-    operation_name="change_user_type",
+    operation_name="delete_user",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=True
 )
-async def change_user_type(
+async def delete_user_endpoint(
         user_hash: str,
-        user_type: str = Form(...),
-        project_hash: Optional[str] = Form(None),  # Required when changing to admin type
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
-) -> ChangeUserTypeResponse:
+) -> Dict[str, Any]:
     """
-    Change user type with support for hierarchical group-based permissions.
+    Soft delete a user account (deactivates user).
     
-    **ROOT access required**: Only ROOT users can change user types.
-    When changing to admin type, a project assignment is required.
+    **Admin access required**: Only root or admin users can delete users.
+    Root users can delete any user except themselves.
+    Admin users can only delete users in their assigned projects.
     
     Args:
-        user_hash: Hash of the user whose type to change
-        user_type: New user type (root, admin, consumer)
-        project_hash: Project hash to assign admin to (required when user_type=admin)
+        user_hash: Hash of the user to delete
         
     Returns:
-        Updated user information with related group and project access changes
+        Deletion confirmation with user details
     """
+    from src.Util.db import delete_user
+    
     # Get current user
     current_user = handle_db_operation(
         lambda: get_user_by_hash(log_context.user_hash),
         error_context="current user lookup",
         not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}"
     )
-        
-    # Only root users can change user types
-    if not is_root_user(current_user.id):
-        raise AuthorizationError(
-            message="ROOT permission required to change user types",
-            error_code=ErrorCode.ACCESS_DENIED
-        )
 
-    # Validate user type
-    valid_types = ['root', 'admin', 'consumer']
-    if user_type not in valid_types:
-        raise ValidationError(
-            message=f"Invalid user type. Must be one of: {', '.join(valid_types)}",
-            error_code=ErrorCode.INVALID_INPUT,
-            details={"valid_types": valid_types}
+    # Check admin permissions
+    is_root = is_root_user(current_user.id)
+    user_type = get_user_type(current_user.id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin permission required to delete users",
+            error_code=ErrorCode.ACCESS_DENIED
         )
 
     # Get target user
@@ -912,135 +917,421 @@ async def change_user_type(
         not_found_message=f"User not found: {mask_uuid(user_hash)}"
     )
 
-    # Prevent changing own type
+    # Prevent self-deletion
     if current_user.user_hash == target_user.user_hash:
         raise ValidationError(
-            message="Cannot change your own user type",
+            message="Cannot delete your own account",
             error_code=ErrorCode.INVALID_INPUT
         )
-        
-    # Validate project assignment for admin users
-    project = None
-    if user_type == 'admin':
-        if not project_hash:
-            raise ValidationError(
-                message="Project hash is required when setting user as admin",
-                error_code=ErrorCode.MISSING_REQUIRED_FIELD
-            )
-            
-        # Verify project exists
-        from src.Util.db import get_project_by_hash
-        project = handle_db_operation(
-            lambda: get_project_by_hash(project_hash),
-            error_context="project lookup",
-            not_found_message=f"Project not found: {mask_uuid(project_hash)}"
+
+    # Prevent deleting root users by non-root users
+    if target_user.user_type == 'root' and not is_root:
+        raise AuthorizationError(
+            message="Cannot delete root users",
+            error_code=ErrorCode.ACCESS_DENIED
         )
 
-    # Update user type with appropriate project assignment
-    previous_type = target_user.user_type
-    from src.Util.db import update_user_type
-    update_result = handle_db_operation(
-        lambda: update_user_type(target_user.id, user_type, project_id=project.id if project else None),
-        error_context="user type update"
+    # Admin users can only delete users in their assigned projects
+    if not is_root:
+        admin_projects = get_user_accessible_projects(current_user.id)
+        target_user_projects = get_user_accessible_projects(target_user.id)
+        
+        admin_project_hashes = [p.project_hash for p in admin_projects]
+        target_project_hashes = [p.project_hash for p in target_user_projects]
+        
+        if not any(ph in admin_project_hashes for ph in target_project_hashes):
+            raise AuthorizationError(
+                message="Access denied: User not in your projects",
+                error_code=ErrorCode.ACCESS_DENIED,
+                details={"target_user": mask_uuid(user_hash)}
+            )
+
+    # Perform soft delete
+    success = handle_db_operation(
+        lambda: delete_user(target_user.id, deleted_by=current_user.id),
+        error_context="user deletion"
     )
 
-    if not update_result:
+    if not success:
+        from src.Util.error_handler import InternalError
+        raise InternalError(
+            message="Failed to delete user",
+            error_code=ErrorCode.INTERNAL_ERROR
+        )
+
+    # Invalidate user sessions and cache
+    from src.Util.db import invalidate_user_sessions
+    from src.Util.cache_manager import cache_manager
+    
+    invalidate_user_sessions(target_user.id)
+    cache_manager.invalidate_user_cache(target_user.id)
+
+    # Log the activity
+    log_operation_details(
+        user_id=log_context.user_id,
+        operation=OperationMetadata(
+            operation_name="delete_user",
+            target_resource=user_hash,
+            target_resource_type="user",
+            additional_data={
+                "target_username": target_user.username,
+                "deleted_by": current_user.username
+            }
+        ),
+        log_context=log_context
+    )
+
+    return {
+        "success": True,
+        "message": f"User '{target_user.username}' has been deleted",
+        "user_hash": target_user.user_hash,
+        "username": target_user.username,
+        "deleted_at": datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/search/query")
+@log_and_handle_errors(
+    operation_name="search_users",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=False
+)
+async def search_users_endpoint(
+        q: str,
+        user_type_filter: Optional[str] = None,
+        limit: int = 50,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> Dict[str, Any]:
+    """
+    Search users by username or email.
+    
+    **Admin access required**: Only root or admin users can search users.
+    
+    Args:
+        q: Search term (searches username and email)
+        user_type_filter: Optional filter by user type (root, admin, consumer)
+        limit: Maximum results to return (default 50, max 100)
+        
+    Returns:
+        List of users matching the search criteria
+    """
+    from src.Util.db import search_users
+    
+    # Get current user
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(log_context.user_hash),
+        error_context="current user lookup",
+        not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}"
+    )
+
+    # Check admin permissions
+    is_root = is_root_user(current_user.id)
+    user_type = get_user_type(current_user.id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin permission required to search users",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
+
+    # Validate and cap limit
+    if limit > 100:
+        limit = 100
+    if limit < 1:
+        limit = 50
+
+    # Validate user type filter
+    if user_type_filter and user_type_filter not in ['root', 'admin', 'consumer']:
+        raise ValidationError(
+            message="Invalid user type filter. Must be one of: root, admin, consumer",
+            error_code=ErrorCode.INVALID_INPUT
+        )
+
+    # Perform search
+    users = handle_db_operation(
+        lambda: search_users(q, user_type=user_type_filter, limit=limit),
+        error_context="user search"
+    )
+
+    # Build response
+    users_list = []
+    for user in users:
+        user_info = {
+            "user_hash": user.user_hash,
+            "username": user.username,
+            "email": user.email,
+            "user_type": user.user_type,
+            "created_at": user.created_at,
+            "last_login": user.last_login,
+            "is_active": user.is_active
+        }
+        users_list.append(user_info)
+
+    return {
+        "success": True,
+        "users": users_list,
+        "search_term": q,
+        "total_results": len(users_list),
+        "filters": {
+            "user_type_filter": user_type_filter,
+            "limit": limit
+        }
+    }
+
+
+@router.patch("/{user_hash}/type", response_model=ChangeUserTypeResponse)
+@log_and_handle_errors(
+    operation_name="change_user_type",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
+async def change_user_type_endpoint(
+        user_hash: str,
+        user_type: str = Form(...),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> ChangeUserTypeResponse:
+    """
+    Change a user's type (promote/demote users).
+    
+    **Root users only**: Only root users can change user types.
+    This is a sensitive operation that changes user privileges.
+    
+    Args:
+        user_hash: Hash of the user to update
+        user_type: New user type (root, admin, consumer)
+        
+    Returns:
+        Updated user type information
+    """
+    # Get current user
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(log_context.user_hash),
+        error_context="current user lookup",
+        not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}"
+    )
+    
+    # Only root users can change user types
+    if not is_root_user(current_user.id):
+        raise AuthorizationError(
+            message="Root user access required to change user types",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_user_type": "root"}
+        )
+    
+    # Get target user
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash),
+        error_context="target user lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}"
+    )
+    
+    # Validate user type
+    if user_type not in ['root', 'admin', 'consumer']:
+        raise ValidationError(
+            message="Invalid user type. Must be 'root', 'admin', or 'consumer'",
+            error_code=ErrorCode.INVALID_ENUM_VALUE,
+            details={"field": "user_type", "allowed_values": ['root', 'admin', 'consumer']}
+        )
+    
+    # Store previous type for response
+    previous_type = target_user.user_type
+    
+    # Update user type
+    success = handle_db_operation(
+        lambda: update_user_type(
+            user_id=target_user.id,
+            new_user_type=user_type,
+            updated_by=current_user.id
+        ),
+        error_context="user type update"
+    )
+    
+    if not success:
         from src.Util.error_handler import InternalError
         raise InternalError(
             message="Failed to update user type",
             error_code=ErrorCode.INTERNAL_ERROR
         )
-        
-    # Get updated user information
-    updated_user = handle_db_operation(
-        lambda: get_user_by_hash(user_hash),
-        error_context="updated user retrieval"
-    )
-        
-    # Handle group membership changes based on user type change
-    affected_groups = []
-    affected_projects = []
     
-    # If changing from admin/consumer to root, remove all group memberships
-    if user_type == 'root' and previous_type in ['admin', 'consumer']:
-        # Root users don't belong to any groups - clear all memberships
-        from src.Util.db import remove_user_from_all_groups
-        removed_groups = remove_user_from_all_groups(target_user.id)
-        affected_groups = removed_groups
-    
-    # If changing to admin, assign to project admin group if it exists
-    elif user_type == 'admin' and project:
-        from src.Util.db import get_admin_group_for_project, add_user_to_group
-        admin_group = get_admin_group_for_project(project.id)
-        
-        if admin_group:
-            add_result = add_user_to_group(
-                user_id=target_user.id,
-                group_id=admin_group.id,
-                assigned_by_user_id=current_user.id
-            )
-            
-            if add_result:
-                affected_groups.append(admin_group)
-                affected_projects.append(project)
-
-    # Log the user type change activity
+    # Log the activity
     log_operation_details(
         user_id=log_context.user_id,
         operation=OperationMetadata(
             operation_name="change_user_type",
             target_resource=user_hash,
             target_resource_type="user",
-            changes={"user_type": {"from": previous_type, "to": user_type}},
+            changes={
+                "previous_type": previous_type,
+                "new_type": user_type
+            },
             additional_data={
                 "target_username": target_user.username,
-                "changed_by": current_user.username,
-                "project_hash": mask_uuid(project_hash) if project_hash else None
+                "changed_by": current_user.username
             }
         ),
         log_context=log_context
     )
-
-    # Get user type info with updated role assignments
-    user_type_info = get_user_type_info(target_user.id)
     
-    # Format affected groups for response
-    groups_info = []
-    if affected_groups:
-        for group in affected_groups:
-            groups_info.append({
-                "group_hash": group.group_hash,
-                "group_name": group.group_name,
-                "action": "added" if user_type == 'admin' else "removed"
-            })
-    
-    # Format affected projects for response
-    projects_info = []
-    if affected_projects:
-        for proj in affected_projects:
-            projects_info.append({
-                "project_hash": proj.project_hash,
-                "project_name": proj.project_name,
-                "action": "assigned" if user_type == 'admin' else "removed"
-            })
-    elif project:
-        projects_info.append({
-            "project_hash": project.project_hash,
-            "project_name": project.project_name,
-            "action": "assigned" if user_type == 'admin' else "removed"
-        })
-
     return ChangeUserTypeResponse(
         success=True,
-        message=f"User type changed to {user_type} successfully",
+        message=f"User type changed successfully",
+        user_hash=target_user.user_hash,
+        previous_type=previous_type,
+        new_type=user_type
+    )
+
+
+@router.put("/{user_hash}", response_model=UpdateUserResponse)
+@log_and_handle_errors(
+    operation_name="update_user_details",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
+async def update_user_details_endpoint(
+        user_hash: str,
+        username: Optional[str] = Form(None),
+        email: Optional[str] = Form(None),
+        user_type: Optional[str] = Form(None),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> UpdateUserResponse:
+    """
+    Update user details (admin/root operation).
+    
+    **Root/Admin access required**:
+    - Root users can update any user including user_type changes
+    - Admin users can update users in their projects (except user_type)
+    
+    Args:
+        user_hash: Hash of the user to update
+        username: New username (optional)
+        email: New email (optional)
+        user_type: New user type (optional, ROOT only)
+        
+    Returns:
+        Updated user information
+    """
+    # Get current user
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(log_context.user_hash),
+        error_context="current user lookup",
+        not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}"
+    )
+    
+    # Check permissions
+    is_root = is_root_user(current_user.id)
+    current_user_type = get_user_type(current_user.id)
+    
+    if not is_root and current_user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin or root access required",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
+    
+    # Get target user
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash),
+        error_context="target user lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}"
+    )
+    
+    # Only root users can change user types
+    if user_type and not is_root:
+        raise AuthorizationError(
+            message="Root user access required to change user types",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_user_type": "root"}
+        )
+    
+    # Validate user type if provided
+    if user_type and user_type not in ['root', 'admin', 'consumer']:
+        raise ValidationError(
+            message="Invalid user type. Must be 'root', 'admin', or 'consumer'",
+            error_code=ErrorCode.INVALID_ENUM_VALUE,
+            details={"field": "user_type", "allowed_values": ['root', 'admin', 'consumer']}
+        )
+    
+    # Admin users can only update users in their projects
+    if not is_root:
+        admin_projects = get_user_accessible_projects(current_user.id)
+        target_user_projects = get_user_accessible_projects(target_user.id)
+        
+        admin_project_hashes = [p.project_hash for p in admin_projects]
+        target_project_hashes = [p.project_hash for p in target_user_projects]
+        
+        if not any(ph in admin_project_hashes for ph in target_project_hashes):
+            raise AuthorizationError(
+                message="Access denied: User not in your projects",
+                error_code=ErrorCode.ACCESS_DENIED,
+                details={"target_user": mask_uuid(user_hash)}
+            )
+    
+    # Check if at least one field is provided
+    if not any([username, email, user_type]):
+        raise ValidationError(
+            message="At least one field must be provided to update",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={"required_fields": ["username", "email", "user_type"]}
+        )
+    
+    # Track changes
+    changes = {}
+    if username:
+        changes['username'] = username
+    if email:
+        changes['email'] = email
+    if user_type:
+        changes['user_type'] = user_type
+    
+    # Update user
+    updated_user = handle_db_operation(
+        lambda: update_user(
+            target_user.id,
+            username=username,
+            email=email,
+            user_type=user_type
+        ),
+        error_context="user update"
+    )
+    
+    if not updated_user:
+        from src.Util.error_handler import InternalError
+        raise InternalError(
+            message="Failed to update user",
+            error_code=ErrorCode.INTERNAL_ERROR
+        )
+    
+    # Log the activity
+    log_operation_details(
+        user_id=log_context.user_id,
+        operation=OperationMetadata(
+            operation_name="update_user_details",
+            target_resource=user_hash,
+            target_resource_type="user",
+            changes=changes,
+            additional_data={
+                "target_username": target_user.username,
+                "updated_by": current_user.username
+            }
+        ),
+        log_context=log_context
+    )
+    
+    # Build response
+    user_info = UserInfo(
         user_hash=updated_user.user_hash,
         username=updated_user.username,
         email=updated_user.email,
         user_type=updated_user.user_type,
-        user_type_info=user_type_info,
-        affected_groups=groups_info,
-        affected_projects=projects_info,
-        previous_type=previous_type,
-        changed_by=current_user.username,
-        changed_at=datetime.utcnow().isoformat()
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at
+    )
+    
+    return UpdateUserResponse(
+        success=True,
+        message="User updated successfully",
+        user=user_info,
+        updated_at=updated_user.updated_at
     )

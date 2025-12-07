@@ -258,6 +258,90 @@ BEGIN
     END IF;
 END//
 
+-- ===================================================================================
+-- USER_GROUP_PROJECT_GROUP_PERMISSIONS TABLE TRIGGERS (Scoped permissions with grant/deny)
+-- ===================================================================================
+
+DROP TRIGGER IF EXISTS trg_after_ugpgp_insert//
+CREATE TRIGGER trg_after_ugpgp_insert AFTER INSERT ON user_group_project_group_permissions FOR EACH ROW
+BEGIN
+    INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+    SELECT CONCAT('act-log-', UUID()), NEW.assigned_by,
+           CASE WHEN NEW.permission_type = 'deny' THEN 'permission_revoke' ELSE 'permission_group_assigned' END,
+           ac.id,
+           CONCAT('Scoped permission ', NEW.permission_type, ' assigned to user group for project group'),
+           NEW.user_group_id,
+           JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id, 
+                       'permission_group_id', NEW.permission_group_id, 'permission_type', NEW.permission_type, 'priority', NEW.priority),
+           CASE WHEN NEW.permission_type = 'deny' THEN 'WARN' ELSE ac.severity_level END, NOW()
+    FROM activity_catalog ac WHERE ac.activity_code = 'permission_group_assigned' AND ac.is_active = TRUE LIMIT 1;
+END//
+
+DROP TRIGGER IF EXISTS trg_after_ugpgp_update//
+CREATE TRIGGER trg_after_ugpgp_update AFTER UPDATE ON user_group_project_group_permissions FOR EACH ROW
+BEGIN
+    IF NEW.is_active = FALSE AND OLD.is_active = TRUE THEN
+        INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+        SELECT CONCAT('act-log-', UUID()), NEW.removed_by, 'permission_group_revoked', ac.id,
+               'Scoped permission removed from user group', NEW.user_group_id,
+               JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id,
+                           'permission_group_id', NEW.permission_group_id, 'permission_type', OLD.permission_type),
+               ac.severity_level, NOW()
+        FROM activity_catalog ac WHERE ac.activity_code = 'permission_group_revoked' AND ac.is_active = TRUE LIMIT 1;
+    END IF;
+END//
+
+DROP TRIGGER IF EXISTS trg_after_ugpgp_delete//
+CREATE TRIGGER trg_after_ugpgp_delete AFTER DELETE ON user_group_project_group_permissions FOR EACH ROW
+BEGIN
+    INSERT INTO activity_logs (id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+    SELECT CONCAT('act-log-', UUID()), 'permission_group_revoked', ac.id,
+           'Scoped permission deleted from user group', OLD.user_group_id,
+           JSON_OBJECT('user_group_id', OLD.user_group_id, 'project_group_id', OLD.project_group_id,
+                       'permission_group_id', OLD.permission_group_id, 'permission_type', OLD.permission_type),
+           ac.severity_level, NOW()
+    FROM activity_catalog ac WHERE ac.activity_code = 'permission_group_revoked' AND ac.is_active = TRUE LIMIT 1;
+END//
+
+-- ===================================================================================
+-- USER_GROUP_PROJECT_GROUP_ROLES TABLE TRIGGERS (Scoped roles)
+-- ===================================================================================
+
+DROP TRIGGER IF EXISTS trg_after_ugpgr_insert//
+CREATE TRIGGER trg_after_ugpgr_insert AFTER INSERT ON user_group_project_group_roles FOR EACH ROW
+BEGIN
+    INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+    SELECT CONCAT('act-log-', UUID()), NEW.assigned_by, 'role_assigned', ac.id,
+           'Scoped role assigned to user group for project group', NEW.user_group_id,
+           JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id, 'role_id', NEW.role_id),
+           ac.severity_level, NOW()
+    FROM activity_catalog ac WHERE ac.activity_code = 'role_assigned' AND ac.is_active = TRUE LIMIT 1;
+END//
+
+DROP TRIGGER IF EXISTS trg_after_ugpgr_update//
+CREATE TRIGGER trg_after_ugpgr_update AFTER UPDATE ON user_group_project_group_roles FOR EACH ROW
+BEGIN
+    IF NEW.is_active = FALSE AND OLD.is_active = TRUE THEN
+        INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+        SELECT CONCAT('act-log-', UUID()), NEW.removed_by, 'role_removed', ac.id,
+               'Scoped role removed from user group', NEW.user_group_id,
+               JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id, 'role_id', OLD.role_id),
+               ac.severity_level, NOW()
+        FROM activity_catalog ac WHERE ac.activity_code = 'role_removed' AND ac.is_active = TRUE LIMIT 1;
+    END IF;
+END//
+
+DROP TRIGGER IF EXISTS trg_after_ugpgr_delete//
+CREATE TRIGGER trg_after_ugpgr_delete AFTER DELETE ON user_group_project_group_roles FOR EACH ROW
+BEGIN
+    INSERT INTO activity_logs (id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
+    SELECT CONCAT('act-log-', UUID()), 'role_removed', ac.id,
+           'Scoped role deleted from user group', OLD.user_group_id,
+           JSON_OBJECT('user_group_id', OLD.user_group_id, 'project_group_id', OLD.project_group_id, 'role_id', OLD.role_id),
+           ac.severity_level, NOW()
+    FROM activity_catalog ac WHERE ac.activity_code = 'role_removed' AND ac.is_active = TRUE LIMIT 1;
+END//
+
 DELIMITER ;
 
 SELECT 'Part 2: Permission and role activity logging triggers created!' as status;

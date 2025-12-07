@@ -14,14 +14,14 @@ from typing import List, Optional
 
 from src.Util.Models import Project, LegacyUserGroup as UserGroup
 from src.Util.db_config import get_connection
-from src.Util.uuid_generator import generate_project_id, generate_user_group_id
+from src.Util.uuid_generator import generate_project_id, generate_user_group_id, generate_project_group_id, generate_project_group_member_id
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.error_handler import mask_uuid
 
 
 # =================== PROJECT MANAGEMENT ===================
 
-def create_project(project_name: str, project_description: str = None, created_by: str = None) -> Project:
+def create_project(project_name: str, project_description: str = None, created_by: str = None, owner_id: str = None) -> Project:
     """
     Create a new project/application with RBAC initialization.
     
@@ -29,6 +29,7 @@ def create_project(project_name: str, project_description: str = None, created_b
         project_name: Unique project name
         project_description: Project description (optional)
         created_by: User ID of creator
+        owner_id: User ID of project owner (defaults to created_by if not provided)
         
     Returns:
         Created Project object
@@ -40,9 +41,11 @@ def create_project(project_name: str, project_description: str = None, created_b
     def _create():
         project_hash = secrets.token_hex(32).upper()
         project_id = generate_project_id()
+        # Default owner_id to created_by if not provided
+        effective_owner_id = owner_id if owner_id else created_by
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_create_project', [project_id, project_hash, project_name, project_description, created_by])
+            cur.callproc('sp_create_project', [project_id, project_hash, project_name, project_description, created_by, effective_owner_id])
             con.commit()
 
             create_default_groups(project_id)
@@ -132,13 +135,24 @@ def get_project_by_id(project_id: str) -> Optional[Project]:
     )
 
 
-def list_all_projects(limit: int = 100, offset: int = 0) -> List[Project]:
+def list_all_projects(
+    limit: int = 100, 
+    offset: int = 0,
+    sort_by: str = 'project_created',
+    sort_order: str = 'DESC',
+    search: str = None,
+    include_archived: bool = False
+) -> List[Project]:
     """
-    List all active projects with pagination.
+    List all active projects with pagination, sorting, and filtering.
     
     Args:
         limit: Maximum results to return
         offset: Offset for pagination
+        sort_by: Column to sort by ('project_name', 'updated_at', 'project_created')
+        sort_order: Sort direction ('ASC' or 'DESC')
+        search: Search term to filter by name or description
+        include_archived: If True, include archived projects
         
     Returns:
         List of Project objects
@@ -149,7 +163,14 @@ def list_all_projects(limit: int = 100, offset: int = 0) -> List[Project]:
     def _list():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_list_all_projects', [limit, offset])
+            cur.callproc('sp_list_all_projects', [
+                limit, 
+                offset, 
+                sort_by, 
+                sort_order, 
+                search, 
+                include_archived
+            ])
             results = []
             for row in cur.fetchall():
                 results.append(Project(
@@ -158,19 +179,22 @@ def list_all_projects(limit: int = 100, offset: int = 0) -> List[Project]:
                     project_name=row[2],
                     project_description=row[3],
                     project_created=row[4],
-                    is_active=bool(row[5])
+                    is_active=bool(row[8]) if len(row) > 8 else True
                 ))
             return results
     
     return handle_db_operation(
         _list,
-        error_context=f"list_all_projects(limit={limit}, offset={offset})"
+        error_context=f"list_all_projects(limit={limit}, offset={offset}, sort_by={sort_by})"
     )
 
 
-def count_projects() -> int:
+def count_projects(include_archived: bool = False) -> int:
     """
     Count total number of active projects.
+    
+    Args:
+        include_archived: If True, include archived projects in count
     
     Returns:
         Count of active projects
@@ -181,12 +205,12 @@ def count_projects() -> int:
     def _count():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_count_projects', [])
+            cur.callproc('sp_count_projects', [include_archived])
             return cur.fetchone()[0]
     
     return handle_db_operation(
         _count,
-        error_context="count_projects()"
+        error_context=f"count_projects(include_archived={include_archived})"
     )
 
 
@@ -342,17 +366,21 @@ def get_project_stats(project_id: str) -> dict:
             # Call stored procedure that returns multiple result sets
             cur.callproc('sp_get_project_statistics', [project_id])
             
-            # Fetch each result set
-            total_users = cur.fetchone()[0]
+            # Fetch each result set (handle None if no rows returned)
+            row = cur.fetchone()
+            total_users = row[0] if row else 0
             cur.nextset()
             
-            active_sessions = cur.fetchone()[0]
+            row = cur.fetchone()
+            active_sessions = row[0] if row else 0
             cur.nextset()
             
-            total_groups = cur.fetchone()[0]
+            row = cur.fetchone()
+            total_groups = row[0] if row else 0
             cur.nextset()
             
-            group_distribution = {row[0]: row[1] for row in cur.fetchall()}
+            rows = cur.fetchall()
+            group_distribution = {r[0]: r[1] for r in rows} if rows else {}
 
             return {
                 "total_users": total_users,
@@ -371,19 +399,15 @@ def get_project_stats(project_id: str) -> dict:
 
 def create_default_groups(project_id: str):
     """
-    Create default groups for a new project using the *global* `user_groups` table.
+    Create default groups for a new project using the "Groups of Groups" architecture.
 
-    In the re-designed schema `user_groups` is no longer tied to a single project – the
-    relation between a group and a project is expressed through the `user_group_projects`
-    link table.  The legacy implementation inserted the groups with a `project_id` column
-    that no longer exists which caused the "Unknown column 'project_id'" MySQL error.
-
-    This refactor will:
-    1. Insert (or re-activate) the three default groups (`admin`, `user`, `readonly`) in
-       `user_groups`.  We make the names project-specific by prefixing them with the
-       project id to avoid global name clashes while still keeping them human readable.
-    2. Record the relationship between each created group and the new project in
-       `user_group_projects` (ON DUPLICATE KEY to handle re-runs).
+    The access model follows: User → User Group → Project Group → Project
+    
+    This function will:
+    1. Create a default project group for this project in `project_groups`
+    2. Link the project to the project group via `project_group_members`
+    3. Create three default user groups (`admin`, `user`, `readonly`) in `user_groups`
+    4. Link user groups to the project group via `user_group_project_groups`
        
     Args:
         project_id: Project ID to create default groups for
@@ -392,45 +416,62 @@ def create_default_groups(project_id: str):
         DatabaseError: On database operation errors
     """
     def _create_defaults():
-        # NOTE: This function uses direct SQL with ON DUPLICATE KEY UPDATE
-        # instead of stored procedures because it's a complex initialization operation
-        # that runs once per project and has conditional logic for duplicate handling.
-        default_groups = [
-            ("admin", "Project administrators", '["admin", "read", "write", "delete", "manage_users"]'),
-            ("user", "Regular users", '["read", "write"]'),
-            ("readonly", "Read-only users", '["read"]'),
+        default_user_groups = [
+            ("admin", "Project administrators"),
+            ("user", "Regular users"),
+            ("readonly", "Read-only users"),
         ]
         with get_connection() as con:
             cur = con.cursor()
 
-            created_group_ids = []
+            # Step 1: Create a default project group for this project
+            project_group_id = generate_project_group_id()
+            project_group_name = f"default_{project_id}"
+            cur.execute(
+                """
+                INSERT INTO project_groups (id, group_hash, group_name, group_description, created_at, is_active)
+                VALUES (%s, %s, %s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
+                """,
+                [project_group_id, f"PG-{secrets.token_hex(16).upper()}", project_group_name, f"Default project group for {project_id}"],
+            )
 
-            for base_name, description, permissions in default_groups:
-                # Build a **globally unique** group name while retaining readability
+            # Step 2: Add the project to the project group via project_group_members
+            pgm_id = generate_project_group_member_id()
+            cur.execute(
+                """
+                INSERT INTO project_group_members (id, project_id, project_group_id, assigned_at, is_active)
+                VALUES (%s, %s, %s, NOW(), 1)
+                ON DUPLICATE KEY UPDATE is_active = 1, assigned_at = NOW()
+                """,
+                [pgm_id, project_id, project_group_id],
+            )
+
+            # Step 3: Create user groups and link them to the project group
+            for base_name, description in default_user_groups:
+                # Build a globally unique group name
                 group_name = f"{base_name}_{project_id}"
                 group_id = generate_user_group_id()
-                # Try to insert. If the name already exists we update `is_active` and fetch the id.
+                
+                # Insert user group
                 cur.execute(
                     """
                     INSERT INTO user_groups (id, group_hash, group_name, group_description, created_at, is_active)
                     VALUES (%s, %s, %s, %s, NOW(), 1)
-                    ON DUPLICATE KEY UPDATE is_active  = 1,
-                                            updated_at = NOW()
+                    ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
                     """,
                     [group_id, f"UG-{secrets.token_hex(16).upper()}", group_name, description],
                 )
-                created_group_ids.append(group_id)
 
-            # Link the (new or existing) groups with the project in user_group_projects
-            for gid in created_group_ids:
+                # Step 4: Link user group to project group via user_group_project_groups
+                ugpg_id = f"ugpg-{secrets.token_hex(16)}"
                 cur.execute(
                     """
-                    INSERT INTO user_group_projects (id, user_group_id, project_id, granted_at, is_active)
+                    INSERT INTO user_group_project_groups (id, user_group_id, project_group_id, granted_at, is_active)
                     VALUES (%s, %s, %s, NOW(), 1)
-                    ON DUPLICATE KEY UPDATE is_active  = 1,
-                                            granted_at = NOW()
+                    ON DUPLICATE KEY UPDATE is_active = 1, granted_at = NOW()
                     """,
-                    [gid, gid, project_id],
+                    [ugpg_id, group_id, project_group_id],
                 )
 
             con.commit()
