@@ -72,6 +72,14 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
   - Cache management (stats, clear, invalidate)
   - Bulk operations (update, delete, assign)
 
+### Audit Log Management
+- **[Audit Log Usage Cases](audit-log-usage-cases.md)** - Complete guide for:
+  - Activity logs (user actions, admin operations)
+  - API audit logs (HTTP request/response tracking)
+  - Security events monitoring
+  - User activity tracking
+  - Filtering and search operations
+
 ---
 
 ## 🗂️ Complete API Endpoint Reference
@@ -244,12 +252,20 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/admin/dashboard/stats` | GET | Dashboard statistics |
-| `/admin/activity` | GET | Activity feed |
+| `/admin/activity` | GET | Activity feed (audit logs) |
 | `/admin/activity/types` | GET | Activity type list |
 | `/admin/health` | GET | Detailed health check |
 | `/admin/users/statistics` | GET | User statistics |
 | `/admin/projects/statistics` | GET | Project statistics |
 | `/admin/system/overview` | GET | System overview |
+
+### Audit Logs (via Admin)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/activity` | GET | Get activity logs with filtering |
+| `/admin/activity/types` | GET | Get available activity types |
+
+**Note**: API audit logs (`api_audit_log` table) are automatically captured by middleware and can be queried via stored procedures: `sp_get_audit_logs`, `sp_count_audit_logs`, `sp_get_security_events`, `sp_get_failed_requests`, `sp_get_audit_statistics`.
 
 ### Bulk Operations (`/admin`)
 | Endpoint | Method | Description |
@@ -301,6 +317,9 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 6. **For Admins** - [Admin Usage Cases](admin-usage-cases.md)
    - Dashboard, monitoring, bulk operations
 
+7. **Audit & Compliance** - [Audit Log Usage Cases](audit-log-usage-cases.md)
+   - View event logs, security events, compliance reports
+
 ### Common Tasks Quick Links
 
 | Task | Guide |
@@ -324,6 +343,9 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 | Bulk update users | [Admin - Bulk Operations](admin-usage-cases.md#bulk-operations) |
 | Clear cache | [Admin - Cache Management](admin-usage-cases.md#cache-management) |
 | Check system health | [Admin - System Health](admin-usage-cases.md#system-health--metrics) |
+| View activity logs | [Audit Log - Activity Logs](audit-log-usage-cases.md#activity-logs) |
+| View security events | [Audit Log - Security Events](audit-log-usage-cases.md#security-events) |
+| Track user activity | [Audit Log - User Activity](audit-log-usage-cases.md#user-activity-tracking) |
 
 ---
 
@@ -387,6 +409,7 @@ All responses follow this structure:
 | [projects-usage-cases.md](projects-usage-cases.md) | Project management | Create, access, teams, troubleshooting |
 | [permissions-usage-cases.md](permissions-usage-cases.md) | Permissions | Roles, permission groups, assignments |
 | [admin-usage-cases.md](admin-usage-cases.md) | Admin operations | Dashboard, activity, cache, bulk ops |
+| [audit-log-usage-cases.md](audit-log-usage-cases.md) | Audit & compliance | Event logs, security events, user tracking |
 
 ---
 

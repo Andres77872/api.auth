@@ -1116,6 +1116,7 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 - **[Users Usage Cases](users-usage-cases.md)** - User management
 - **[Groups Usage Cases](groups-usage-cases.md)** - Group management
 - **[Permissions Usage Cases](permissions-usage-cases.md)** - Permission management
+- **[Audit Log Usage Cases](audit-log-usage-cases.md)** - Event logs, security events
 
 ---
 
