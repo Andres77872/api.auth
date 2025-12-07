@@ -49,7 +49,7 @@ class SystemMetrics:
             )
 
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
                 "health_score": health_score,
                 "status": "healthy" if health_score >= 80 else ("degraded" if health_score >= 60 else "unhealthy"),
                 "system": {
@@ -67,7 +67,7 @@ class SystemMetrics:
 
         except Exception as e:
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
                 "health_score": 0,
                 "status": "error",
                 "error": str(e)
@@ -107,14 +107,14 @@ class SystemMetrics:
                     "connections": connections[1] if connections else 0,
                     "size_mb": round(size_result[0], 2) if size_result and size_result[0] else 0,
                     "table_count": table_count[0] if table_count else 0,
-                    "last_check": datetime.utcnow().isoformat()
+                    "last_check": datetime.utcnow().isoformat() + "Z"
                 }
 
         except Exception as e:
             return {
                 "status": "unhealthy",
                 "error": str(e),
-                "last_check": datetime.utcnow().isoformat()
+                "last_check": datetime.utcnow().isoformat() + "Z"
             }
 
     @staticmethod
@@ -138,14 +138,14 @@ class SystemMetrics:
                 "connected_clients": info.get('connected_clients', 0),
                 "total_commands": info.get('total_commands_processed', 0),
                 "uptime_seconds": info.get('uptime_in_seconds', 0),
-                "last_check": datetime.utcnow().isoformat()
+                "last_check": datetime.utcnow().isoformat() + "Z"
             }
 
         except Exception as e:
             return {
                 "status": "unhealthy",
                 "error": str(e),
-                "last_check": datetime.utcnow().isoformat()
+                "last_check": datetime.utcnow().isoformat() + "Z"
             }
 
     @staticmethod

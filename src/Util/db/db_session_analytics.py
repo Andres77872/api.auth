@@ -414,7 +414,7 @@ def check_database_health() -> Dict[str, Any]:
         return {
             "status": "healthy",
             "message": "Database accessible",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
     
     return handle_db_operation(
@@ -423,7 +423,7 @@ def check_database_health() -> Dict[str, Any]:
         default_return={
             "status": "unhealthy",
             "message": "Database error",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
     )
 
@@ -443,13 +443,13 @@ def check_redis_health() -> Dict[str, Any]:
         return {
             "status": "healthy",
             "message": "Redis accessible",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
     except Exception as e:
         return {
             "status": "unhealthy",
             "message": f"Redis error: {str(e)}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
 
 

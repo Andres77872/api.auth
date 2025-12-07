@@ -155,7 +155,7 @@ async def bulk_update_users_endpoint(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat()
+        "performed_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -256,7 +256,7 @@ async def bulk_delete_users_endpoint(
         "errors": result.get('errors', []),
         "warnings": result.get('warnings', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat()
+        "performed_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -365,7 +365,7 @@ async def bulk_assign_roles_to_project_users(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat()
+        "performed_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -465,5 +465,5 @@ async def bulk_assign_users_to_groups(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat()
+        "performed_at": datetime.utcnow().isoformat() + "Z"
     }

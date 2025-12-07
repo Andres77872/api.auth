@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def generate_hash(prefix: str, value: str) -> str:
     """Generate a unique hash"""
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.utcnow().isoformat() + "Z"
     hash_input = f"{prefix}:{value}:{timestamp}"
     return hashlib.sha256(hash_input.encode()).hexdigest()[:32]
 

@@ -123,7 +123,7 @@ async def get_dashboard_stats(
             "overall_status": "healthy" if db_health["status"] == "healthy" and redis_health[
                 "status"] == "healthy" else "degraded"
         },
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -134,7 +134,7 @@ async def get_dashboard_stats(
     log_success=False
 )
 async def get_activity_feed(
-        limit: int = Query(50, ge=1, le=100, description="Number of activities to return"),
+        limit: int = Query(50, ge=1, le=500, description="Number of activities to return"),
         offset: int = Query(0, ge=0, description="Number of activities to skip"),
         activity_type_filter: Optional[str] = Query(None, description="Filter by activity type"),
         user_id: Optional[str] = Query(None, description="Filter by user ID"),
@@ -184,7 +184,7 @@ async def get_activity_feed(
                 "id": activity["id"],
                 "activity_type": activity["activity_type"],
                 "details": activity["details"],
-                "created_at": activity["created_at"],
+                "created_at": activity["created_at"].isoformat() + "Z" if hasattr(activity["created_at"], 'isoformat') else str(activity["created_at"]) + "Z",
                 "user": {
                     "id": activity["user_id"],
                     "username": activity["username"],
@@ -223,7 +223,7 @@ async def get_activity_feed(
             "project_id": project_id,
             "days": days
         },
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -291,7 +291,7 @@ async def get_system_health(
             "total_projects": total_projects,
             "active_sessions": active_sessions
         },
-        "checked_at": datetime.utcnow().isoformat()
+        "checked_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -325,7 +325,7 @@ async def get_activity_types(
 
     return {
         "activity_types": activity_types,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -366,7 +366,7 @@ async def get_user_statistics(
     return {
         "success": True,
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -407,7 +407,7 @@ async def get_project_statistics(
     return {
         "success": True,
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 
@@ -444,5 +444,5 @@ async def get_system_overview(
     return {
         "success": True,
         "system_overview": overview,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }

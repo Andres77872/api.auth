@@ -713,7 +713,7 @@ async def get_project_activity(
             "activity_type": activity_type,
             "days": days
         },
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 @router.get("/{project_hash}/stats")
@@ -773,7 +773,7 @@ async def get_detailed_project_stats(
             "project_description": project.project_description
         },
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat() + "Z"
     }
 
 @router.patch("/{project_hash}/owner")
@@ -867,7 +867,7 @@ async def transfer_project_ownership(
             "user_hash": current_user.user_hash,
             "username": current_user.username
         },
-        "transferred_at": datetime.utcnow().isoformat()
+        "transferred_at": datetime.utcnow().isoformat() + "Z"
     }
 
 @router.patch("/{project_hash}/archive")
@@ -949,7 +949,7 @@ async def archive_unarchive_project(
         "action_details": {
             "action": "archive" if archived else "unarchive",
             "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat()
+            "performed_at": datetime.utcnow().isoformat() + "Z"
         }
     }
 

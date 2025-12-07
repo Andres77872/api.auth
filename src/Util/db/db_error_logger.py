@@ -36,7 +36,7 @@ def generate_error_hash(
     Returns:
         SHA256 hash of the error signature
     """
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.utcnow().isoformat() + "Z"
     signature = f"{error_code}|{error_message}|{request_path}|{function_name}|{timestamp}"
     return hashlib.sha256(signature.encode()).hexdigest()
 

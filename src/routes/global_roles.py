@@ -835,7 +835,7 @@ async def check_my_permission(permission_name: str, session_data=Depends(require
             "permission": permission_name,
             "has_permission": True,
             "reason": "Root user",
-            "checked_at": datetime.utcnow().isoformat()
+            "checked_at": datetime.utcnow().isoformat() + "Z"
         }
     
     has_permission = global_roles.check_user_has_permission(user.id, permission_name)
@@ -844,7 +844,7 @@ async def check_my_permission(permission_name: str, session_data=Depends(require
         "success": True,
         "permission": permission_name,
         "has_permission": has_permission,
-        "checked_at": datetime.utcnow().isoformat()
+        "checked_at": datetime.utcnow().isoformat() + "Z"
     }
 
 

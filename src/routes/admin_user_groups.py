@@ -697,7 +697,7 @@ async def get_group_members_with_pagination(
             "email": member.email,
             "user_type": getattr(member, 'user_type', 'consumer'),
             "is_active": getattr(member, 'is_active', True),
-            "joined_at": joined_date.isoformat() if joined_date else None  # API uses joined_at for membership date
+            "joined_at": (joined_date.isoformat() + "Z") if joined_date else None  # API uses joined_at for membership date
         }
         members_data.append(member_info)
 
@@ -723,7 +723,7 @@ async def get_group_members_with_pagination(
             "total_members": total_count,
             "members_shown": len(members_data)
         },
-        generated_at=datetime.utcnow().isoformat()
+        generated_at=datetime.utcnow().isoformat() + "Z"
     )
 
 @router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
@@ -833,7 +833,7 @@ async def bulk_add_users_to_group(
         results=results,
         errors=errors,
         performed_by=current_user.username,
-        performed_at=datetime.utcnow().isoformat()
+        performed_at=datetime.utcnow().isoformat() + "Z"
     )
 
 @router.get("/users/{user_hash}/groups", response_model=UserGroupsForUserResponse)
@@ -873,7 +873,7 @@ async def get_user_groups(
             "group_hash": group.group_hash,
             "group_name": group.group_name,
             "description": group.group_description,
-            "joined_at": joined_date.isoformat() if joined_date else None
+            "joined_at": (joined_date.isoformat() + "Z") if joined_date else None
         }
         groups_data.append(group_info)
 
@@ -889,5 +889,5 @@ async def get_user_groups(
         statistics={
             "total_groups": len(groups_data)
         },
-        generated_at=datetime.utcnow().isoformat()
+        generated_at=datetime.utcnow().isoformat() + "Z"
     )

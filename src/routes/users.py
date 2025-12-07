@@ -986,7 +986,7 @@ async def delete_user_endpoint(
         "message": f"User '{target_user.username}' has been deleted",
         "user_hash": target_user.user_hash,
         "username": target_user.username,
-        "deleted_at": datetime.utcnow().isoformat()
+        "deleted_at": datetime.utcnow().isoformat() + "Z"
     }
 
 

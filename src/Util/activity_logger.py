@@ -363,7 +363,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_LOGIN.value,
-            details={"action": "login", "timestamp": datetime.utcnow().isoformat()},
+            details={"action": "login", "timestamp": datetime.utcnow().isoformat() + "Z"},
             project_id=project_id,
             ip_address=ip_address,
             user_agent=user_agent
@@ -375,7 +375,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_LOGOUT.value,
-            details={"action": "logout", "timestamp": datetime.utcnow().isoformat()},
+            details={"action": "logout", "timestamp": datetime.utcnow().isoformat() + "Z"},
             project_id=project_id,
             ip_address=ip_address
         )
@@ -386,7 +386,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_REGISTRATION.value,
-            details={"action": "registration", "timestamp": datetime.utcnow().isoformat()},
+            details={"action": "registration", "timestamp": datetime.utcnow().isoformat() + "Z"},
             project_id=project_id,
             ip_address=ip_address
         )
@@ -398,7 +398,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.ADMIN_ACTION.value,
-            details={"action": action, "details": details, "timestamp": datetime.utcnow().isoformat()},
+            details={"action": action, "details": details, "timestamp": datetime.utcnow().isoformat() + "Z"},
             project_id=project_id,
             target_user_id=target_user_id
         )

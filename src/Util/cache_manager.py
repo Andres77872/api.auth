@@ -219,7 +219,7 @@ class CacheManager:
 
             permission_data = {
                 "has_permission": has_permission,
-                "checked_at": datetime.utcnow().isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "user_id": user_id,
                 "permission": permission
             }
@@ -284,7 +284,7 @@ class CacheManager:
 
             type_data = {
                 "user_type": user_type,
-                "cached_at": datetime.utcnow().isoformat(),
+                "cached_at": datetime.utcnow().isoformat() + "Z",
                 "user_id": user_id
             }
 
