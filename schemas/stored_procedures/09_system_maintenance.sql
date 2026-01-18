@@ -39,18 +39,39 @@ END$$
 DROP PROCEDURE IF EXISTS sp_cleanup_orphaned_records$$
 CREATE PROCEDURE sp_cleanup_orphaned_records()
 BEGIN
+    DECLARE v_cleaned_ugm INT DEFAULT 0;
+    DECLARE v_cleaned_ugpg INT DEFAULT 0;
+    DECLARE v_cleaned_pgm INT DEFAULT 0;
+    
+    -- Clean orphaned user_group_members (users deleted or inactive)
     UPDATE user_group_members ugm
     LEFT JOIN users u ON ugm.user_id = u.id
     SET ugm.is_active = 0, ugm.removed_at = NOW()
-    WHERE u.id IS NULL OR u.is_active = 0;
+    WHERE ugm.is_active = 1 AND (u.id IS NULL OR u.is_active = 0);
+    SET v_cleaned_ugm = ROW_COUNT();
     
-    UPDATE user_group_projects ugp
-    LEFT JOIN user_groups ug ON ugp.user_group_id = ug.id
-    LEFT JOIN projects p ON ugp.project_id = p.id
-    SET ugp.is_active = 0, ugp.revoked_at = NOW()
-    WHERE ug.id IS NULL OR ug.is_active = 0 OR p.id IS NULL OR p.is_active = 0;
+    -- Clean orphaned user_group_project_groups (user groups or project groups deleted/inactive)
+    UPDATE user_group_project_groups ugpg
+    LEFT JOIN user_groups ug ON ugpg.user_group_id = ug.id
+    LEFT JOIN project_groups pg ON ugpg.project_group_id = pg.id
+    SET ugpg.is_active = 0, ugpg.revoked_at = NOW()
+    WHERE ugpg.is_active = 1 AND (ug.id IS NULL OR ug.is_active = 0 OR pg.id IS NULL OR pg.is_active = 0);
+    SET v_cleaned_ugpg = ROW_COUNT();
     
-    SELECT ROW_COUNT() as cleaned_records, NOW() as cleanup_timestamp;
+    -- Clean orphaned project_group_members (projects or project groups deleted/inactive)
+    UPDATE project_group_members pgm
+    LEFT JOIN projects p ON pgm.project_id = p.id
+    LEFT JOIN project_groups pg ON pgm.project_group_id = pg.id
+    SET pgm.is_active = 0, pgm.removed_at = NOW()
+    WHERE pgm.is_active = 1 AND (p.id IS NULL OR p.is_active = 0 OR pg.id IS NULL OR pg.is_active = 0);
+    SET v_cleaned_pgm = ROW_COUNT();
+    
+    SELECT 
+        v_cleaned_ugm + v_cleaned_ugpg + v_cleaned_pgm as cleaned_records,
+        v_cleaned_ugm as cleaned_user_group_members,
+        v_cleaned_ugpg as cleaned_user_group_project_groups,
+        v_cleaned_pgm as cleaned_project_group_members,
+        NOW() as cleanup_timestamp;
 END$$
 
 -- ===================================================================================

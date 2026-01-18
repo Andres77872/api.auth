@@ -379,8 +379,11 @@ DROP PROCEDURE IF EXISTS sp_get_user_groups_for_project$$
 CREATE PROCEDURE sp_get_user_groups_for_project(IN p_project_id VARCHAR(64))
 BEGIN
     -- Get all user groups that have access to a project through project groups
+    -- Includes member_count for each group
     SELECT DISTINCT ug.id, ug.group_hash, ug.group_name, ug.group_description,
-           ug.created_at, ug.updated_at, ug.is_active
+           ug.created_at, ug.updated_at, ug.is_active,
+           (SELECT COUNT(*) FROM user_group_members ugm 
+            WHERE ugm.user_group_id = ug.id AND ugm.is_active = 1) AS member_count
     FROM user_groups ug
     INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id
     INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id

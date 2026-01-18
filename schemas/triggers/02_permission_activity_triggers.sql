@@ -154,10 +154,11 @@ END//
 
 -- ===================================================================================
 -- USER_GROUP_PERMISSION_GROUPS TABLE TRIGGERS
+-- Note: Trigger names use 'ugpermg' to avoid collision with user_group_project_groups triggers in file 01
 -- ===================================================================================
 
-DROP TRIGGER IF EXISTS trg_after_ugpg_insert//
-CREATE TRIGGER trg_after_ugpg_insert AFTER INSERT ON user_group_permission_groups FOR EACH ROW
+DROP TRIGGER IF EXISTS trg_after_ugpermg_insert//
+CREATE TRIGGER trg_after_ugpermg_insert AFTER INSERT ON user_group_permission_groups FOR EACH ROW
 BEGIN
     INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
     SELECT CONCAT('act-log-', UUID()), NEW.assigned_by, 'permission_group_assigned', ac.id,
@@ -167,8 +168,8 @@ BEGIN
     FROM activity_catalog ac WHERE ac.activity_code = 'permission_group_assigned' AND ac.is_active = TRUE LIMIT 1;
 END//
 
-DROP TRIGGER IF EXISTS trg_after_ugpg_delete//
-CREATE TRIGGER trg_after_ugpg_delete AFTER DELETE ON user_group_permission_groups FOR EACH ROW
+DROP TRIGGER IF EXISTS trg_after_ugpermg_delete//
+CREATE TRIGGER trg_after_ugpermg_delete AFTER DELETE ON user_group_permission_groups FOR EACH ROW
 BEGIN
     INSERT INTO activity_logs (id, activity_type, activity_catalog_id, details, user_group_id, metadata, severity_level, created_at)
     SELECT CONCAT('act-log-', UUID()), 'permission_group_revoked', ac.id,

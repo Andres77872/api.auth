@@ -34,7 +34,7 @@ The Magic Auth database implements a sophisticated **multi-project authenticatio
 - **Scoped Permissions**: Grant or deny permissions at project-group level with priority
 - **Comprehensive Auditing**: Full activity logging with 40+ predefined activity types
 - **Error Tracking**: Dedicated error logging with statistics and alerting
-- **Performance Optimized**: 80+ indexes, permission caching, optimized views
+- **Performance Optimized**: 80+ indexes, permission caching, 16 optimized views
 
 ---
 
@@ -140,31 +140,31 @@ schemas/
 │
 ├── tables/                  # All table definitions and initialization
 │   ├── 01_create_database.sql      # Database creation with UTF-8
-│   ├── 02_create_tables.sql        # 30+ tables definition
+│   ├── 02_create_tables.sql        # 27 core tables definition
 │   ├── 03_create_indexes.sql       # 80+ performance indexes
-│   ├── 04_add_constraints.sql      # Foreign keys + 14 triggers
+│   ├── 04_add_constraints.sql      # Foreign keys + 16 validation triggers
 │   ├── 05_initialize_data.sql      # Root user creation
 │   ├── 06_create_views.sql         # 12 optimization views
-│   ├── 07_error_logs.sql           # Error logging tables + views
-│   └── 08_activity_logging_tables.sql  # Activity logging + 40 types
+│   ├── 07_error_logs.sql           # 3 error logging tables + 4 views
+│   └── 08_activity_logging_tables.sql  # 3 activity tables + 40 types
 │
-├── stored_procedures/       # 137+ stored procedures
-│   ├── 01_user_management.sql      # 21 procedures
-│   ├── 02_user_groups.sql          # 26 procedures
-│   ├── 03_projects.sql             # 18 procedures
-│   ├── 04_project_groups.sql       # 14 procedures
-│   ├── 05_global_roles.sql         # 26 procedures
-│   ├── 06_permission_assignments.sql # 21 procedures
+├── stored_procedures/       # 167 stored procedures
+│   ├── 01_user_management.sql      # 20 procedures
+│   ├── 02_user_groups.sql          # 25 procedures
+│   ├── 03_projects.sql             # 17 procedures
+│   ├── 04_project_groups.sql       # 15 procedures
+│   ├── 05_global_roles.sql         # 29 procedures
+│   ├── 06_permission_assignments.sql # 22 procedures
 │   ├── 07_sessions_analytics.sql   # 8 procedures
 │   ├── 08_admin_operations.sql     # 1 procedure
 │   ├── 09_system_maintenance.sql   # 5 procedures
-│   ├── 10_error_logging.sql        # 14 procedures
-│   ├── 11_activity_logging.sql     # 11 procedures
-│   └── 12_activity_context.sql     # 4 procedures/functions
+│   ├── 10_error_logging.sql        # 12 procedures
+│   ├── 11_activity_logging.sql     # 10 procedures
+│   └── 12_activity_context.sql     # 3 procedures + 1 function
 │
-└── triggers/                # Database triggers
+└── triggers/                # 46 activity logging triggers (21 + 25)
     ├── 01_activity_logging_triggers.sql      # 21 core entity triggers
-    └── 02_permission_activity_triggers.sql   # 21 permission/role triggers
+    └── 02_permission_activity_triggers.sql   # 25 permission/role triggers
 ```
 
 ---
@@ -247,7 +247,7 @@ schemas/
 
 ## Stored Procedures Reference
 
-### User Management (`01_user_management.sql`) - 21 Procedures
+### User Management (`01_user_management.sql`) - 20 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -272,7 +272,7 @@ schemas/
 | `sp_set_user_status` | Set user active/inactive |
 | `sp_get_recent_users_count` | Count recently created users |
 
-### User Groups (`02_user_groups.sql`) - 26 Procedures
+### User Groups (`02_user_groups.sql`) - 25 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -302,7 +302,7 @@ schemas/
 | `sp_get_user_groups_for_project` | Get all user groups with project access |
 | `sp_get_projects_for_user_group` | Get all projects accessible by user group |
 
-### Projects (`03_projects.sql`) - 18 Procedures
+### Projects (`03_projects.sql`) - 17 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -324,7 +324,7 @@ schemas/
 | `sp_check_admin_multi_project_access` | Check admin project access |
 | `sp_get_admin_project_assignments_with_details` | Get admin assignments with access path |
 
-### Project Groups (`04_project_groups.sql`) - 14 Procedures
+### Project Groups (`04_project_groups.sql`) - 15 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -344,7 +344,7 @@ schemas/
 | `sp_get_project_group_stats` | Get group statistics |
 | `sp_get_users_with_access_to_project_group` | Get users with group access |
 
-### Global Roles (`05_global_roles.sql`) - 26 Procedures
+### Global Roles (`05_global_roles.sql`) - 29 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -374,8 +374,11 @@ schemas/
 | `sp_global_remove_role_from_user` | Remove role from user |
 | `sp_global_get_user_permissions` | Get user's permissions via role |
 | `sp_global_check_user_has_permission` | Check if user has permission |
+| `sp_global_add_role_to_project_catalog` | Add role to project catalog |
+| `sp_global_get_project_cataloged_roles` | Get project's cataloged roles |
+| `sp_global_remove_role_from_project_catalog` | Remove role from project catalog |
 
-### Permission Assignments (`06_permission_assignments.sql`) - 21 Procedures
+### Permission Assignments (`06_permission_assignments.sql`) - 22 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -399,6 +402,7 @@ schemas/
 | `sp_add_permission_group_to_project_catalog` | Add to project catalog |
 | `sp_remove_permission_group_from_project_catalog` | Remove from catalog |
 | `sp_get_project_cataloged_permission_groups` | Get project's cataloged permissions |
+| `sp_get_permission_group_cataloged_projects` | Get permission group's cataloged projects |
 | `sp_get_user_all_groups_with_inheritance` | Get user groups with inheritance |
 
 ### Sessions & Analytics (`07_sessions_analytics.sql`) - 8 Procedures
@@ -424,7 +428,7 @@ schemas/
 | `sp_system_health_check` | Run health diagnostics |
 | `sp_check_database_health` | Simple health ping |
 
-### Error Logging (`10_error_logging.sql`) - 14 Procedures
+### Error Logging (`10_error_logging.sql`) - 12 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -441,7 +445,7 @@ schemas/
 | `sp_cleanup_old_error_logs` | Clean old logs |
 | `sp_get_error_log_summary` | Get dashboard summary |
 
-### Activity Logging (`11_activity_logging.sql`) - 11 Procedures
+### Activity Logging (`11_activity_logging.sql`) - 10 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -458,12 +462,12 @@ schemas/
 
 ### Activity Context (`12_activity_context.sql`) - 3 Procedures + 1 Function
 
-| Procedure/Function | Description |
-|--------------------|-------------|
-| `sp_set_activity_context` | Set session context for triggers |
-| `sp_clear_activity_context` | Clear session context |
-| `sp_get_activity_context` | Get current context (debug) |
-| `fn_get_context_user_id` | Helper function for context resolution |
+| Procedure/Function | Type | Description |
+|--------------------|------|-------------|
+| `sp_set_activity_context` | Procedure | Set session context for triggers |
+| `sp_clear_activity_context` | Procedure | Clear session context |
+| `sp_get_activity_context` | Procedure | Get current context (debug) |
+| `fn_get_context_user_id` | Function | Helper function for context resolution |
 
 ---
 
@@ -530,7 +534,7 @@ schemas/
 | `tr_validate_bulk_operation_counts` | `bulk_operations_log` | Validate counts |
 | `tr_validate_bulk_operation_completion` | `bulk_operations_log` | Validate completion time |
 
-### Activity Logging Triggers - Core Entities (`01_activity_logging_triggers.sql`)
+### Activity Logging Triggers - Core Entities (`01_activity_logging_triggers.sql`) - 21 Triggers
 
 | Trigger | Table | Event | Activity Type |
 |---------|-------|-------|---------------|
@@ -556,7 +560,7 @@ schemas/
 | `trg_after_ugpg_update` | `user_group_project_groups` | UPDATE | `user_group_project_group_access_revoked` |
 | `trg_after_ugpg_delete` | `user_group_project_groups` | DELETE | `user_group_project_group_access_revoked` |
 
-### Activity Logging Triggers - Permissions (`02_permission_activity_triggers.sql`)
+### Activity Logging Triggers - Permissions (`02_permission_activity_triggers.sql`) - 25 Triggers
 
 | Trigger | Table | Event | Activity Type |
 |---------|-------|-------|---------------|
@@ -571,8 +575,8 @@ schemas/
 | `trg_after_permission_delete` | `global_permissions` | DELETE | `permission_revoke` |
 | `trg_after_rpg_insert` | `role_permission_groups` | INSERT | `permission_group_assigned` |
 | `trg_after_rpg_delete` | `role_permission_groups` | DELETE | `permission_group_revoked` |
-| `trg_after_ugpg_insert` | `user_group_permission_groups` | INSERT | `permission_group_assigned` |
-| `trg_after_ugpg_delete` | `user_group_permission_groups` | DELETE | `permission_group_revoked` |
+| `trg_after_ugpermg_insert` | `user_group_permission_groups` | INSERT | `permission_group_assigned` |
+| `trg_after_ugpermg_delete` | `user_group_permission_groups` | DELETE | `permission_group_revoked` |
 | `trg_after_upg_insert` | `user_permission_groups` | INSERT | `permission_group_assigned` |
 | `trg_after_upg_delete` | `user_permission_groups` | DELETE | `permission_group_revoked` |
 | `trg_after_gpgp_insert` | `global_permission_group_permissions` | INSERT | `permission_grant` |
@@ -715,14 +719,15 @@ Type: root
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 30+
+- **Tables**: 33
 - **Indexes**: 80+
-- **Stored Procedures**: 137+
+- **Stored Procedures**: 167
+- **Functions**: 1
 - **Views**: 16
-- **Triggers**: 42+
+- **Triggers**: 46 (activity logging)
 - **Activity Types**: 40
 
 ---
 
-**Last Updated**: December 2024  
+**Last Updated**: January 2026  
 **Version**: 3.0 (Groups of Groups Architecture)

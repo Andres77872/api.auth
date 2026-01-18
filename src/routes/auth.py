@@ -33,7 +33,9 @@ from src.Util.db import (
     get_user_by_hash,
     get_user_by_credentials,
     enhanced_register,
+    get_user_group_by_hash,
 )
+from src.Util.db.db_user_groups import get_projects_for_user_group
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -361,6 +363,34 @@ async def register(
                 details={"email": email}
             )
 
+    # Validate user group exists before registration
+    user_group = handle_db_operation(
+        lambda: get_user_group_by_hash(user_group_hash),
+        error_context="user group lookup"
+    )
+    if not user_group:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"user_group_hash": mask_uuid(user_group_hash)}
+        )
+    
+    # Validate user group has linked projects
+    group_projects = handle_db_operation(
+        lambda: get_projects_for_user_group(user_group.id),
+        error_context="user group projects lookup"
+    )
+    if not group_projects:
+        raise ValidationError(
+            message="User group is not linked to any projects. Cannot complete registration.",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={
+                "user_group_hash": mask_uuid(user_group_hash),
+                "group_name": user_group.group_name,
+                "hint": "The user group must be linked to at least one project before users can register"
+            }
+        )
+
     # Register user with group assignment
     register_result = handle_db_operation(
         lambda: enhanced_register(username, password, email, user_group_hash),
@@ -370,9 +400,13 @@ async def register(
     if not register_result:
         from src.Util.error_handler import InternalError
         raise InternalError(
-            message="Registration failed due to internal error",
+            message="User creation failed during registration",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "user_registration"}
+            details={
+                "operation": "user_registration",
+                "user_group": user_group.group_name,
+                "hint": "User record creation failed. This may indicate a database constraint violation."
+            }
         )
 
     # Set HTTP-only cookie with JWT token

@@ -26,7 +26,7 @@ import pymysql
 
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import (
-    User, Project, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
+    User, Project, ProjectInfo, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
 )
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
@@ -757,39 +757,6 @@ def get_user_project_access(user_id: str, project_id: str) -> Optional[bool]:
     )
 
 
-def get_user_projects(user_id: str) -> List[Tuple[Project, Any]]:
-    """
-    Get all projects a user has access to through user groups.
-    
-    Args:
-        user_id: User ID to query
-        
-    Returns:
-        List of tuples (Project, None) for compatibility
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_get_user_projects', [user_id])
-            results = []
-            for row in cur.fetchall():
-                project = Project(
-                    id=row[0], project_hash=row[1], project_name=row[2],
-                    project_description=row[3], project_created=row[4], is_active=bool(row[5])
-                )
-                results.append((project, None))
-            
-            return results
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_user_projects(user_id={user_id})"
-    )
-
-
 def revoke_user_project_access(user_id: str, project_id: str, revoked_by: str = None) -> bool:
     """
     Revoke user's access to a project by removing them from all groups with access.
@@ -1051,9 +1018,10 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         available_projects = [project]  # Admin users see their assigned projects
     elif user_type == 'consumer':
         # Get fresh user groups and permissions for consumer users
+        from src.Util.db.db_user_groups import get_user_accessible_projects
         groups = get_user_groups_in_project(session_data['user_id'], project.id)
         permissions = get_user_permissions_in_project(session_data['user_id'], project.id)
-        available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
+        available_projects = get_user_accessible_projects(session_data['user_id'])
         groups = [g.group_name for g in groups]
     else:
         return None

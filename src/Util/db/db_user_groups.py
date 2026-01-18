@@ -565,7 +565,7 @@ def get_user_groups_for_project(project_id: str) -> List[UserGroup]:
         project_id: Project ID to get groups for
         
     Returns:
-        List of UserGroup objects
+        List of UserGroup objects with member_count
         
     Raises:
         DatabaseError: On database operation errors
@@ -583,7 +583,8 @@ def get_user_groups_for_project(project_id: str) -> List[UserGroup]:
                     group_description=row[3],
                     created_at=row[4],
                     updated_at=row[5],
-                    is_active=bool(row[6])
+                    is_active=bool(row[6]),
+                    member_count=row[7]
                 ))
 
             return groups

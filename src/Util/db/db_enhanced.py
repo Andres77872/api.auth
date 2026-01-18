@@ -35,17 +35,17 @@ from src.Util.db.db_users import (
     get_user_by_credentials, check_username_email_available,
     get_user_type, get_admin_assigned_project,
     get_user_project_access,  # legacy accessor still used in some paths
-    get_user_projects,  # used for available project listing
     get_session_data,
 )
 
-# NEW: user-group utilities --------------------------------------------------
+# User-group utilities
 from src.Util.db.db_user_groups import (
     get_user_group_by_hash,
     assign_user_to_group,
     get_projects_for_user_group,
     get_user_groups_in_project,
     get_user_groups_in_project_by_hash,
+    get_user_accessible_projects,  # canonical function for user project access
 )
 
 # Global role system permission resolver
@@ -190,7 +190,7 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         # Prepare convenience collections ----------------------------------
         group_names = [g.group_name for g in groups]
 
-        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+        available_projects = get_user_accessible_projects(user.id)
 
         # Consumer-specific session data additions
         session_specific = {
@@ -351,7 +351,7 @@ def enhanced_register(
             permissions = []
         session_data.update({'groups': groups, 'permissions': permissions})
         # Get all projects accessible to the user
-        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+        available_projects = get_user_accessible_projects(user.id)
 
     elif user_type == "admin":
         assigned_project_id = default_project_id
@@ -362,7 +362,7 @@ def enhanced_register(
             'permissions': permissions,
             'groups': groups,
         })
-        available_projects = [proj for proj, _ in get_user_projects(user.id)]
+        available_projects = get_user_accessible_projects(user.id)
 
     elif user_type == "root":
         groups = ['root_users']
@@ -466,7 +466,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         except Exception as e:
             logger.warning(f"Failed to load global role permissions for user {session_data['user_id']}: {str(e)}")
             permissions = []
-        available_projects = [proj for proj, _ in get_user_projects(session_data['user_id'])]
+        available_projects = get_user_accessible_projects(session_data['user_id'])
     else:
         return None
 

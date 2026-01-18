@@ -67,7 +67,7 @@ class AddMemberToProjectResponse(BaseModel):
 
 @router.get("", response_model=ListProjectsResponse)
 async def list_projects(
-        limit: int = Query(10, ge=1, le=100),
+        limit: int = Query(10, ge=1, le=500),
         offset: int = Query(0, ge=0),
         search: str = Query(None),
         credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -1000,7 +1000,9 @@ async def list_project_user_groups(
             group_hash=grp.group_hash,
             group_name=grp.group_name,
             description=grp.group_description,
-            created_at=grp.created_at
+            member_count=grp.member_count,
+            created_at=grp.created_at,
+            updated_at=grp.updated_at
         ))
 
     pagination = PaginationInfo(

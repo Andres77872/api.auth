@@ -32,7 +32,7 @@ The Magic Auth system implements comprehensive auditing at multiple levels:
 
 ### Key Features
 
-- **Automatic Trigger-Based Logging**: 42+ triggers log CRUD operations automatically
+- **Automatic Trigger-Based Logging**: 46 triggers log CRUD operations automatically
 - **40 Predefined Activity Types**: Categorized activities with severity levels
 - **Error Tracking**: Always logs regardless of DEBUG_MODE
 - **Alert System**: Automatic alerting for error patterns
@@ -668,7 +668,7 @@ CALL sp_get_activity_by_code('user_login');
 
 ### Activity Logging Triggers - Permissions
 
-**File**: `triggers/02_permission_activity_triggers.sql` (21 triggers)
+**File**: `triggers/02_permission_activity_triggers.sql` (25 triggers)
 
 | Table | Triggers | Activity Types |
 |-------|----------|----------------|

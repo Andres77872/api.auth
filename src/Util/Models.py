@@ -37,6 +37,7 @@ class User(BaseModelConfig):
     updated_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
     is_active: bool = True
+    assigned_at: Optional[datetime] = None  # When user was assigned to a group (from membership record)
 
 
 class Project(BaseModelConfig):
@@ -59,6 +60,8 @@ class UserGroup(BaseModelConfig):
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_active: bool = True
+    joined_at: Optional[datetime] = None  # When user joined this group (from membership record)
+    member_count: Optional[int] = None  # Number of members in the group
 
 
 class ProjectGroup(BaseModelConfig):
@@ -908,7 +911,7 @@ class EnhancedUserLogin(BaseModelConfig):
     user_project_id: Optional[str] = None
     groups: List[str] = Field(default_factory=list)
     permissions: List[str] = Field(default_factory=list)
-    available_projects: List[ProjectInfo] = Field(default_factory=list)
+    available_projects: List['ProjectSummary'] = Field(default_factory=list)
     user_type: str = 'consumer'
     assigned_project_id: Optional[str] = None
 
