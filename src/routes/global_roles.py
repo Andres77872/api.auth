@@ -10,7 +10,7 @@ This module implements REST API endpoints for the new global role system where:
 
 import logging
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
@@ -769,84 +769,10 @@ async def get_my_role(session_data=Depends(require_valid_session)):
     }
 
 
-@router.get("/users/me/permissions")
-async def get_my_permissions(session_data=Depends(require_valid_session)):
-    """Get current user's permissions (GLOBAL - works everywhere)"""
-    # Check if user exists (including inactive)
-    user = get_user_by_hash(session_data.user_hash, include_inactive=True)
-    if not user:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND,
-            details={"user_hash": session_data.user_hash}
-        )
-    
-    # Check if user is active
-    if not user.is_active:
-        raise AuthorizationError(
-            message="User account is inactive",
-            error_code=ErrorCode.ACCOUNT_INACTIVE,
-            details={"user_hash": session_data.user_hash}
-        )
-    
-    # Root users have all permissions
-    if user.user_type == 'root':
-        return {
-            "success": True,
-            "user": {"user_hash": session_data.user_hash, "username": user.username},
-            "permissions": ["*"],
-            "note": "Root user has all permissions"
-        }
-    
-    permissions = global_roles.get_user_permissions(user.id)
-    
-    return {
-        "success": True,
-        "user": {"user_hash": session_data.user_hash, "username": user.username},
-        "permissions": permissions,
-        "total": len(permissions)
-    }
-
-
-@router.get("/users/me/permissions/check/{permission_name}")
-async def check_my_permission(permission_name: str, session_data=Depends(require_valid_session)):
-    """Check if current user has a specific permission"""
-    # Check if user exists (including inactive)
-    user = get_user_by_hash(session_data.user_hash, include_inactive=True)
-    if not user:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND,
-            details={"user_hash": session_data.user_hash}
-        )
-    
-    # Check if user is active
-    if not user.is_active:
-        raise AuthorizationError(
-            message="User account is inactive",
-            error_code=ErrorCode.ACCOUNT_INACTIVE,
-            details={"user_hash": session_data.user_hash}
-        )
-    
-    # Root users have all permissions
-    if user.user_type == 'root':
-        return {
-            "success": True,
-            "permission": permission_name,
-            "has_permission": True,
-            "reason": "Root user",
-            "checked_at": datetime.utcnow().isoformat() + "Z"
-        }
-    
-    has_permission = global_roles.check_user_has_permission(user.id, permission_name)
-    
-    return {
-        "success": True,
-        "permission": permission_name,
-        "has_permission": has_permission,
-        "checked_at": datetime.utcnow().isoformat() + "Z"
-    }
-
+# NOTE: /users/me/permissions and /users/me/permissions/check/{name} routes
+# have been moved to permission_assignments.py which uses the extended
+# permission checking function (check_user_has_permission_extended).
+# These duplicate routes were removed to eliminate shadowing.
 
 # =============================================================================
 # USER ROLE ASSIGNMENT ENDPOINTS

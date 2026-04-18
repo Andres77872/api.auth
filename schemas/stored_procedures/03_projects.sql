@@ -243,6 +243,52 @@ BEGIN
     ORDER BY user_type, username;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_get_project_members_paginated$$
+CREATE PROCEDURE sp_get_project_members_paginated(
+    IN p_project_id VARCHAR(64),
+    IN p_user_type VARCHAR(20),
+    IN p_limit INT,
+    IN p_offset INT
+)
+BEGIN
+    SELECT DISTINCT u.id,
+                    u.user_hash,
+                    u.username,
+                    u.email,
+                    u.user_type,
+                    u.is_active,
+                    u.created_at,
+                    vupa.access_granted_at,
+                    NULL AS granted_by
+    FROM users u
+    INNER JOIN v_user_project_access vupa ON u.id = vupa.user_id
+    WHERE u.is_active = 1
+      AND vupa.project_id = p_project_id
+      AND (p_user_type IS NULL OR u.user_type = p_user_type)
+    ORDER BY u.user_type, u.username
+    LIMIT p_limit OFFSET p_offset;
+
+    SELECT COUNT(DISTINCT u.id) AS total_count
+    FROM users u
+    INNER JOIN v_user_project_access vupa ON u.id = vupa.user_id
+    WHERE u.is_active = 1
+      AND vupa.project_id = p_project_id
+      AND (p_user_type IS NULL OR u.user_type = p_user_type);
+END$$
+
+DROP PROCEDURE IF EXISTS sp_find_admin_group_for_project$$
+CREATE PROCEDURE sp_find_admin_group_for_project(IN p_project_id VARCHAR(64))
+BEGIN
+    SELECT DISTINCT ug.id
+    FROM user_groups ug
+    INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+    INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
+    WHERE pgm.project_id = p_project_id
+      AND ug.group_name = CONCAT('admin_', p_project_id)
+      AND ug.is_active = 1
+    LIMIT 1;
+END$$
+
 DROP PROCEDURE IF EXISTS sp_get_admin_assigned_projects$$
 CREATE PROCEDURE sp_get_admin_assigned_projects(IN p_user_id VARCHAR(64))
 BEGIN

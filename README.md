@@ -124,8 +124,8 @@ curl http://localhost:8000/system/ping
 | `/projects/{hash}/groups` | GET | Get project groups |
 | `/projects/{hash}/activity` | GET | Get project activity |
 | `/projects/{hash}/stats` | GET | Get project statistics |
-| `/projects/{hash}/owner` | PUT | Change project owner |
-| `/projects/{hash}/archive` | POST | Archive project |
+| `/projects/{hash}/owner` | PATCH | Change project owner (**currently 501**) |
+| `/projects/{hash}/archive` | PATCH | Archive/unarchive project (**currently 501**) |
 
 ### User Groups (`/admin/user-groups`)
 | Endpoint | Method | Description |
@@ -256,8 +256,8 @@ curl -X GET "http://localhost:8000/users/profile" \
 |----------|-------------|
 | [Authentication](docs/USAGE/authentication-usage-cases.md) | Login, sessions, project switching |
 | [Users](docs/USAGE/users-usage-cases.md) | Profile, admin operations |
-| [Groups](docs/USAGE/groups-usage-cases.md) | User groups, project groups |
-| [Projects](docs/USAGE/projects-usage-cases.md) | Project management |
+| [Groups](docs/USAGE/groups/README.md) | User groups, project groups, flows, troubleshooting |
+| [Projects](docs/USAGE/projects/README.md) | Project management suite |
 | [Permissions](docs/USAGE/permissions-usage-cases.md) | Roles, permissions |
 | [Admin](docs/USAGE/admin-usage-cases.md) | Dashboard, bulk ops, cache |
 
@@ -286,7 +286,7 @@ services:
 # Database
 DB_MYSQL_PASSWORD=your_mysql_password
 DB_HOST=192.168.1.90
-DB_DATABASE=magic-auth
+DB_NAME=magic-auth
 
 # JWT
 JWT_SECRET_KEY=your_secure_jwt_secret_key

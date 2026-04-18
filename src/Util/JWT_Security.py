@@ -20,8 +20,9 @@ class JWTTokenHandler:
     """
 
     @staticmethod
-    def create_access_token(session_id: int, user_hash: str, collection: str,
-                            expires_delta: Optional[timedelta] = None) -> str:
+    def create_access_token(session_id: int, user_hash: str, collection: Optional[str] = None,
+                            expires_delta: Optional[timedelta] = None,
+                            scope: Optional[str] = None) -> str:
         """
         Create a JWT access token with session data
         
@@ -30,6 +31,7 @@ class JWTTokenHandler:
             user_hash: User hash for identification
             collection: Collection identifier
             expires_delta: Token expiration time
+            scope: Optional session scope marker
             
         Returns:
             JWT token string
@@ -48,6 +50,9 @@ class JWTTokenHandler:
             "iat": datetime.now(timezone.utc),
             "type": "access_token"
         }
+
+        if scope:
+            payload["scope"] = scope
 
         return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 

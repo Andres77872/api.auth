@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 import pymysql
 
 from src.Util.Models import (
-    User, UserGroup, UserGroupMember, UserGroupProject, ProjectSummary
+    User, UserGroup, UserGroupMember, ProjectSummary
 )
 from src.Util.db_config import get_connection
 from src.Util.uuid_generator import generate_user_group_id, generate_user_group_project_id, \
@@ -334,6 +334,8 @@ def assign_user_to_group(user_id: str, user_group_id: str, assigned_by: str = No
             member_id = generate_user_group_member_id()
             try:
                 cur.callproc('sp_assign_user_to_group', [member_id, user_id, user_group_id, assigned_by])
+                while cur.nextset():
+                    pass
                 con.commit()
 
                 return UserGroupMember(
@@ -348,8 +350,12 @@ def assign_user_to_group(user_id: str, user_group_id: str, assigned_by: str = No
             except pymysql.IntegrityError:
                 # User already in group, reactivate if needed
                 cur.callproc('sp_reactivate_user_group_membership', [user_id, user_group_id, assigned_by])
+                result = cur.fetchone()
+                while cur.nextset():
+                    pass
 
-                if cur.rowcount > 0:
+                rows_affected = result[0] if result else 0
+                if rows_affected > 0:
                     con.commit()
                     return get_user_group_membership(user_id, user_group_id)
 

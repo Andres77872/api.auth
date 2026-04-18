@@ -19,7 +19,7 @@ Endpoints:
 
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, Form
@@ -859,11 +859,10 @@ async def reset_user_password(
             "email": target_user.email
         },
         "reset_data": {
-            "temporary_password": temp_password,
             "expires_at": reset_data["expires_at"],
             "must_change_on_login": True
         },
-        "instructions": "User must change password on next login"
+        "instructions": "User must change password on next login. Temporary password was delivered out-of-band."
     }
 
 
@@ -986,7 +985,7 @@ async def delete_user_endpoint(
         "message": f"User '{target_user.username}' has been deleted",
         "user_hash": target_user.user_hash,
         "username": target_user.username,
-        "deleted_at": datetime.utcnow().isoformat() + "Z"
+        "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 

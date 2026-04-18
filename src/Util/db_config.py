@@ -10,22 +10,40 @@ import os
 import pymysql
 import redis
 
-# Database connection settings
-DB_HOST = "192.168.1.90"
-# DB_HOST = "127.0.0.1"
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if value is None or not str(value).strip():
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _get_int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not str(value).strip():
+        return default
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid integer value for environment variable {name}: {value}") from exc
+
 
 CONNECTION_CONFIG = {
-    "host": DB_HOST,
-    "user": "root",
-    "password": os.environ.get("DB_MYSQL_PASSWORD"),
-    "database": "magic_auth"
+    "host": _require_env("DB_HOST"),
+    "port": _get_int_env("DB_PORT", 3306),
+    "user": _require_env("DB_USER"),
+    "password": _require_env("DB_MYSQL_PASSWORD"),
+    "database": _require_env("DB_NAME"),
+    "charset": "utf8mb4",
+    "autocommit": False,
 }
 
 # Redis connection configuration
 REDIS_CONFIG = {
-    "host": DB_HOST,
-    "port": 6379,
-    "db": 0,
+    "host": _require_env("REDIS_HOST"),
+    "port": _get_int_env("REDIS_PORT", 6379),
+    "db": _get_int_env("REDIS_DB", 0),
     "password": os.environ.get("DB_REDIS_PASSWORD")
 }
 

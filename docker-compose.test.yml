@@ -1,0 +1,60 @@
+# docker-compose.test.yml — MySQL 8.0 + Redis for real-DB integration tests
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   pytest -m real_db -v
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  mysql-test:
+    image: mysql:8.0
+    container_name: api-auth-mysql-test
+    environment:
+      MYSQL_ROOT_PASSWORD: test_root
+      MYSQL_DATABASE: magic_auth
+      MYSQL_USER: test_user
+      MYSQL_PASSWORD: test_mysql_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./schemas/tables/01_create_database.sql:/docker-entrypoint-initdb.d/01_create_database.sql
+      - ./schemas/tables/02_create_tables.sql:/docker-entrypoint-initdb.d/02_create_tables.sql
+      - ./schemas/tables/03_create_indexes.sql:/docker-entrypoint-initdb.d/03_create_indexes.sql
+      - ./schemas/tables/04_add_constraints.sql:/docker-entrypoint-initdb.d/04_add_constraints.sql
+      - ./schemas/tables/05_initialize_data.sql:/docker-entrypoint-initdb.d/05_initialize_data.sql
+      - ./schemas/tables/06_create_views.sql:/docker-entrypoint-initdb.d/06_create_views.sql
+      - ./schemas/tables/07_error_logs.sql:/docker-entrypoint-initdb.d/07_error_logs.sql
+      - ./schemas/tables/08_activity_logging_tables.sql:/docker-entrypoint-initdb.d/08_activity_logging_tables.sql
+      - ./schemas/stored_procedures/01_user_management.sql:/docker-entrypoint-initdb.d/10_sp_01_user_management.sql
+      - ./schemas/stored_procedures/02_user_groups.sql:/docker-entrypoint-initdb.d/11_sp_02_user_groups.sql
+      - ./schemas/stored_procedures/03_projects.sql:/docker-entrypoint-initdb.d/12_sp_03_projects.sql
+      - ./schemas/stored_procedures/04_project_groups.sql:/docker-entrypoint-initdb.d/13_sp_04_project_groups.sql
+      - ./schemas/stored_procedures/05_global_roles.sql:/docker-entrypoint-initdb.d/14_sp_05_global_roles.sql
+      - ./schemas/stored_procedures/06_permission_assignments.sql:/docker-entrypoint-initdb.d/15_sp_06_permission_assignments.sql
+      - ./schemas/stored_procedures/07_sessions_analytics.sql:/docker-entrypoint-initdb.d/16_sp_07_sessions_analytics.sql
+      - ./schemas/stored_procedures/08_admin_operations.sql:/docker-entrypoint-initdb.d/17_sp_08_admin_operations.sql
+      - ./schemas/stored_procedures/09_system_maintenance.sql:/docker-entrypoint-initdb.d/18_sp_09_system_maintenance.sql
+      - ./schemas/stored_procedures/10_error_logging.sql:/docker-entrypoint-initdb.d/19_sp_10_error_logging.sql
+      - ./schemas/stored_procedures/11_activity_logging.sql:/docker-entrypoint-initdb.d/20_sp_11_activity_logging.sql
+      - ./schemas/stored_procedures/12_activity_context.sql:/docker-entrypoint-initdb.d/21_sp_12_activity_context.sql
+      - ./schemas/triggers/01_activity_logging_triggers.sql:/docker-entrypoint-initdb.d/30_tr_01_activity_logging.sql
+      - ./schemas/triggers/02_permission_activity_triggers.sql:/docker-entrypoint-initdb.d/31_tr_02_permission_activity.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: api-auth-redis-test
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s

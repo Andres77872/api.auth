@@ -675,9 +675,12 @@ def create_default_project_groups():
 
 # =================== UTILITIES ===================
 
-def count_project_groups() -> int:
+def count_project_groups(search: str = None) -> int:
     """
     Count total number of active project groups using stored procedure.
+    
+    Args:
+        search: Optional search term to filter by group_name (LIKE)
     
     Returns:
         Count of active project groups
@@ -688,7 +691,7 @@ def count_project_groups() -> int:
     def _count():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_count_project_groups', [])
+            cur.callproc('sp_count_project_groups', [search])
             
             result = cur.fetchone()
             
@@ -700,7 +703,7 @@ def count_project_groups() -> int:
     
     return handle_db_operation(
         _count,
-        error_context="count_project_groups()"
+        error_context=f"count_project_groups(search={search})"
     )
 
 

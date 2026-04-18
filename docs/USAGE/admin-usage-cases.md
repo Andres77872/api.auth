@@ -2,6 +2,11 @@
 
 Complete practical guide for admin dashboard operations, system monitoring, bulk operations, and cache management.
 
+> For activity logs and audit details, see [Audit Logs Documentation Suite](audit_logs/README.md).
+> For error codes, see [Error Reference](errors.md).
+
+> **Important**: Every request MUST include a `User-Agent` header. Missing it returns `422`.
+
 ---
 
 ## 📖 Table of Contents
@@ -167,101 +172,9 @@ curl -X GET "http://localhost:8000/admin/system/overview" \
 
 ## Activity Monitoring
 
-### Get Activity Feed
+> **Note**: The activity feed (`/admin/activity`) and activity types (`/admin/activity/types`) are documented here for quick reference. For comprehensive audit log coverage including API audit logs, security events, export functionality, audit statistics, and detailed filtering, see [Audit Logs Usage Guide](audit_logs/usage.md).
 
-**Scenario**: View recent system activities with filtering.
-
-```bash
-# Basic activity feed
-curl -X GET "http://localhost:8000/admin/activity" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# With pagination
-curl -X GET "http://localhost:8000/admin/activity?limit=50&offset=0" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# Filter by activity type
-curl -X GET "http://localhost:8000/admin/activity?activity_type_filter=user_login" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# Filter by user
-curl -X GET "http://localhost:8000/admin/activity?user_id=123" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# Filter by project
-curl -X GET "http://localhost:8000/admin/activity?project_id=456" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# Custom time range
-curl -X GET "http://localhost:8000/admin/activity?days=7" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "activities": [
-    {
-      "id": 12345,
-      "activity_type": "user_login",
-      "details": {"message": "User logged in successfully"},
-      "created_at": "2024-03-25T10:25:00Z",
-      "user": {
-        "id": 123,
-        "username": "john_doe",
-        "user_hash": "usr-abc123..."
-      },
-      "project": {
-        "id": 456,
-        "name": "API v2",
-        "hash": "proj-xyz789..."
-      },
-      "target_user": null,
-      "ip_address": "192.168.1.100"
-    }
-  ],
-  "pagination": {
-    "total": 1580,
-    "limit": 50,
-    "offset": 0,
-    "has_more": true,
-    "next_offset": 50
-  },
-  "filters": {
-    "activity_type": null,
-    "user_id": null,
-    "project_id": null,
-    "days": 30
-  },
-  "generated_at": "2024-03-25T10:30:00Z"
-}
-```
-
-### Get Activity Types
-
-**Scenario**: Get list of available activity types for filtering.
-
-```bash
-curl -X GET "http://localhost:8000/admin/activity/types" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "activity_types": [
-    "user_login",
-    "user_logout",
-    "user_registration",
-    "user_update",
-    "admin_action",
-    "permission_change",
-    "group_membership_change",
-    "project_access_change"
-  ],
-  "generated_at": "2024-03-25T10:30:00Z"
-}
-```
+For full endpoint documentation, query parameters, response shapes, and examples, see the canonical source: **[Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard)**.
 
 ---
 
@@ -281,7 +194,7 @@ curl -X GET "http://localhost:8000/system/info"
   "success": true,
   "system": {
     "name": "Group-Based Multi-Project Authentication API",
-    "version": "1.0.0",
+    "version": "2.2.0",
     "architecture": "hierarchical-group-based",
     "status": "operational"
   },
@@ -474,398 +387,59 @@ curl -X POST "http://localhost:8000/system/cache/invalidate/project/456" \
 
 ## User Type Management
 
-### Create ROOT User
+User-type lifecycle is now documented in the dedicated users suite.
 
-**Scenario**: Create a new root (super admin) user.
+Use it for:
 
-```bash
-curl -X POST "http://localhost:8000/user-types/root" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_root&password=SecurePassword123!&email=root@example.com"
-```
+- root/admin user creation
+- type inspection and type changes
+- list-by-type and stats
+- caveats about overlapping `/users/{hash}/type` vs `/user-types/{hash}/type`
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Root user 'new_root' created successfully",
-  "user": {
-    "user_hash": "usr-xxx...",
-    "username": "new_root",
-    "email": "root@example.com",
-    "user_type": "root",
-    "created_at": "2024-03-25T10:30:00Z"
-  }
-}
-```
+Start here:
 
-### Create ADMIN User
-
-**Scenario**: Create a new admin user with project assignment.
-
-```bash
-# Assign to single project
-curl -X POST "http://localhost:8000/user-types/admin" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_admin&password=SecurePassword123!&email=admin@example.com&assigned_project_id=1"
-
-# Assign to multiple projects
-curl -X POST "http://localhost:8000/user-types/admin" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_admin&password=SecurePassword123!&email=admin@example.com&assigned_project_ids=1&assigned_project_ids=2&assigned_project_ids=3"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Admin user 'new_admin' created and assigned to 3 project(s)",
-  "user": {
-    "user_hash": "usr-xxx...",
-    "username": "new_admin",
-    "email": "admin@example.com",
-    "user_type": "admin",
-    "assigned_project_ids": ["1", "2", "3"],
-    "assigned_projects": [
-      {"project_id": 1, "project_hash": "proj-xxx...", "project_name": "Project A"},
-      {"project_id": 2, "project_hash": "proj-yyy...", "project_name": "Project B"},
-      {"project_id": 3, "project_hash": "proj-zzz...", "project_name": "Project C"}
-    ],
-    "primary_project_id": "1",
-    "created_at": "2024-03-25T10:30:00Z",
-    "created_by": "root_admin"
-  }
-}
-```
-
-### Get Users by Type
-
-**Scenario**: List all users of a specific type.
-
-```bash
-# List all admin users
-curl -X GET "http://localhost:8000/user-types/users/admin?limit=100&offset=0" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN"
-
-# List all root users
-curl -X GET "http://localhost:8000/user-types/users/root?limit=100&offset=0" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN"
-
-# List all consumer users
-curl -X GET "http://localhost:8000/user-types/users/consumer?limit=100&offset=0" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "users": [
-    {
-      "user_hash": "usr-xxx...",
-      "username": "admin_user",
-      "email": "admin@example.com",
-      "user_type": "admin",
-      "created_at": "2024-01-15T10:30:00Z",
-      "is_active": true,
-      "assigned_project": {
-        "project_id": 1,
-        "project_hash": "proj-xxx...",
-        "project_name": "Project A"
-      }
-    }
-  ],
-  "pagination": {
-    "limit": 100,
-    "offset": 0,
-    "total": 15,
-    "has_more": false
-  },
-  "filter": {
-    "user_type": "admin",
-    "project_filter": null
-  }
-}
-```
-
-### Get User Type Statistics
-
-**Scenario**: View breakdown of users by type.
-
-```bash
-curl -X GET "http://localhost:8000/user-types/stats" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "statistics": {
-    "total_users": 1250,
-    "user_types": {
-      "root": {"count": 2, "percentage": 0.16},
-      "admin": {"count": 15, "percentage": 1.2},
-      "consumer": {"count": 1233, "percentage": 98.64}
-    },
-    "system_info": {
-      "user_type_system": "3-tier (root, admin, consumer)",
-      "access_model": "hierarchical",
-      "features": ["global-root-access", "project-scoped-admin", "rbac-consumer-users"]
-    },
-    "scope": {
-      "type": "global_root",
-      "access": "unrestricted"
-    }
-  }
-}
-```
+- **[Users - User Types](users/user-types.md)**
 
 ---
 
 ## Admin Project Management
 
-### Get Admin User's Projects
+Admin-project assignment is now documented as part of the users suite because it is a user-type lifecycle concern, not a generic dashboard concern.
 
-**Scenario**: View all projects assigned to an admin user.
+Use it for:
 
-```bash
-curl -X GET "http://localhost:8000/user-types/admin/usr-admin123.../projects" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN"
-```
+- listing assigned projects for an admin user
+- replacing the full assignment set
+- adding/removing one project at a time
+- understanding that assignments are implemented through admin-group membership
 
-**Response:**
-```json
-{
-  "success": true,
-  "user_hash": "usr-admin123...",
-  "assigned_projects": [
-    {
-      "project_id": "1",
-      "project_hash": "proj-xxx...",
-      "project_name": "Project A",
-      "project_description": "Main project",
-      "assigned_at": "2024-01-15T10:30:00Z",
-      "assigned_by": "root_admin"
-    },
-    {
-      "project_id": "2",
-      "project_hash": "proj-yyy...",
-      "project_name": "Project B",
-      "project_description": "Secondary project",
-      "assigned_at": "2024-02-01T14:00:00Z",
-      "assigned_by": "root_admin"
-    }
-  ]
-}
-```
+Start here:
 
-### Update Admin User's Projects (Replace All)
-
-**Scenario**: Replace all project assignments for an admin user.
-
-```bash
-curl -X PUT "http://localhost:8000/user-types/admin/usr-admin123.../projects" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "assigned_project_ids=1&assigned_project_ids=3&assigned_project_ids=5"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Admin projects updated",
-  "user_hash": "usr-admin123...",
-  "assigned_projects": [
-    {"project_id": "1", "project_hash": "proj-xxx...", "project_name": "Project A", ...},
-    {"project_id": "3", "project_hash": "proj-zzz...", "project_name": "Project C", ...},
-    {"project_id": "5", "project_hash": "proj-vvv...", "project_name": "Project E", ...}
-  ],
-  "total_projects": 3
-}
-```
-
-### Add Admin to Project
-
-**Scenario**: Add an admin user to an additional project.
-
-```bash
-curl -X POST "http://localhost:8000/user-types/admin/usr-admin123.../projects/add" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_id=4"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Admin added to project",
-  "user_hash": "usr-admin123...",
-  "project_id": "4",
-  "project_hash": "proj-www...",
-  "project_name": "Project D"
-}
-```
-
-### Remove Admin from Project
-
-**Scenario**: Remove an admin user from a specific project.
-
-```bash
-curl -X DELETE "http://localhost:8000/user-types/admin/usr-admin123.../projects/4" \
-  -H "Authorization: Bearer YOUR_ROOT_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Admin removed from project",
-  "user_hash": "usr-admin123...",
-  "project_id": "4"
-}
-```
+- **[Users - User Types](users/user-types.md#admin-project-assignment-lifecycle)**
 
 ---
 
 ## Bulk Operations
 
-### Bulk Update Users
+User bulk update/delete is now documented in the users suite.
 
-**Scenario**: Update multiple users at once.
+Use it for:
 
-```bash
-curl -X POST "http://localhost:8000/admin/users/bulk-update" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-abc123...&user_hashes=usr-def456...&user_hashes=usr-ghi789...&is_active=true&user_type=consumer"
-```
+- route limits (`100` update / `50` delete)
+- confirmation requirements for delete
+- partial-failure handling
+- current implementation caveats on bulk update
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Bulk update completed: 3 succeeded, 0 failed",
-  "summary": {
-    "total_requested": 3,
-    "success_count": 3,
-    "error_count": 0,
-    "skipped_count": 0
-  },
-  "updates_applied": {
-    "is_active": true,
-    "user_type": "consumer"
-  },
-  "results": [
-    {"user_hash": "usr-abc123...", "status": "updated"},
-    {"user_hash": "usr-def456...", "status": "updated"},
-    {"user_hash": "usr-ghi789...", "status": "updated"}
-  ],
-  "errors": [],
-  "performed_by": "admin_user",
-  "performed_at": "2024-03-25T10:30:00Z"
-}
-```
+Start here:
 
-### Bulk Delete Users
-
-**Scenario**: Delete multiple users at once.
-
-```bash
-curl -X POST "http://localhost:8000/admin/users/bulk-delete" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-abc123...&user_hashes=usr-def456...&confirm_deletion=true"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Bulk deletion completed: 2 deleted, 0 failed",
-  "summary": {
-    "total_requested": 2,
-    "success_count": 2,
-    "error_count": 0,
-    "protected_count": 0
-  },
-  "results": [
-    {"user_hash": "usr-abc123...", "status": "deleted"},
-    {"user_hash": "usr-def456...", "status": "deleted"}
-  ],
-  "errors": [],
-  "warnings": [],
-  "performed_by": "admin_user",
-  "performed_at": "2024-03-25T10:30:00Z"
-}
-```
+- **[Users - Bulk Operations](users/bulk-operations.md)**
 
 ### Bulk Assign Roles in Project
 
-**Scenario**: Assign roles to multiple users in a project.
-
-```bash
-curl -X POST "http://localhost:8000/admin/projects/proj-xyz789.../bulk-assign-roles" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-abc123...&user_hashes=usr-def456...&role_names=developer&role_names=reviewer"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Bulk role assignment completed: 4 succeeded, 0 failed",
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "API v2"
-  },
-  "roles_assigned": ["developer", "reviewer"],
-  "summary": {
-    "total_requested": 2,
-    "success_count": 4,
-    "error_count": 0
-  },
-  "results": [...],
-  "errors": [],
-  "performed_by": "admin_user",
-  "performed_at": "2024-03-25T10:30:00Z"
-}
-```
-
-### Bulk Assign Users to Groups
-
-**Scenario**: Assign multiple users to multiple groups.
-
-```bash
-curl -X POST "http://localhost:8000/admin/user-groups/bulk-assign" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-abc123...&user_hashes=usr-def456...&group_names=developers&group_names=qa_team"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Bulk group assignment completed: 4 succeeded, 0 failed",
-  "groups_assigned": ["developers", "qa_team"],
-  "summary": {
-    "total_requested": 2,
-    "success_count": 4,
-    "error_count": 0
-  },
-  "results": [...],
-  "errors": [],
-  "performed_by": "admin_user",
-  "performed_at": "2024-03-25T10:30:00Z"
-}
-```
+> **WARNING**: This endpoint is **currently broken** due to a parameter mismatch between the route and the utility function. It returns errors for every assignment. Do not use it in production.
+>
+> **Workaround**: Assign roles individually via `PUT /roles/users/{user_hash}/role`.
+> See [Roles Troubleshooting → Bulk role assignment](roles/troubleshooting.md#bulk-role-assignment-always-fails) for details.
 
 ---
 
@@ -1038,26 +612,6 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 
 ## Quick Reference
 
-### User Type Management Endpoints
-
-| Operation | Endpoint | Method | Permission |
-|-----------|----------|--------|------------|
-| Create ROOT user | `/user-types/root` | POST | Root only |
-| Create ADMIN user | `/user-types/admin` | POST | Root only |
-| Get user type info | `/user-types/{user_hash}/info` | GET | Admin/Root |
-| Update user type | `/user-types/{user_hash}/type` | PUT | Root only |
-| List users by type | `/user-types/users/{type}` | GET | Admin/Root |
-| User type stats | `/user-types/stats` | GET | Admin/Root |
-
-### Admin Project Management Endpoints
-
-| Operation | Endpoint | Method | Permission |
-|-----------|----------|--------|------------|
-| Get admin projects | `/user-types/admin/{user_hash}/projects` | GET | Root only |
-| Update admin projects | `/user-types/admin/{user_hash}/projects` | PUT | Root only |
-| Add admin to project | `/user-types/admin/{user_hash}/projects/add` | POST | Root only |
-| Remove from project | `/user-types/admin/{user_hash}/projects/{project_id}` | DELETE | Root only |
-
 ### Admin Dashboard Endpoints
 
 | Operation | Endpoint | Method | Permission |
@@ -1067,6 +621,7 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 | Project statistics | `/admin/projects/statistics` | GET | Admin/Root |
 | System overview | `/admin/system/overview` | GET | Admin/Root |
 | Activity feed | `/admin/activity` | GET | Admin/Root |
+| Activity detail | `/admin/activity/{activity_id}` | GET | Admin/Root |
 | Activity types | `/admin/activity/types` | GET | Admin/Root |
 | Admin health | `/admin/health` | GET | Admin/Root |
 
@@ -1086,10 +641,12 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 
 | Operation | Endpoint | Method | Permission |
 |-----------|----------|--------|------------|
-| Bulk update users | `/admin/users/bulk-update` | POST | Admin |
-| Bulk delete users | `/admin/users/bulk-delete` | POST | Admin |
+| Bulk update users | `/admin/users/bulk-update` | POST | Admin / `manage_users` |
+| Bulk delete users | `/admin/users/bulk-delete` | POST | Admin / `manage_users` |
 | Bulk assign roles | `/admin/projects/{hash}/bulk-assign-roles` | POST | Admin |
 | Bulk assign groups | `/admin/user-groups/bulk-assign` | POST | Admin |
+
+See detailed behavior in **[Users - Bulk Operations](users/bulk-operations.md)**.
 
 ### Bulk Operation Limits
 
@@ -1100,25 +657,29 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 | Bulk role assign | 100 users | No |
 | Bulk group assign | 100 users | No |
 
-### Role Catalog Endpoints (Metadata Only)
+### Cross-Reference Links
 
-| Operation | Endpoint | Method | Permission |
-|-----------|----------|--------|------------|
-| Add role to project catalog | `/roles/projects/{hash}/catalog/roles/{role_hash}` | POST | Admin/Root |
-| Get project cataloged roles | `/roles/projects/{hash}/catalog/roles` | GET | Authenticated |
-| Remove role from catalog | `/roles/projects/{hash}/catalog/roles/{role_hash}` | DELETE | Admin/Root |
+| Topic | Canonical Doc |
+|-------|--------------|
+| User type lifecycle | [Users - User Types](users/user-types.md) |
+| Admin project assignment | [Users - User Types](users/user-types.md#admin-project-assignment-lifecycle) |
+| Activity feed & API audit logs | [Audit Logs Suite](audit_logs/README.md) |
+| Role catalog (metadata only) | [Roles - Usage](roles/usage.md) |
 
 ---
 
 ## Related Documentation
 
+- **[Audit Logs Documentation Suite](audit_logs/README.md)** — Activity feed, API audit logs, security events, export, and audit statistics
+- **[Error Reference](errors.md)** — Error codes and troubleshooting
+- **[Getting Started](getting-started.md)** — Platform setup and first steps
 - **[Authentication Usage Cases](authentication-usage-cases.md)** - Login, sessions
-- **[Users Usage Cases](users-usage-cases.md)** - User management
-- **[Groups Usage Cases](groups-usage-cases.md)** - Group management
-- **[Permissions Usage Cases](permissions-usage-cases.md)** - Permission management
-- **[Audit Log Usage Cases](audit-log-usage-cases.md)** - Event logs, security events
+- **[Users Documentation Suite](users/README.md)** - User management, user types, bulk user operations
+- **[Groups Documentation Suite](groups/README.md)** - Group management, flow, and troubleshooting
+- **[Projects Documentation Suite](projects/README.md)** - Project management and access control
+- **[Permissions Documentation Suite](permissions/README.md)** - Permission management
 
 ---
 
-**Last Updated**: December 2024
-**Document Version**: 1.0
+**Last Updated**: April 2026
+**API Version**: 2.2.0

@@ -16,8 +16,8 @@ Features:
 import hashlib
 import json
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, Iterator, List
 
 from src.Util.db_config import redis_client
 
@@ -45,6 +45,48 @@ class CacheManager:
 
     def __init__(self):
         self.redis = redis_client
+
+    def _iter_keys(self, pattern: str, count: int = 100) -> Iterator[Any]:
+        """Iterate keys with SCAN instead of blocking Redis with KEYS."""
+        yield from self.redis.scan_iter(match=pattern, count=count)
+
+    def _delete_keys(self, keys: List[Any]) -> int:
+        if not keys:
+            return 0
+        return int(self.redis.delete(*keys))
+
+    def _delete_pattern(self, pattern: str, batch_size: int = 100) -> int:
+        deleted_count = 0
+        batch: List[Any] = []
+
+        for key in self._iter_keys(pattern, count=batch_size):
+            batch.append(key)
+            if len(batch) >= batch_size:
+                deleted_count += self._delete_keys(batch)
+                batch.clear()
+
+        deleted_count += self._delete_keys(batch)
+        return deleted_count
+
+    def _count_pattern(self, pattern: str, batch_size: int = 100) -> int:
+        return sum(1 for _ in self._iter_keys(pattern, count=batch_size))
+
+    def invalidate_user_sessions(self, user_id: str) -> int:
+        invalidated_count = 0
+
+        for key in self._iter_keys(f"{SESSION_PREFIX}*", count=100):
+            try:
+                session_data = self.redis.get(key)
+                if not session_data:
+                    continue
+
+                data = json.loads(session_data)
+                if data.get('user_id') == user_id:
+                    invalidated_count += int(self.redis.delete(key))
+            except Exception:
+                continue
+
+        return invalidated_count
 
     # =============================================================================
     # CACHE KEY GENERATION
@@ -219,7 +261,7 @@ class CacheManager:
 
             permission_data = {
                 "has_permission": has_permission,
-                "checked_at": datetime.utcnow().isoformat() + "Z",
+                "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "user_id": user_id,
                 "permission": permission
             }
@@ -284,7 +326,7 @@ class CacheManager:
 
             type_data = {
                 "user_type": user_type,
-                "cached_at": datetime.utcnow().isoformat() + "Z",
+                "cached_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "user_id": user_id
             }
 
@@ -354,23 +396,10 @@ class CacheManager:
 
             deleted_count = 0
             for pattern in patterns:
-                keys = self.redis.keys(pattern)
-                if keys:
-                    deleted_count += self.redis.delete(*keys)
+                deleted_count += self._delete_pattern(pattern)
             
             # Also invalidate all sessions for this user
-            # Sessions are stored with session token as key, so we need to check each one
-            session_keys = self.redis.keys(f"{SESSION_PREFIX}*")
-            for key in session_keys:
-                try:
-                    session_data = self.redis.get(key)
-                    if session_data:
-                        data = json.loads(session_data)
-                        if data.get('user_id') == user_id:
-                            self.redis.delete(key)
-                            deleted_count += 1
-                except Exception:
-                    continue
+            deleted_count += self.invalidate_user_sessions(user_id)
 
             logger.info(f"Invalidated {deleted_count} cache entries for user_{user_id}")
             return True
@@ -399,9 +428,7 @@ class CacheManager:
 
             deleted_count = 0
             for pattern in patterns:
-                keys = self.redis.keys(pattern)
-                if keys:
-                    deleted_count += self.redis.delete(*keys)
+                deleted_count += self._delete_pattern(pattern)
 
             logger.info(f"Invalidated {deleted_count} cache entries for project_{project_id}")
             return True
@@ -430,9 +457,7 @@ class CacheManager:
 
             deleted_count = 0
             for pattern in patterns:
-                keys = self.redis.keys(pattern)
-                if keys:
-                    deleted_count += self.redis.delete(*keys)
+                deleted_count += self._delete_pattern(pattern)
 
             logger.warning(f"FULL CACHE CLEAR: Invalidated {deleted_count} cache entries")
             return True
@@ -467,9 +492,7 @@ class CacheManager:
 
             deleted_count = 0
             for pattern in patterns:
-                keys = self.redis.keys(pattern)
-                if keys:
-                    deleted_count += self.redis.delete(*keys)
+                deleted_count += self._delete_pattern(pattern)
 
             scope = f"user_{user_id}" if user_id else "all_users"
             logger.info(f"Invalidated {deleted_count} role cache entries for {scope}")
@@ -492,12 +515,12 @@ class CacheManager:
         """
         try:
             stats = {
-                "sessions": len(self.redis.keys(f"{SESSION_PREFIX}*")),
-                "access_checks": len(self.redis.keys(f"{ACCESS_PREFIX}*")),
-                "permission_checks": len(self.redis.keys(f"{PERMISSION_PREFIX}*")),
-                "user_types": len(self.redis.keys(f"{USER_TYPE_PREFIX}*")),
-                "role_checks": len(self.redis.keys(f"{ROLE_PREFIX}*")),
-                "total_keys": len(self.redis.keys("*"))
+                "sessions": self._count_pattern(f"{SESSION_PREFIX}*"),
+                "access_checks": self._count_pattern(f"{ACCESS_PREFIX}*"),
+                "permission_checks": self._count_pattern(f"{PERMISSION_PREFIX}*"),
+                "user_types": self._count_pattern(f"{USER_TYPE_PREFIX}*"),
+                "role_checks": self._count_pattern(f"{ROLE_PREFIX}*"),
+                "total_keys": self._count_pattern("*")
             }
 
             return stats

@@ -11,7 +11,7 @@ import json
 import hashlib
 import logging
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.Util.db_config import get_connection
 
@@ -36,7 +36,7 @@ def generate_error_hash(
     Returns:
         SHA256 hash of the error signature
     """
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     signature = f"{error_code}|{error_message}|{request_path}|{function_name}|{timestamp}"
     return hashlib.sha256(signature.encode()).hexdigest()
 

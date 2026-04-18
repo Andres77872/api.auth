@@ -5,7 +5,7 @@ Uses stored procedures for all database operations
 
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import pymysql.cursors
 
@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 def generate_hash(prefix: str, value: str) -> str:
     """Generate a unique hash"""
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     hash_input = f"{prefix}:{value}:{timestamp}"
     return hashlib.sha256(hash_input.encode()).hexdigest()[:32]
 
 
 def generate_id(prefix: str) -> str:
     """Generate a unique ID"""
-    timestamp = datetime.utcnow().timestamp()
+    timestamp = datetime.now(timezone.utc).timestamp()
     hash_input = f"{prefix}:{timestamp}"
     return f"{prefix}_{hashlib.sha256(hash_input.encode()).hexdigest()[:16]}"
 
@@ -182,32 +182,19 @@ def update_permission_group(group_id: str, group_display_name: Optional[str] = N
                            group_description: Optional[str] = None, group_category: Optional[str] = None):
     """Update permission group details"""
     def _update():
+        if group_display_name is None and group_description is None and group_category is None:
+            return True
+
         with get_connection() as con:
-            cur = con.cursor()
-            # Build dynamic update query
-            updates = []
-            params = []
-            
-            if group_display_name is not None:
-                updates.append("group_display_name = %s")
-                params.append(group_display_name)
-            if group_description is not None:
-                updates.append("group_description = %s")
-                params.append(group_description)
-            if group_category is not None:
-                updates.append("group_category = %s")
-                params.append(group_category)
-            
-            if not updates:
-                return True  # Nothing to update
-            
-            updates.append("updated_at = NOW()")
-            params.append(group_id)
-            
-            query = f"UPDATE global_permission_groups SET {', '.join(updates)} WHERE id = %s AND is_active = 1"
-            cur.execute(query, params)
+            cur = con.cursor(pymysql.cursors.DictCursor)
+            cur.callproc('sp_global_update_permission_group', (
+                group_id, group_display_name, group_description, group_category
+            ))
+            result = cur.fetchone()
+            while cur.nextset():
+                pass
             con.commit()
-            return cur.rowcount > 0
+            return bool(result and result.get('rows_affected', 0) > 0)
     
     return handle_db_operation(
         _update,
@@ -293,32 +280,19 @@ def update_permission(permission_id: str, permission_display_name: Optional[str]
                      permission_description: Optional[str] = None, permission_category: Optional[str] = None):
     """Update permission details"""
     def _update():
+        if permission_display_name is None and permission_description is None and permission_category is None:
+            return True
+
         with get_connection() as con:
-            cur = con.cursor()
-            # Build dynamic update query
-            updates = []
-            params = []
-            
-            if permission_display_name is not None:
-                updates.append("permission_display_name = %s")
-                params.append(permission_display_name)
-            if permission_description is not None:
-                updates.append("permission_description = %s")
-                params.append(permission_description)
-            if permission_category is not None:
-                updates.append("permission_category = %s")
-                params.append(permission_category)
-            
-            if not updates:
-                return True  # Nothing to update
-            
-            updates.append("updated_at = NOW()")
-            params.append(permission_id)
-            
-            query = f"UPDATE global_permissions SET {', '.join(updates)} WHERE id = %s AND is_active = 1"
-            cur.execute(query, params)
+            cur = con.cursor(pymysql.cursors.DictCursor)
+            cur.callproc('sp_global_update_permission', (
+                permission_id, permission_display_name, permission_description, permission_category
+            ))
+            result = cur.fetchone()
+            while cur.nextset():
+                pass
             con.commit()
-            return cur.rowcount > 0
+            return bool(result and result.get('rows_affected', 0) > 0)
     
     return handle_db_operation(
         _update,

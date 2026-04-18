@@ -8,7 +8,7 @@ Uses database activity catalog and stored procedures for consistent logging.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any, List, Union, Callable
 from functools import wraps
@@ -132,7 +132,8 @@ class ActivityLogger:
             user_id: Optional[str] = None,
             project_id: Optional[str] = None,
             activity_type: Optional[str] = None,
-            days: int = 30
+            days: int = 30,
+            search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get recent activities with filtering using stored procedure
@@ -144,6 +145,7 @@ class ActivityLogger:
             project_id: Filter by specific project
             activity_type: Filter by activity type
             days: Number of days to look back
+            search: Free-text search across activity_type, details, and username
             
         Returns:
             List of activity entries with catalog information
@@ -159,7 +161,8 @@ class ActivityLogger:
                     user_id,
                     project_id,
                     activity_type,
-                    days
+                    days,
+                    search,
                 ])
 
                 # Fetch results from the stored procedure
@@ -205,7 +208,8 @@ class ActivityLogger:
             user_id: Optional[str] = None,
             project_id: Optional[str] = None,
             activity_type: Optional[str] = None,
-            days: int = 30
+            days: int = 30,
+            search: Optional[str] = None,
     ) -> int:
         """
         Count activity logs with filtering using stored procedure
@@ -215,6 +219,7 @@ class ActivityLogger:
             project_id: Filter by specific project
             activity_type: Filter by activity type
             days: Number of days to look back
+            search: Free-text search across activity_type, details, and username
             
         Returns:
             Count of matching activities
@@ -228,7 +233,8 @@ class ActivityLogger:
                     user_id,
                     project_id,
                     activity_type,
-                    days
+                    days,
+                    search,
                 ])
 
                 # Fetch result from stored procedure
@@ -238,6 +244,87 @@ class ActivityLogger:
         except Exception as e:
             logger.error(f"Failed to count activity logs: {str(e)}")
             return 0
+
+    @staticmethod
+    def get_activity_by_id(activity_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a single activity log entry by ID with enriched fields.
+
+        Args:
+            activity_id: Activity log ID
+
+        Returns:
+            Activity entry dictionary with catalog information, or None
+        """
+        try:
+            with get_connection() as con:
+                cur = con.cursor()
+
+                cur.execute("""
+                    SELECT 
+                        al.id,
+                        al.user_id,
+                        al.activity_type,
+                        al.details,
+                        al.project_id,
+                        al.user_group_id,
+                        al.target_user_id,
+                        al.ip_address,
+                        al.user_agent,
+                        al.metadata,
+                        al.severity_level,
+                        al.created_at,
+                        u.username,
+                        u.user_hash,
+                        p.project_name,
+                        p.project_hash,
+                        tu.username as target_username,
+                        tu.user_hash as target_user_hash,
+                        ug.group_name as user_group_name,
+                        ac.activity_name,
+                        ac.activity_category,
+                        ac.activity_description
+                    FROM activity_logs al
+                    LEFT JOIN users u ON al.user_id = u.id
+                    LEFT JOIN projects p ON al.project_id = p.id
+                    LEFT JOIN users tu ON al.target_user_id = tu.id
+                    LEFT JOIN user_groups ug ON al.user_group_id = ug.id
+                    LEFT JOIN activity_catalog ac ON al.activity_catalog_id = ac.id
+                    WHERE al.id = %s
+                """, (activity_id,))
+
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "activity_type": row[2],
+                    "details": row[3],
+                    "project_id": row[4],
+                    "user_group_id": row[5],
+                    "target_user_id": row[6],
+                    "ip_address": row[7],
+                    "user_agent": row[8],
+                    "metadata": row[9],
+                    "severity_level": row[10],
+                    "created_at": row[11],
+                    "username": row[12],
+                    "user_hash": row[13],
+                    "project_name": row[14],
+                    "project_hash": row[15],
+                    "target_username": row[16],
+                    "target_user_hash": row[17],
+                    "user_group_name": row[18],
+                    "activity_name": row[19],
+                    "activity_category": row[20],
+                    "activity_description": row[21],
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to get activity by id: {str(e)}")
+            return None
 
     @staticmethod
     def get_activity_catalog(category: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -363,7 +450,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_LOGIN.value,
-            details={"action": "login", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            details={"action": "login", "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
             project_id=project_id,
             ip_address=ip_address,
             user_agent=user_agent
@@ -375,7 +462,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_LOGOUT.value,
-            details={"action": "logout", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            details={"action": "logout", "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
             project_id=project_id,
             ip_address=ip_address
         )
@@ -386,7 +473,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.USER_REGISTRATION.value,
-            details={"action": "registration", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            details={"action": "registration", "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
             project_id=project_id,
             ip_address=ip_address
         )
@@ -398,7 +485,7 @@ class ActivityLogger:
         return ActivityLogger.log_activity(
             user_id=user_id,
             activity_type=ActivityType.ADMIN_ACTION.value,
-            details={"action": action, "details": details, "timestamp": datetime.utcnow().isoformat() + "Z"},
+            details={"action": action, "details": details, "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
             project_id=project_id,
             target_user_id=target_user_id
         )
@@ -766,6 +853,11 @@ def count_activity_logs(**kwargs) -> int:
     return activity_logger.count_activity_logs(**kwargs)
 
 
+def get_activity_by_id(activity_id: str) -> Optional[Dict[str, Any]]:
+    """Convenience function for getting a single activity by ID"""
+    return activity_logger.get_activity_by_id(activity_id)
+
+
 def get_activity_catalog(category: Optional[str] = None) -> List[Dict[str, Any]]:
     """Convenience function for getting activity catalog"""
     return activity_logger.get_activity_catalog(category)
@@ -779,6 +871,34 @@ def get_activity_by_code(activity_code: str) -> Optional[Dict[str, Any]]:
 def get_activity_stats(project_id: Optional[str] = None, days: int = 30) -> List[Dict[str, Any]]:
     """Convenience function for getting activity statistics"""
     return activity_logger.get_activity_stats(project_id, days)
+
+
+def get_recent_security_events(p_hours: int = 24, p_limit: int = 100) -> List[Dict[str, Any]]:
+    """Convenience function for getting recent security events from activity_logs"""
+    try:
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_get_recent_security_events', [p_hours, p_limit])
+
+            columns = [
+                'id', 'user_id', 'activity_type', 'details', 'ip_address',
+                'severity_level', 'created_at', 'username', 'activity_name',
+                'activity_description',
+            ]
+
+            results = cur.fetchall()
+            events = []
+            for row in results:
+                event = {}
+                for i, col in enumerate(columns):
+                    event[col] = row[i] if i < len(row) else None
+                events.append(event)
+
+            return events
+
+    except Exception as e:
+        logger.error(f"Failed to get recent security events: {str(e)}")
+        return []
 
 
 # ========== Context Manager for Auto-Logging ==========

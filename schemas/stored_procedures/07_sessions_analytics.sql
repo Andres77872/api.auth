@@ -278,8 +278,8 @@ END$$
 -- ===================================================================================
 -- GET USER ACTIVITY SUMMARY
 -- ===================================================================================
-DROP PROCEDURE IF EXISTS sp_get_user_activity_summary$$
-CREATE PROCEDURE sp_get_user_activity_summary(
+DROP PROCEDURE IF EXISTS sp_get_user_api_activity_summary$$
+CREATE PROCEDURE sp_get_user_api_activity_summary(
     IN p_user_id VARCHAR(64),
     IN p_days INT
 )

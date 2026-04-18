@@ -110,9 +110,14 @@ BEGIN
 END$$
 
 DROP PROCEDURE IF EXISTS sp_count_project_groups$$
-CREATE PROCEDURE sp_count_project_groups()
+CREATE PROCEDURE sp_count_project_groups(IN p_search VARCHAR(255))
 BEGIN
-    SELECT COUNT(*) as count FROM project_groups WHERE is_active = 1;
+    IF p_search IS NOT NULL THEN
+        SELECT COUNT(*) as count FROM project_groups
+        WHERE is_active = 1 AND group_name LIKE CONCAT('%', p_search, '%');
+    ELSE
+        SELECT COUNT(*) as count FROM project_groups WHERE is_active = 1;
+    END IF;
 END$$
 
 -- ===================================================================================

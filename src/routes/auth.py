@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # Initialize router and security
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearerOrCookie()
+PLATFORM_SCOPE = "platform"
 
 # Cookie settings
 COOKIE_NAME = "session_token"
@@ -55,6 +56,7 @@ from src.Util.JWT_Security import JWTTokenHandler
 # NEW: helpers aligned with the group-based schema
 from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project
 from src.Util.db.db_projects import get_project_by_hash
+from src.Util.auth_flow import resolve_target_project
 
 # ---------------------------------------------------------------------------
 # Session helpers (group-based, no user_projects table required)
@@ -77,7 +79,12 @@ def _delete_session(token: str) -> None:
 def _get_session(token: str) -> Optional[dict]:
     """Fetch session payload from Redis."""
     raw = redis_client.get(f"session:{token}")
-    return json.loads(raw.decode()) if raw else None
+    if not raw:
+        return None
+    # Handle both bytes (default Redis) and str (decode_responses=True)
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return json.loads(raw)
 
 def _create_session(user: Any, project: Optional[Any] = None) -> tuple[str, int]:
     """Generate JWT & persist session payload. Returns (token, ttl_seconds)."""
@@ -103,12 +110,51 @@ def _create_session(user: Any, project: Optional[Any] = None) -> tuple[str, int]
         "user_type": user.user_type,
         "project_id": getattr(project, "id", None),
         "project_hash": getattr(project, "project_hash", ""),
-        "project_name": getattr(project, "project_name", "Global Root Access" if user.user_type == "root" else None),
+        "project_name": getattr(project, "project_name", None) if project else None,
         "user_group_ids": user_group_ids,
         "user_group_names": user_group_names,
     }
 
     # Persist
+    _store_session(token, payload)
+    return token, SESSION_EXPIRE_HOURS * 3600
+
+
+def _create_platform_session(user: Any) -> tuple[str, int]:
+    """Generate JWT & persist a platform-scoped session for dashboard access."""
+    session_id = secrets.randbelow(2 ** 31)
+
+    token = JWTTokenHandler.create_access_token(
+        session_id=session_id,
+        user_hash=user.user_hash,
+        collection="__platform__",
+        expires_delta=timedelta(hours=SESSION_EXPIRE_HOURS),
+        scope=PLATFORM_SCOPE,
+    )
+
+    if user.user_type == "root":
+        permissions = ["admin", "global_admin", "manage_users", "manage_roles", "unrestricted_access"]
+        groups = ["platform_root_users"]
+    else:
+        permissions = ["admin", "project_admin", "manage_users", "manage_roles", "manage_permissions"]
+        groups = ["platform_admins"]
+
+    payload = {
+        "session_id": session_id,
+        "user_id": user.id,
+        "user_hash": user.user_hash,
+        "user_type": user.user_type,
+        "scope": PLATFORM_SCOPE,
+        "project_id": None,
+        "project_hash": None,
+        "project_name": None,
+        "permissions": permissions,
+        "groups": groups,
+        "user_group_ids": [],
+        "user_group_names": [],
+        "assigned_project_id": getattr(user, "assigned_project_id", None),
+    }
+
     _store_session(token, payload)
     return token, SESSION_EXPIRE_HOURS * 3600
 
@@ -124,19 +170,21 @@ async def login(
         response: Response,
         username: str = Form(...),
         password: str = Form(...),
-        project_hash: Optional[str] = Form(None),
+        project_hash: Optional[str] = Form(
+            None,
+            description="Required for all users. Root users bypass group-based access validation and may access any project by role.",
+        ),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
 ) -> LoginResponse:
     """
     Authenticate user and return session token.
 
-    The project context can be specified or auto-selected:
-    • Root users receive a global session (no project binding required).
-    • If project_hash is provided: Login to that specific project (if user has access).
-    • If project_hash is NOT provided: Admin/consumer users are automatically placed 
-      in the first accessible project.
-    • The complete list of accessible projects is always returned so clients may 
+    The project context is mandatory for all users:
+    - Root users MUST provide a project_hash but bypass group-based access validation.
+    - Root may access any project by role.
+    - Non-root users MUST provide a project_hash and are validated through group membership.
+    - The complete list of accessible projects is always returned so clients may 
       switch context later with the `/auth/switch-project` endpoint.
     """
     if not username or not password:
@@ -160,10 +208,32 @@ async def login(
         )
 
     # ------------------------------------------------------------------
-    # Root users -> global session (no project context required)
+    # ALL users MUST provide a project_hash
+    # ------------------------------------------------------------------
+    if not project_hash:
+        raise ValidationError(
+            message="Project identifier is required for login",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"missing_fields": ["project_hash"]}
+        )
+
+    # ------------------------------------------------------------------
+    # Root users -> project-bound session (bypasses group validation)
     # ------------------------------------------------------------------
     if user_record.user_type == "root":
-        session_token, _ = _create_session(user_record, None)
+        target_project = handle_db_operation(
+            lambda: get_project_by_hash(project_hash),
+            error_context="project lookup",
+            not_found_message=f"Project not found: {mask_uuid(project_hash)}",
+        )
+        if not target_project:
+            raise NotFoundError(
+                message=f"Project not found: {mask_uuid(project_hash)}",
+                error_code=ErrorCode.PROJECT_NOT_FOUND,
+                details={"project_hash": mask_uuid(project_hash)},
+            )
+
+        session_token, _ = _create_session(user_record, target_project)
 
         # Persist cookie
         response.set_cookie(
@@ -188,7 +258,7 @@ async def login(
 
         return LoginResponse(
             success=True,
-            message="Root user login successful - global access granted",
+            message="Root user login successful",
             session_token=session_token,
             user=UserInfo(
                 user_hash=user_record.user_hash,
@@ -196,9 +266,13 @@ async def login(
                 email=user_record.email,
                 user_type="root",
             ),
-            project=None,
+            project=ProjectInfo(
+                project_hash=target_project.project_hash,
+                project_name=target_project.project_name,
+                project_description=target_project.project_description,
+            ),
             accessible_projects=accessible_projects_info,
-            user_groups=[],  # Root users don't use groups
+            user_groups=[],  # Root users bypass group validation
             user_id=user_record.id
         )
 
@@ -206,40 +280,12 @@ async def login(
     # Non-root users → choose specific or default project
     # ------------------------------------------------------------------
     accessible = get_user_accessible_projects(user_record.id)
-    if not accessible:
-        raise AuthorizationError(
-            message="User has no access to any project",
-            error_code=ErrorCode.ACCESS_DENIED,
-            details={"username": username}
-        )
-
-    # Determine which project to use
-    if project_hash:
-        # User specified a project - verify they have access to it
-        accessible_hashes = [p.project_hash for p in accessible]
-        if project_hash not in accessible_hashes:
-            raise AuthorizationError(
-                message=f"Access denied to project {mask_uuid(project_hash)}. User has access to {len(accessible)} project(s)",
-                error_code=ErrorCode.PROJECT_ACCESS_DENIED,
-                details={
-                    "requested_project": mask_uuid(project_hash),
-                    "accessible_projects_count": len(accessible)
-                }
-            )
-        
-        target_project = handle_db_operation(
-            lambda: get_project_by_hash(project_hash),
-            error_context="project lookup",
-            not_found_message=f"Project not found: {mask_uuid(project_hash)}"
-        )
-    else:
-        # No project specified - use first accessible project as default
-        default_project_hash = accessible[0].project_hash
-        target_project = handle_db_operation(
-            lambda: get_project_by_hash(default_project_hash),
-            error_context="default project resolution",
-            not_found_message="Failed to resolve default project context"
-        )
+    target_project = resolve_target_project(
+        accessible_projects=accessible,
+        requested_project_hash=project_hash,
+        get_project_by_hash_fn=get_project_by_hash,
+        handle_db_operation_fn=handle_db_operation,
+    )
 
     # Build session & response
     session_token, _ = _create_session(user_record, target_project)
@@ -296,6 +342,74 @@ async def login(
         accessible_projects=accessible_projects_info,
         user_groups=user_groups_info,
         user_id=user_record.id
+    )
+
+
+@router.post("/platform/login", response_model=LoginResponse)
+@log_unauthenticated_operation(
+    operation_name="platform_user_login",
+    activity_type=ActivityType.USER_LOGIN,
+    extract_username=lambda *args, **kwargs: kwargs.get('username')
+)
+async def platform_login(
+        response: Response,
+        username: str = Form(...),
+        password: str = Form(...),
+        request: Request = None,
+        log_context: UnauthenticatedLogContext = None
+) -> LoginResponse:
+    """Authenticate root/admin users for platform dashboard access without project scope."""
+    if not username or not password:
+        raise ValidationError(
+            message="Username and password are required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"missing_fields": ["username", "password"]}
+        )
+
+    user_record = handle_db_operation(
+        lambda: get_user_by_credentials(username, password),
+        error_context="platform user authentication"
+    )
+
+    if not user_record:
+        raise AuthenticationError(
+            message="Invalid username or password",
+            error_code=ErrorCode.INVALID_CREDENTIALS,
+            details={"username": username}
+        )
+
+    if user_record.user_type not in {"root", "admin"}:
+        raise AuthorizationError(
+            message="Platform login is restricted to root and admin users",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"allowed_user_types": ["root", "admin"]}
+        )
+
+    session_token, _ = _create_platform_session(user_record)
+
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=session_token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+    )
+
+    return LoginResponse(
+        success=True,
+        message="Platform login successful",
+        session_token=session_token,
+        user=UserInfo(
+            user_hash=user_record.user_hash,
+            username=user_record.username,
+            email=user_record.email,
+            user_type=user_record.user_type,
+        ),
+        project=None,
+        accessible_projects=[],
+        user_groups=[],
+        user_id=user_record.id,
     )
 
 
@@ -375,22 +489,6 @@ async def register(
             details={"user_group_hash": mask_uuid(user_group_hash)}
         )
     
-    # Validate user group has linked projects
-    group_projects = handle_db_operation(
-        lambda: get_projects_for_user_group(user_group.id),
-        error_context="user group projects lookup"
-    )
-    if not group_projects:
-        raise ValidationError(
-            message="User group is not linked to any projects. Cannot complete registration.",
-            error_code=ErrorCode.INVALID_INPUT,
-            details={
-                "user_group_hash": mask_uuid(user_group_hash),
-                "group_name": user_group.group_name,
-                "hint": "The user group must be linked to at least one project before users can register"
-            }
-        )
-
     # Register user with group assignment
     register_result = handle_db_operation(
         lambda: enhanced_register(username, password, email, user_group_hash),
@@ -426,10 +524,12 @@ async def register(
         user_type=getattr(register_result, 'user_type', 'consumer')
     )
 
-    project_info = ProjectInfo(
-        project_hash=register_result.project_hash,
-        project_name=register_result.project_name
-    )
+    project_info = None
+    if register_result.project_hash:
+        project_info = ProjectInfo(
+            project_hash=register_result.project_hash,
+            project_name=register_result.project_name
+        )
 
     return RegisterResponse(
         success=True,
@@ -452,7 +552,6 @@ async def validate_user_session(
 ) -> ValidateSessionResponse:
     """
     Validate session token and return user information with group context.
-    Supports global root sessions without project context.
     
     Returns:
         Current user and session information
@@ -483,11 +582,7 @@ async def validate_user_session(
             project_name=raw.get("project_name", ""),
         )
     else:
-        project_info = ProjectInfo(
-            project_hash="",
-            project_name="Global Root Access",
-            project_description="Unrestricted global access for root user",
-        )
+        project_info = None
 
     # Get user groups from session (cached during login)
     user_group_names = raw.get("user_group_names", [])
@@ -497,7 +592,7 @@ async def validate_user_session(
         valid=True,
         user=user_info,
         project=project_info,
-        session={"created_at": None, "is_global_session": raw.get("project_hash") == ""},
+        session={"created_at": None, "scope": raw.get("scope", "project")},
         user_groups=user_group_names,
     )
 
@@ -571,6 +666,12 @@ async def refresh_token(
                 message="Project not found",
                 error_code=ErrorCode.PROJECT_NOT_FOUND
             )
+    else:
+        raise AuthenticationError(
+            message="Session format outdated, please log in again",
+            error_code=ErrorCode.SESSION_EXPIRED,
+            details={"hint": "Project-scoped session required"}
+        )
 
     # Create brand-new session with same context
     new_token, _ = _create_session(user_data, current_project)

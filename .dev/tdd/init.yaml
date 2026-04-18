@@ -1,0 +1,303 @@
+# TDD Bootstrap: api.auth
+# Generated: 2026-04-17
+# Status: BROWNFIELD — 31 test files, 44% coverage, 2 completed TDD changes
+
+project:
+  name: api.auth
+  language: python
+  version: "3.12"
+  framework: fastapi
+  app_entry: src.main:app
+
+# ─── Current Test Topology ───────────────────────────────────────────────────
+
+test_infrastructure:
+  status: active
+  test_runner: pytest
+  config_file: pytest.ini
+  pytest_ini: |
+    [pytest]
+    testpaths = tests
+    python_files = test_*.py
+    python_classes = Test*
+    python_functions = test_*
+    asyncio_mode = auto
+    addopts = -v --tb=short
+
+  installed_plugins:
+    - pytest>=8.0
+    - pytest-cov>=5.0
+    - pytest-asyncio>=0.24 (auto mode)
+    - httpx>=0.27
+    - fakeredis>=2.26
+    - freezegun>=1.5
+    - python-dotenv>=1.0
+
+  test_files:
+    total: 31
+    unit: 13
+    integration: 17
+    e2e: 1
+
+  conftest_files:
+    - tests/conftest.py              # Root: .env.test loading, mock_redis, mock_db_connection, jwt_secret, frozen_time, debug_mode on/off
+    - tests/integration/conftest.py  # Integration: httpx client, fakeredis, DB patching, factories, DBPatcher class
+    - tests/e2e/conftest.py          # E2E: same as integration + e2e_env combined fixture, e2e factories
+
+  coverage_artifacts:
+    - .coverage                      # Binary, full suite (unit + integration + e2e) — 44% total
+    - .coverage-unit.json            # JSON, unit tests only — 36.4% overall
+
+  coverage_summary:
+    total_lines: 7434
+    covered: 3263
+    missing: 4171
+    percentage: 44
+
+  lowest_coverage_modules:
+    - "0%: src/Util/activity_logger.py (362 stmts)"
+    - "0%: src/Util/bulk_operations.py (175 stmts)"
+    - "0%: src/Util/db/db_error_logger.py (124 stmts)"
+    - "0%: src/Util/db/db_global_roles.py (270 stmts)"
+    - "0%: src/Util/decorators.py (109 stmts)"
+    - "10%: src/Util/db/db_enhanced.py (211 stmts)"
+    - "11%: src/middleware/authentication.py (104 stmts)"
+    - "13%: src/Util/db/db_projects.py (151 stmts)"
+    - "14%: src/Util/db/db_project_groups.py (214 stmts)"
+    - "14%: src/Util/db/db_users.py (469 stmts)"
+
+  best_coverage_modules:
+    - "100%: src/Util/Models.py (578 stmts)"
+    - "100%: src/Util/log_context_models.py (32 stmts)"
+    - "100%: src/Util/password_generator.py (65 stmts)"
+    - "100%: src/Util/uuid_generator.py (43 stmts)"
+    - "95%: src/Util/error_handler.py (286 stmts)"
+    - "94%: src/Util/JWT_Security.py (65 stmts)"
+    - "94%: src/middleware/auth_context.py (31 stmts)"
+    - "92%: src/Util/api_audit_logger.py (145 stmts)"
+    - "91%: src/Util/db_error_wrapper.py (118 stmts)"
+
+# ─── Completed TDD Changes ───────────────────────────────────────────────────
+
+completed_changes:
+  unit-test-coverage:
+    date: 2026-04-15
+    slices: 12 (all complete)
+    output: 13 unit test files
+    focus: Layer 1 — pure function tests (JWT, password, UUID, error handler, models, etc.)
+    verify_report: .dev/tdd/changes/unit-test-coverage/verify-report.md
+
+  api-deep-review-coverage:
+    date: 2026-04-15
+    slices: 16 + 1 e2e (all complete)
+    output: 17 integration test files + 1 e2e test file
+    focus: Outside-in HTTP integration tests with defect remediation
+    defects_fixed:
+      - "#1 CORS misconfiguration (allow_origins=['*'] with credentials)"
+      - "#2 Duplicate route shadowing (/users/me/permissions)"
+      - "#3 Stub endpoints (owner/archive → 501)"
+      - "#4 Plaintext password in reset-password response"
+      - "#8 Empty Bearer token accepted"
+      - "#9 datetime.utcnow() deprecation"
+      - "#11 Pagination total mismatch"
+    verify_report: .dev/tdd/changes/api-deep-review-coverage/verify-report.md
+
+# ─── Test Architecture ───────────────────────────────────────────────────────
+
+test_strategy:
+  approach: "Outside-in + Contract-heavy"
+  pattern: "Slice-based integration tests (test_slice0_ through test_slice15_)"
+  isolation_model: |
+    HTTP layer: REAL (httpx.AsyncClient + ASGITransport)
+    Middleware: REAL (all 4 middleware run in actual order)
+    Route handlers: REAL (execute with real logic)
+    JWT: REAL (JWTTokenHandler with test secret)
+    Redis: fakeredis (FakeStrictRedis, full API-compatible)
+    DB: PATCHED at module boundary (src.Util.db.*)
+    Cache manager: PATCHED
+    Activity/Audit loggers: PATCHED/SPY
+
+  db_patching_policy: |
+    DB functions are patched at their USAGE location (import namespace), not source.
+    DBPatcher class in integration/conftest.py provides context-manager for bulk patching.
+    Default patches list covers 40+ DB function names.
+    Rationale: MySQL stored procedures require real MySQL 8.0 instance — not available in test env.
+
+  env_isolation: |
+    .env.test loaded by tests/conftest.py BEFORE any src.* import.
+    Prevents db_config.py from creating live Redis connection at import time.
+    JWT_SECRET_KEY, DEBUG_MODE, LOG_TOKEN_USER, LOG_TOKEN_REALM all overridden.
+
+# ─── Recommended Commands ────────────────────────────────────────────────────
+
+recommended_commands:
+  run_all: pytest
+  run_unit: pytest tests/unit -v
+  run_integration: pytest tests/integration -v
+  run_e2e: pytest tests/e2e -v
+  run_single: pytest tests/integration/test_slice2_auth_login.py -v
+  run_slice: pytest tests/integration/test_slice{N}_*.py -v
+  coverage: pytest --cov=src --cov-report=term-missing --cov-report=html
+  coverage_fail: pytest --cov=src --cov-fail-under=80
+  coverage_unit_json: pytest --cov=src --cov-report=json:.coverage-unit.json
+  deprecation_check: pytest -W error::DeprecationWarning
+  watch: pytest -x --lf
+  collect_only: pytest tests/integration/ --collect-only
+
+# ─── Quality Gates ───────────────────────────────────────────────────────────
+
+quality_gates:
+  available:
+    - pytest (test runner, auto asyncio mode)
+    - pytest-cov (coverage reporting)
+    - pytest-asyncio (async test support)
+    - fakeredis (Redis test double)
+    - freezegun (deterministic time)
+    - .env.test isolation (prevents live connections)
+    - DBPatcher class (bulk DB function patching)
+    - Slice-based test organization
+    - Coverage artifacts (.coverage + .coverage-unit.json)
+
+  missing:
+    - CI/CD pipeline (no .github/workflows/, .gitlab-ci.yml, Jenkinsfile)
+    - pre-commit hooks
+    - linting (ruff/flake8/black not configured)
+    - type checking (mypy not configured)
+    - Real MySQL integration tests (docker-compose/testcontainers)
+    - Mutation testing (mutmut, cosmic-ray)
+    - Contract testing (schemathesis, pact)
+    - Load/performance testing
+
+# ─── Proving Layers ──────────────────────────────────────────────────────────
+
+proving_layers:
+  layer_1_unit:
+    status: COMPLETE
+    description: Pure function tests — no I/O
+    files: 13 test files in tests/unit/
+    coverage_target: "80%+ on utility modules"
+    current_state: "100% on Models, password_generator, uuid_generator, log_context_models; 94-95% on JWT_Security, error_handler"
+
+  layer_2_integration:
+    status: COMPLETE (slices 0-15)
+    description: HTTP-level integration through real FastAPI app
+    files: 17 slice files in tests/integration/
+    coverage_target: "Routes and middleware > 60%"
+    current_state: "Routes range 14-93%, middleware 11-94%"
+    slices_completed:
+      - "0: Test Infrastructure (conftest, fixtures, DBPatcher)"
+      - "1: Health & Ping endpoints"
+      - "2: Auth flow — login"
+      - "3: Auth flow — register"
+      - "4: Auth flow — validate/logout/refresh"
+      - "5: Auth flow — switch project / check availability"
+      - "6: Permission enforcement"
+      - "7: User profile & access summary"
+      - "8: User management (admin operations)"
+      - "9: Project CRUD"
+      - "10: Error handler contract"
+      - "11: Request validation + auth context"
+      - "12: API audit middleware"
+      - "13: Security & contract tests"
+      - "14: Route conflict detection"
+      - "15: Audit logs"
+
+  layer_3_e2e:
+    status: COMPLETE (1 file)
+    description: High-fidelity ASGI integration — full API lifecycle
+    files: tests/e2e/test_api_lifecycle.py
+    note: "Labeled 'e2e' but are high-fidelity ASGI integration tests (DB patched, Redis = fakeredis)"
+
+  layer_4_contract:
+    status: PARTIAL
+    description: API response shape validation
+    current_state: "Basic shape validation in slices (success/error/data structure)"
+    missing: "Schemathesis or formal schema assertions"
+
+  layer_5_security:
+    status: PARTIAL
+    description: Auth-specific security tests
+    current_state: "CORS, empty Bearer, password leak, token rejection covered in slice 13"
+    missing: "Rate limiting tests, SQL injection resistance, brute force protection"
+
+# ─── External Dependencies ───────────────────────────────────────────────────
+
+external_dependencies:
+  database:
+    type: mysql
+    driver: pymysql (synchronous)
+    pattern: Stored procedures for ALL operations
+    test_strategy: "Patch at module boundary — no real DB in tests"
+    future_need: "docker-compose with MySQL 8.0 for true E2E"
+
+  cache:
+    type: redis
+    driver: redis-py (synchronous)
+    test_strategy: "fakeredis.FakeStrictRedis — full API-compatible"
+    patch_locations:
+      - src.Util.db_config.redis_client
+      - src.Util.cache_manager.redis_client
+      - src.Util.db.db_enhanced.client
+      - src.Util.db.db_users.client
+      - src.Util.db.db_session_analytics.redis_client
+      - src.Util.system_metrics.redis_client
+      - src.routes.auth.redis_client
+
+  auth:
+    jwt_library: python-jose + PyJWT (RSA + HS256)
+    password_hash: argon2-cffi
+    session_storage: 'redis (key pattern: "session:*")'
+
+# ─── Architecture ────────────────────────────────────────────────────────────
+
+architecture:
+  pattern: "Layered (routes → middleware → Util/db → MySQL/Redis)"
+  entrypoint: src/main.py
+  routes: 14 modules (auth, users, projects, admin, roles, permissions, system, bulk, audit_logs)
+  middleware: 6 modules (auth_context, authentication, api_audit, error_handler, request_validation, activity_logging)
+  utilities: 20 modules (db, JWT, security, cache, logging, models)
+  db_layer: 11 modules (enhanced, users, projects, user_groups, project_groups, roles, permissions, analytics, audit, error_logger, global_roles)
+
+  key_patterns:
+    - "Groups-of-groups: USER → USER_GROUP → PROJECT_GROUP → PROJECTS"
+    - "Three user types: root, admin, consumer"
+    - "UUID-based identifiers (usr-{UUID4}, proj-{UUID4})"
+    - "Form data for most endpoints, JSON for bulk operations"
+    - "Response format: {success, message, data}"
+    - "Redis session caching with key pattern 'session:*'"
+    - "MySQL stored procedures for all DB operations"
+    - "Middleware stack: CORS → RequestValidation → APIAudit → AuthContext"
+    - "Activity logging and API audit as background tasks"
+
+# ─── Constraints ─────────────────────────────────────────────────────────────
+
+constraints:
+  - "Tests MUST NOT hit production DB/Redis — .env.test isolation handles this"
+  - "Sync DB/Redis drivers (pymysql, redis-py) block event loop — test perf impact"
+  - "JWT_SECRET_KEY from .env must be overridden in test fixtures (handled by conftest.py)"
+  - "DB patching must target import location, not source definition"
+  - "fakeredis is NOT a mock — it implements full Redis API in-memory"
+  - "src/main.py reads ./src/README.md at import time — tests must run from project root"
+  - "Filename conventions violate PEP 8 (Seccurity.py, JWT_Security.py, Models.py)"
+
+# ─── Risks ───────────────────────────────────────────────────────────────────
+
+risks:
+  - "HIGH: 44% coverage — 56% of codebase untested, including critical auth middleware (11%)"
+  - "HIGH: No CI/CD — no automated gate, tests only run locally"
+  - "MEDIUM: Sync drivers will slow any future real-DB test suite"
+  - "MEDIUM: DB patching at module boundary may miss direct submodule imports"
+  - "MEDIUM: No mutation testing — false positives in test assertions undetected"
+  - "LOW: No rate limiting on login endpoint (documented, not fixed)"
+  - "LOW: Inconsistent auth check patterns across routes (documented, not fixed)"
+
+# ─── Next Steps ──────────────────────────────────────────────────────────────
+
+next_steps:
+  - "1. REAL E2E: Add docker-compose.test.yml with MySQL 8.0 for true end-to-end tests"
+  - "2. COVERAGE: Target 80%+ on routes and middleware (currently 14-93% and 11-94%)"
+  - "3. MUTATION: Add mutmut or cosmic-ray to detect false-positive test assertions"
+  - "4. CI/CD: Add GitHub Actions or GitLab CI pipeline with pytest + coverage gate"
+  - "5. CONTRACT: Add schemathesis for OpenAPI contract testing"
+  - "6. PERFORMANCE: Add load testing for auth endpoints (login, validate, refresh)"
+  - "7. CLEANUP: Fix PEP 8 filename violations (Seccurity.py, JWT_Security.py, Models.py)"

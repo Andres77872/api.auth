@@ -32,7 +32,7 @@ from src.Util.db import (
     create_project_permission_group, get_project_permission_group_by_hash, list_all_project_permission_groups,
     update_project_permission_group,
     delete_project_permission_group, assign_project_to_permission_group, remove_project_from_permission_group,
-    get_projects_in_permission_group
+    get_projects_in_permission_group, count_project_permission_groups
 )
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
@@ -110,10 +110,18 @@ async def list_project_groups(
         )
         groups_with_counts.append(group_info)
 
+    total_count = handle_db_operation(
+        lambda: count_project_permission_groups(search),
+        error_context="count project permission groups"
+    )
+
+    has_more = offset + limit < total_count
+
     pagination = PaginationInfo(
         limit=limit,
         offset=offset,
-        total=len(groups_with_counts)
+        total=total_count,
+        has_more=has_more
     )
 
     return ListProjectGroupsResponse(

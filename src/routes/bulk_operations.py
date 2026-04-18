@@ -6,7 +6,7 @@ for efficient mass management in the authentication system.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Form
@@ -155,7 +155,7 @@ async def bulk_update_users_endpoint(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat() + "Z"
+        "performed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -256,7 +256,7 @@ async def bulk_delete_users_endpoint(
         "errors": result.get('errors', []),
         "warnings": result.get('warnings', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat() + "Z"
+        "performed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -365,7 +365,7 @@ async def bulk_assign_roles_to_project_users(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat() + "Z"
+        "performed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -465,5 +465,5 @@ async def bulk_assign_users_to_groups(
         "results": result['results'],
         "errors": result.get('errors', []),
         "performed_by": current_user.username,
-        "performed_at": datetime.utcnow().isoformat() + "Z"
+        "performed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }

@@ -10,7 +10,7 @@ This module handles all project-related database operations including:
 
 import secrets
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 
 from src.Util.Models import Project, LegacyUserGroup as UserGroup
 from src.Util.db_config import get_connection
@@ -395,6 +395,50 @@ def get_project_stats(project_id: str) -> dict:
     )
 
 
+def get_project_members_page(
+    project_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    user_type: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Get paginated project members through the DB layer."""
+    def _get() -> Tuple[List[Dict[str, Any]], int]:
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_get_project_members_paginated', [project_id, user_type, limit, offset])
+
+            members = []
+            for row in cur.fetchall():
+                members.append({
+                    "user_id": row[0],
+                    "user_hash": row[1],
+                    "username": row[2],
+                    "email": row[3],
+                    "user_type": row[4],
+                    "is_active": bool(row[5]),
+                    "created_at": row[6],
+                    "granted_at": row[7],
+                    "granted_by": row[8],
+                })
+
+            total_count = 0
+            if cur.nextset():
+                count_row = cur.fetchone()
+                total_count = count_row[0] if count_row else 0
+
+            while cur.nextset():
+                pass
+
+            return members, total_count
+
+    return handle_db_operation(
+        _get,
+        error_context=(
+            f"get_project_members_page(project_id={project_id}, limit={limit}, offset={offset}, user_type={user_type})"
+        )
+    )
+
+
 # =================== PROJECT GROUP MANAGEMENT ===================
 
 def create_default_groups(project_id: str):
@@ -424,8 +468,9 @@ def create_default_groups(project_id: str):
         with get_connection() as con:
             cur = con.cursor()
 
-            # Step 1: Create a default project group for this project
-            project_group_id = generate_project_group_id()
+            # Step 1: Create a default project group for this project.
+            # Use a deterministic ID so re-runs are truly idempotent.
+            project_group_id = f"pg-default-{project_id}"
             project_group_name = f"default_{project_id}"
             cur.execute(
                 """
@@ -437,7 +482,7 @@ def create_default_groups(project_id: str):
             )
 
             # Step 2: Add the project to the project group via project_group_members
-            pgm_id = generate_project_group_member_id()
+            pgm_id = f"pgm-default-{project_id}"
             cur.execute(
                 """
                 INSERT INTO project_group_members (id, project_id, project_group_id, assigned_at, is_active)
@@ -451,8 +496,9 @@ def create_default_groups(project_id: str):
             for base_name, description in default_user_groups:
                 # Build a globally unique group name
                 group_name = f"{base_name}_{project_id}"
-                group_id = generate_user_group_id()
-                
+                # Use deterministic IDs for idempotency
+                group_id = f"ug-default-{base_name}-{project_id}"
+
                 # Insert user group
                 cur.execute(
                     """
@@ -464,7 +510,7 @@ def create_default_groups(project_id: str):
                 )
 
                 # Step 4: Link user group to project group via user_group_project_groups
-                ugpg_id = f"ugpg-{secrets.token_hex(16)}"
+                ugpg_id = f"ugpg-default-{base_name}-{project_id}"
                 cur.execute(
                     """
                     INSERT INTO user_group_project_groups (id, user_group_id, project_group_id, granted_at, is_active)

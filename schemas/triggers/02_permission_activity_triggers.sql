@@ -274,7 +274,7 @@ BEGIN
            NEW.user_group_id,
            JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id, 
                        'permission_group_id', NEW.permission_group_id, 'permission_type', NEW.permission_type, 'priority', NEW.priority),
-           CASE WHEN NEW.permission_type = 'deny' THEN 'WARN' ELSE ac.severity_level END, NOW()
+           CASE WHEN NEW.permission_type = 'deny' THEN 'warning' ELSE ac.severity_level END, NOW()
     FROM activity_catalog ac WHERE ac.activity_code = 'permission_group_assigned' AND ac.is_active = TRUE LIMIT 1;
 END//
 

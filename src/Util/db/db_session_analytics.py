@@ -6,7 +6,7 @@ and analytics support for the multi-project authentication system.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from src.Util.db_config import get_connection, redis_client
@@ -26,9 +26,7 @@ def count_active_sessions() -> int:
         Number of active sessions
     """
     try:
-        # Count session keys in Redis
-        session_keys = redis_client.keys("session:*")
-        return len(session_keys)
+        return sum(1 for _ in redis_client.scan_iter(match="session:*", count=100))
     except Exception as e:
         logger.error(f"Failed to count active sessions: {str(e)}")
         return 0
@@ -414,7 +412,7 @@ def check_database_health() -> Dict[str, Any]:
         return {
             "status": "healthy",
             "message": "Database accessible",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
     
     return handle_db_operation(
@@ -423,7 +421,7 @@ def check_database_health() -> Dict[str, Any]:
         default_return={
             "status": "unhealthy",
             "message": "Database error",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
     )
 
@@ -443,13 +441,13 @@ def check_redis_health() -> Dict[str, Any]:
         return {
             "status": "healthy",
             "message": "Redis accessible",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
     except Exception as e:
         return {
             "status": "unhealthy",
             "message": f"Redis error: {str(e)}",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
 
 

@@ -6,7 +6,7 @@ for the group-based multi-project authentication system.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form, Body
@@ -21,15 +21,16 @@ from src.Util.Models import (
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
-    NotFoundError, InternalError, ErrorCode, create_not_found_error
+    NotFoundError, InternalError, FeatureNotImplementedError, ErrorCode, create_not_found_error
 )
-from src.Util.activity_logger import ActivityLogger, ActivityType, get_recent_activity
+from src.Util.activity_logger import ActivityLogger, ActivityType, get_recent_activity, count_activity_logs
 from src.Util.db import (
     validate_session, get_user_by_hash,
     create_project, get_project_by_hash, list_all_projects,
     update_project, delete_project, search_projects,
     get_project_stats, get_user_accessible_projects,
-    get_user_project_permissions, get_user_groups_for_user,
+    get_project_members_page,
+    get_user_groups_for_user,
     # Group-project management
     get_user_groups_for_project,
     # Project groups for groups-of-groups architecture
@@ -113,18 +114,23 @@ async def list_projects(
     else:
         # Regular users see only accessible projects
         accessible_projects = get_user_accessible_projects(user_data.id)
+        total_accessible = len(accessible_projects)
         projects = accessible_projects[offset:offset + limit] if accessible_projects else []
 
     # Add access level information
     projects_with_access = []
     for project in projects:
         project_hash = getattr(project, 'project_hash', '')
-        project_id = getattr(project, 'id', 0)
-        project_permissions = get_user_project_permissions(user_data.id, project_id)
 
-        access_level = "admin" if "admin" in project_permissions else (
-            "read-write" if "write" in project_permissions else "read-only")
-        access_through = "admin_access" if is_admin else "user_group"
+        if is_admin:
+            access_level = "admin_access"
+            access_through = "admin_access"
+        else:
+            # Non-admin users access projects via groups-of-groups chain.
+            # get_user_project_permissions() returns GLOBAL permissions, not
+            # project-scoped ones, so we report honest group-based access.
+            access_level = "group_access"
+            access_through = "user_group"
 
         project_access = ProjectAccessInfo(
             project_hash=project_hash,
@@ -135,11 +141,18 @@ async def list_projects(
         )
         projects_with_access.append(project_access)
 
+    # Pagination: admin path uses DB-level pagination so total is the page size;
+    # non-admin path tracks the full accessible count before slicing.
+    if is_admin:
+        total_count = len(projects_with_access)
+    else:
+        total_count = total_accessible
+
     pagination = PaginationInfo(
         limit=limit,
         offset=offset,
-        total=len(projects_with_access),
-        has_more=len(projects_with_access) == limit
+        total=total_count,
+        has_more=offset + limit < total_count
     )
 
     return ListProjectsResponse(
@@ -254,16 +267,24 @@ async def get_project_details(
     # Get user data
     user_data = get_user_by_hash(session_data.user_hash)
 
-    # Check if user has access to this project
-    user_permissions = get_user_project_permissions(user_data.id, project.id)
+    # Check if user has access to this project.
+    # Admin users always have access. Non-admin users must have group-based
+    # access (verified via accessible projects list). We do NOT use
+    # get_user_project_permissions() here because it returns GLOBAL permissions,
+    # not project-scoped ones — a consumer with no global permissions but valid
+    # group access would be incorrectly denied.
     session_permissions = getattr(session_data, 'permissions', [])
+    is_admin = 'admin' in session_permissions
 
-    if not user_permissions and 'admin' not in session_permissions:
-        raise AuthorizationError(
-            message="Access denied to this project",
-            error_code=ErrorCode.PROJECT_ACCESS_DENIED,
-            details={"project_hash": project_hash}
-        )
+    if not is_admin:
+        accessible = get_user_accessible_projects(user_data.id)
+        has_access = any(p.id == project.id for p in accessible)
+        if not has_access:
+            raise AuthorizationError(
+                message="Access denied to this project",
+                error_code=ErrorCode.PROJECT_ACCESS_DENIED,
+                details={"project_hash": project_hash}
+            )
 
     # Get project statistics
     project_stats = get_project_stats(project.id)
@@ -290,9 +311,8 @@ async def get_project_details(
     )
 
     user_access = {
-        "permissions": user_permissions,
-        "access_level": "admin" if "admin" in user_permissions else (
-            "read-write" if "write" in user_permissions else "read-only"),
+        "permissions": session_permissions if is_admin else [],
+        "access_level": "admin_access" if is_admin else "group_access",
         "user_groups": [group.group_name for group in user_groups]
     }
 
@@ -496,77 +516,43 @@ async def list_project_members(
             details={"project_hash": project_hash}
         )
 
-    # Get project members
-    from src.Util.db_config import get_connection
-
-    with get_connection() as con:
-        cur = con.cursor()
-
-        # Query to get all users with access to this project (group-based schema)
-        query = (
-            """
-                SELECT DISTINCT u.id,
-                                u.user_hash,
-                                u.username,
-                                u.email,
-                                u.user_type,
-                                u.is_active,
-                                u.created_at,
-                                vupa.access_granted_at,
-                                NULL AS granted_by
-                FROM users u
-                         INNER JOIN v_user_project_access vupa
-                                    ON u.id = vupa.user_id
-                WHERE u.is_active = 1
-                  AND vupa.project_id = %s
-            """
-        )
-
-        params: list[Any] = [project.id]
-
-        if user_type:
-            query += " AND u.user_type = %s"
-            params.append(user_type)
-
-        query += " ORDER BY u.user_type, u.username LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cur.execute(query, params)
-        results = cur.fetchall()
-
-        # Get total count (group-based schema)
-        count_query = (
-            """
-                      SELECT COUNT(DISTINCT u.id)
-                      FROM users u
-                               INNER JOIN v_user_project_access vupa
-                                          ON u.id = vupa.user_id
-                      WHERE u.is_active = 1
-                        AND vupa.project_id = %s
-            """
-        )
-
-        count_params: list[Any] = [project.id]
-        if user_type:
-            count_query += " AND u.user_type = %s"
-            count_params.append(user_type)
-
-        cur.execute(count_query, count_params)
-        total_count = cur.fetchone()[0]
+    results, total_count = get_project_members_page(
+        project_id=project.id,
+        limit=limit,
+        offset=offset,
+        user_type=user_type,
+    )
 
     # Build members list
     members = []
     for row in results:
-        user_id, user_hash, username, email, user_type_val, is_active, created_at, granted_at, granted_by = row
+        user_id = row["user_id"]
+        user_hash = row["user_hash"]
+        username = row["username"]
+        email = row["email"]
+        user_type_val = row["user_type"]
+        is_active = row["is_active"]
+        created_at = row["created_at"]
+        granted_at = row["granted_at"]
+        granted_by = row["granted_by"]
 
-        # Get user's permissions in this project
-        permissions = get_user_project_permissions(user_id, project.id)
-
-        # Get user groups for consumer users
+        # Get user groups for consumer users.
+        # We do NOT call get_user_project_permissions() per-member because it
+        # returns GLOBAL permissions (ignores project_id), making per-member
+        # access_level labels misleading and causing N+1 DB round-trips.
         groups = []
         if user_type_val == 'consumer':
             user_groups = get_user_groups_for_user(user_id)
             groups = [g.group_name for g in user_groups]
+
+        # access_level reflects the user's type within this project context,
+        # not their global permissions.
+        if user_type_val == 'root':
+            member_access_level = "root_access"
+        elif user_type_val == 'admin':
+            member_access_level = "admin_access"
+        else:
+            member_access_level = "group_access"
 
         member_info = {
             "user_hash": user_hash,
@@ -574,10 +560,8 @@ async def list_project_members(
             "email": email,
             "user_type": user_type_val,
             "is_active": is_active,
-            "permissions": permissions,
             "groups": groups,
-            "access_level": "admin" if "admin" in permissions else (
-                "read-write" if "write" in permissions else "read-only"),
+            "access_level": member_access_level,
             "joined_at": granted_at,
             "granted_by": granted_by,
             "created_at": created_at
@@ -672,20 +656,30 @@ async def get_project_activity(
 
     # Check user access to project
     current_user = get_user_by_hash(session_data.user_hash)
-    user_permissions = get_user_project_permissions(current_user.id, project.id)
     session_permissions = getattr(session_data, 'permissions', [])
+    is_admin = 'admin' in session_permissions
 
-    if not user_permissions and 'admin' not in session_permissions:
-        raise AuthorizationError(
-            message="Access denied to this project",
-            error_code=ErrorCode.PROJECT_ACCESS_DENIED,
-            details={"project_hash": project_hash}
-        )
+    if not is_admin:
+        accessible = get_user_accessible_projects(current_user.id)
+        has_access = any(p.id == project.id for p in accessible)
+        if not has_access:
+            raise AuthorizationError(
+                message="Access denied to this project",
+                error_code=ErrorCode.PROJECT_ACCESS_DENIED,
+                details={"project_hash": project_hash}
+            )
 
     # Get project activities
     activities = get_recent_activity(
         limit=limit,
         offset=offset,
+        project_id=project.id,
+        activity_type=activity_type,
+        days=days
+    )
+
+    # Get total count for honest pagination
+    total_count = count_activity_logs(
         project_id=project.id,
         activity_type=activity_type,
         days=days
@@ -697,7 +691,8 @@ async def get_project_activity(
         "pagination": {
             "limit": limit,
             "offset": offset,
-            "total": len(activities)
+            "total": total_count,
+            "has_more": offset + limit < total_count
         }
     }
 
@@ -713,7 +708,7 @@ async def get_project_activity(
             "activity_type": activity_type,
             "days": days
         },
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 @router.get("/{project_hash}/stats")
@@ -752,15 +747,18 @@ async def get_detailed_project_stats(
 
     # Check user access to project
     current_user = get_user_by_hash(session_data.user_hash)
-    user_permissions = get_user_project_permissions(current_user.id, project.id)
     session_permissions = getattr(session_data, 'permissions', [])
+    is_admin = 'admin' in session_permissions
 
-    if not user_permissions and 'admin' not in session_permissions:
-        raise AuthorizationError(
-            message="Access denied to this project",
-            error_code=ErrorCode.PROJECT_ACCESS_DENIED,
-            details={"project_hash": project_hash}
-        )
+    if not is_admin:
+        accessible = get_user_accessible_projects(current_user.id)
+        has_access = any(p.id == project.id for p in accessible)
+        if not has_access:
+            raise AuthorizationError(
+                message="Access denied to this project",
+                error_code=ErrorCode.PROJECT_ACCESS_DENIED,
+                details={"project_hash": project_hash}
+            )
 
     # Get detailed project statistics
     stats = get_project_stats(project.id) or {}
@@ -773,7 +771,7 @@ async def get_detailed_project_stats(
             "project_description": project.project_description
         },
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 @router.patch("/{project_hash}/owner")
@@ -832,43 +830,17 @@ async def transfer_project_ownership(
 
     current_user = get_user_by_hash(session_data.user_hash)
 
-    # Transfer ownership (placeholder implementation)
-    # TODO: Implement actual ownership transfer logic
-    success = True  # For now, just return success
-
-    if not success:
-        raise InternalError(
-            message="Failed to transfer project ownership",
-            error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "transfer_ownership", "project_hash": project_hash}
-        )
-
-    # Log the activity
-    ActivityLogger.log_project_ownership_transferred(
-        current_user.id, project.id, new_owner.id
+    # Ownership transfer not yet implemented — return 501 Not Implemented
+    raise FeatureNotImplementedError(
+        message="Project ownership transfer is not yet implemented",
+        error_code=ErrorCode.FEATURE_NOT_IMPLEMENTED,
+        details={
+            "operation": "transfer_ownership",
+            "project_hash": project_hash,
+            "status": "planned",
+            "note": "This endpoint is reserved for future implementation"
+        }
     )
-
-    logger.info(
-        f"Project ownership transferred: {project.project_name} -> {new_owner.username} by {current_user.username}")
-
-    return {
-        "success": True,
-        "message": f"Project ownership transferred to {new_owner.username}",
-        "project": {
-            "project_hash": project.project_hash,
-            "project_name": project.project_name
-        },
-        "new_owner": {
-            "user_hash": new_owner.user_hash,
-            "username": new_owner.username,
-            "email": new_owner.email
-        },
-        "transferred_by": {
-            "user_hash": current_user.user_hash,
-            "username": current_user.username
-        },
-        "transferred_at": datetime.utcnow().isoformat() + "Z"
-    }
 
 @router.patch("/{project_hash}/archive")
 async def archive_unarchive_project(
@@ -918,40 +890,19 @@ async def archive_unarchive_project(
 
     current_user = get_user_by_hash(session_data.user_hash)
 
-    # Archive/unarchive project (placeholder implementation)
-    # TODO: Implement actual archive/unarchive logic
-    success = True  # For now, just return success
-
-    if not success:
-        raise InternalError(
-            message=f"Failed to {'archive' if archived else 'unarchive'} project",
-            error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "archive_project", "archived": archived}
-        )
-
-    # Log the activity
-    action = "archived" if archived else "unarchived"
-    if archived:
-        ActivityLogger.log_project_archived(current_user.id, project.id)
-    else:
-        ActivityLogger.log_project_unarchived(current_user.id, project.id)
-
-    logger.info(f"Project {action}: {project.project_name} by {current_user.username}")
-
-    return {
-        "success": True,
-        "message": f"Project {project.project_name} {'archived' if archived else 'unarchived'} successfully",
-        "project": {
-            "project_hash": project.project_hash,
-            "project_name": project.project_name,
-            "archived": archived
-        },
-        "action_details": {
-            "action": "archive" if archived else "unarchive",
-            "performed_by": current_user.username,
-            "performed_at": datetime.utcnow().isoformat() + "Z"
+    # Archive/unarchive not yet implemented — return 501 Not Implemented
+    raise FeatureNotImplementedError(
+        message="Project archive/unarchive is not yet implemented",
+        error_code=ErrorCode.FEATURE_NOT_IMPLEMENTED,
+        details={
+            "operation": "archive_project",
+            "project_hash": project_hash,
+            "archived": archived,
+            "status": "planned",
+            "note": "This endpoint is reserved for future implementation"
         }
-    }
+    )
+
 
 # =================== NEW GROUP-PROJECT ENDPOINTS ===================
 

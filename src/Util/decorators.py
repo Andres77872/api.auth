@@ -9,7 +9,7 @@ import traceback
 import uuid
 from typing import Callable, Optional, Any, Dict
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timezone
 from inspect import signature
 
 from fastapi import Request
@@ -67,7 +67,7 @@ def log_and_handle_errors(
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             log_context = None
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             request_id = str(uuid.uuid4())
             
             try:
@@ -125,7 +125,7 @@ def log_and_handle_errors(
                 
                 # Log successful operation
                 if log_success and log_context:
-                    duration = (datetime.utcnow() - start_time).total_seconds()
+                    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                     
                     # Log to activity logger if activity_type is provided
                     if activity_type:
@@ -158,7 +158,7 @@ def log_and_handle_errors(
                 
             except AppException as e:
                 # Handle known application exceptions
-                duration = (datetime.utcnow() - start_time).total_seconds()
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
                 # Log the error
                 log_error(e, context={
@@ -191,7 +191,7 @@ def log_and_handle_errors(
                 
             except Exception as e:
                 # Handle unexpected exceptions
-                duration = (datetime.utcnow() - start_time).total_seconds()
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
                 logger.error(
                     f"Unexpected error in {operation_name}: {sanitize_error_message(str(e))}",
@@ -273,7 +273,7 @@ def log_unauthenticated_operation(
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             request_id = str(uuid.uuid4())
             username = None
             
@@ -319,7 +319,7 @@ def log_unauthenticated_operation(
                 
                 # Log successful operation
                 if log_success:
-                    duration = (datetime.utcnow() - start_time).total_seconds()
+                    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                     
                     logger.info(
                         f"Unauthenticated operation completed: {operation_name}",
@@ -372,7 +372,7 @@ def log_unauthenticated_operation(
                 
             except AppException as e:
                 # Handle known application exceptions
-                duration = (datetime.utcnow() - start_time).total_seconds()
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
                 # Log the error
                 log_error(e, context={
@@ -404,7 +404,7 @@ def log_unauthenticated_operation(
                 
             except Exception as e:
                 # Handle unexpected exceptions
-                duration = (datetime.utcnow() - start_time).total_seconds()
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
                 logger.error(
                     f"Unexpected error in {operation_name}: {sanitize_error_message(str(e))}",

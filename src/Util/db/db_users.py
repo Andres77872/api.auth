@@ -31,7 +31,7 @@ from src.Util.Models import (
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
 from src.Util.password_security import hash_password, verify_password, needs_rehash
-from src.Util.uuid_generator import generate_user_id
+from src.Util.uuid_generator import generate_user_id, generate_user_group_member_id
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.error_handler import ValidationError, NotFoundError, ErrorCode, mask_uuid
 
@@ -971,21 +971,7 @@ def invalidate_user_sessions(user_id: str) -> bool:
         DatabaseError: On Redis operation errors
     """
     def _invalidate():
-        session_keys = client.keys("session:*")
-        invalidated_count = 0
-        
-        for key in session_keys:
-            try:
-                session_data = client.get(key)
-                if session_data:
-                    data = json.loads(session_data)
-                    if data.get('user_id') == user_id:
-                        client.delete(key)
-                        invalidated_count += 1
-            except Exception:
-                continue
-        
-        return invalidated_count > 0
+        return cache_manager.invalidate_user_sessions(user_id) > 0
     
     return handle_db_operation(
         _invalidate,
@@ -1078,51 +1064,64 @@ def get_admin_assigned_projects(user_id: str) -> List[str]:
 
 def assign_admin_to_multiple_projects(user_id: str, project_ids: List[str], assigned_by: str = None) -> bool:
     """Assign admin user to multiple projects through user groups"""
-    with get_connection() as con:
-        cur = con.cursor()
-
-        try:
-            con.begin()
-
-            # Verify user is admin
-            user_type = get_user_type(user_id)
-            if user_type != 'admin':
-                raise ValueError("User is not an admin user")
-
-            # For now, we'll use the existing user group management functions
-            # This is a simplified approach - in a full implementation, you might want
-            # to create project-specific admin groups or handle this differently
-
-            # Import the user group functions
-            from src.Util.db.db_user_groups import (
-                assign_user_to_group,
-                get_user_groups_for_user
-            )
-
-            # Get user's current groups
-            current_groups = get_user_groups_for_user(user_id)
-
-            # For each project, ensure the user has access through an appropriate admin group
-            for project_id in project_ids:
-                # Look for an existing admin group for this project
-                cur.callproc('sp_find_admin_group_for_project', [project_id])
-                admin_group_result = cur.fetchone()
-                if admin_group_result:
-                    admin_group_id = admin_group_result[0]
-
-                    # Check if user is already in this group
-                    cur.callproc('sp_check_user_in_group', [user_id, admin_group_id])
-                    if not cur.fetchone()[0]:
-                        # Add user to admin group
-                        assign_user_to_group(user_id, admin_group_id, assigned_by)
-
-            con.commit()
+    def _assign() -> bool:
+        if not project_ids:
             return True
 
-        except Exception as e:
-            con.rollback()
-            print(f"Error assigning admin to multiple projects: {e}")
-            return False
+        with get_connection() as con:
+            cur = con.cursor()
+
+            try:
+                con.begin()
+
+                current_user_type = get_user_type(user_id)
+                if current_user_type != 'admin':
+                    raise ValidationError(
+                        message="User is not an admin user",
+                        error_code=ErrorCode.INVALID_INPUT,
+                        details={"user_id": user_id, "user_type": current_user_type}
+                    )
+
+                for project_id in project_ids:
+                    cur.callproc('sp_find_admin_group_for_project', [project_id])
+                    admin_group_result = cur.fetchone()
+                    while cur.nextset():
+                        pass
+
+                    if not admin_group_result:
+                        raise NotFoundError(
+                            message="No admin group found for project",
+                            error_code=ErrorCode.GROUP_NOT_FOUND,
+                            details={"project_id": project_id}
+                        )
+
+                    admin_group_id = admin_group_result[0]
+
+                    cur.callproc('sp_check_user_in_group', [user_id, admin_group_id])
+                    membership_result = cur.fetchone()
+                    while cur.nextset():
+                        pass
+
+                    is_member = bool(membership_result[0]) if membership_result else False
+                    if is_member:
+                        continue
+
+                    member_id = generate_user_group_member_id()
+                    cur.callproc('sp_assign_user_to_group', [member_id, user_id, admin_group_id, assigned_by])
+                    while cur.nextset():
+                        pass
+
+                con.commit()
+                cache_manager.invalidate_user_cache(user_id)
+                return True
+            except Exception:
+                con.rollback()
+                raise
+
+    return handle_db_operation(
+        _assign,
+        error_context=f"assign_admin_to_multiple_projects(user_id={user_id}, project_count={len(project_ids)})"
+    )
 
 
 def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None) -> bool:

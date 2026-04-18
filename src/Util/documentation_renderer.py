@@ -679,8 +679,8 @@ class DocumentationRenderer:
             <ul>
                 <li><a href="{base_url}/USAGE/authentication-usage-cases.md">Authentication - Login, sessions, tokens</a></li>
                 <li><a href="{base_url}/USAGE/users-usage-cases.md">Users - Profile, admin operations</a></li>
-                <li><a href="{base_url}/USAGE/groups-usage-cases.md">Groups - User groups, project groups</a></li>
-                <li><a href="{base_url}/USAGE/projects-usage-cases.md">Projects - Project management</a></li>
+                <li><a href="{base_url}/USAGE/groups/README.md">Groups - User groups, project groups, flows</a></li>
+                <li><a href="{base_url}/USAGE/projects/README.md">Projects - Project management suite</a></li>
                 <li><a href="{base_url}/USAGE/permissions-usage-cases.md">Permissions - Roles, permission groups</a></li>
                 <li><a href="{base_url}/USAGE/admin-usage-cases.md">Admin - Dashboard, bulk operations</a></li>
             </ul>

@@ -30,9 +30,6 @@ from src.Util.db.db_enhanced import (
     is_admin_user,
     is_consumer_user,
     check_admin_project_access,
-    create_root_session,
-    validate_root_session,
-    validate_admin_session
 )
 # Import project group management functions
 from src.Util.db.db_project_groups import (
@@ -62,6 +59,7 @@ from src.Util.db.db_projects import (
     create_project,
     get_project_by_hash,
     get_project_by_id,
+    get_project_members_page,
     list_all_projects,
     count_projects,
     update_project,
@@ -86,6 +84,15 @@ from src.Util.db.db_session_analytics import (
     check_redis_health,
     get_recent_activity_count,
     initialize_activity_logs_table
+)
+# Import audit analytics functions
+from src.Util.db.db_audit_analytics import (
+    get_audit_logs,
+    count_audit_logs,
+    get_audit_statistics,
+    get_security_events,
+    get_failed_requests,
+    get_user_api_activity_summary,
 )
 # Import user group management functions
 from src.Util.db.db_user_groups import (
@@ -385,9 +392,6 @@ __all__ = [
     'enhanced_register',
     'validate_session',
     'get_session_data',
-    'create_root_session',
-    'validate_root_session',
-    'validate_admin_session',
 
     # User type functions
     'is_root_user',
@@ -435,6 +439,7 @@ __all__ = [
     'create_project',
     'get_project_by_hash',
     'get_project_by_id',
+    'get_project_members_page',
     'list_all_projects',
     'count_projects',
     'update_project',
@@ -509,6 +514,14 @@ __all__ = [
     'check_database_health',
     'check_redis_health',
     'get_recent_activity_count',
+    
+    # Audit Analytics
+    'get_audit_logs',
+    'count_audit_logs',
+    'get_audit_statistics',
+    'get_security_events',
+    'get_failed_requests',
+    'get_user_api_activity_summary',
     
     # Permission Assignment System
     'assign_permission_group_to_user_group',

@@ -7,17 +7,18 @@ Provides endpoints for the admin dashboard including:
 - System health monitoring
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.activity_logger import get_recent_activity, count_activity_logs, ActivityType
+from src.Util.activity_logger import get_recent_activity, count_activity_logs, ActivityType, get_activity_by_id
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
-from src.Util.error_handler import AuthorizationError, ErrorCode
+from src.Util.error_handler import AuthorizationError, ErrorCode, NotFoundError, ValidationError
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.db import (
     count_users, count_projects, count_active_sessions,
@@ -123,7 +124,7 @@ async def get_dashboard_stats(
             "overall_status": "healthy" if db_health["status"] == "healthy" and redis_health[
                 "status"] == "healthy" else "degraded"
         },
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -140,6 +141,7 @@ async def get_activity_feed(
         user_id: Optional[str] = Query(None, description="Filter by user ID"),
         project_id: Optional[str] = Query(None, description="Filter by project ID"),
         days: int = Query(30, ge=1, le=365, description="Days to look back"),
+        search: Optional[str] = Query(None, description="Free-text search across activity_type, details, and username"),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
@@ -147,7 +149,7 @@ async def get_activity_feed(
     Get activity feed for the dashboard
     
     Returns recent activities with pagination and filtering options.
-    Supports filtering by activity type, user, project, and time range.
+    Supports filtering by activity type, user, project, time range, and free-text search.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -159,6 +161,9 @@ async def get_activity_feed(
             error_code=ErrorCode.ACCESS_DENIED
         )
     
+    # Treat empty string as None (no filtering)
+    search_param = search if search else None
+    
     # Get recent activities with filters
     activities = get_recent_activity(
         limit=limit,
@@ -166,7 +171,8 @@ async def get_activity_feed(
         user_id=user_id,
         project_id=project_id,
         activity_type=activity_type_filter,
-        days=days
+        days=days,
+        search=search_param,
     )
 
     # Get total count for pagination
@@ -174,7 +180,8 @@ async def get_activity_feed(
         user_id=user_id,
         project_id=project_id,
         activity_type=activity_type_filter,
-        days=days
+        days=days,
+        search=search_param,
     )
 
     # Format activities for frontend
@@ -221,9 +228,96 @@ async def get_activity_feed(
             "activity_type": activity_type_filter,
             "user_id": user_id,
             "project_id": project_id,
-            "days": days
+            "days": days,
+            "search": search_param,
         },
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+
+
+@router.get("/activity/{activity_id}")
+@log_and_handle_errors(
+    operation_name="get_activity_detail",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=False
+)
+async def get_activity_detail(
+        activity_id: str,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> Dict[str, Any]:
+    """
+    Get detailed information for a single activity log entry.
+    
+    Returns full metadata for the specified activity including user info,
+    project info, target user info, and all enriched fields.
+    """
+    # Check admin access
+    user_type = get_user_type(log_context.user_id)
+    is_root = is_root_user(log_context.user_id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin access required",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
+    
+    # Validate activity_id format
+    if not activity_id or not activity_id.strip():
+        raise ValidationError(
+            message="Invalid activity ID: empty value",
+            error_code=ErrorCode.INVALID_INPUT,
+        )
+    
+    # Validate activity_id matches expected format: act-{32 hex chars}
+    if not re.match(r'^act-[0-9a-fA-F]{32}$', activity_id):
+        raise ValidationError(
+            message=f"Invalid activity ID format: {activity_id}",
+            error_code=ErrorCode.INVALID_INPUT,
+        )
+    
+    # Fetch activity by ID
+    activity = get_activity_by_id(activity_id)
+    
+    if not activity:
+        raise NotFoundError(
+            message=f"Activity log entry not found: {activity_id}",
+            error_code=ErrorCode.RESOURCE_NOT_FOUND,
+        )
+    
+    # Format the activity for response
+    formatted_activity = {
+        "id": activity["id"],
+        "activity_type": activity["activity_type"],
+        "details": activity["details"],
+        "severity_level": activity["severity_level"],
+        "created_at": activity["created_at"].isoformat() + "Z" if hasattr(activity["created_at"], 'isoformat') else str(activity["created_at"]) + "Z",
+        "user": {
+            "id": activity["user_id"],
+            "username": activity["username"],
+            "user_hash": activity["user_hash"]
+        } if activity["user_id"] else None,
+        "project": {
+            "id": activity["project_id"],
+            "name": activity["project_name"],
+            "hash": activity["project_hash"]
+        } if activity["project_id"] else None,
+        "target_user": {
+            "id": activity["target_user_id"],
+            "username": activity["target_username"],
+            "user_hash": activity["target_user_hash"]
+        } if activity["target_user_id"] else None,
+        "ip_address": activity["ip_address"],
+        "user_agent": activity["user_agent"],
+        "metadata": activity["metadata"],
+        "activity_name": activity["activity_name"],
+        "activity_category": activity["activity_category"],
+        "activity_description": activity["activity_description"],
+    }
+    
+    return {
+        "activity": formatted_activity,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -291,7 +385,7 @@ async def get_system_health(
             "total_projects": total_projects,
             "active_sessions": active_sessions
         },
-        "checked_at": datetime.utcnow().isoformat() + "Z"
+        "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -325,7 +419,7 @@ async def get_activity_types(
 
     return {
         "activity_types": activity_types,
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -366,7 +460,7 @@ async def get_user_statistics(
     return {
         "success": True,
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -407,7 +501,7 @@ async def get_project_statistics(
     return {
         "success": True,
         "statistics": stats,
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 
@@ -444,5 +538,5 @@ async def get_system_overview(
     return {
         "success": True,
         "system_overview": overview,
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }

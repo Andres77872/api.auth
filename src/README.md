@@ -59,8 +59,8 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 | [📚 Documentation Home](/documentation) | Main documentation index |
 | [🔐 Authentication](/documentation/USAGE/authentication-usage-cases.md) | Login, sessions, tokens, project switching |
 | [👤 Users](/documentation/USAGE/users-usage-cases.md) | Profile management, admin operations |
-| [👥 Groups](/documentation/USAGE/groups-usage-cases.md) | User groups, project groups, permission groups |
-| [📁 Projects](/documentation/USAGE/projects-usage-cases.md) | Project management, access control |
+| [👥 Groups](/documentation/USAGE/groups/README.md) | User groups, project groups, flows, troubleshooting |
+| [📁 Projects](/documentation/USAGE/projects/README.md) | Project management suite, access control |
 | [🔑 Permissions](/documentation/USAGE/permissions-usage-cases.md) | Roles, permission groups, assignments |
 | [⚙️ Admin](/documentation/USAGE/admin-usage-cases.md) | Dashboard, bulk operations, cache management |
 
@@ -98,8 +98,8 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 - `GET /projects/{hash}/groups` - Get groups
 - `GET /projects/{hash}/activity` - Get activity
 - `GET /projects/{hash}/stats` - Get statistics
-- `PUT /projects/{hash}/owner` - Change owner
-- `POST /projects/{hash}/archive` - Archive project
+- `PATCH /projects/{hash}/owner` - Change owner (currently 501)
+- `PATCH /projects/{hash}/archive` - Archive/unarchive project (currently 501)
 
 ### User Groups (`/admin/user-groups`) - 12 endpoints
 - `POST /admin/user-groups` - Create group

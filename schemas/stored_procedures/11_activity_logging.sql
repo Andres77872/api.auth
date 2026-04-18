@@ -86,7 +86,8 @@ CREATE PROCEDURE sp_get_activity_logs(
     IN p_user_id VARCHAR(64),
     IN p_project_id VARCHAR(64),
     IN p_activity_code VARCHAR(50),
-    IN p_days INT
+    IN p_days INT,
+    IN p_search VARCHAR(255)
 )
 BEGIN
     DECLARE v_date_filter DATETIME;
@@ -129,6 +130,10 @@ BEGIN
         AND (p_project_id IS NULL OR al.project_id = p_project_id)
         AND (p_activity_code IS NULL OR al.activity_type = p_activity_code)
         AND al.created_at >= v_date_filter
+        AND (p_search IS NULL
+             OR al.activity_type LIKE CONCAT('%', p_search, '%')
+             OR al.details LIKE CONCAT('%', p_search, '%')
+             OR u.username LIKE CONCAT('%', p_search, '%'))
     ORDER BY al.created_at DESC
     LIMIT p_limit OFFSET p_offset;
 END//
@@ -140,7 +145,8 @@ CREATE PROCEDURE sp_count_activity_logs(
     IN p_user_id VARCHAR(64),
     IN p_project_id VARCHAR(64),
     IN p_activity_code VARCHAR(50),
-    IN p_days INT
+    IN p_days INT,
+    IN p_search VARCHAR(255)
 )
 BEGIN
     DECLARE v_date_filter DATETIME;
@@ -151,11 +157,16 @@ BEGIN
     -- Return count
     SELECT COUNT(*) as total_count
     FROM activity_logs al
+    LEFT JOIN users u ON al.user_id = u.id
     WHERE 
         (p_user_id IS NULL OR al.user_id = p_user_id)
         AND (p_project_id IS NULL OR al.project_id = p_project_id)
         AND (p_activity_code IS NULL OR al.activity_type = p_activity_code)
-        AND al.created_at >= v_date_filter;
+        AND al.created_at >= v_date_filter
+        AND (p_search IS NULL
+             OR al.activity_type LIKE CONCAT('%', p_search, '%')
+             OR al.details LIKE CONCAT('%', p_search, '%')
+             OR u.username LIKE CONCAT('%', p_search, '%'));
 END//
 
 -- =================== SP: GET ACTIVITY CATALOG ===================

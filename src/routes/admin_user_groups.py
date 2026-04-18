@@ -6,7 +6,7 @@ and access control for the group-based multi-project authentication system.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form, Body
@@ -204,7 +204,7 @@ async def get_user_group_details(
     if not user_group:
         raise NotFoundError(
             message="User group not found",
-            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            error_code=ErrorCode.GROUP_NOT_FOUND,
             details={"group_hash": group_hash}
         )
 
@@ -514,7 +514,7 @@ async def grant_user_group_project_group_access_endpoint(
     if not project_group:
         raise NotFoundError(
             message="Project group not found",
-            error_code=ErrorCode.NOT_FOUND,
+            error_code=ErrorCode.RESOURCE_NOT_FOUND,
             details={"project_group_hash": project_group_hash}
         )
 
@@ -584,7 +584,7 @@ async def revoke_user_group_project_group_access_endpoint(
     if not project_group:
         raise NotFoundError(
             message="Project group not found",
-            error_code=ErrorCode.NOT_FOUND,
+            error_code=ErrorCode.RESOURCE_NOT_FOUND,
             details={"project_group_hash": project_group_hash}
         )
 
@@ -627,7 +627,7 @@ async def list_project_groups_for_user_group(
     if not user_group:
         raise NotFoundError(
             message="User group not found",
-            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            error_code=ErrorCode.GROUP_NOT_FOUND,
             details={"group_hash": group_hash}
         )
 
@@ -674,7 +674,7 @@ async def get_group_members_with_pagination(
     if not user_group:
         raise NotFoundError(
             message="User group not found",
-            error_code=ErrorCode.USER_GROUP_NOT_FOUND,
+            error_code=ErrorCode.GROUP_NOT_FOUND,
             details={"group_hash": group_hash}
         )
 
@@ -723,7 +723,7 @@ async def get_group_members_with_pagination(
             "total_members": total_count,
             "members_shown": len(members_data)
         },
-        generated_at=datetime.utcnow().isoformat() + "Z"
+        generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
 @router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
@@ -833,7 +833,7 @@ async def bulk_add_users_to_group(
         results=results,
         errors=errors,
         performed_by=current_user.username,
-        performed_at=datetime.utcnow().isoformat() + "Z"
+        performed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
 @router.get("/users/{user_hash}/groups", response_model=UserGroupsForUserResponse)
@@ -889,5 +889,5 @@ async def get_user_groups(
         statistics={
             "total_groups": len(groups_data)
         },
-        generated_at=datetime.utcnow().isoformat() + "Z"
+        generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )

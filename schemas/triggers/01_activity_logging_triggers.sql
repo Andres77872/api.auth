@@ -25,7 +25,7 @@ BEGIN
         CONCAT('User created: ', NEW.username, ' (', NEW.user_type, ')'),
         NEW.id,
         JSON_OBJECT('user_hash', NEW.user_hash, 'username', NEW.username, 'user_type', NEW.user_type),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -52,7 +52,7 @@ BEGIN
             'old', JSON_OBJECT('user_type', OLD.user_type, 'is_active', OLD.is_active),
             'new', JSON_OBJECT('user_type', NEW.user_type, 'is_active', NEW.is_active)
         ),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -67,7 +67,7 @@ BEGIN
         CONCAT('User deleted: ', OLD.username),
         OLD.id,
         JSON_OBJECT('user_hash', OLD.user_hash, 'username', OLD.username),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -87,7 +87,7 @@ BEGIN
         CONCAT('Project created: ', NEW.project_name),
         NEW.id,
         JSON_OBJECT('project_hash', NEW.project_hash, 'project_name', NEW.project_name, 'owner_id', NEW.owner_id),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -114,7 +114,7 @@ BEGIN
             'old', JSON_OBJECT('archived', OLD.archived, 'owner_id', OLD.owner_id),
             'new', JSON_OBJECT('archived', NEW.archived, 'owner_id', NEW.owner_id)
         ),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -129,7 +129,7 @@ BEGIN
         CONCAT('Project deleted: ', OLD.project_name),
         OLD.id,
         JSON_OBJECT('project_hash', OLD.project_hash, 'project_name', OLD.project_name),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -149,7 +149,7 @@ BEGIN
         CONCAT('User group created: ', NEW.group_name),
         NEW.id,
         JSON_OBJECT('group_hash', NEW.group_hash, 'group_name', NEW.group_name, 'is_root', NEW.parent_group_id IS NULL),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -167,7 +167,7 @@ BEGIN
             'old', JSON_OBJECT('group_name', OLD.group_name, 'is_active', OLD.is_active),
             'new', JSON_OBJECT('group_name', NEW.group_name, 'is_active', NEW.is_active)
         ),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -182,7 +182,7 @@ BEGIN
         CONCAT('User group deleted: ', OLD.group_name),
         OLD.id,
         JSON_OBJECT('group_hash', OLD.group_hash, 'group_name', OLD.group_name),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -201,7 +201,7 @@ BEGIN
         'project_group_creation',
         CONCAT('Project group created: ', NEW.group_name),
         JSON_OBJECT('group_hash', NEW.group_hash, 'group_name', NEW.group_name),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -218,7 +218,7 @@ BEGIN
             'old', JSON_OBJECT('group_name', OLD.group_name, 'is_active', OLD.is_active),
             'new', JSON_OBJECT('group_name', NEW.group_name, 'is_active', NEW.is_active)
         ),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -232,7 +232,7 @@ BEGIN
         'project_group_delete',
         CONCAT('Project group deleted: ', OLD.group_name),
         JSON_OBJECT('group_hash', OLD.group_hash, 'group_name', OLD.group_name),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -253,7 +253,7 @@ BEGIN
         NEW.user_id,
         NEW.user_group_id,
         JSON_OBJECT('user_id', NEW.user_id, 'user_group_id', NEW.user_group_id),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -271,7 +271,7 @@ BEGIN
             NEW.user_id,
             NEW.user_group_id,
             JSON_OBJECT('user_id', NEW.user_id, 'user_group_id', NEW.user_group_id),
-            'WARN',
+            'warning',
             NOW()
         );
     END IF;
@@ -288,7 +288,7 @@ BEGIN
         OLD.user_id,
         OLD.user_group_id,
         JSON_OBJECT('user_id', OLD.user_id, 'user_group_id', OLD.user_group_id),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -308,7 +308,7 @@ BEGIN
         'Project assigned to project group',
         NEW.project_id,
         JSON_OBJECT('project_id', NEW.project_id, 'project_group_id', NEW.project_group_id),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -325,7 +325,7 @@ BEGIN
             'Project removed from project group',
             NEW.project_id,
             JSON_OBJECT('project_id', NEW.project_id, 'project_group_id', NEW.project_group_id),
-            'WARN',
+            'warning',
             NOW()
         );
     END IF;
@@ -341,7 +341,7 @@ BEGIN
         'Project membership deleted from project group',
         OLD.project_id,
         JSON_OBJECT('project_id', OLD.project_id, 'project_group_id', OLD.project_group_id),
-        'WARN',
+        'warning',
         NOW()
     );
 END//
@@ -361,7 +361,7 @@ BEGIN
         'User group granted access to project group',
         NEW.user_group_id,
         JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id),
-        'INFO',
+        'info',
         NOW()
     );
 END//
@@ -378,7 +378,7 @@ BEGIN
             'User group access revoked from project group',
             NEW.user_group_id,
             JSON_OBJECT('user_group_id', NEW.user_group_id, 'project_group_id', NEW.project_group_id),
-            'WARN',
+            'warning',
             NOW()
         );
     END IF;
@@ -394,7 +394,7 @@ BEGIN
         'User group project group access deleted',
         OLD.user_group_id,
         JSON_OBJECT('user_group_id', OLD.user_group_id, 'project_group_id', OLD.project_group_id),
-        'WARN',
+        'warning',
         NOW()
     );
 END//

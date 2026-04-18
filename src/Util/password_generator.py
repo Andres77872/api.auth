@@ -7,7 +7,7 @@ like password resets and temporary password creation.
 
 import secrets
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
 
@@ -81,14 +81,14 @@ class PasswordGenerator:
         reset_token = PasswordGenerator.generate_reset_token()
         temp_password = PasswordGenerator.generate_temporary_password()
 
-        expiry_time = datetime.utcnow() + timedelta(hours=expiry_hours)
+        expiry_time = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
 
         return {
             "reset_token": reset_token,
             "temporary_password": temp_password,
             "user_id": user_id,
             "expires_at": expiry_time,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
 
     @staticmethod

@@ -28,6 +28,7 @@ from . import users
 from . import global_roles
 from . import permission_assignments
 from . import bulk_operations
+from . import audit_logs
 
 __all__ = [
     'auth',
@@ -40,5 +41,6 @@ __all__ = [
     'system',
     'global_roles',
     'permission_assignments',
-    'bulk_operations'
+    'bulk_operations',
+    'audit_logs',
 ]

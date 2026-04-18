@@ -5,7 +5,7 @@ Handles user group and direct user assignment of permission groups
 
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import pymysql.cursors
 
@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 def generate_hash(prefix: str, value: str) -> str:
     """Generate a unique hash"""
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     hash_input = f"{prefix}:{value}:{timestamp}"
     return hashlib.sha256(hash_input.encode()).hexdigest()[:32]
 
 
 def generate_id(prefix: str) -> str:
     """Generate a unique ID"""
-    timestamp = datetime.utcnow().timestamp()
+    timestamp = datetime.now(timezone.utc).timestamp()
     hash_input = f"{prefix}:{timestamp}"
     return f"{prefix}_{hashlib.sha256(hash_input.encode()).hexdigest()[:16]}"
 

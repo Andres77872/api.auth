@@ -1,0 +1,142 @@
+# Groups Architecture
+
+Technical architecture of the groups system as it actually exists in `api.auth`.
+
+---
+
+## Core Access Model
+
+The active runtime model is:
+
+```
+USER → USER_GROUP → PROJECT_GROUP → PROJECT
+                 ↘
+                   PERMISSION_GROUP → PERMISSIONS
+```
+
+This is the important distinction:
+
+- **User groups** organize users globally
+- **Project groups** collect projects into reusable access buckets
+- **Permission groups** are attached independently and do not replace project-access wiring
+
+---
+
+## Real Tables Behind the Model
+
+| Table | Purpose |
+|------|---------|
+| `user_groups` | Global team/organizational groups |
+| `user_group_members` | User-to-user-group membership |
+| `project_groups` | Project containers |
+| `project_group_members` | Project-to-project-group membership |
+| `user_group_project_groups` | The key access bridge from teams to project containers |
+| `user_group_permission_groups` | Separate bridge from teams to permission templates |
+
+If you forget `user_group_project_groups`, you miss the whole point of the implementation.
+
+---
+
+## Route and Layer Split
+
+### User-group operations
+- Route file: `src/routes/admin_user_groups.py`
+- DB layer: `src/Util/db/db_user_groups.py`
+- Stored procedures: `schemas/stored_procedures/02_user_groups.sql`
+
+### Project-group operations
+- Route file: `src/routes/admin_project_groups.py`
+- DB layer: `src/Util/db/db_project_groups.py`
+- Stored procedures: `schemas/stored_procedures/04_project_groups.sql`
+
+### Session-aware access resolution
+- Route file: `src/routes/auth.py`
+- Shared DB exports: `src/Util/db/__init__.py`
+
+---
+
+## Authorization Split
+
+The repo does not use one identical admin guard for all group operations.
+
+| Area | Permission Gate |
+|------|-----------------|
+| `/admin/user-groups` | `admin` or `manage_users` |
+| `/admin/project-groups` | `admin` or `manage_roles` |
+
+That means user-group and project-group administration are related, but not authorized identically.
+
+---
+
+## Login and Session Architecture
+
+During login, `_create_session()` in `src/routes/auth.py` loads the user's groups and embeds them in the session payload:
+
+- `user_group_ids`
+- `user_group_names`
+
+This matters because group changes may not be reflected in an already-issued session until the user logs in again, refreshes, or switches project context depending on the workflow.
+
+---
+
+## Project Creation Side Effect: Default Groups
+
+`src/Util/db/db_projects.py:create_default_groups()` creates default access scaffolding when a project is created.
+
+Current behavior:
+
+1. Create a default project group for the project
+2. Add the project to that project group
+3. Create default user groups based on the project id:
+   - `admin_{project_id}`
+   - `user_{project_id}`
+   - `readonly_{project_id}`
+4. Link those user groups to the default project group
+
+So new projects come with group wiring baked in from day one.
+
+---
+
+## Soft Deletes
+
+Group deletion is implemented as deactivation, not hard deletion.
+
+- `is_active = 0` is used across core group tables
+- membership and access links are also deactivated during user-group deletion
+- active queries typically filter on `is_active = 1`
+
+Operationally, this means historical records may still exist, but they should no longer participate in access resolution.
+
+---
+
+## Important Current Caveats
+
+### `parent_group_id` exists but is not an active feature
+
+Both `user_groups` and `project_groups` have hierarchy columns, but current runtime code and stored procedures do not actively use them for group operations. Do not document or operate them as if inheritance is live. It isn't.
+
+### Permission groups are attached separately
+
+Permission groups are not children of project groups. They are attached to user groups or users through separate routes and tables.
+
+### Legacy direct-project traces still exist in some responses
+
+Some code paths still expose fields such as `accessible_projects`, but the real scalable access pattern is the group bridge:
+
+`user_group_members → user_group_project_groups → project_group_members`
+
+---
+
+## Related Documentation
+
+- **[Groups Overview](README.md)**
+- **[Usage](usage.md)**
+- **[Request & Data Flow](request-flow.md)**
+- **[Scenarios](scenarios.md)**
+- **[Operational Reference](reference.md)**
+- **[Troubleshooting](troubleshooting.md)**
+
+---
+
+**Last Updated**: April 2026  
+**Document Version**: 3.0

@@ -1,0 +1,79 @@
+"""
+Slice 1 — Health & Ping Endpoints (System Routes, No Auth)
+
+Tests: GET /ping (204), GET /system/ping (200), GET /system/health (200), GET /system/info (200)
+
+CRITICAL: system.py imports count_users etc. from src.Util.db at module load time.
+We must patch at src.routes.system.count_users (usage location), not src.Util.db.count_users.
+"""
+
+import pytest
+from unittest.mock import patch
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_204(client):
+    """GET /ping returns 204 No Content."""
+    response = await client.get("/ping")
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+@pytest.mark.asyncio
+async def test_system_ping_returns_200(client, fake_redis):
+    """GET /system/ping returns 200 with success payload."""
+    response = await client.get("/system/ping")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "message" in data
+    assert "timestamp" in data
+
+
+@pytest.mark.asyncio
+async def test_system_health_returns_200(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """GET /system/health returns 200 with component statuses."""
+    # Patch at USAGE location in system.py (where names are bound at import time)
+    with patch("src.routes.system.count_users", return_value=42), \
+         patch("src.routes.system.count_user_groups", return_value=5), \
+         patch("src.routes.system.count_project_permission_groups", return_value=3):
+        response = await client.get("/system/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["status"] in ("healthy", "degraded")
+    assert "timestamp" in data
+    assert "components" in data
+    assert data["components"]["redis"]["status"] == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_system_info_returns_200(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """GET /system/info returns 200 with system statistics."""
+    with patch("src.routes.system.count_users", return_value=100), \
+         patch("src.routes.system.count_projects", return_value=25), \
+         patch("src.routes.system.count_user_groups", return_value=10), \
+         patch("src.routes.system.count_project_permission_groups", return_value=8):
+        response = await client.get("/system/info")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["system"]["name"] == "Group-Based Multi-Project Authentication API"
+    assert data["statistics"]["total_users"] == 100
+    assert data["statistics"]["total_projects"] == 25
+
+
+@pytest.mark.asyncio
+async def test_health_degraded_when_db_fails(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """GET /system/health returns degraded when DB is unreachable."""
+    with patch("src.routes.system.count_users", return_value=None), \
+         patch("src.routes.system.count_user_groups", return_value=5), \
+         patch("src.routes.system.count_project_permission_groups", return_value=3):
+        response = await client.get("/system/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["components"]["database"]["status"] == "unhealthy"

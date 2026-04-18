@@ -106,56 +106,7 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
     # Get user type for permission checking
     user_type = get_user_type(user.id)
 
-    # Handle root users who may not have a project_hash
-    if user_type == "root":
-        if not project_hash:
-            # Root user global login - no specific project
-            session_length = 60 * 60 * 24 * 7  # 7 days for root users
-            session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
-
-            # Create JWT token for root user global session
-            session_token = JWTTokenHandler.create_access_token(
-                session_id=session_id,
-                user_hash=user.user_hash,
-                collection="",  # Empty for global root session
-            )
-
-            # Build global session data for root user
-            session_data = {
-                'session_id': session_id,
-                'user_id': user.id,
-                'user_hash': user.user_hash,
-                'user_type': 'root',
-                'permissions': ['admin', 'global_admin', 'unrestricted_access'],
-                'groups': ['root_users'],
-                'is_global_session': True,
-                'project_id': None,
-                'project_hash': None
-            }
-
-            # Store session in cache and Redis
-            cache_manager.set_session(session_token, session_data)
-            client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-
-            return EnhancedUserLogin(
-                user_hash=user.user_hash,
-                project_hash="",  # Empty for global root session
-                project_name="Global Root Access",
-                user_project_hash="",
-                session_token=session_token,
-                session_length=session_length,
-                user_id=user.id,
-                project_id=None,  # No specific project
-                user_project_id=None,
-                groups=['root_users'],
-                permissions=['admin', 'global_admin', 'unrestricted_access'],
-                available_projects=[],  # Root users can access all projects
-                user_type='root',
-                assigned_project_id=None
-            )
-        # If root user provided project_hash, continue with normal flow
-
-    # For non-root users or root users with project context, project_hash is required
+    # For non-root users, project_hash is required
     if not project_hash:
         return None
 
@@ -291,11 +242,10 @@ def enhanced_register(
         return None  # Unknown or inactive group
 
     grp_projects = get_projects_for_user_group(user_group.id)
-    if not grp_projects:
-        logging.debug(f"Group hash not linked to any projects: {group_hash}")
-        return None  # Group must be linked to at least one project
-
-    default_project_id, default_project_hash, project_name, _ = grp_projects[0]
+    if grp_projects:
+        default_project_id, default_project_hash, project_name, _ = grp_projects[0]
+    else:
+        default_project_id, default_project_hash, project_name = None, None, None
 
     # 3. Create the user record
     user = None
@@ -409,24 +359,34 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         cache_manager.set_session(session_token, session_data)
 
     user_type = session_data.get('user_type', 'consumer')
+    scope = session_data.get('scope')
 
-    # Handle global root sessions (no project context)
-    if user_type == 'root':
+    if scope == 'platform':
+        if user_type not in {'root', 'admin'}:
+            return None
+
+        groups = session_data.get('groups', ['platform_admins'])
+        if user_type == 'root':
+            permissions = session_data.get('permissions', ['admin', 'global_admin', 'manage_users', 'manage_roles'])
+        else:
+            permissions = session_data.get('permissions', ['admin', 'project_admin', 'manage_users', 'manage_roles'])
+
         return EnhancedUserLogin(
             user_hash=session_data['user_hash'],
-            project_hash="",  # Empty for global session
-            project_name="Global Root Access",
-            user_project_hash="",
+            scope='platform',
+            project_hash=None,
+            project_name=None,
+            user_project_hash=session_data.get('user_project_hash', ''),
             session_token=session_token,
-            session_length=0,  # We don't track remaining time
+            session_length=0,
             user_id=session_data['user_id'],
-            project_id=None,  # No specific project
-            user_project_id=None,
-            groups=['root_users'],
-            permissions=['admin', 'global_admin', 'unrestricted_access'],
-            available_projects=[],  # Root users can access all projects
-            user_type='root',
-            assigned_project_id=None
+            project_id=None,
+            user_project_id=session_data.get('user_project_id'),
+            groups=groups,
+            permissions=permissions,
+            available_projects=[],
+            user_type=user_type,
+            assigned_project_id=session_data.get('assigned_project_id')
         )
 
     # For sessions with project context, get fresh project data
@@ -472,6 +432,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
 
     return EnhancedUserLogin(
         user_hash=session_data['user_hash'],
+        scope=scope,
         project_hash=session_data['project_hash'],
         project_name=project.project_name,
         user_project_hash=session_data.get('user_project_hash', ''),
@@ -489,74 +450,4 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
 
 
 # =================== USER TYPE SPECIFIC FUNCTIONS ===================
-
-def create_root_session(username: str, password: str) -> Optional[dict]:
-    """Create a special root session that can access any project"""
-    user = get_user_by_credentials(username, password)
-    if not user or not is_root_user(user.id):
-        return None
-
-    session_length = 60 * 60 * 24 * 7  # 7 days for root users
-    session_id = secrets.randbelow(2 ** 31)  # Generate unique session ID for JWT
-
-    # Create JWT token for root user global session
-    session_token = JWTTokenHandler.create_access_token(
-        session_id=session_id,
-        user_hash=user.user_hash,
-        collection="",  # Empty for global root session
-    )
-
-    session_data = {
-        'session_id': session_id,
-        'user_id': user.id,
-        'user_hash': user.user_hash,
-        'user_type': 'root',
-        'permissions': ['admin', 'global_admin', 'unrestricted_access'],
-        'groups': ['root_users'],
-        'is_global_session': True,
-        'project_id': None,
-        'project_hash': None
-    }
-
-    # Store in both cache and Redis
-    cache_manager.set_session(session_token, session_data)
-    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-
-    return {
-        'session_token': session_token,
-        'user_type': 'root',
-        'permissions': session_data['permissions'],
-        'expires_in': session_length,
-        'user_hash': user.user_hash,
-        'username': user.username,
-        'email': user.email
-    }
-
-
-def validate_root_session(session_token: str) -> bool:
-    """Validate if session belongs to a root user"""
-    try:
-        session_data = get_session_data(session_token)
-        return session_data and session_data.get('user_type') == 'root'
-    except:
-        return False
-
-
-def validate_admin_session(session_token: str, project_id: str) -> bool:
-    """Validate if session belongs to admin user with access to project"""
-    try:
-        session_data = get_session_data(session_token)
-        if not session_data:
-            return False
-
-        user_type = session_data.get('user_type')
-        if user_type == 'root':
-            return True
-        elif user_type == 'admin':
-            return session_data.get('assigned_project_id') == project_id
-
-        return False
-    except:
-        return False
-
 

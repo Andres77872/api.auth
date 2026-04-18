@@ -6,7 +6,7 @@ for the group-based multi-project authentication system.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPAuthorizationCredentials
@@ -110,7 +110,7 @@ async def system_health() -> HealthCheckResponse:
         Detailed health status of all system components
     """
     status = "healthy"
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     components = {}
 
     # Check database connectivity
@@ -181,7 +181,7 @@ async def ping() -> PingResponse:
     return PingResponse(
         success=True,
         message="Group-based authentication API is running",
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -216,7 +216,7 @@ async def get_cache_statistics(
         success=True,
         cache_statistics=cache_stats,
         cache_configuration=cache_config,
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -262,7 +262,7 @@ async def clear_cache(
         success=True,
         message="Entire authentication cache has been cleared",
         cleared_by=mask_uuid(log_context.user_hash),
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         warning="All users will need to re-authenticate or may experience slower response times"
     )
 
@@ -320,7 +320,7 @@ async def invalidate_user_cache(
         success=True,
         message=f"Cache invalidated for user: {mask_uuid(user_hash)}",
         invalidated_by=mask_uuid(log_context.user_hash),
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -369,5 +369,5 @@ async def invalidate_project_cache(
         success=True,
         message=f"Cache invalidated for project: {project_id}",
         invalidated_by=mask_uuid(log_context.user_hash),
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )

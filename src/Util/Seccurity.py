@@ -18,6 +18,7 @@ x_token_collection = APIKeyHeader(name=x_token_collection_name, auto_error=True,
 
 # JWT token constants
 JWT_COOKIE_NAME = "session_token"
+PLATFORM_COLLECTION_SENTINEL = "__platform__"
 
 
 class HTTPBearerOrCookie(HTTPBearer):
@@ -66,7 +67,9 @@ def extract_jwt_token_from_request(request: Request) -> str:
     # First, try Authorization header (Bearer token)
     authorization = request.headers.get("Authorization")
     if authorization and authorization.startswith("Bearer "):
-        return authorization.split(" ")[1]
+        token = authorization.split(" ", 1)[1]  # split on first space only
+        if token:  # Reject empty tokens (e.g., "Bearer " with nothing after)
+            return token
 
     # Then, try cookie
     cookie_token = request.cookies.get(JWT_COOKIE_NAME)
@@ -94,25 +97,21 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             enhanced_user = validate_session(jwt_token)
 
             if enhanced_user:
-                # Handle root users with global sessions (no project context required)
-                if (enhanced_user.user_type == 'root' and
-                        enhanced_user.project_hash == "" and
-                        enhanced_user.project_name == "Global Root Access"):
-                    # Root user with global session - collection token not required
+                if enhanced_user.scope == 'platform':
                     return UserLogin(
                         user_session=enhanced_user.session_token,
                         user_session_length=enhanced_user.session_length,
                         user_hash=enhanced_user.user_hash,
-                        user_collection="",  # Empty for global root session
+                        user_collection=PLATFORM_COLLECTION_SENTINEL,
                         user_id=enhanced_user.user_id,
-                        project_id=None,  # No specific project
+                        project_id=enhanced_user.project_id,
                         user_project_id=enhanced_user.user_project_id,
                         groups=enhanced_user.groups,
                         user_type=enhanced_user.user_type,
                         assigned_project_id=enhanced_user.assigned_project_id
                     )
 
-                # For regular project-based sessions, validate project access
+                # For project-based sessions, validate project access
                 project_hash = enhanced_user.project_hash
                 if project_hash:
                     # Convert to legacy UserLogin format for compatibility
@@ -150,25 +149,24 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             enhanced_user = validate_session(user_token)
 
             if enhanced_user:
-                # Handle root users with global sessions (no project context required)
-                if (enhanced_user.user_type == 'root' and
-                        enhanced_user.project_hash == "" and
-                        enhanced_user.project_name == "Global Root Access"):
-                    # Root user with global session - collection token not required
+                if enhanced_user.scope == 'platform':
+                    if collection_token != PLATFORM_COLLECTION_SENTINEL:
+                        raise HTTPException(status_code=401, detail='Invalid token or platform access denied')
+
                     return UserLogin(
                         user_session=enhanced_user.session_token,
                         user_session_length=enhanced_user.session_length,
                         user_hash=enhanced_user.user_hash,
-                        user_collection="",  # Empty for global root session
+                        user_collection=PLATFORM_COLLECTION_SENTINEL,
                         user_id=enhanced_user.user_id,
-                        project_id=None,  # No specific project
+                        project_id=enhanced_user.project_id,
                         user_project_id=enhanced_user.user_project_id,
                         groups=enhanced_user.groups,
                         user_type=enhanced_user.user_type,
                         assigned_project_id=enhanced_user.assigned_project_id
                     )
 
-                # For regular project-based sessions, validate project access
+                # For project-based sessions, validate project access
                 if enhanced_user.project_hash == collection_token:
                     # Convert to legacy UserLogin format for compatibility
                     return UserLogin(

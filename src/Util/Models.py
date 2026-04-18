@@ -137,18 +137,6 @@ class UserGroupMember(BaseModelConfig):
     is_active: bool = True
 
 
-class UserGroupProject(BaseModelConfig):
-    """Model for user group to project access relationships"""
-    id: str
-    user_group_id: str
-    project_id: str
-    granted_at: Optional[datetime] = None
-    granted_by: Optional[str] = None
-    revoked_at: Optional[datetime] = None
-    revoked_by: Optional[str] = None
-    is_active: bool = True
-
-
 class ProjectGroupMember(BaseModelConfig):
     """Model for project group membership relationships"""
     id: str
@@ -766,7 +754,7 @@ class LoginRequest(BaseModelConfig):
     """Login request model"""
     username: str
     password: str
-    project_hash: Optional[str] = None  # Optional for root users
+    project_hash: Optional[str] = None  # Required for all users at route level; root bypasses group validation
 
 
 class RegisterRequest(BaseModelConfig):
@@ -901,8 +889,9 @@ class UserLogin(BaseModelConfig):
 class EnhancedUserLogin(BaseModelConfig):
     """Enhanced login response with group-based access"""
     user_hash: str
-    project_hash: str
-    project_name: str
+    scope: Optional[str] = None
+    project_hash: Optional[str] = None
+    project_name: Optional[str] = None
     user_project_hash: str = ""
     session_token: str
     session_length: int

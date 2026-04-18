@@ -5,6 +5,7 @@ from starlette.responses import RedirectResponse
 from pathlib import Path
 from typing import Optional
 from enum import Enum
+import os
 
 from src.middleware.error_handler import register_exception_handlers
 from src.middleware.auth_context import AuthContextMiddleware
@@ -12,7 +13,8 @@ from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
     auth, users, user_types_auth, projects,
-    admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments
+    admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
+    audit_logs
 )
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files
 
@@ -46,10 +48,15 @@ app.include_router(system.router, tags=['System Information'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
 app.include_router(permission_assignments.router, tags=['Permission Assignments'])
+app.include_router(audit_logs.router, tags=['Audit Logs'])
+
+# CORS configuration — explicit origins only (never "*" with credentials)
+_allowed_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]

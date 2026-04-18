@@ -2,6 +2,12 @@
 
 Complete practical guide for authentication, session management, and user registration in the authentication system.
 
+> **New here?** Start with [Getting Started](getting-started.md) for platform setup and first-time onboarding.
+> For client integration (JS, Python, React), see [Client Authentication Guide](client-authentication-guide.md).
+> For error codes and troubleshooting, see [Error Reference](errors.md).
+
+> **Important**: Every request MUST include a `User-Agent` header. Missing it returns `422`. All curl examples below include it.
+
 ---
 
 ## 📖 Table of Contents
@@ -43,14 +49,15 @@ The authentication system uses **JWT tokens** with **HTTP-only cookies** for sec
 
 ## Login
 
-### Basic Login
+### Consumer Login (requires project_hash)
 
-**Scenario**: User logs in with username and password.
+**Scenario**: Non-root user logs in with username, password, and project context.
 
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=SecurePass123!"
+  -H "User-Agent: my-client/1.0" \
+  -d "username=john_doe&password=SecurePass123!&project_hash=proj-xyz789..."
 ```
 
 **Response:**
@@ -97,17 +104,19 @@ curl -X POST "http://localhost:8000/auth/login" \
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=john_doe&password=SecurePass123!&project_hash=proj-specific123..."
 ```
 
 ### Login with Email
 
-**Scenario**: User logs in using email instead of username.
+**Scenario**: User logs in using email instead of username. Non-root users must include `project_hash`.
 
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john@example.com&password=SecurePass123!"
+  -H "User-Agent: my-client/1.0" \
+  -d "username=john@example.com&password=SecurePass123!&project_hash=proj-xyz789..."
 ```
 
 ### Root User Login
@@ -117,6 +126,7 @@ curl -X POST "http://localhost:8000/auth/login" \
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=root_admin&password=RootPass123!"
 ```
 
@@ -149,6 +159,7 @@ curl -X POST "http://localhost:8000/auth/login" \
 ```bash
 curl -X POST "http://localhost:8000/auth/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=new_user&password=SecurePass123!&email=newuser@example.com&user_group_hash=grp-default123..."
 ```
 
@@ -178,16 +189,19 @@ curl -X POST "http://localhost:8000/auth/register" \
 # Check username
 curl -X POST "http://localhost:8000/auth/check-availability" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=desired_username"
 
 # Check email
 curl -X POST "http://localhost:8000/auth/check-availability" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "email=desired@email.com"
 
 # Check both
 curl -X POST "http://localhost:8000/auth/check-availability" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=desired_username&email=desired@email.com"
 ```
 
@@ -210,7 +224,8 @@ curl -X POST "http://localhost:8000/auth/check-availability" \
 
 ```bash
 curl -X GET "http://localhost:8000/auth/validate" \
-  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 **Response:**
@@ -241,7 +256,8 @@ curl -X GET "http://localhost:8000/auth/validate" \
 
 ```bash
 curl -X POST "http://localhost:8000/auth/refresh" \
-  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 **Response:**
@@ -271,7 +287,8 @@ curl -X POST "http://localhost:8000/auth/refresh" \
 
 ```bash
 curl -X POST "http://localhost:8000/auth/logout" \
-  -H "Authorization: Bearer YOUR_SESSION_TOKEN"
+  -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 **Response:**
@@ -294,6 +311,7 @@ curl -X POST "http://localhost:8000/auth/logout" \
 curl -X POST "http://localhost:8000/auth/switch-project" \
   -H "Authorization: Bearer YOUR_SESSION_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "project_hash=proj-newproject456..."
 ```
 
@@ -324,19 +342,23 @@ curl -X POST "http://localhost:8000/auth/switch-project" \
 # Step 1: Login
 TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=john_doe&password=SecurePass123!" | jq -r '.session_token')
 
 # Step 2: Use the token for authenticated requests
 curl -X GET "http://localhost:8000/users/profile" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H "User-Agent: my-client/1.0"
 
 # Step 3: Refresh token before expiry (optional)
 NEW_TOKEN=$(curl -s -X POST "http://localhost:8000/auth/refresh" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.session_token')
+  -H "Authorization: Bearer $TOKEN" \
+  -H "User-Agent: my-client/1.0" | jq -r '.session_token')
 
 # Step 4: Logout
 curl -X POST "http://localhost:8000/auth/logout" \
-  -H "Authorization: Bearer $NEW_TOKEN"
+  -H "Authorization: Bearer $NEW_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 ### Scenario 2: Self-Service Registration
@@ -347,16 +369,19 @@ curl -X POST "http://localhost:8000/auth/logout" \
 # Step 1: Check availability
 curl -X POST "http://localhost:8000/auth/check-availability" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=newdev&email=newdev@company.com"
 
 # Step 2: Register (requires knowing a user group hash)
 TOKEN=$(curl -s -X POST "http://localhost:8000/auth/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=newdev&password=SecurePass123!&email=newdev@company.com&user_group_hash=grp-public123..." | jq -r '.session_token')
 
 # Step 3: Start working
 curl -X GET "http://localhost:8000/users/profile" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 ### Scenario 3: Multi-Project User Workflow
@@ -364,30 +389,11 @@ curl -X GET "http://localhost:8000/users/profile" \
 **Goal**: User works across multiple projects in a single session.
 
 ```bash
-# Step 1: Login (auto-selects first accessible project)
+# Step 1: Login (must specify project_hash for non-root users)
 TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=SecurePass123!" | jq -r '.session_token')
-
-# Step 2: Check accessible projects
-curl -X GET "http://localhost:8000/auth/validate" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Step 3: Switch to Project B
-TOKEN=$(curl -s -X POST "http://localhost:8000/auth/switch-project" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=proj-b456..." | jq -r '.session_token')
-
-# Step 4: Work in Project B
-curl -X GET "http://localhost:8000/projects/proj-b456..." \
-  -H "Authorization: Bearer $TOKEN"
-
-# Step 5: Switch back to Project A
-TOKEN=$(curl -s -X POST "http://localhost:8000/auth/switch-project" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=proj-a123..." | jq -r '.session_token')
+  -H "User-Agent: my-client/1.0" \
+  -d "username=john_doe&password=SecurePass123!&project_hash=proj-a123..." | jq -r '.session_token')
 ```
 
 ---
@@ -447,11 +453,13 @@ TOKEN=$(curl -s -X POST "http://localhost:8000/auth/switch-project" \
 ```bash
 # Check user's groups
 curl -X GET "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 
 # Check group's project access
 curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 ### Username/Email Already Exists
@@ -483,7 +491,7 @@ curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups"
 
 | Endpoint | Required Fields | Optional Fields |
 |----------|-----------------|-----------------|
-| `/auth/login` | username, password | project_hash |
+| `/auth/login` | username, password, project_hash | - |
 | `/auth/register` | username, password, user_group_hash | email |
 | `/auth/switch-project` | project_hash | - |
 | `/auth/check-availability` | (at least one) | username, email |
@@ -492,11 +500,14 @@ curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups"
 
 ## Related Documentation
 
-- **[Users Usage Cases](users-usage-cases.md)** - User profile and management
-- **[Groups Usage Cases](groups-usage-cases.md)** - Understanding user groups
-- **[Projects Usage Cases](projects-usage-cases.md)** - Project access control
+- **[Getting Started](getting-started.md)** — Platform setup, bootstrap, and first steps
+- **[Client Authentication Guide](client-authentication-guide.md)** — JS, Python, and React integration examples
+- **[Error Reference](errors.md)** — Error codes, response shapes, and troubleshooting
+- **[Users Documentation Suite](users/README.md)** - User profile, access summary, and lifecycle management
+- **[Groups Documentation Suite](groups/README.md)** - Understanding user groups and project access flow
+- **[Projects Documentation Suite](projects/README.md)** - Project access control and project switching context
 
 ---
 
-**Last Updated**: December 2024
-**Document Version**: 1.0
+**Last Updated**: April 2026
+**API Version**: 2.2.0

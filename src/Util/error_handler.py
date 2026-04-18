@@ -119,6 +119,7 @@ class ErrorCode(str, Enum):
     SERVICE_UNAVAILABLE = "INT_7003"
     TIMEOUT = "INT_7004"
     RATE_LIMIT_EXCEEDED = "INT_7005"
+    FEATURE_NOT_IMPLEMENTED = "INT_7006"
     
     # External service errors (8xxx)
     EXTERNAL_SERVICE_ERROR = "EXT_8001"
@@ -610,6 +611,21 @@ class InternalError(AppException):
             error_code=error_code,
             category=ErrorCategory.INTERNAL,
             status_code=500,
+            details=details,
+            original_error=original_error,
+            error_context=error_context
+        )
+
+
+class FeatureNotImplementedError(AppException):
+    """Feature not yet implemented (501 Not Implemented)"""
+    
+    def __init__(self, message: str, error_code: ErrorCode = ErrorCode.FEATURE_NOT_IMPLEMENTED, details: Optional[Dict[str, Any]] = None, original_error: Optional[Exception] = None, error_context: Optional[str] = None):
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            category=ErrorCategory.INTERNAL,
+            status_code=501,
             details=details,
             original_error=original_error,
             error_context=error_context

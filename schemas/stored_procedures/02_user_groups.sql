@@ -138,6 +138,25 @@ BEGIN
         removed_by = NULL;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_reactivate_user_group_membership$$
+CREATE PROCEDURE sp_reactivate_user_group_membership(
+    IN p_user_id VARCHAR(64),
+    IN p_user_group_id VARCHAR(64),
+    IN p_assigned_by VARCHAR(64)
+)
+BEGIN
+    UPDATE user_group_members
+    SET is_active = TRUE,
+        assigned_at = NOW(),
+        assigned_by = p_assigned_by,
+        removed_at = NULL,
+        removed_by = NULL
+    WHERE user_id = p_user_id
+      AND user_group_id = p_user_group_id;
+
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
 DROP PROCEDURE IF EXISTS sp_remove_user_from_group$$
 CREATE PROCEDURE sp_remove_user_from_group(
     IN p_user_id VARCHAR(64),
@@ -268,23 +287,29 @@ CREATE PROCEDURE sp_get_user_accessible_projects(IN p_user_id VARCHAR(64))
 BEGIN
     DECLARE v_user_type VARCHAR(20);
     SELECT user_type INTO v_user_type FROM users WHERE id = p_user_id AND is_active = 1;
-    
+
     IF v_user_type = 'root' THEN
         SELECT p.id, p.project_hash, p.project_name, p.project_description,
-               'root_access' as access_type, NULL as user_group_name, NULL as project_group_name
-        FROM projects p 
+               'root_access' as access_type
+        FROM projects p
         WHERE p.is_active = 1
         ORDER BY p.project_name;
     ELSE
-        SELECT DISTINCT p.id, p.project_hash, p.project_name, p.project_description,
-               'group_access' as access_type, ug.group_name as user_group_name, pg.group_name as project_group_name
-        FROM user_group_members ugm
-        JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
-        JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
-        JOIN project_groups pg ON ugpg.project_group_id = pg.id AND pg.is_active = 1
-        JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = 1
-        JOIN projects p ON pgm.project_id = p.id AND p.is_active = 1
-        WHERE ugm.user_id = p_user_id AND ugm.is_active = 1
+        -- Use subquery to ensure each project appears only once even when
+        -- linked through multiple user_group → project_group paths
+        SELECT p.id, p.project_hash, p.project_name, p.project_description,
+               'group_access' as access_type
+        FROM projects p
+        WHERE p.is_active = 1
+          AND p.id IN (
+              SELECT DISTINCT pgm.project_id
+              FROM user_group_members ugm
+              JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id AND ugpg.is_active = 1
+              JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
+              WHERE ugm.user_id = p_user_id AND ugm.is_active = 1
+                AND EXISTS (SELECT 1 FROM user_groups ug WHERE ug.id = ugm.user_group_id AND ug.is_active = 1)
+                AND EXISTS (SELECT 1 FROM project_groups pg WHERE pg.id = ugpg.project_group_id AND pg.is_active = 1)
+          )
         ORDER BY p.project_name;
     END IF;
 END$$
