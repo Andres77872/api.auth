@@ -16,7 +16,7 @@ CONSUMER  → USER → USER_GROUP → PROJECT_GROUP → PROJECT
 
 What matters operationally:
 
-- **`root` users** are global operators and do not depend on project-scoped group membership to log in
+- **`root` users** are global operators — they bypass group-membership validation on `/auth/login` but **still require `project_hash`** to log in. Root/admin can use `/auth/platform/login` if they need login without project binding (consumer users are rejected from platform login)
 - **`admin` users** are still normal `users` rows, but their reach comes from assignment to project-specific admin groups
 - **`consumer` users** get project reach through user groups and project groups, not direct user-to-project links
 - **`/users/*`** covers profile, access summary, list/search, detail, status, reset, delete, and one type-change endpoint
@@ -53,7 +53,7 @@ What matters operationally:
 
 - **Consumers** reach projects through `user_group_members` → `user_group_project_groups` → `project_group_members`
 - **Admins** also reach projects through group membership, but typically through project admin groups discovered with `sp_find_admin_group_for_project`
-- **Roots** bypass project scoping in the main auth/login flow
+- **Roots** bypass **group-membership validation** on `/auth/login` (can access any project without group membership) — but they still require `project_hash` to specify the target project. Use `/auth/platform/login` for root/admin login without `project_hash`.
 
 ### What `/users/*` does NOT manage directly
 

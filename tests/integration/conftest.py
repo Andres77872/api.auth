@@ -11,6 +11,7 @@ importing module's namespace), not the source definition.
 import json
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from unittest.mock import patch, MagicMock
 
@@ -112,6 +113,10 @@ def fake_redis():
     user_mock.email = "test@example.com"
     user_mock.user_type = "consumer"
 
+    # Patch the singleton instance's redis attribute (created at import time)
+    from src.Util.cache_manager import cache_manager
+    original_redis = cache_manager.redis
+
     with patch("src.Util.db_config.redis_client", fake), \
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.db.db_enhanced.client", fake), \
@@ -122,7 +127,10 @@ def fake_redis():
          patch("src.Util.decorators.validate_session", return_value=session_mock), \
          patch("src.Util.decorators.get_user_by_hash", return_value=user_mock), \
          patch("src.Util.db.validate_session", return_value=session_mock):
+        # Directly set the singleton's redis attribute (cannot be patched after import)
+        cache_manager.redis = fake
         yield fake
+        cache_manager.redis = original_redis
     fake.flushall()
 
 
@@ -152,6 +160,7 @@ _DB_CONN_PATCH_LOCATIONS = [
     "src.Util.db.db_permission_assignments.get_connection",
     "src.Util.db.db_session_analytics.get_connection",
     "src.Util.db.db_audit_analytics.get_connection",
+    "src.Util.db.db_api_keys.get_connection",
     "src.Util.system_metrics.get_connection",
     "src.Util.bulk_operations.get_connection",
 ]
@@ -272,6 +281,7 @@ def _make_mock_user(
     user_type: str = "consumer", is_active: bool = True,
     assigned_project_id: Optional[str] = None,
     password_hash: str = "$argon2id$fake",
+    created_at: Optional[datetime] = None,
 ):
     user = MagicMock()
     user.id = user_id
@@ -282,6 +292,10 @@ def _make_mock_user(
     user.is_active = is_active
     user.assigned_project_id = assigned_project_id
     user.password_hash = password_hash
+    user.created_at = created_at or datetime.now(timezone.utc)
+    user.updated_at = None
+    user.last_login = None
+    user.assigned_at = None
     return user
 
 
@@ -289,6 +303,7 @@ def _make_mock_project(
     project_id: str = "1", project_hash: str = "prj-test-hash-001",
     project_name: str = "Test Project", project_description: str = "A test project",
     owner_id: str = "1", is_active: bool = True,
+    project_created: Optional[datetime] = None,
 ):
     project = MagicMock()
     project.id = project_id
@@ -297,6 +312,8 @@ def _make_mock_project(
     project.project_description = project_description
     project.owner_id = owner_id
     project.is_active = is_active
+    project.project_created = project_created or datetime.now(timezone.utc)
+    project.updated_at = None
     return project
 
 

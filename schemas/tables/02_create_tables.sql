@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS api_audit_log (
     user_id VARCHAR(64),
     user_type ENUM('root', 'admin', 'consumer'),
     session_id VARCHAR(256),
+    auth_method ENUM('session', 'api_key') NOT NULL DEFAULT 'session',
     request_headers JSON,
     request_body JSON,
     request_query JSON,
@@ -550,6 +551,45 @@ CREATE TABLE IF NOT EXISTS permission_group_project_catalog (
     UNIQUE KEY uk_permgroup_project (permission_group_id, project_id),
     INDEX idx_project_permgroups (project_id),
     INDEX idx_permgroup_projects (permission_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===================================================================================
+-- API KEY MANAGEMENT TABLES
+-- ===================================================================================
+
+-- =================== USER_PROJECT_API_KEYS TABLE ===================
+-- Project-scoped API keys for machine authentication (split-token pattern)
+-- Keys inherit owner's live permissions via groups-of-groups chain
+CREATE TABLE IF NOT EXISTS user_project_api_keys (
+    id VARCHAR(64) NOT NULL,
+    public_id VARCHAR(16) NOT NULL,
+    project_id VARCHAR(64) NOT NULL,
+    owner_user_id VARCHAR(64) NOT NULL,
+    created_by VARCHAR(64) NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT NULL,
+    secret_hash BINARY(32) NOT NULL,
+    hash_algorithm VARCHAR(20) NOT NULL DEFAULT 'hmac-sha256-v1',
+    fingerprint CHAR(12) NOT NULL,
+    secret_last4 CHAR(4) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    expires_at DATETIME NULL COMMENT 'NULL = key never expires',
+    last_used_at DATETIME NULL,
+    revoked_at DATETIME NULL,
+    revoked_by VARCHAR(64) NULL,
+    revoke_reason VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_public_id (public_id),
+    INDEX idx_owner_project (owner_user_id, project_id, is_active),
+    INDEX idx_project_active (project_id, is_active),
+    INDEX idx_expires_at (expires_at, is_active),
+    INDEX idx_fingerprint (fingerprint),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (revoked_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===================================================================================

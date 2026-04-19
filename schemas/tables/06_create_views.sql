@@ -420,6 +420,54 @@ JOIN projects p ON pgm.project_id = p.id AND p.is_active = TRUE
 WHERE u.is_active = TRUE;
 
 -- ===================================================================================
+-- API KEY AUDIT VIEW
+-- Joins user_project_api_keys with users and projects for audit queries
+-- Excludes secret_hash for security
+-- ===================================================================================
+CREATE OR REPLACE VIEW v_api_key_audit AS
+SELECT
+    apk.id,
+    apk.public_id,
+    apk.project_id,
+    p.project_name,
+    p.project_hash,
+    apk.owner_user_id,
+    u.username as owner_username,
+    u.user_hash as owner_user_hash,
+    u.user_type as owner_user_type,
+    u.is_active as owner_is_active,
+    apk.created_by,
+    cb.username as created_by_username,
+    cb.user_hash as created_by_user_hash,
+    apk.name,
+    apk.description,
+    apk.hash_algorithm,
+    apk.fingerprint,
+    apk.secret_last4,
+    apk.is_active,
+    apk.expires_at,
+    apk.last_used_at,
+    apk.revoked_at,
+    apk.revoked_by,
+    rb.username as revoked_by_username,
+    rb.user_hash as revoked_by_user_hash,
+    apk.revoke_reason,
+    apk.created_at,
+    apk.updated_at,
+    CASE
+        WHEN apk.is_active = FALSE AND apk.revoked_at IS NOT NULL THEN 'revoked'
+        WHEN apk.is_active = FALSE AND apk.expires_at IS NOT NULL AND apk.expires_at < NOW() THEN 'expired'
+        WHEN apk.is_active = TRUE AND apk.expires_at IS NOT NULL AND apk.expires_at < NOW() THEN 'expired_but_active'
+        WHEN apk.is_active = TRUE THEN 'active'
+        ELSE 'inactive'
+    END as effective_status
+FROM user_project_api_keys apk
+JOIN projects p ON apk.project_id = p.id
+JOIN users u ON apk.owner_user_id = u.id
+LEFT JOIN users cb ON apk.created_by = cb.id
+LEFT JOIN users rb ON apk.revoked_by = rb.id;
+
+-- ===================================================================================
 -- VIEWS CREATED SUCCESSFULLY
 -- ===================================================================================
 SELECT 'All views created successfully!' as status,

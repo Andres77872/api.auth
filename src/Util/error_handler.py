@@ -62,6 +62,9 @@ class ErrorCode(str, Enum):
     PASSWORD_RESET_REQUIRED = "AUTH_1007"
     MFA_REQUIRED = "AUTH_1008"
     MFA_INVALID = "AUTH_1009"
+    API_KEY_INVALID = "AUTH_1010"
+    API_KEY_EXPIRED = "AUTH_1011"
+    API_KEY_REVOKED = "AUTH_1012"
     
     # Authorization errors (2xxx)
     ACCESS_DENIED = "AUTHZ_2001"
@@ -71,6 +74,7 @@ class ErrorCode(str, Enum):
     RESOURCE_ACCESS_DENIED = "AUTHZ_2005"
     ROLE_ASSIGNMENT_DENIED = "AUTHZ_2006"
     PERMISSION_DENIED = "AUTHZ_2007"
+    API_KEY_NO_ACCESS = "AUTHZ_2008"
     
     # Validation errors (3xxx)
     INVALID_INPUT = "VAL_3001"
@@ -96,6 +100,7 @@ class ErrorCode(str, Enum):
     ROLE_NOT_FOUND = "NF_4007"
     ENDPOINT_NOT_FOUND = "NF_4008"
     USER_TYPE_NOT_FOUND = "NF_4009"
+    API_KEY_NOT_FOUND = "NF_4010"
     
     # Conflict errors (5xxx)
     USERNAME_EXISTS = "CONF_5001"

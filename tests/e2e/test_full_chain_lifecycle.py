@@ -214,13 +214,14 @@ async def test_full_register_login_access_chain_live_redis(
         f"Session groups should contain {ug['group_name']}. Got: {session_data['groups']}"
     )
 
-    # Step 4: Login via HTTP API
+    # Step 4: Login via HTTP API (consumer user REQUIRES project_hash per login contract)
     with _patch_all_infra():
         login_response = await client.post(
             "/auth/login",
             data={
                 "username": f"e2e_user_{unique_suffix}",
                 "password": "E2EP@ss123!",
+                "project_hash": proj["project_hash"],  # Required for non-root login
             },
             headers={"User-Agent": "e2e-test"},
         )

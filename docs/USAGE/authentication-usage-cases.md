@@ -30,9 +30,9 @@ The authentication system uses **JWT tokens** with **HTTP-only cookies** for sec
 ### Key Concepts
 
 - **Session Token**: JWT token returned on login, stored in HTTP-only cookie
-- **Project Context**: Non-root users operate within a project context
-- **Root Users**: Have global access without project binding
-- **User Groups**: Determine which projects a user can access
+- **Project Context**: All users (including root) operate within a project context on `/auth/login`
+- **Root Users**: Have global access (bypass group-membership validation) but still require `project_hash` on `/auth/login`. Use `/auth/platform/login` for login without project binding.
+- **User Groups**: Determine which projects a user can access (root bypasses this validation)
 
 ### Authentication Flow
 
@@ -110,7 +110,7 @@ curl -X POST "http://localhost:8000/auth/login" \
 
 ### Login with Email
 
-**Scenario**: User logs in using email instead of username. Non-root users must include `project_hash`.
+**Scenario**: User logs in using email instead of username. All users must include `project_hash` on `/auth/login`.
 
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
@@ -121,20 +121,20 @@ curl -X POST "http://localhost:8000/auth/login" \
 
 ### Root User Login
 
-**Scenario**: Root user logs in with global access.
+**Scenario**: Root user logs in to a specific project. **Root must provide `project_hash` on `/auth/login`** — the requirement applies to all user types. Root only bypasses group-membership validation, not the `project_hash` requirement.
 
 ```bash
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -H "User-Agent: my-client/1.0" \
-  -d "username=root_admin&password=RootPass123!"
+  -d "username=root_admin&password=RootPass123!&project_hash=proj-xyz789..."
 ```
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Root user login successful - global access granted",
+  "message": "Root user login successful",
   "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
     "user_hash": "usr-root123...",
@@ -142,11 +142,17 @@ curl -X POST "http://localhost:8000/auth/login" \
     "email": "root@example.com",
     "user_type": "root"
   },
-  "project": null,
+  "project": {
+    "project_hash": "proj-xyz789...",
+    "project_name": "Default Project",
+    "project_description": "Root's target project"
+  },
   "accessible_projects": [...],
   "user_groups": []
 }
 ```
+
+> **Alternative endpoint**: Root and admin users can use `/auth/platform/login` which does **NOT** require `project_hash`. This endpoint is restricted to root/admin; consumer users are rejected (403).
 
 ---
 
@@ -389,7 +395,7 @@ curl -X GET "http://localhost:8000/users/profile" \
 **Goal**: User works across multiple projects in a single session.
 
 ```bash
-# Step 1: Login (must specify project_hash for non-root users)
+# Step 1: Login (must specify project_hash for all users)
 TOKEN=$(curl -s -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -H "User-Agent: my-client/1.0" \
@@ -491,7 +497,8 @@ curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups"
 
 | Endpoint | Required Fields | Optional Fields |
 |----------|-----------------|-----------------|
-| `/auth/login` | username, password, project_hash | - |
+| `/auth/login` | username, password, **project_hash** (required for ALL user types: root, admin, consumer) | - |
+| `/auth/platform/login` | username, password | - (only root/admin; consumer rejected) |
 | `/auth/register` | username, password, user_group_hash | email |
 | `/auth/switch-project` | project_hash | - |
 | `/auth/check-availability` | (at least one) | username, email |

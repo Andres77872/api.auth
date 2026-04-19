@@ -139,10 +139,11 @@ async function register(username, password, email, groupHash) {
 }
 
 // Login
-// NOTE: projectHash is REQUIRED for non-root users, optional only for root
+// NOTE: projectHash is REQUIRED for ALL users on /auth/login (root, admin, consumer)
+// Root/admin may use /auth/platform/login if they want login without project_hash
 async function login(username, password, projectHash) {
   if (!projectHash) {
-    throw new Error('projectHash is required for non-root users');
+    throw new Error('projectHash is required for all users on /auth/login');
   }
   const formData = new URLSearchParams();
   formData.append('username', username);
@@ -247,7 +248,8 @@ class AuthClient:
 
     def login(self, username: str, password: str,
               project_hash: str) -> Dict[Any, Any]:
-        """Login. project_hash is REQUIRED for non-root users, optional only for root."""
+        """Login. project_hash is REQUIRED for ALL users (root, admin, consumer) on /auth/login.
+        Root/admin may use /auth/platform/login if they want login without project_hash."""
         data = {'username': username, 'password': password, 'project_hash': project_hash}
 
         response = self.session.post(f"{BASE_URL}/auth/login", data=data)
@@ -362,7 +364,7 @@ export function useAuth() {
   }, []);
 
   const login = useCallback(async (username: string, password: string, projectHash: string) => {
-    // projectHash is REQUIRED for non-root users, optional only for root
+    // projectHash is REQUIRED for ALL users (root, admin, consumer) on /auth/login
     const formData = new URLSearchParams();
     formData.append('username', username);
     formData.append('password', password);

@@ -235,6 +235,40 @@ async def get_activity_feed(
     }
 
 
+@router.get("/activity/types")
+@log_and_handle_errors(
+    operation_name="get_activity_types",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=False
+)
+async def get_activity_types(
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> Dict[str, Any]:
+    """
+    Get available activity types for filtering
+    
+    Returns list of all activity types that have been logged in the system.
+    """
+    # Check admin access
+    user_type = get_user_type(log_context.user_id)
+    is_root = is_root_user(log_context.user_id)
+    
+    if not is_root and user_type != 'admin':
+        raise AuthorizationError(
+            message="Admin access required",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
+    
+    # Get activity types from enum
+    activity_types = [activity_type.value for activity_type in ActivityType]
+
+    return {
+        "activity_types": activity_types,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+
+
 @router.get("/activity/{activity_id}")
 @log_and_handle_errors(
     operation_name="get_activity_detail",
@@ -386,40 +420,6 @@ async def get_system_health(
             "active_sessions": active_sessions
         },
         "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    }
-
-
-@router.get("/activity/types")
-@log_and_handle_errors(
-    operation_name="get_activity_types",
-    activity_type=ActivityType.ADMIN_ACTION,
-    log_success=False
-)
-async def get_activity_types(
-        credentials: HTTPAuthorizationCredentials = Depends(security),
-        log_context: LogContext = None
-) -> Dict[str, Any]:
-    """
-    Get available activity types for filtering
-    
-    Returns list of all activity types that have been logged in the system.
-    """
-    # Check admin access
-    user_type = get_user_type(log_context.user_id)
-    is_root = is_root_user(log_context.user_id)
-    
-    if not is_root and user_type != 'admin':
-        raise AuthorizationError(
-            message="Admin access required",
-            error_code=ErrorCode.ACCESS_DENIED
-        )
-    
-    # Get activity types from enum
-    activity_types = [activity_type.value for activity_type in ActivityType]
-
-    return {
-        "activity_types": activity_types,
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 

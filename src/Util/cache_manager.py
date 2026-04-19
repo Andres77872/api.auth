@@ -38,6 +38,10 @@ ROLE_PREFIX = "role:"
 USER_INFO_PREFIX = "user_info:"
 PERMISSION_PREFIX = "permission:"
 USER_TYPE_PREFIX = "user_type:"
+APIKEY_PREFIX = "apikey:"
+
+# API key cache TTL (seconds) — short window to balance performance with security
+APIKEY_TTL = 60  # 60 seconds
 
 
 class CacheManager:
@@ -503,6 +507,89 @@ class CacheManager:
             return False
 
     # =============================================================================
+    # API KEY VALIDATION CACHING
+    # =============================================================================
+
+    def set_api_key(self, public_id: str, validation_data: Dict[str, Any]) -> bool:
+        """
+        Cache API key validation result with short TTL (60s).
+
+        Args:
+            public_id: The API key's public identifier
+            validation_data: Dict with validated key metadata
+                (user_id, project_id, permissions, groups, etc.)
+
+        Returns:
+            Success status
+        """
+        try:
+            cache_key = f"{APIKEY_PREFIX}{public_id}"
+            data_json = json.dumps(validation_data, default=str)
+
+            result = self.redis.setex(cache_key, APIKEY_TTL, data_json)
+
+            if result:
+                logger.debug(f"API key cached: {public_id[:8]}... for {APIKEY_TTL} seconds")
+
+            return bool(result)
+
+        except Exception as e:
+            logger.error(f"Failed to cache API key {public_id[:8]}...: {e}")
+            return False
+
+    def get_api_key(self, public_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached API key validation data.
+
+        Args:
+            public_id: The API key's public identifier
+
+        Returns:
+            Cached validation data or None if not found/expired
+        """
+        try:
+            cache_key = f"{APIKEY_PREFIX}{public_id}"
+            cached_data = self.redis.get(cache_key)
+
+            if cached_data:
+                validation_data = json.loads(cached_data)
+                logger.debug(f"API key cache hit: {public_id[:8]}...")
+                return validation_data
+
+            logger.debug(f"API key cache miss: {public_id[:8]}...")
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get API key {public_id[:8]}...: {e}")
+            return None
+
+    def invalidate_api_key(self, public_id: str) -> bool:
+        """
+        Remove API key from cache immediately.
+
+        Called on revocation, reactivation, or any state change that
+        invalidates the cached validation result.
+
+        Args:
+            public_id: The API key's public identifier
+
+        Returns:
+            Success status
+        """
+        try:
+            cache_key = f"{APIKEY_PREFIX}{public_id}"
+            result = self.redis.delete(cache_key)
+
+            if result:
+                logger.debug(f"API key cache invalidated: {public_id[:8]}...")
+
+            return bool(result)
+
+        except Exception as e:
+            logger.error(f"Failed to invalidate API key {public_id[:8]}...: {e}")
+            return False
+
+    # =============================================================================
     # CACHE STATISTICS
     # =============================================================================
 
@@ -520,6 +607,7 @@ class CacheManager:
                 "permission_checks": self._count_pattern(f"{PERMISSION_PREFIX}*"),
                 "user_types": self._count_pattern(f"{USER_TYPE_PREFIX}*"),
                 "role_checks": self._count_pattern(f"{ROLE_PREFIX}*"),
+                "api_keys": self._count_pattern(f"{APIKEY_PREFIX}*"),
                 "total_keys": self._count_pattern("*")
             }
 

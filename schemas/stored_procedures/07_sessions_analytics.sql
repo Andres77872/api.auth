@@ -38,18 +38,19 @@ CREATE PROCEDURE sp_log_api_request(
     IN p_user_agent TEXT,
     IN p_referer VARCHAR(512),
     IN p_project_id VARCHAR(64),
-    IN p_metadata JSON
+    IN p_metadata JSON,
+    IN p_auth_method ENUM('session', 'api_key')
 )
 BEGIN
     INSERT INTO api_audit_log (
         id, request_id, http_method, endpoint_path, route_pattern,
-        user_id, user_type, session_id,
+        user_id, user_type, session_id, auth_method,
         request_headers, request_body, request_query, request_size_bytes,
         request_timestamp, client_ip, user_agent, referer,
         project_id, metadata, response_status
     ) VALUES (
         p_id, p_request_id, p_http_method, p_endpoint_path, p_route_pattern,
-        p_user_id, p_user_type, p_session_id,
+        p_user_id, p_user_type, p_session_id, p_auth_method,
         p_request_headers, p_request_body, p_request_query, p_request_size_bytes,
         NOW(), p_client_ip, p_user_agent, p_referer,
         p_project_id, p_metadata, 0  -- Placeholder status, updated later

@@ -73,6 +73,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         user_type = None
         session_id = None
         project_id = None
+        auth_method = "session"  # Default for backward compatibility
         
         if hasattr(request.state, 'user'):
             user = request.state.user
@@ -87,6 +88,9 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         
         if hasattr(request.state, 'project_id'):
             project_id = request.state.project_id
+        
+        if hasattr(request.state, 'auth_method'):
+            auth_method = request.state.auth_method
         
         # Get client IP address
         client_ip = self._get_client_ip(request)
@@ -152,7 +156,8 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             user_agent=user_agent,
             referer=referer,
             project_id=project_id,
-            metadata=None
+            metadata=None,
+            auth_method=auth_method
         )
         
         # Process request

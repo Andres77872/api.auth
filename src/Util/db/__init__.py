@@ -176,6 +176,18 @@ from src.Util.db.db_permission_assignments import (
     check_user_has_permission_extended,
     get_user_permission_sources
 )
+# Import API key management functions
+from src.Util.db.db_api_keys import (
+    create_api_key,
+    get_api_key_by_public_id,
+    validate_api_key_lookup,
+    revoke_api_key,
+    revoke_api_key_with_cache_invalidation,
+    list_user_api_keys,
+    list_project_api_keys,
+    update_api_key,
+    cleanup_expired_keys,
+)
 # Import core database connection
 from src.Util.db_config import redis_client as client, get_connection
 from src.Util.db_error_wrapper import handle_db_operation
@@ -538,5 +550,16 @@ __all__ = [
     'get_permission_group_cataloged_projects',
     'get_user_all_permissions',
     'check_user_has_permission_extended',
-    'get_user_permission_sources'
+    'get_user_permission_sources',
+
+    # API Key Management
+    'create_api_key',
+    'get_api_key_by_public_id',
+    'validate_api_key_lookup',
+    'revoke_api_key',
+    'revoke_api_key_with_cache_invalidation',
+    'list_user_api_keys',
+    'list_project_api_keys',
+    'update_api_key',
+    'cleanup_expired_keys',
 ]

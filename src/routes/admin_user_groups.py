@@ -78,7 +78,7 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
 
 @router.get("", response_model=ListUserGroupsResponse)
 async def list_user_groups(
-        limit: int = Query(50, ge=1, le=100),
+        limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         sort_by: str = Query('group_name', description="Field to sort by (group_name, created_at, updated_at, id)"),
         sort_order: str = Query('asc', description="Sort direction (asc or desc)"),

@@ -14,7 +14,7 @@ from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
     auth, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
-    audit_logs
+    audit_logs, api_keys, user_api_keys,
 )
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files
 
@@ -38,6 +38,9 @@ register_exception_handlers(app)
 
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
+# NOTE: user_api_keys must be registered BEFORE users to avoid /users/{user_hash}
+# catching /users/api-keys as a user_hash parameter
+app.include_router(user_api_keys.router, tags=["API Keys - User"])
 app.include_router(users.router, tags=['User Management'])
 app.include_router(user_types_auth.router, tags=['User Type Management'])
 app.include_router(projects.router, tags=['Project Management'])
@@ -49,6 +52,7 @@ app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
 app.include_router(permission_assignments.router, tags=['Permission Assignments'])
 app.include_router(audit_logs.router, tags=['Audit Logs'])
+app.include_router(api_keys.router, tags=["API Keys - Admin"])
 
 # CORS configuration — explicit origins only (never "*" with credentials)
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")

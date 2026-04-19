@@ -63,11 +63,13 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/10_error_logging.sql',
     'stored_procedures/11_activity_logging.sql',
     'stored_procedures/12_activity_context.sql',
+    'stored_procedures/13_api_keys.sql',
 ]
 
 TRIGGER_FILES = [
     'triggers/01_activity_logging_triggers.sql',
     'triggers/02_permission_activity_triggers.sql',
+    'triggers/03_api_key_activity_triggers.sql',
 ]
 
 
@@ -292,4 +294,3 @@ def create_database():
 
 if __name__ == '__main__':
     create_database()
-

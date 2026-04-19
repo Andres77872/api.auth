@@ -409,8 +409,10 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         if not check_admin_project_access(session_data['user_id'], project.id):
             return None
         groups = session_data.get('groups', ['project_admins'])
-        permissions = session_data.get('permissions', ['admin', 'project_admin'])
-        available_projects = [project]
+        permissions = session_data.get('permissions', ['admin', 'project_admin', 'manage_users', 'manage_roles'])
+        # Use get_user_accessible_projects to return proper ProjectSummary objects
+        # (not raw Project objects which lack project_group_name field)
+        available_projects = get_user_accessible_projects(session_data['user_id'])
     elif user_type == "consumer":
         # Resolve group memberships and permissions dynamically (group-based)
         groups_objs = get_user_groups_in_project_by_hash(session_data['user_id'], project_hash)

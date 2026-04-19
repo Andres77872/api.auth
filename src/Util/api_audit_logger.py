@@ -289,24 +289,27 @@ class APIAuditLogger:
         user_agent: Optional[str],
         referer: Optional[str],
         project_id: Optional[str],
-        metadata: Optional[Dict]
+        metadata: Optional[Dict],
+        auth_method: str = "session"
     ) -> bool:
         """
         Log API request start to database (called in background).
-        
+
         Args:
             All request details
-            
+            auth_method: Authentication method used ('session' or 'api_key').
+                         Defaults to 'session' for backward compatibility.
+
         Returns:
             True if logged successfully, False otherwise
         """
         try:
             logger.info(f"API Audit: Logging request [{http_method}] {endpoint_path} [audit_id={audit_id}]")
-            
+
             # Filter sensitive data
             filtered_headers = APIAuditLogger.filter_headers(request_headers) if request_headers else None
             filtered_body = APIAuditLogger.filter_sensitive_data(request_body) if request_body else None
-            
+
             with get_connection() as conn:
                 cursor = conn.cursor()
                 logger.debug(f"Calling sp_log_api_request with method={http_method}, path={endpoint_path}")
@@ -327,16 +330,17 @@ class APIAuditLogger:
                     user_agent,
                     referer,
                     project_id,
-                    json.dumps(metadata) if metadata else None
+                    json.dumps(metadata) if metadata else None,
+                    auth_method
                 ))
                 conn.commit()
-            
+
             logger.debug(f"Successfully logged API request: {audit_id}")
             return True
-            
+
         except Exception as e:
             logger.error(
-                f"Failed to log API request [audit_id={audit_id}, endpoint={endpoint_path}]: {e}", 
+                f"Failed to log API request [audit_id={audit_id}, endpoint={endpoint_path}]: {e}",
                 exc_info=True,
                 extra={
                     "audit_id": audit_id,

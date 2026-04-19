@@ -29,6 +29,8 @@ from . import global_roles
 from . import permission_assignments
 from . import bulk_operations
 from . import audit_logs
+from . import api_keys
+from . import user_api_keys
 
 __all__ = [
     'auth',
@@ -43,4 +45,6 @@ __all__ = [
     'permission_assignments',
     'bulk_operations',
     'audit_logs',
+    'api_keys',
+    'user_api_keys',
 ]

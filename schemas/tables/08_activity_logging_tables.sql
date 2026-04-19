@@ -148,6 +148,14 @@ INSERT INTO activity_catalog (id, activity_code, activity_name, activity_descrip
 ('act-cat-039', 'system_event', 'System Event', 'System-level event', 'system', 'info', TRUE, TRUE),
 ('act-cat-040', 'security_alert', 'Security Alert', 'Security-related alert or event', 'security', 'critical', TRUE, TRUE);
 
+-- API Key Management Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-041', 'api_key_created', 'API Key Created', 'New API key created for user on project', 'api_keys', 'warning', TRUE, TRUE),
+('act-cat-042', 'api_key_revoked', 'API Key Revoked', 'API key was revoked', 'api_keys', 'warning', TRUE, TRUE),
+('act-cat-043', 'api_key_reactivated', 'API Key Reactivated', 'Expired API key was reactivated by extending expiration', 'api_keys', 'warning', TRUE, TRUE),
+('act-cat-044', 'api_key_expired', 'API Key Expired', 'API key was auto-deactivated due to expiration', 'api_keys', 'info', TRUE, TRUE),
+('act-cat-045', 'api_key_updated', 'API Key Updated', 'API key name or description was updated', 'api_keys', 'info', TRUE, TRUE);
+
 -- =================== TABLE CREATION COMPLETE ===================
 SELECT 'Activity logging tables created successfully!' as status, 
        '3 tables created: activity_catalog, activity_logs, permission_audit_log' as details;

@@ -166,6 +166,17 @@ CREATE INDEX idx_project_catalog ON permission_group_project_catalog(project_id,
 CREATE INDEX idx_permgroup_catalog ON permission_group_project_catalog(permission_group_id, is_active);
 
 -- ===================================================================================
+-- USER_PROJECT_API_KEYS TABLE INDEXES
+-- (Note: basic indexes are defined inline in 02_create_tables.sql)
+-- Additional explicit indexes for query patterns
+-- ===================================================================================
+CREATE INDEX idx_api_keys_owner_project ON user_project_api_keys (owner_user_id, project_id, is_active);
+CREATE INDEX idx_api_keys_project_active ON user_project_api_keys (project_id, is_active);
+CREATE INDEX idx_api_keys_expires ON user_project_api_keys (expires_at, is_active);
+CREATE INDEX idx_api_keys_fingerprint ON user_project_api_keys (fingerprint);
+CREATE INDEX idx_api_keys_public_id ON user_project_api_keys (public_id);
+
+-- ===================================================================================
 -- INDEX CREATION COMPLETE
 -- ===================================================================================
 SELECT 'All indexes created successfully!' as status,
