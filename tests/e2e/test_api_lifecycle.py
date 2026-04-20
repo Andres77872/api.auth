@@ -164,6 +164,16 @@ class TestSecurity:
         assert acao == "http://localhost:3000"
 
     @pytest.mark.asyncio
+    async def test_cors_allows_vite_preview_origin(self, client, e2e_env):
+        """CORS should allow the default Vite preview origin used by the dashboard."""
+        response = await client.get(
+            "/ping",
+            headers={"Origin": "http://localhost:4173", "User-Agent": "e2e-test-client"},
+        )
+        acao = response.headers.get("access-control-allow-origin")
+        assert acao == "http://localhost:4173"
+
+    @pytest.mark.asyncio
     async def test_cors_rejects_unknown_origin(self, client, e2e_env):
         """CORS should not reflect unknown origins."""
         response = await client.get(

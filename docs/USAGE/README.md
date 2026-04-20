@@ -127,7 +127,7 @@ For detailed endpoint tables, see each suite's `reference.md`.
 | **501 stubs** | `PATCH /projects/{hash}/owner` and `PATCH /projects/{hash}/archive` are not implemented. |
 | **No rate limiting** | No endpoint has rate limiting. Protect at the infrastructure level. |
 | **JWT_SECRET_KEY** | Must be set in production. If omitted, each restart generates a new key and invalidates all sessions. |
-| **CORS** | Defaults to `http://localhost:3000,http://localhost:5173`. Set `ALLOWED_ORIGINS` in production. |
+| **CORS** | Defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173`. Set `ALLOWED_ORIGINS` in production. |
 | **Password validation** | No server-side enforcement. Clients must validate. |
 | **First root user** | Must be created directly in the database. No API bootstrap exists. |
 

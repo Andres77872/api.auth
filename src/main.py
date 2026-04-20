@@ -55,7 +55,10 @@ app.include_router(audit_logs.router, tags=['Audit Logs'])
 app.include_router(api_keys.router, tags=["API Keys - Admin"])
 
 # CORS configuration — explicit origins only (never "*" with credentials)
-_allowed_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+_allowed_origins = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173",
+)
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 
 app.add_middleware(

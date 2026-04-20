@@ -53,7 +53,7 @@ The API reads configuration from environment variables. These are the ones you *
 | `REDIS_DB` | No | `0` | Redis DB number |
 | `DB_REDIS_PASSWORD` | No | -- | Redis password |
 | `JWT_SECRET_KEY` | **Yes in production** | Random per-process | See critical note below |
-| `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173` | CORS origins (comma-separated) |
+| `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:4173` | CORS origins (comma-separated) |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 
 ### Critical: `JWT_SECRET_KEY`
@@ -287,7 +287,7 @@ The API still accepts `X-token-user` and `X-token-collection` headers as a fallb
 
 ### 7. CORS defaults to localhost only
 
-`ALLOWED_ORIGINS` defaults to `http://localhost:3000,http://localhost:5173`. In production, you **must** set this to your actual frontend origins.
+`ALLOWED_ORIGINS` defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173`. In production, you **must** set this to your actual frontend origins.
 
 ### 8. Password complexity is NOT enforced
 

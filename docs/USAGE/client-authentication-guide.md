@@ -30,7 +30,7 @@ The API provides authentication via JWT tokens stored in HTTP-only cookies. Clie
 |---------|--------|
 | Content-Type | Almost all POST/PUT/PATCH use `multipart/form-data`. Exceptions: `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export` use JSON. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
-| CORS | Defaults to `http://localhost:3000,http://localhost:5173`. Set `ALLOWED_ORIGINS` in production. |
+| CORS | Defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173`. Set `ALLOWED_ORIGINS` in production. |
 | Cookie | `session_token`, HTTP-only, Secure, SameSite=Strict, 72-hour max-age |
 
 ---

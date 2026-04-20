@@ -391,7 +391,7 @@ DB_REDIS_PASSWORD=your_password # optional
 API_KEY_PEPPER=your_pepper_secret  # required for /api-keys and /users/api-keys
 
 # CORS
-ALLOWED_ORIGINS=localhost:3000,localhost:5173  # optional, comma-separated
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:4173  # optional, comma-separated
 ```
 
 ## 📊 Performance

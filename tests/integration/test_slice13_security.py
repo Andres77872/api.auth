@@ -22,6 +22,14 @@ async def test_cors_headers_not_wildcard(client, fake_redis, patched_cache_manag
 
 
 @pytest.mark.asyncio
+async def test_cors_allows_vite_preview_origin(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """CORS should allow the default Vite preview origin used by the dashboard."""
+    response = await client.get("/ping", headers={"Origin": "http://localhost:4173"})
+    acao = response.headers.get("access-control-allow-origin")
+    assert acao == "http://localhost:4173"
+
+
+@pytest.mark.asyncio
 async def test_cors_rejects_unknown_origin(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
     """CORS should not reflect unknown origins."""
     response = await client.get("/ping", headers={"Origin": "http://evil.com"})
