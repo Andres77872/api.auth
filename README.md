@@ -30,6 +30,7 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 ### 🔐 Authentication & Sessions
 - JWT-based session management with HTTP-only cookies
 - Multi-project login and project switching
+- Platform-scoped login for root/admin users
 - Session validation and token refresh
 - Username/email availability checking
 
@@ -51,15 +52,21 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 - Activity tracking and audit logs
 - Archive functionality
 
+### 🔑 API Key Management
+- User-scoped API keys for programmatic access
+- Admin-scoped key management (create, revoke, inspect)
+- Per-project and per-user key listing
+
 ### 🛡️ Enterprise Security
 - Multi-layer security (transport, auth, authorization, data isolation)
 - UUID-based identification (`usr-{UUID4}`, `proj-{UUID4}`)
-- Comprehensive audit trails
+- Comprehensive audit trails with export (CSV/JSON)
 - Redis-based session caching
 
 ### 🔧 Admin Features
 - Dashboard statistics and monitoring
-- Activity feed with filtering
+- Activity feed with filtering and detail view
+- Audit log browser with security events and statistics
 - System health checks
 - Cache management
 - Bulk operations (update, delete, assign)
@@ -73,8 +80,13 @@ cd api.auth
 pip install -r requirements.txt
 
 # 2. Set environment variables
+export DB_HOST=192.168.1.90
+export DB_USER=your_mysql_user
 export DB_MYSQL_PASSWORD=your_mysql_password
+export DB_NAME=magic-auth
 export DB_REDIS_PASSWORD=your_redis_password
+export JWT_SECRET_KEY=your_jwt_secret
+export API_KEY_PEPPER=your_api_key_pepper_secret
 
 # 3. Initialize database
 python scripts/recreate_database.py
@@ -91,7 +103,8 @@ curl http://localhost:8000/system/ping
 ### Authentication (`/auth`)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/auth/login` | POST | User login |
+| `/auth/login` | POST | User login (requires `project_hash`) |
+| `/auth/platform/login` | POST | Platform-scoped login for root/admin (no project required) |
 | `/auth/register` | POST | New user registration |
 | `/auth/validate` | GET | Validate current session |
 | `/auth/logout` | POST | End session |
@@ -108,9 +121,20 @@ curl http://localhost:8000/system/ping
 | `/users/list` | GET | List users with filters (admin) |
 | `/users/search/query` | GET | Search users (admin) |
 | `/users/{user_hash}` | GET | Get user details |
+| `/users/{user_hash}` | PUT | Update user details (admin/root) |
 | `/users/{user_hash}/status` | PUT | Update user status |
+| `/users/{user_hash}/type` | PATCH | Change user type (root only) |
 | `/users/{user_hash}/reset-password` | POST | Reset password (admin) |
 | `/users/{user_hash}` | DELETE | Delete user (admin) |
+
+### User API Keys (`/users/api-keys`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/users/api-keys` | POST | Create own API key |
+| `/users/api-keys` | GET | List own API keys |
+| `/users/api-keys/{key_id}` | GET | Get own key details |
+| `/users/api-keys/{key_id}` | PUT | Update own key |
+| `/users/api-keys/{key_id}` | DELETE | Revoke own key |
 
 ### Projects (`/projects`)
 | Endpoint | Method | Description |
@@ -142,6 +166,7 @@ curl http://localhost:8000/system/ping
 | `/admin/user-groups/{hash}/project-groups` | GET | Get project group access |
 | `/admin/user-groups/{hash}/project-groups` | POST | Grant project group access |
 | `/admin/user-groups/{hash}/project-groups/{pg}` | DELETE | Revoke access |
+| `/admin/user-groups/users/{user_hash}/groups` | GET | Get user's groups |
 
 ### Project Groups (`/admin/project-groups`)
 | Endpoint | Method | Description |
@@ -163,11 +188,16 @@ curl http://localhost:8000/system/ping
 | `/roles/roles/{hash}` | GET | Get role details |
 | `/roles/roles/{hash}` | PUT | Update role |
 | `/roles/roles/{hash}` | DELETE | Delete role |
-| `/roles/roles/{hash}/permission-groups/{pg}` | POST | Add permission group |
-| `/roles/roles/{hash}/permission-groups/{pg}` | DELETE | Remove permission group |
-| `/roles/users/{user_hash}/role` | GET | Get user's role |
-| `/roles/users/{user_hash}/role` | POST | Assign role |
+| `/roles/roles/{hash}/permission-groups` | GET | Get role's permission groups |
+| `/roles/roles/{hash}/permission-groups/{pg}` | POST | Add permission group to role |
+| `/roles/roles/{hash}/permission-groups/{pg}` | DELETE | Remove permission group from role |
 | `/roles/users/me/role` | GET | Get my role |
+| `/roles/users/{user_hash}/role` | GET | Get user's role |
+| `/roles/users/{user_hash}/role` | PUT | Assign role to user |
+| `/roles/users/{user_hash}/role` | DELETE | Remove role from user |
+| `/roles/projects/{hash}/catalog/roles` | GET | Get project role catalog |
+| `/roles/projects/{hash}/catalog/roles/{role_hash}` | POST | Add role to project catalog |
+| `/roles/projects/{hash}/catalog/roles/{role_hash}` | DELETE | Remove from project catalog |
 
 ### Permission Groups (`/roles/permission-groups`)
 | Endpoint | Method | Description |
@@ -177,20 +207,54 @@ curl http://localhost:8000/system/ping
 | `/roles/permission-groups/{hash}` | GET | Get group details |
 | `/roles/permission-groups/{hash}` | PUT | Update group |
 | `/roles/permission-groups/{hash}` | DELETE | Delete group |
-| `/roles/permission-groups/{hash}/permissions` | GET | Get permissions |
-| `/roles/permission-groups/{hash}/permissions` | POST | Add permission |
-| `/roles/permission-groups/{hash}/permissions/{p}` | DELETE | Remove permission |
+| `/roles/permission-groups/{hash}/permissions` | GET | Get permissions in group |
+| `/roles/permission-groups/{hash}/permissions/{p}` | POST | Add permission to group |
+| `/roles/permission-groups/{hash}/permissions/{p}` | DELETE | Remove permission from group |
 
-### Permissions (`/permissions`)
+### Permissions (`/roles/permissions` and `/permissions`)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/roles/permissions` | POST | Create permission |
 | `/roles/permissions` | GET | List all permissions |
+| `/roles/permissions/{hash}` | GET | Get permission details |
+| `/roles/permissions/{hash}` | PUT | Update permission |
+| `/roles/permissions/{hash}` | DELETE | Delete permission |
 | `/permissions/users/me/permissions` | GET | Get my permissions |
-| `/permissions/users/me/permissions/check` | POST | Check specific permission |
+| `/permissions/users/me/permissions/check/{permission_name}` | GET | Check specific permission |
 | `/permissions/users/me/permission-groups` | GET | Get my direct permission groups |
-| `/permissions/users/me/sources` | GET | Get permission sources |
-| `/permissions/admin/user-groups/{hash}/permission-groups` | POST | Assign to user group |
-| `/permissions/users/{user}/permission-groups` | POST | Assign to user |
+| `/permissions/users/me/permission-sources` | GET | Get permission source breakdown |
+| `/permissions/admin/user-groups/{hash}/permission-groups` | GET | Get group's permission groups |
+| `/permissions/admin/user-groups/{hash}/permission-groups` | POST | Assign permission group to user group |
+| `/permissions/admin/user-groups/{hash}/permission-groups` | POST | Bulk assign permission groups |
+| `/permissions/admin/user-groups/{hash}/permission-groups/{pg}` | DELETE | Remove permission group from user group |
+| `/permissions/users/{user}/permission-groups` | GET | Get user's direct permission groups |
+| `/permissions/users/{user}/permission-groups` | POST | Assign permission group to user |
+| `/permissions/users/{user}/permission-groups/{pg}` | DELETE | Remove permission group from user |
+
+### User Type Management (`/user-types`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/user-types/root` | POST | Create root user |
+| `/user-types/admin` | POST | Create admin user |
+| `/user-types/{user_hash}/info` | GET | Get user type info |
+| `/user-types/{user_hash}/type` | PUT | Update user type |
+| `/user-types/users/{user_type}` | GET | List users by type |
+| `/user-types/stats` | GET | User type statistics |
+| `/user-types/admin/{user_hash}/projects` | GET | Get admin's projects |
+| `/user-types/admin/{user_hash}/projects` | PUT | Update admin's projects |
+| `/user-types/admin/{user_hash}/projects/add` | POST | Add admin to project |
+| `/user-types/admin/{user_hash}/projects/{project_id}` | DELETE | Remove admin from project |
+
+### API Keys Admin (`/api-keys`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api-keys` | POST | Create API key (admin) |
+| `/api-keys` | GET | List keys (admin scope) |
+| `/api-keys/{key_id}` | GET | Get key details |
+| `/api-keys/{key_id}` | PUT | Update key |
+| `/api-keys/{key_id}` | DELETE | Revoke key |
+| `/api-keys/users/{user_hash}` | GET | List user's keys |
+| `/api-keys/projects/{project_hash}` | GET | List project's keys |
 
 ### System (`/system`)
 | Endpoint | Method | Auth | Description |
@@ -209,10 +273,20 @@ curl http://localhost:8000/system/ping
 | `/admin/dashboard/stats` | GET | Dashboard statistics |
 | `/admin/activity` | GET | Activity feed |
 | `/admin/activity/types` | GET | Activity type list |
+| `/admin/activity/{activity_id}` | GET | Activity detail |
 | `/admin/health` | GET | Detailed health check |
 | `/admin/users/statistics` | GET | User statistics |
 | `/admin/projects/statistics` | GET | Project statistics |
 | `/admin/system/overview` | GET | System overview |
+
+### Audit Logs (`/admin/audit`)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/audit/logs` | GET | Paginated audit logs |
+| `/admin/audit/security-events` | GET | Security events |
+| `/admin/audit/statistics` | GET | Audit statistics |
+| `/admin/audit/export` | POST | Export logs (CSV/JSON) |
+| `/admin/users/{user_id}/activity` | GET | User activity timeline |
 
 ### Bulk Operations (`/admin`)
 | Endpoint | Method | Description |
@@ -226,10 +300,15 @@ curl http://localhost:8000/system/ping
 
 ### Authentication
 ```bash
-# Login
+# Login (requires a project_hash context)
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=SecurePass123!"
+  -d "username=john_doe&password=SecurePass123!&project_hash=proj-xxxx"
+
+# Platform login for root/admin (no project required)
+curl -X POST "http://localhost:8000/auth/platform/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin_user&password=SecurePass123!"
 
 # Use token for authenticated requests
 curl -X GET "http://localhost:8000/users/profile" \
@@ -254,15 +333,18 @@ curl -X GET "http://localhost:8000/users/profile" \
 ### Usage Guides
 | Document | Description |
 |----------|-------------|
+| [Getting Started](docs/USAGE/getting-started.md) | Installation, env vars, first run |
 | [Authentication](docs/USAGE/authentication-usage-cases.md) | Login, sessions, project switching |
-| [Users](docs/USAGE/users-usage-cases.md) | Profile, admin operations |
+| [Users](docs/USAGE/users/README.md) | Profile, admin operations, bulk ops |
 | [Groups](docs/USAGE/groups/README.md) | User groups, project groups, flows, troubleshooting |
 | [Projects](docs/USAGE/projects/README.md) | Project management suite |
-| [Permissions](docs/USAGE/permissions-usage-cases.md) | Roles, permissions |
+| [Roles](docs/USAGE/roles/README.md) | Role definitions, assignment flows |
+| [Permissions](docs/USAGE/permissions/README.md) | Permission groups, RBAC resolution |
+| [Audit Logs](docs/USAGE/audit_logs/README.md) | Audit trail, security events, export |
 | [Admin](docs/USAGE/admin-usage-cases.md) | Dashboard, bulk ops, cache |
+| [Error Reference](docs/USAGE/errors.md) | Error codes and troubleshooting |
 
-### Architecture
-- [Architecture Overview](docs/ARCHITECTURE/README.md)
+### Schema
 - [Database Schema](schemas/README.md)
 
 ## 🐳 Docker Deployment
@@ -275,28 +357,41 @@ docker-compose up -d
 services:
   api-auth:
     environment:
+      - DB_HOST=192.168.1.90
+      - DB_USER=your_mysql_user
       - DB_MYSQL_PASSWORD=secure_password
-      - DB_REDIS_PASSWORD=secure_password
+      - DB_NAME=magic-auth
       - JWT_SECRET_KEY=your_jwt_secret
+      - API_KEY_PEPPER=your_api_key_pepper_secret
+      - DB_REDIS_PASSWORD=secure_password
 ```
 
 ## 🔧 Configuration
 
 ```bash
-# Database
-DB_MYSQL_PASSWORD=your_mysql_password
+# Database (MySQL)
 DB_HOST=192.168.1.90
-DB_NAME=magic-auth
+DB_PORT=3306                    # optional, default: 3306
+DB_USER=your_mysql_user         # required
+DB_MYSQL_PASSWORD=your_password # required
+DB_NAME=magic-auth              # required
 
 # JWT
-JWT_SECRET_KEY=your_secure_jwt_secret_key
+JWT_SECRET_KEY=your_secure_jwt_secret_key   # auto-generated if missing (warns)
 JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_HOURS=72
 
 # Redis
-DB_REDIS_PASSWORD=your_redis_password
 REDIS_HOST=192.168.1.90
-REDIS_PORT=6379
+REDIS_PORT=6379                 # optional, default: 6379
+REDIS_DB=0                      # optional, default: 0
+DB_REDIS_PASSWORD=your_password # optional
+
+# API Keys
+API_KEY_PEPPER=your_pepper_secret  # required for /api-keys and /users/api-keys
+
+# CORS
+ALLOWED_ORIGINS=localhost:3000,localhost:5173  # optional, comma-separated
 ```
 
 ## 📊 Performance
@@ -315,6 +410,7 @@ REDIS_PORT=6379
 | Permission denied | Verify permission groups assigned to user/group |
 | Database errors | Verify MySQL connection and schema |
 | Cache issues | Use `/system/cache/clear` to reset |
+| API key errors | Verify `API_KEY_PEPPER` env var is set |
 
 ### Quick Diagnostics
 ```bash
