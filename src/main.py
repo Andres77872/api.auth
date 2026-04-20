@@ -54,10 +54,10 @@ app.include_router(permission_assignments.router, tags=['Permission Assignments'
 app.include_router(audit_logs.router, tags=['Audit Logs'])
 app.include_router(api_keys.router, tags=["API Keys - Admin"])
 
-# CORS configuration — explicit origins only (never "*" with credentials)
+# CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 
@@ -66,7 +66,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 # Add Request Validation Middleware (validates requests, tracks time, logs activity)

@@ -23,10 +23,18 @@ async def test_cors_headers_not_wildcard(client, fake_redis, patched_cache_manag
 
 @pytest.mark.asyncio
 async def test_cors_allows_vite_preview_origin(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
-    """CORS should allow the default Vite preview origin used by the dashboard."""
+    """CORS should allow the default local Vite preview origin."""
     response = await client.get("/ping", headers={"Origin": "http://localhost:4173"})
     acao = response.headers.get("access-control-allow-origin")
     assert acao == "http://localhost:4173"
+
+
+@pytest.mark.asyncio
+async def test_cors_allows_auth_ui_dashboard_origin(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """CORS should allow the production auth dashboard origin."""
+    response = await client.get("/ping", headers={"Origin": "https://auth-ui.arz.ai"})
+    acao = response.headers.get("access-control-allow-origin")
+    assert acao == "https://auth-ui.arz.ai"
 
 
 @pytest.mark.asyncio
