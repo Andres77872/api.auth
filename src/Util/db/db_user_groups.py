@@ -404,15 +404,21 @@ def get_user_group_membership(user_id: str, user_group_id: str) -> Optional[User
         user_group_id: Group ID to check
         
     Returns:
-        UserGroupMember object if found, None if not found
+        UserGroupMember object if found, None if not found or if SP is missing
         
     Raises:
-        DatabaseError: On database operation errors
+        DatabaseError: On database operation errors (other than missing SP)
     """
     def _get():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_get_user_group_membership', [user_id, user_group_id])
+            try:
+                cur.callproc('sp_get_user_group_membership', [user_id, user_group_id])
+            except pymysql.err.OperationalError as e:
+                error_code = e.args[0] if e.args else None
+                if error_code == 1305:
+                    return None
+                raise
             result = cur.fetchone()
             if result:
                 return UserGroupMember(

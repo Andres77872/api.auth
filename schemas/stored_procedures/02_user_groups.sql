@@ -201,6 +201,20 @@ BEGIN
     WHERE user_id = p_user_id AND user_group_id = p_user_group_id AND is_active = 1;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_get_user_group_membership$$
+CREATE PROCEDURE sp_get_user_group_membership(
+    IN p_user_id VARCHAR(64),
+    IN p_user_group_id VARCHAR(64)
+)
+BEGIN
+    SELECT id, user_id, user_group_id, assigned_at, assigned_by,
+           removed_at, removed_by, is_active
+    FROM user_group_members
+    WHERE user_id = p_user_id
+      AND user_group_id = p_user_group_id
+    LIMIT 1;
+END$$
+
 -- ===================================================================================
 -- USER GROUP → PROJECT GROUP ACCESS (GROUPS OF GROUPS)
 -- ===================================================================================
