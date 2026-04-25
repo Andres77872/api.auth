@@ -58,7 +58,7 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 |-------|-------------|
 | [📚 Documentation Home](/documentation) | Main documentation index |
 | [🔐 Authentication](/documentation/USAGE/authentication-usage-cases.md) | Login, sessions, tokens, project switching |
-| [👤 Users](/documentation/USAGE/users-usage-cases.md) | Profile management, admin operations |
+| [👤 Users](/documentation/USAGE/users/README.md) | Profile management, admin operations |
 | [👥 Groups](/documentation/USAGE/groups/README.md) | User groups, project groups, flows, troubleshooting |
 | [📁 Projects](/documentation/USAGE/projects/README.md) | Project management suite, access control |
 | [🔑 Permissions](/documentation/USAGE/permissions-usage-cases.md) | Roles, permission groups, assignments |

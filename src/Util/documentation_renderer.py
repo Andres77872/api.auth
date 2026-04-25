@@ -1238,7 +1238,7 @@ class DocumentationRenderer:
         
         # Convert callouts (blockquotes with special markers)
         def callout_replacer(match):
-            marker = match.group(1).lower()
+            marker = match.group(1).lower() if match.group(1) else None
             text = match.group(2)
             if marker in ['!warning', '!warn']:
                 return f'<div class="callout callout-warning"><span class="callout-icon">⚠️</span><div class="callout-content"><div class="callout-title">Warning</div><p>{text}</p></div></div>'
@@ -1251,9 +1251,6 @@ class DocumentationRenderer:
             return f'<blockquote><p>{text}</p></blockquote>'
         
         html = re.sub(r'^&gt;\s*(!\w+)?\s*(.+)$', callout_replacer, html, flags=re.MULTILINE)
-        
-        # Convert regular blockquotes
-        html = re.sub(r'^&gt;\s*(.+)$', r'<blockquote><p>\1</p></blockquote>', html, flags=re.MULTILINE)
         
         # Convert bold and italic
         html = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', html)
