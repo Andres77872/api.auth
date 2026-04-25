@@ -16,7 +16,7 @@ from src.routes import (
     admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
     audit_logs, api_keys, user_api_keys,
 )
-from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files
+from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
 
 # Read description from README file
 with open('./src/README.md', 'r', encoding='utf-8') as f:
@@ -103,19 +103,21 @@ async def documentation_index(
         - `html` (default): Rendered HTML with styling
         - `raw`, `md`, `markdown`: Raw markdown content (for LLM/API consumption)
     """
-    usage_files = get_documentation_files(DOCS_BASE_PATH, "USAGE")
+    categories = get_documentation_categories(DOCS_BASE_PATH)
     
     # Return raw list for LLM consumption
     if format in [DocFormat.raw, DocFormat.md, DocFormat.markdown]:
-        file_list = "# API Documentation\n\n## Available Guides\n\n"
-        for f in usage_files:
-            file_list += f"- [{f.title}]({DOCS_BASE_URL}/USAGE/{f.name})\n"
+        file_list = "# API Documentation\n\n## Available Categories\n\n"
+        for cat in categories:
+            file_list += f"\n### {cat.title}\n\n"
+            for f in cat.files:
+                file_list += f"- [{f.title}]({DOCS_BASE_URL}/{f.path})\n"
         file_list += "\n## API Documentation\n\n"
         file_list += "- [OpenAPI/Swagger](/docs)\n"
         file_list += "- [ReDoc](/redoc)\n"
         return PlainTextResponse(file_list, media_type="text/markdown; charset=utf-8")
     
-    return HTMLResponse(DocumentationRenderer.render_home(usage_files, DOCS_BASE_URL))
+    return HTMLResponse(DocumentationRenderer.render_home(categories, DOCS_BASE_URL))
 
 
 @app.get("/documentation/{path:path}", tags=["Documentation"])
@@ -129,7 +131,7 @@ async def serve_documentation(
     
     - **path**: Path to the markdown file (e.g., USAGE/authentication-usage-cases.md)
     - **format**: Output format
-        - `html` (default): Rendered HTML with modern dark theme styling
+        - `html` (default): Rendered HTML with modern docs UI
         - `raw`, `md`, `markdown`: Raw markdown content (for LLM/API consumption)
     - **raw**: Deprecated - use `format=raw` instead
     
@@ -139,6 +141,9 @@ async def serve_documentation(
     - `/documentation/USAGE/authentication-usage-cases.md` - Rendered HTML
     - `/documentation/USAGE/authentication-usage-cases.md?format=raw` - Raw markdown for LLMs
     """
+    # Get categories for sidebar navigation
+    categories = get_documentation_categories(DOCS_BASE_PATH)
+    
     # Normalize path
     file_path = DOCS_BASE_PATH / path
     
@@ -168,7 +173,7 @@ async def serve_documentation(
                 content += f"- [{f.title}]({DOCS_BASE_URL}/{f.path})\n"
             return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
         
-        return HTMLResponse(DocumentationRenderer.render_index(path, files, DOCS_BASE_URL))
+        return HTMLResponse(DocumentationRenderer.render_index(path, files, DOCS_BASE_URL, categories))
     
     # Read file content
     try:
@@ -182,7 +187,7 @@ async def serve_documentation(
     
     # Render as HTML
     title = path.replace(".md", "").replace("-", " ").replace("/", " - ").title()
-    return HTMLResponse(DocumentationRenderer.render_page(content, title, path, DOCS_BASE_URL))
+    return HTMLResponse(DocumentationRenderer.render_page(content, title, path, DOCS_BASE_URL, categories))
 
 
 @app.get("/docs/USAGE/{filename:path}", include_in_schema=False)

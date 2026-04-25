@@ -9,3 +9,4 @@ COPY requirements.txt /nn
 RUN pip install -r requirements.txt
 
 COPY src /nn/src
+COPY docs /nn/docs
