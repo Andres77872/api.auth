@@ -53,7 +53,14 @@ security = HTTPBearerOrCookie()
 
 # Helper function to check admin permissions
 async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Ensure user has admin permissions"""
+    """
+    Ensure user has admin permissions.
+
+    Checks ``'admin'`` OR ``'manage_roles'`` in session permissions.
+    Project groups relate to role assignments, hence the ``manage_roles``
+    scope.  Consistent with the ``global_roles.py`` pattern for
+    ``manage_roles``-protected surfaces.
+    """
     session_data = validate_session(credentials.credentials)
     if not session_data:
         raise AuthenticationError(

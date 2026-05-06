@@ -45,7 +45,18 @@ async def require_valid_session(credentials: HTTPAuthorizationCredentials = Depe
 
 
 async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Ensure user has admin permissions"""
+    """
+    Ensure user has admin permissions.
+
+    Checks ``user_type IN ['root','admin']`` OR
+    ``check_user_has_permission('manage_roles')``.  Also verifies the user
+    is active.
+
+    Differs from ``admin_user_groups.py:require_admin()`` because role
+    management CAN be delegated via the ``manage_roles`` permission.
+    Intentional least-privilege — a consumer with ``manage_roles`` can
+    manage roles but NOT user groups.
+    """
     session_data = validate_session(credentials.credentials)
     if not session_data:
         raise AuthenticationError(

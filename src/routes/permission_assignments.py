@@ -67,7 +67,14 @@ async def require_valid_session(credentials: HTTPAuthorizationCredentials = Depe
 
 
 async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Ensure user has admin permissions"""
+    """
+    Ensure user has admin permissions.
+
+    Checks ``user_type NOT IN ['root','admin']`` (inverted) OR
+    ``check_user_has_permission_extended('manage_roles')``.  Uses extended
+    check to include inherited permissions.  Consistent with the
+    ``global_roles.py`` pattern but with extended permission resolution.
+    """
     session_data = validate_session(credentials.credentials)
     if not session_data:
         raise AuthenticationError(

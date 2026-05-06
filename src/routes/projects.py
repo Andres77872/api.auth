@@ -187,7 +187,10 @@ async def create_new_project(
             error_code=ErrorCode.SESSION_INVALID
         )
 
-    # Check if user has permission to create projects
+    # Uses inline check (not require_admin()) because project
+    # creation/management is admin-only with no sub-permission delegation.
+    # This is the simplest pattern for endpoints that require full admin
+    # privilege.
     user_permissions = getattr(session_data, 'permissions', [])
     if 'admin' not in user_permissions:
         raise AuthorizationError(
