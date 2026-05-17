@@ -105,6 +105,8 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                     request.state.project_id = session_data.project_id
                     request.state.project_hash = session_data.project_hash
                     request.state.auth_method = "session"
+                    # Phase 2.2a: Store full validate_session result for decorator reuse
+                    request.state.session_validation = session_data
 
             except Exception as e:
                 # Don't fail the request, just log the error

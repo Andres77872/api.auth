@@ -76,6 +76,10 @@ app.add_middleware(RequestValidationMiddleware)
 app.add_middleware(APIAuditMiddleware)
 
 # Add Auth Context Middleware (extracts user context for audit logging)
+# IMPORTANT: AuthContextMiddleware MUST be the innermost middleware (registered LAST)
+# so that it executes BEFORE route handlers and their decorators.
+# This ensures request.state.session_validation is populated before
+# @log_and_handle_errors reads it (Phase 2.2 dependency).
 app.add_middleware(AuthContextMiddleware)
 
 

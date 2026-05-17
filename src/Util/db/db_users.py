@@ -949,6 +949,7 @@ def invalidate_session(session_token: str) -> bool:
     """
     def _invalidate():
         result = client.delete(f"session:{session_token}")
+        client.delete(f"session_full:{session_token}")  # Phase 2.1c: also invalidate full-session cache
         return result > 0
     
     return handle_db_operation(

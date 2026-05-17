@@ -8,6 +8,7 @@ Uses database activity catalog and stored procedures for consistent logging.
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any, List, Union, Callable
@@ -92,6 +93,7 @@ class ActivityLogger:
         Returns:
             Success status
         """
+        t0 = time.monotonic()
         try:
             with get_connection() as con:
                 cur = con.cursor()
@@ -119,9 +121,11 @@ class ActivityLogger:
                 ])
 
                 con.commit()
+                logger.info(f"AUTH_PERF|activity_log|{(time.monotonic() - t0) * 1000:.3f}")
                 return True
 
         except Exception as e:
+            logger.info(f"AUTH_PERF|activity_log|{(time.monotonic() - t0) * 1000:.3f}")
             logger.error(f"Failed to log activity: {str(e)}")
             return False
 

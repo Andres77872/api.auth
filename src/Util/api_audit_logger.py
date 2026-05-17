@@ -6,6 +6,7 @@ Works with the api_audit_log table and stored procedures.
 """
 
 import json
+import time
 import uuid
 import logging
 from typing import Dict, Any, Optional, List
@@ -43,6 +44,7 @@ class APIAuditLogger:
         '/docs',
         '/redoc',
         '/openapi.json',
+        '/auth/validate',  # Phase 1.3: high-frequency, low-value validation — skip sync audit log
     ]
     
     @staticmethod
@@ -303,6 +305,7 @@ class APIAuditLogger:
         Returns:
             True if logged successfully, False otherwise
         """
+        t0 = time.monotonic()
         try:
             logger.info(f"API Audit: Logging request [{http_method}] {endpoint_path} [audit_id={audit_id}]")
 
@@ -336,9 +339,11 @@ class APIAuditLogger:
                 conn.commit()
 
             logger.debug(f"Successfully logged API request: {audit_id}")
+            logger.info(f"AUTH_PERF|api_audit_log|{(time.monotonic() - t0) * 1000:.3f}")
             return True
 
         except Exception as e:
+            logger.info(f"AUTH_PERF|api_audit_log|{(time.monotonic() - t0) * 1000:.3f}")
             logger.error(
                 f"Failed to log API request [audit_id={audit_id}, endpoint={endpoint_path}]: {e}",
                 exc_info=True,

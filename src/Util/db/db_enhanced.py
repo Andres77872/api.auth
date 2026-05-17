@@ -17,7 +17,9 @@ Key features:
 
 import json
 import logging
+import os
 import secrets
+import time
 from typing import Optional
 
 from src.Util.JWT_Security import JWTTokenHandler
@@ -53,6 +55,9 @@ from src.Util.db_config import redis_client as client
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+# Phase 2.1: Feature flag for cache-first validation
+VALIDATE_CACHE_ENABLED = os.environ.get("VALIDATE_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # Re-export database connection for backward compatibility
 
@@ -344,13 +349,33 @@ def enhanced_register(
     )
 
 
+# Phase 0.8: Module-level call counter for validate_session()
+_validation_call_counter: int = 0
+
+
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     """Validate a session token and return user data with user type context (cache-first)"""
-    # Try cache first
-    session_data = cache_manager.get_session(session_token)
+    global _validation_call_counter
+    _validation_call_counter += 1
 
+    t_total = time.monotonic()
+
+    # Phase 2.1: Try full-session cache first (serialized EnhancedUserLogin)
+    if VALIDATE_CACHE_ENABLED:
+        cached_full = cache_manager.get_session_full(session_token)
+        if cached_full is not None:
+            duration_ms = (time.monotonic() - t_total) * 1000
+            logger.info(f"AUTH_PERF|validate_session|hit|{duration_ms:.3f}")
+            return cached_full
+
+    cache_hit = True
+
+    # Try cache first (raw session dict)
+    session_data = cache_manager.get_session(session_token)
+    
     # If not in cache, check database/Redis
     if not session_data:
+        cache_hit = False
         session_data = get_session_data(session_token)
         if not session_data:
             return None
@@ -371,14 +396,16 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         else:
             permissions = session_data.get('permissions', ['admin', 'project_admin', 'manage_users', 'manage_roles'])
 
-        return EnhancedUserLogin(
+        duration_ms = (time.monotonic() - t_total) * 1000
+        outcome = "hit" if cache_hit else "miss"
+        login_data = EnhancedUserLogin(
             user_hash=session_data['user_hash'],
             scope='platform',
             project_hash=None,
             project_name=None,
             user_project_hash=session_data.get('user_project_hash', ''),
             session_token=session_token,
-            session_length=0,
+            session_length=0,  # We don't track remaining time
             user_id=session_data['user_id'],
             project_id=None,
             user_project_id=session_data.get('user_project_id'),
@@ -388,13 +415,21 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
             user_type=user_type,
             assigned_project_id=session_data.get('assigned_project_id')
         )
+        # Phase 2.1: Cache full result for subsequent requests
+        if VALIDATE_CACHE_ENABLED:
+            cache_manager.set_session_full(session_token, login_data)
+        logger.info(f"AUTH_PERF|validate_session|{outcome}|{duration_ms:.3f}")
+        return login_data
 
     # For sessions with project context, get fresh project data
     project_hash = session_data.get('project_hash')
     if not project_hash:
         return None
 
+    # Phase 0.3: Time individual queries
+    t0 = time.monotonic()
     project = get_project_by_hash(project_hash)
+    logger.info(f"AUTH_PERF|query_project|{(time.monotonic() - t0) * 1000:.3f}")
     if not project:
         return None
 
@@ -406,16 +441,23 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         available_projects = []  # Root users can access all projects
     elif user_type == "admin":
         # Validate admin user still has access to project
-        if not check_admin_project_access(session_data['user_id'], project.id):
+        t0 = time.monotonic()
+        access_granted = check_admin_project_access(session_data['user_id'], project.id)
+        logger.info(f"AUTH_PERF|query_access|{(time.monotonic() - t0) * 1000:.3f}")
+        if not access_granted:
             return None
         groups = session_data.get('groups', ['project_admins'])
         permissions = session_data.get('permissions', ['admin', 'project_admin', 'manage_users', 'manage_roles'])
         # Use get_user_accessible_projects to return proper ProjectSummary objects
         # (not raw Project objects which lack project_group_name field)
+        t0 = time.monotonic()
         available_projects = get_user_accessible_projects(session_data['user_id'])
+        logger.info(f"AUTH_PERF|query_projects|{(time.monotonic() - t0) * 1000:.3f}")
     elif user_type == "consumer":
         # Resolve group memberships and permissions dynamically (group-based)
+        t0 = time.monotonic()
         groups_objs = get_user_groups_in_project_by_hash(session_data['user_id'], project_hash)
+        logger.info(f"AUTH_PERF|query_access|{(time.monotonic() - t0) * 1000:.3f}")
         if not groups_objs:
             return None
 
@@ -424,15 +466,21 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         # Graceful degradation: if global roles fail, continue with empty permissions
         try:
             from src.Util.db.db_global_roles import get_user_permissions
+            t0 = time.monotonic()
             permissions = get_user_permissions(session_data['user_id'])
+            logger.info(f"AUTH_PERF|query_permissions|{(time.monotonic() - t0) * 1000:.3f}")
         except Exception as e:
             logger.warning(f"Failed to load global role permissions for user {session_data['user_id']}: {str(e)}")
             permissions = []
+        t0 = time.monotonic()
         available_projects = get_user_accessible_projects(session_data['user_id'])
+        logger.info(f"AUTH_PERF|query_projects|{(time.monotonic() - t0) * 1000:.3f}")
     else:
         return None
 
-    return EnhancedUserLogin(
+    duration_ms = (time.monotonic() - t_total) * 1000
+    outcome = "hit" if cache_hit else "miss"
+    login_data = EnhancedUserLogin(
         user_hash=session_data['user_hash'],
         scope=scope,
         project_hash=session_data['project_hash'],
@@ -449,6 +497,11 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         user_type=user_type,
         assigned_project_id=session_data.get('assigned_project_id')
     )
+    # Phase 2.1: Cache full result for subsequent requests
+    if VALIDATE_CACHE_ENABLED:
+        cache_manager.set_session_full(session_token, login_data)
+    logger.info(f"AUTH_PERF|validate_session|{outcome}|{duration_ms:.3f}")
+    return login_data
 
 
 # =================== USER TYPE SPECIFIC FUNCTIONS ===================

@@ -896,6 +896,7 @@ class EnhancedUserLogin(BaseModelConfig):
     session_token: str
     session_length: int
     user_id: str
+    username: Optional[str] = None  # Phase 1.2a: populated from session data to avoid get_user_by_hash()
     project_id: Optional[str] = None  # Optional for global root sessions
     user_project_id: Optional[str] = None
     groups: List[str] = Field(default_factory=list)

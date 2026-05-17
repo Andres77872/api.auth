@@ -16,6 +16,7 @@ Features:
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Iterator, List
 
@@ -30,9 +31,11 @@ SESSION_TTL = 3600  # 1 hour for sessions
 ACCESS_CHECK_TTL = 1800  # 30 minutes for access checks
 PERMISSION_CHECK_TTL = 1800  # 30 minutes for permission checks
 USER_INFO_TTL = 3600  # 1 hour for user info
+VALIDATE_CACHE_TTL = int(os.environ.get("VALIDATE_CACHE_TTL", "30"))  # Phase 2.1: full-session cache TTL in seconds
 
 # Cache key prefixes
 SESSION_PREFIX = "session:"
+SESSION_FULL_PREFIX = "session_full:"  # Phase 2.1: full EnhancedUserLogin cache
 ACCESS_PREFIX = "access:"
 ROLE_PREFIX = "role:"
 USER_INFO_PREFIX = "user_info:"
@@ -78,6 +81,7 @@ class CacheManager:
     def invalidate_user_sessions(self, user_id: str) -> int:
         invalidated_count = 0
 
+        # Scan raw session keys
         for key in self._iter_keys(f"{SESSION_PREFIX}*", count=100):
             try:
                 session_data = self.redis.get(key)
@@ -85,6 +89,20 @@ class CacheManager:
                     continue
 
                 data = json.loads(session_data)
+                if data.get('user_id') == user_id:
+                    invalidated_count += int(self.redis.delete(key))
+            except Exception:
+                continue
+
+        # Phase 2.1c: Also scan and invalidate full-session cache keys
+        for key in self._iter_keys(f"{SESSION_FULL_PREFIX}*", count=100):
+            try:
+                raw = self.redis.get(key)
+                if not raw:
+                    continue
+                if isinstance(raw, bytes):
+                    raw = raw.decode()
+                data = json.loads(raw)
                 if data.get('user_id') == user_id:
                     invalidated_count += int(self.redis.delete(key))
             except Exception:
@@ -163,9 +181,62 @@ class CacheManager:
             logger.error(f"Failed to get session {session_token[:8]}...: {e}")
             return None
 
+    # =============================================================================
+    # FULL SESSION CACHE (Phase 2.1) — serialized EnhancedUserLogin
+    # =============================================================================
+
+    def set_session_full(self, session_token: str, login_data: 'EnhancedUserLogin') -> bool:
+        """
+        Serialize full EnhancedUserLogin to Redis with short TTL for cache-first validation.
+
+        Args:
+            session_token: Session token
+            login_data: EnhancedUserLogin object to cache
+
+        Returns:
+            Success status
+        """
+        try:
+            cache_key = f"{SESSION_FULL_PREFIX}{session_token}"
+            json_data = login_data.model_dump_json()
+            result = self.redis.setex(cache_key, VALIDATE_CACHE_TTL, json_data)
+            if result:
+                logger.debug(f"Full session cached: {session_token[:8]}... TTL={VALIDATE_CACHE_TTL}s")
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Failed to cache full session {session_token[:8]}...: {e}")
+            return False
+
+    def get_session_full(self, session_token: str) -> Optional['EnhancedUserLogin']:
+        """
+        Deserialize EnhancedUserLogin from Redis full-session cache.
+
+        Args:
+            session_token: Session token
+
+        Returns:
+            EnhancedUserLogin or None on miss/error
+        """
+        try:
+            cache_key = f"{SESSION_FULL_PREFIX}{session_token}"
+            raw = self.redis.get(cache_key)
+            if not raw:
+                logger.debug(f"Full session cache miss: {session_token[:8]}...")
+                return None
+            # Handle both bytes (default Redis) and str (decode_responses=True)
+            if isinstance(raw, bytes):
+                raw = raw.decode()
+            from src.Util.Models import EnhancedUserLogin
+            login_data = EnhancedUserLogin.model_validate_json(raw)
+            logger.debug(f"Full session cache hit: {session_token[:8]}...")
+            return login_data
+        except Exception as e:
+            logger.warning(f"Failed to deserialize full session {session_token[:8]}...: {e}")
+            return None
+
     def invalidate_session(self, session_token: str) -> bool:
         """
-        Remove session from cache
+        Remove session from cache (both raw session and full EnhancedUserLogin).
         
         Args:
             session_token: Session token
@@ -175,7 +246,8 @@ class CacheManager:
         """
         try:
             cache_key = f"{SESSION_PREFIX}{session_token}"
-            result = self.redis.delete(cache_key)
+            full_key = f"{SESSION_FULL_PREFIX}{session_token}"  # Phase 2.1c
+            result = self.redis.delete(cache_key, full_key)
 
             if result:
                 logger.debug(f"Session invalidated: {session_token[:8]}...")

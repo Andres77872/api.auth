@@ -6,12 +6,14 @@ for the group-based multi-project authentication system.
 """
 
 import logging
+import time
 from typing import Optional, Any
 import json
 import secrets
 from datetime import timedelta
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Response, Request
+from starlette.background import BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
@@ -73,8 +75,9 @@ def _store_session(token: str, data: dict, hours: int = SESSION_EXPIRE_HOURS) ->
     )
 
 def _delete_session(token: str) -> None:
-    """Remove session payload from Redis (logout / refresh)."""
+    """Remove session payload from Redis (logout / refresh). Also removes full-session cache."""
     redis_client.delete(f"session:{token}")
+    redis_client.delete(f"session_full:{token}")  # Phase 2.1c: also invalidate full-session cache
 
 def _get_session(token: str) -> Optional[dict]:
     """Fetch session payload from Redis."""
@@ -548,7 +551,9 @@ async def register(
 )
 async def validate_user_session(
         credentials: HTTPAuthorizationCredentials = Depends(security),
-        log_context: LogContext = None
+        log_context: LogContext = None,
+        response: Response = None,
+        background_tasks: BackgroundTasks = None,
 ) -> ValidateSessionResponse:
     """
     Validate session token and return user information with group context.
@@ -556,45 +561,55 @@ async def validate_user_session(
     Returns:
         Current user and session information
     """
+    _t_start = time.monotonic()
     session_token = credentials.credentials
 
-    raw = handle_db_operation(
-        lambda: _get_session(session_token),
-        error_context="session validation"
-    )
-    
-    if not raw:
-        raise AuthenticationError(
-            message="Invalid or expired session",
-            error_code=ErrorCode.SESSION_EXPIRED,
-            details={"hint": "Please log in again"}
+    try:
+        raw = handle_db_operation(
+            lambda: _get_session(session_token),
+            error_context="session validation"
+        )
+        
+        if not raw:
+            raise AuthenticationError(
+                message="Invalid or expired session",
+                error_code=ErrorCode.SESSION_EXPIRED,
+                details={"hint": "Please log in again"}
+            )
+
+        user_info = UserInfo(
+            user_hash=raw["user_hash"],
+            username=raw.get("username", "user"),
+            user_type=raw.get("user_type", "consumer"),
         )
 
-    user_info = UserInfo(
-        user_hash=raw["user_hash"],
-        username=raw.get("username", "user"),
-        user_type=raw.get("user_type", "consumer"),
-    )
+        if raw.get("project_hash"):
+            project_info = ProjectInfo(
+                project_hash=raw["project_hash"],
+                project_name=raw.get("project_name", ""),
+            )
+        else:
+            project_info = None
 
-    if raw.get("project_hash"):
-        project_info = ProjectInfo(
-            project_hash=raw["project_hash"],
-            project_name=raw.get("project_name", ""),
+        # Get user groups from session (cached during login)
+        user_group_names = raw.get("user_group_names", [])
+
+        duration_ms = (time.monotonic() - _t_start) * 1000
+        if response is not None:
+            response.headers["X-Auth-Process-Time"] = f"{duration_ms:.3f}"
+        return ValidateSessionResponse(
+            success=True,
+            valid=True,
+            user=user_info,
+            project=project_info,
+            session={"created_at": None, "scope": raw.get("scope", "project")},
+            user_groups=user_group_names,
         )
-    else:
-        project_info = None
-
-    # Get user groups from session (cached during login)
-    user_group_names = raw.get("user_group_names", [])
-
-    return ValidateSessionResponse(
-        success=True,
-        valid=True,
-        user=user_info,
-        project=project_info,
-        session={"created_at": None, "scope": raw.get("scope", "project")},
-        user_groups=user_group_names,
-    )
+    except Exception:
+        duration_ms = (time.monotonic() - _t_start) * 1000
+        if response is not None:
+            response.headers["X-Auth-Process-Time"] = f"{duration_ms:.3f}"
+        raise
 
 
 @router.post("/logout", response_model=LogoutResponse)

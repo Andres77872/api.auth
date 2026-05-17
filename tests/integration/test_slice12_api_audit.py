@@ -131,6 +131,7 @@ def test_excluded_paths_constant():
     assert "/docs" in APIAuditLogger.EXCLUDED_PATHS
     assert "/redoc" in APIAuditLogger.EXCLUDED_PATHS
     assert "/openapi.json" in APIAuditLogger.EXCLUDED_PATHS
+    assert "/auth/validate" in APIAuditLogger.EXCLUDED_PATHS  # Phase 1.3: high-frequency validation
 
 
 # ─── Request-Level: APIAuditMiddleware Runtime Proof ─────────────────────────

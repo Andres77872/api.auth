@@ -5,6 +5,8 @@ Provides decorators for automatic logging and error handling in API endpoints.
 """
 
 import logging
+import os
+import time
 import traceback
 import uuid
 from typing import Callable, Optional, Any, Dict
@@ -24,6 +26,12 @@ from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import validate_session, get_user_by_hash
 
 logger = logging.getLogger(__name__)
+
+# Phase 2.2: Feature flag for request.state pass-through
+REQUEST_STATE_PASSTHROUGH = os.environ.get("REQUEST_STATE_PASSTHROUGH", "true").lower() in ("true", "1", "yes")
+
+# Phase 2.3: Feature flag for async activity logging via BackgroundTasks
+ASYNC_ACTIVITY_LOGGING = os.environ.get("ASYNC_ACTIVITY_LOGGING", "true").lower() in ("true", "1", "yes")
 
 
 def log_and_handle_errors(
@@ -77,9 +85,19 @@ def log_and_handle_errors(
                 
                 # Build log context
                 if require_auth and credentials:
+                    t_auth = time.monotonic()
+                    
                     # Validate session and get user info
                     session_token = credentials.credentials
-                    session_data = validate_session(session_token)
+
+                    # Phase 2.2b: Try request.state.session_validation first (set by AuthContextMiddleware)
+                    if REQUEST_STATE_PASSTHROUGH and request is not None:
+                        session_data = getattr(request.state, 'session_validation', None)
+                        if session_data is None:
+                            logger.info("AUTH_PERF|decorator_state_miss|fallback_to_direct")
+                            session_data = validate_session(session_token)
+                    else:
+                        session_data = validate_session(session_token)
                     
                     if not session_data:
                         raise AuthenticationError(
@@ -87,23 +105,45 @@ def log_and_handle_errors(
                             error_code=ErrorCode.SESSION_INVALID
                         )
                     
-                    # Get full user data
-                    user_data = get_user_by_hash(session_data.user_hash)
+                    # Phase 1.2b: Build LogContext from session_data directly
+                    # EnhancedUserLogin now carries username (via Phase 1.2a), so
+                    # we no longer need the redundant get_user_by_hash() call.
+                    # Fallback: if session_data lacks username (non-EnhancedUserLogin
+                    # edge case, e.g. raw dict), fall through to get_user_by_hash.
+                    if hasattr(session_data, 'username'):
+                        log_context = LogContext(
+                            user_id=session_data.user_id,
+                            user_hash=session_data.user_hash,
+                            username=session_data.username,
+                            project_id=session_data.project_id if hasattr(session_data, 'project_id') else None,
+                            project_hash=session_data.project_hash if hasattr(session_data, 'project_hash') else None,
+                            ip_address=request.client.host if request and hasattr(request, 'client') else None,
+                            user_agent=request.headers.get('user-agent') if request else None,
+                            endpoint=func.__name__,
+                            method=request.method if request else None,
+                            request_id=request_id,
+                            timestamp=start_time
+                        )
+                    else:
+                        # Fallback: original behavior using get_user_by_hash
+                        user_data = get_user_by_hash(session_data.user_hash)
+                        log_context = LogContext(
+                            user_id=session_data.user_id if hasattr(session_data, 'user_id') else user_data.id if user_data else None,
+                            user_hash=session_data.user_hash,
+                            username=user_data.username if user_data else None,
+                            project_id=session_data.project_id if hasattr(session_data, 'project_id') else None,
+                            project_hash=session_data.project_hash if hasattr(session_data, 'project_hash') else None,
+                            ip_address=request.client.host if request and hasattr(request, 'client') else None,
+                            user_agent=request.headers.get('user-agent') if request else None,
+                            endpoint=func.__name__,
+                            method=request.method if request else None,
+                            request_id=request_id,
+                            timestamp=start_time
+                        )
                     
-                    # Build authenticated log context
-                    log_context = LogContext(
-                        user_id=session_data.user_id if hasattr(session_data, 'user_id') else user_data.id if user_data else None,
-                        user_hash=session_data.user_hash,
-                        username=user_data.username if user_data else None,
-                        project_id=session_data.project_id if hasattr(session_data, 'project_id') else None,
-                        project_hash=session_data.project_hash if hasattr(session_data, 'project_hash') else None,
-                        ip_address=request.client.host if request and hasattr(request, 'client') else None,
-                        user_agent=request.headers.get('user-agent') if request else None,
-                        endpoint=func.__name__,
-                        method=request.method if request else None,
-                        request_id=request_id,
-                        timestamp=start_time
-                    )
+                    # Phase 0.4: Log decorator auth timing
+                    auth_duration_ms = (time.monotonic() - t_auth) * 1000
+                    logger.info(f"AUTH_PERF|decorator_auth|{auth_duration_ms:.3f}")
                     
                     # Inject log_context into kwargs for the function to use if needed
                     kwargs['log_context'] = log_context
@@ -127,21 +167,55 @@ def log_and_handle_errors(
                 if log_success and log_context:
                     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                     
-                    # Log to activity logger if activity_type is provided
+                    # Phase 2.3: Log to activity logger — async via BackgroundTasks if available
                     if activity_type:
-                        ActivityLogger.log_activity(
-                            user_id=log_context.user_id,
-                            activity_type=activity_type.value,
-                            details={
-                                "operation": operation_name,
-                                "success": True,
-                                "duration_seconds": duration,
-                                "request_id": request_id
-                            },
-                            project_id=log_context.project_id,
-                            ip_address=log_context.ip_address,
-                            user_agent=log_context.user_agent
-                        )
+                        if ASYNC_ACTIVITY_LOGGING:
+                            background_tasks = kwargs.get('background_tasks')
+                            if background_tasks is not None:
+                                background_tasks.add_task(
+                                    ActivityLogger.log_activity,
+                                    user_id=log_context.user_id,
+                                    activity_type=activity_type.value,
+                                    details={
+                                        "operation": operation_name,
+                                        "success": True,
+                                        "duration_seconds": duration,
+                                        "request_id": request_id
+                                    },
+                                    project_id=log_context.project_id,
+                                    ip_address=log_context.ip_address,
+                                    user_agent=log_context.user_agent
+                                )
+                            else:
+                                # Fallback: synchronous (no BackgroundTasks available)
+                                ActivityLogger.log_activity(
+                                    user_id=log_context.user_id,
+                                    activity_type=activity_type.value,
+                                    details={
+                                        "operation": operation_name,
+                                        "success": True,
+                                        "duration_seconds": duration,
+                                        "request_id": request_id
+                                    },
+                                    project_id=log_context.project_id,
+                                    ip_address=log_context.ip_address,
+                                    user_agent=log_context.user_agent
+                                )
+                        else:
+                            # Feature flag disabled: synchronous
+                            ActivityLogger.log_activity(
+                                user_id=log_context.user_id,
+                                activity_type=activity_type.value,
+                                details={
+                                    "operation": operation_name,
+                                    "success": True,
+                                    "duration_seconds": duration,
+                                    "request_id": request_id
+                                },
+                                project_id=log_context.project_id,
+                                ip_address=log_context.ip_address,
+                                user_agent=log_context.user_agent
+                            )
                     
                     logger.info(
                         f"Operation completed: {operation_name}",
