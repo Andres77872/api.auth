@@ -246,6 +246,66 @@ async def test_logout_valid_session(
 
 
 @pytest.mark.asyncio
+async def test_logout_cookie_attributes(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Logout Set-Cookie deletion uses same security attributes as login set_cookie."""
+    _store_session_in_redis(fake_redis, SESSION_TOKEN, _make_redis_session_payload())
+
+    response = await client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+    )
+
+    assert response.status_code == 200
+    cookies = [v for k, v in response.headers.raw if k.lower() == b"set-cookie"]
+    assert len(cookies) == 1, f"Expected 1 Set-Cookie, got {len(cookies)}"
+    cookie = cookies[0].decode().lower()
+    assert "session_token=" in cookie
+    assert "httponly" in cookie, f"Missing httponly in: {cookie}"
+    assert "secure" in cookie, f"Missing secure in: {cookie}"
+    assert "samesite=strict" in cookie.replace(" ", "").replace(";", "; "), (
+        f"Missing samesite=strict in: {cookie}"
+    )
+    assert "max-age=0" in cookie, f"Missing max-age=0 in: {cookie}"
+
+
+@pytest.mark.asyncio
+async def test_logout_invalidates_session_immediately(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """After logout, the same token is immediately rejected by validate."""
+    _store_session_in_redis(fake_redis, SESSION_TOKEN, _make_redis_session_payload())
+
+    # Confirm session is valid before logout
+    pre = await client.get(
+        "/auth/validate",
+        headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+    )
+    assert pre.status_code == 200
+
+    # Logout
+    logout_resp = await client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+    )
+    assert logout_resp.status_code == 200
+
+    # Validate same token — must be rejected
+    post = await client.get(
+        "/auth/validate",
+        headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+    )
+    assert post.status_code == 401
+    assert fake_redis.get(f"session:{SESSION_TOKEN}") is None
+    assert fake_redis.get(f"session_full:{SESSION_TOKEN}") is None
+
+
+@pytest.mark.asyncio
 async def test_refresh_valid_session(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,

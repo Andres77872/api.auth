@@ -76,8 +76,10 @@ def _store_session(token: str, data: dict, hours: int = SESSION_EXPIRE_HOURS) ->
 
 def _delete_session(token: str) -> None:
     """Remove session payload from Redis (logout / refresh). Also removes full-session cache."""
-    redis_client.delete(f"session:{token}")
-    redis_client.delete(f"session_full:{token}")  # Phase 2.1c: also invalidate full-session cache
+    pipe = redis_client.pipeline()
+    pipe.delete(f"session:{token}")
+    pipe.delete(f"session_full:{token}")  # Phase 2.1c: also invalidate full-session cache
+    pipe.execute()
 
 def _get_session(token: str) -> Optional[dict]:
     """Fetch session payload from Redis."""
@@ -633,8 +635,8 @@ async def logout(
     session_token = credentials.credentials
 
     _delete_session(session_token)
-    # Clear the session cookie
-    response.delete_cookie(key=COOKIE_NAME)
+    # Clear the session cookie with matching security attributes
+    response.delete_cookie(key=COOKIE_NAME, path="/", httponly=True, secure=True, samesite="strict")
     return LogoutResponse(success=True, message="Logged out successfully")
 
 
