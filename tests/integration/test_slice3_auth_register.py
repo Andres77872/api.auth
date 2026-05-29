@@ -192,3 +192,92 @@ async def test_register_duplicate_email(
     assert response.status_code == 409
     data = response.json()
     assert data["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_register_without_email(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Registration without email succeeds; response user email is None."""
+    group = _make_user_group()
+    project = _make_project()
+
+    def make_result_no_email(*args, **kwargs):
+        from src.Util.Models import EnhancedUserLogin
+        r = EnhancedUserLogin(
+            user_hash="usr-noemail-001",
+            username=kwargs.get("username", "bob"),
+            project_hash="prj-test-001",
+            project_name="Test Project",
+            session_token="tok-noemail",
+            session_length=86400,
+            user_id="101",
+            project_id="1",
+            user_project_id=None,
+            user_project_hash="",
+            groups=[],
+            permissions=[],
+            available_projects=[],
+            user_type="consumer",
+            assigned_project_id=None,
+        )
+        return r
+
+    with patch("src.routes.auth.check_username_email_available", return_value=True), \
+         patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
+         patch("src.routes.auth.get_projects_for_user_group", return_value=[project]), \
+         patch("src.routes.auth.enhanced_register", side_effect=make_result_no_email):
+        response = await client.post(
+            "/auth/register",
+            data={
+                "username": "bob",
+                "password": "SecureP@ss123",
+                "user_group_hash": "grp-test-001",
+            },
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user"]["username"] == "bob"
+    assert data["user"]["email"] is None
+
+
+@pytest.mark.asyncio
+async def test_register_username_none_in_result_does_not_crash(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Simulated register_result.username=None falls back to submitted username (no crash)."""
+    group = _make_user_group()
+    project = _make_project()
+    result = MagicMock()
+    result.user_hash = "usr-none-001"
+    result.username = None
+    result.email = None
+    result.user_type = "consumer"
+    result.session_token = "tok-none"
+    result.project_hash = "prj-test-001"
+    result.project_name = "Test Project"
+    result.user_id = "102"
+
+    with patch("src.routes.auth.check_username_email_available", return_value=True), \
+         patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
+         patch("src.routes.auth.get_projects_for_user_group", return_value=[project]), \
+         patch("src.routes.auth.enhanced_register", return_value=result):
+        response = await client.post(
+            "/auth/register",
+            data={
+                "username": "alice",
+                "password": "SecureP@ss123",
+                "user_group_hash": "grp-test-001",
+            },
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user"]["username"] == "alice"

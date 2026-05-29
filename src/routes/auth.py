@@ -522,7 +522,7 @@ async def register(
 
     user_info = UserInfo(
         user_hash=register_result.user_hash,
-        username=getattr(register_result, 'username', username),
+        username=getattr(register_result, 'username') or username,
         email=getattr(register_result, 'email', email),
         user_type=getattr(register_result, 'user_type', 'consumer')
     )

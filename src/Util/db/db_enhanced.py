@@ -286,6 +286,7 @@ def enhanced_register(
         'project_id': default_project_id,
         'project_hash': default_project_hash,
         'user_type': user_type,
+        'username': username,
     }
 
     # User-type specific session details
@@ -333,6 +334,7 @@ def enhanced_register(
     # Build response object
     return EnhancedUserLogin(
         user_hash=user.user_hash,
+        username=username,
         project_hash=default_project_hash,
         project_name=project_name,
         user_project_hash='',  # Deprecated
