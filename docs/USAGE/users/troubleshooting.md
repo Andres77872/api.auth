@@ -78,18 +78,18 @@ Practical fix order:
 
 ---
 
-### Bulk update behaves unexpectedly
+### Bulk update uses a list-of-dicts utility contract
 
-This is a documented implementation risk.
+The old route/utility signature mismatch is no longer present.
 
-The route contract suggests a field-based bulk update API, but the imported utility signature does not line up cleanly with the route call.
+The route builds `user_updates` as `[{"user_hash": "...", "updates": {...}}, ...]`, and the utility accepts that list-of-dicts shape directly.
 
-Practical guidance:
+Practical guidance still applies because this is a bulk lifecycle operation:
 
-- validate `bulk-update` in staging first
-- prefer smaller batches
+- prefer smaller batches for high-risk changes
 - keep a rollback plan
-- use individual update/status routes if the bulk path is uncertain during an incident
+- inspect `summary`, `results`, and `errors` before declaring success
+- use individual update/status routes only when you need per-user remediation
 
 ---
 

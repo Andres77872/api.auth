@@ -170,6 +170,18 @@ def _format_key_response(key_data: dict, include_token: bool = False, token: Opt
         "secret_last4": key_data.get("secret_last4"),
         "hash_algorithm": key_data.get("hash_algorithm"),
     }
+    # Pass through enrichment columns the list/detail stored procedures JOIN in
+    # (project name, owner identity) so the dashboard can show per-token context.
+    # Only included when present so the create/reveal response shape is unchanged.
+    for enrichment_key in (
+        "project_name",
+        "project_hash",
+        "owner_username",
+        "owner_user_hash",
+        "owner_user_type",
+    ):
+        if enrichment_key in key_data:
+            response[enrichment_key] = key_data.get(enrichment_key)
     if include_token and token:
         response["api_key"] = token
     return response

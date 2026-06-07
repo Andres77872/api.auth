@@ -324,7 +324,7 @@ curl -X GET "http://localhost:8000/auth/validate" \
   },
   "session": {
     "created_at": null,
-    "is_global_session": false
+    "scope": "project"
   },
   "user_groups": ["developers", "qa_team"]
 }

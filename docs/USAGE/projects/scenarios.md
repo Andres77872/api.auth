@@ -80,19 +80,12 @@ From the project side, the outcome is: every project contained in those project 
 Goal: add a new user to an existing project access model with minimal churn.
 
 ```bash
-# 1. Create the user
-curl -X POST "http://localhost:8000/admin/users" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+# 1. Register the user into the team group that already has project-group access
+curl -X POST "http://localhost:8000/auth/register" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=emma.johnson&email=emma.johnson@company.com&password=TempPass123!&user_type=consumer"
+  -d "username=emma.johnson&email=emma.johnson@company.com&password=TempPass123!&user_group_hash=$BACKEND_TEAM_HASH"
 
-# 2. Add the user to the team group that already has project-group access
-curl -X POST "http://localhost:8000/admin/user-groups/$BACKEND_TEAM_HASH/members" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hash=$EMMA_HASH"
-
-# 3. Have the user log in and verify accessible projects
+# 2. Have the user log in and verify accessible projects
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=emma.johnson&password=TempPass123!"
@@ -102,6 +95,7 @@ Why this pattern matters:
 
 - onboarding stays team-centric
 - project access is inherited from existing group wiring
+- `/auth/register` requires `user_group_hash`; there is no `POST /admin/users` creation route or `user_type=consumer` create field
 - no per-user project exceptions are needed
 
 ---

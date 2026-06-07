@@ -13,7 +13,7 @@ Technical architecture of the audit and activity logging systems as they actuall
 | **Populated by** | `ActivityLogger` class via `@log_and_handle_errors` decorator |
 | **Decorator location** | `src/Util/activity_logger.py` |
 | **Granularity** | Semantic operations (e.g., `user_login`, `project_creation`, `permission_grant`) |
-| **Activity types** | 29 enum values in `ActivityType` |
+| **Activity types** | 30 enum values in `ActivityType` |
 | **Stored procedures** | `sp_get_activity_logs`, `sp_count_activity_logs`, `sp_get_recent_security_events` |
 
 **Core schema fields:** `id`, `user_id`, `activity_type`, `details`, `project_id`, `user_group_id`, `target_user_id`, `ip_address`, `user_agent`, `metadata`, `severity_level`, `created_at`
@@ -33,7 +33,7 @@ Technical architecture of the audit and activity logging systems as they actuall
 
 **Enriched fields** (added at query time): `username`, `user_hash`, `project_name`, `project_hash`
 
-**Excluded paths** (not logged): `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`
+**Excluded paths** (not logged): `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/auth/validate`
 
 **Excluded methods:** `OPTIONS` (CORS preflight)
 

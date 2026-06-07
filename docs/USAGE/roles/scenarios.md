@@ -15,12 +15,12 @@ You need a new "Content Editor" role with read and write data permissions.
 curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=read_data&permission_display_name=Read Data&permission_description=Read project data"
+  -d "permission_name=read_data&permission_display_name=Read Data&permission_description=Read project data&permission_category=data"
 
 curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=write_data&permission_display_name=Write Data&permission_description=Write project data"
+  -d "permission_name=write_data&permission_display_name=Write Data&permission_description=Write project data&permission_category=data"
 
 # Step 2: Create a permission group
 curl -X POST "http://localhost:8000/roles/permission-groups" \
@@ -84,6 +84,8 @@ curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
 
 The user's session still contains permissions from their previous role until they re-login or refresh.
 
+The API takes the public `role_hash` form value, resolves it to the internal numeric role id, and stores that id in `users.role_id`.
+
 ---
 
 ### Scenario 4: Remove a User's Role
@@ -122,7 +124,8 @@ This is a two-step lookup: role → permission groups → permissions.
 # Attempt to delete a system role (will fail)
 curl -X DELETE "http://localhost:8000/roles/roles/ROLE_ADMIN" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# → 403 OPERATION_NOT_ALLOWED
+# → currently 500 INTERNAL_ERROR because ErrorCode.OPERATION_NOT_ALLOWED is missing
+#   (the intended behavior is a clean 403 block)
 
 # Delete a user-created role (succeeds)
 curl -X DELETE "http://localhost:8000/roles/roles/ROLE_CONTENT_EDITOR" \
@@ -146,7 +149,9 @@ curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
 ```bash
 # Add a role to the project's catalog (metadata only)
 curl -X POST "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "catalog_purpose=Recommended editor role&notes=Metadata only"
 
 # List all cataloged roles for the project
 curl -X GET "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles" \

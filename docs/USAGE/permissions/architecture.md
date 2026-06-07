@@ -264,15 +264,16 @@ The shared error codes define these authorization families:
 
 | Code | Meaning |
 |------|---------|
-| `AUTHZ_2001` | Insufficient permissions |
-| `AUTHZ_2002` | Access denied to project |
-| `AUTHZ_2003` | Admin scoped to assigned projects |
+| `AUTHZ_2001` | Access denied |
+| `AUTHZ_2002` | Insufficient permissions |
+| `AUTHZ_2003` | Project access denied |
 | `AUTHZ_2004` | Group access denied |
 | `AUTHZ_2005` | Resource access denied |
 | `AUTHZ_2006` | Role assignment denied |
 | `AUTHZ_2007` | Permission denied |
+| `AUTHZ_2008` | API key has no access to the requested project |
 
-In the permissions area, permission-guard failures usually map to `AUTHZ_2001`, while project-scoping and assigned-project problems surface through the project-oriented authorization codes above.
+In the permissions area, permission-guard failures usually map to `AUTHZ_2002`, while project-scoping and assigned-project problems surface through `AUTHZ_2003` or `AUTHZ_2008` depending on whether the request is session-authenticated or API-key-authenticated.
 
 ---
 

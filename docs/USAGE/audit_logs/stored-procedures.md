@@ -9,7 +9,7 @@ SQL stored procedures for querying the `api_audit_log` and `activity_logs` table
 ## Table of Contents
 
 - [API Audit Log Procedures](#api-audit-log-procedures)
-- [Activity Log Procedures](#activity-log-procedures)
+- [API Audit Security Procedures](#api-audit-security-procedures)
 - [Statistics Procedures](#statistics-procedures)
 - [User Activity Procedures](#user-activity-procedures)
 
@@ -89,9 +89,9 @@ CALL sp_count_audit_logs(NULL, NULL, NULL, NULL, NULL, NULL, TRUE, 7);
 
 ---
 
-## Activity Log Procedures
+## API Audit Security Procedures
 
-These procedures query the `activity_logs` table (populated by the `@log_and_handle_errors` decorator).
+These procedures query the `api_audit_log` table for security-relevant HTTP events captured by middleware.
 
 ### `sp_get_security_events`
 
@@ -129,7 +129,9 @@ CALL sp_get_security_events(50, 0, 7);
 | `request_timestamp` | When request was received |
 | `duration_ms` | Request processing time |
 | `tags` | Searchable tags array |
+| `metadata` | Additional structured request metadata |
 | `username` | Username (if authenticated) |
+| `user_hash` | Public user hash (if authenticated) |
 
 ### `sp_get_failed_requests`
 
@@ -182,16 +184,20 @@ CALL sp_get_audit_statistics(7);
 
 ### `sp_get_user_activity_summary`
 
-Get a specific user's API usage patterns. Returns **two result sets**:
+Get a specific user's activity-log summary. Returns **one result set** grouped by activity category and name:
 
 ```sql
 CALL sp_get_user_activity_summary(p_user_id, p_days);
 ```
 
-**Result sets:**
+**Result set fields:**
 
-1. **Summary**: Total requests, success/failure counts, unique endpoints, first/last request
-2. **Recent Activity**: Top endpoints accessed by user with timestamps
+- `activity_category`
+- `activity_name`
+- `activity_count`
+- `last_activity`
+
+> **Current application status:** this stored procedure is defined in SQL but is not called by the Python application. The HTTP user-activity endpoint uses the API-audit summary path plus activity-log queries instead of this two-step stored-procedure contract.
 
 **Example:**
 

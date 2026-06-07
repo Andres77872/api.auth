@@ -60,7 +60,7 @@ Reference for the project-related API surface used in this repository.
 - project access and permissions are not the same concern
 
 ### Response semantics
-- project member and project list access levels are influenced by global permission lookup
+- project member and project list access levels are path labels (`group_access` / `admin_access`), not global-permission-derived labels
 - some older docs or responses may still use legacy naming like `accessible_projects`
 
 ---

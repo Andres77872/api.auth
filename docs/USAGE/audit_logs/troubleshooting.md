@@ -26,7 +26,7 @@ All audit endpoints (`/admin/audit/*`, `/admin/activity*`, `/admin/users/{id}/ac
 
 2. **Filters too restrictive** — combining multiple filters (user_id + endpoint_path + status_code) may match zero records. Remove filters one at a time to isolate the issue.
 
-3. **Endpoint is excluded from logging** — `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json` and `OPTIONS` requests are never logged.
+3. **Endpoint is excluded from logging** — `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/auth/validate`, and `OPTIONS` requests are never logged.
 
 4. **Middleware not registered** — if `APIAuditMiddleware` is not added to the FastAPI app in `main.py`, no requests are captured. Check application startup logs.
 

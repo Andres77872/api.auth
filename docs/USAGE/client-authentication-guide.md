@@ -34,7 +34,7 @@ The API uses a **true access/refresh token model**:
 |---------|--------|
 | Content-Type | Almost all POST/PUT/PATCH use `multipart/form-data`. Exceptions: `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export` use JSON. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
-| CORS | Defaults to explicit local origins `http://localhost:3000,http://localhost:5173,http://localhost:4173` plus dashboard origin `https://auth-ui.arz.ai`. Set `ALLOWED_ORIGINS` in production. |
+| CORS | Defaults to explicit local origins `http://localhost:3000,http://localhost:5173,http://localhost:4173,http://localhost:5177` plus dashboard origin `https://auth-ui.arz.ai`. Set `ALLOWED_ORIGINS` in production. |
 | Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
 
 ---

@@ -43,16 +43,16 @@ Technical architecture of the global roles system as it actually exists in `api.
 
 ## Route Organization
 
-All 28 role-related endpoints live in **one file**: `src/routes/global_roles.py` (1055 lines).
+All 28 role-related endpoints live in **one file**: `src/routes/global_roles.py` (1066 lines).
 
 | Section | Lines | Endpoints |
 |---------|-------|-----------|
-| Role CRUD | 89-223 | POST/GET/PUT/DELETE `/roles/roles` + `/roles/roles/{hash}` |
-| Role ↔ Permission Group | 230-337 | POST/GET/DELETE `/roles/roles/{hash}/permission-groups` |
-| Permission Group CRUD | 344-596 | Full CRUD on `/roles/permission-groups` + permissions sub-routes |
-| Permission CRUD | 603-735 | Full CRUD on `/roles/permissions` |
-| User Role Assignment | 743-894 | GET `/roles/users/me/role`, PUT/GET/DELETE `/roles/users/{hash}/role` |
-| Project Catalog | 901-1055 | POST/GET/DELETE `/roles/projects/{hash}/catalog/roles` |
+| Role CRUD | 100-234 | POST/GET/PUT/DELETE `/roles/roles` + `/roles/roles/{hash}` |
+| Role ↔ Permission Group | 241-348 | POST/GET/DELETE `/roles/roles/{hash}/permission-groups` |
+| Permission Group CRUD | 355-493 | Full CRUD on `/roles/permission-groups` + permissions sub-routes |
+| Permission CRUD | 614-746 | Full CRUD on `/roles/permissions` |
+| User Role Assignment | 754-905 | GET `/roles/users/me/role`, PUT/GET/DELETE `/roles/users/{hash}/role` |
+| Project Catalog | 912-1066 | POST/GET/DELETE `/roles/projects/{hash}/catalog/roles` |
 
 Router prefix: `/roles`
 OpenAPI tag: "Global Role System"
@@ -166,7 +166,7 @@ The gap means permissions assigned via user groups or directly to users are visi
 
 - The create endpoint does not expose `is_system_role`
 - System roles must be created via direct DB access
-- System roles cannot be deleted via API (403 `OPERATION_NOT_ALLOWED`)
+- System roles are intended to be blocked from API deletion, but the current route references missing `ErrorCode.OPERATION_NOT_ALLOWED`; until the enum/source is fixed, that path surfaces as a generic 500 rather than a clean 403
 
 ### Project catalog is metadata only
 

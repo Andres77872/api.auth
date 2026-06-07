@@ -142,13 +142,14 @@ Reference for the permissions-related API surface used in this repository.
 
 | Code | Typical meaning in this area |
 |------|------------------------------|
-| `AUTHZ_2001` | Insufficient permissions |
-| `AUTHZ_2002` | Access denied to project |
-| `AUTHZ_2003` | Admin scoped to assigned projects |
+| `AUTHZ_2001` | Access denied |
+| `AUTHZ_2002` | Insufficient permissions |
+| `AUTHZ_2003` | Project access denied |
 | `AUTHZ_2004` | Group-level access denied |
 | `AUTHZ_2005` | Specific resource access denied |
 | `AUTHZ_2006` | Role assignment denied |
 | `AUTHZ_2007` | Permission denied |
+| `AUTHZ_2008` | API key has no access to the requested project |
 
 ---
 

@@ -122,12 +122,13 @@ See the canonical explanation in **[Permissions Reference → Guard differences]
 | 401 | `SESSION_INVALID` | Invalid/expired session token |
 | 403 | `INSUFFICIENT_PERMISSIONS` | Non-admin without `manage_roles` |
 | 403 | `ACCOUNT_INACTIVE` | Target user is inactive (role assignment) |
-| 403 | `OPERATION_NOT_ALLOWED` | Attempting to delete system role |
+| 500 | `INTERNAL_ERROR` | Current code defect: system-role delete references missing `ErrorCode.OPERATION_NOT_ALLOWED` instead of returning the intended 403 |
 | 404 | `ROLE_NOT_FOUND` | Role hash not found |
-| 404 | `PERMISSION_GROUP_NOT_FOUND` | Permission group hash not found |
+| 500 | `INTERNAL_ERROR` | Current code defect: permission-group not-found paths reference missing `ErrorCode.PERMISSION_GROUP_NOT_FOUND` |
 | 404 | `USER_NOT_FOUND` | User hash not found |
 | 404 | `PROJECT_NOT_FOUND` | Project hash not found (catalog endpoints) |
-| 409 | `ALREADY_EXISTS` | Duplicate role name, or role already in project catalog |
+| 409 | `DUPLICATE_ENTRY` | Duplicate role name through DB conflict handling |
+| 500 | `INTERNAL_ERROR` | Current code defect: duplicate project-catalog entry references missing `ErrorCode.ALREADY_EXISTS` |
 | 500 | `INTERNAL_ERROR` | DB operation failed |
 
 ---

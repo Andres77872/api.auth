@@ -138,13 +138,14 @@ Yes, they look ugly. Yes, they are still real route paths.
 
 | Code | When you usually see it here |
 |------|------------------------------|
-| `AUTHZ_2001` | Insufficient permissions on the target endpoint |
-| `AUTHZ_2002` | Access denied to project |
-| `AUTHZ_2003` | Admin is scoped to assigned projects only |
+| `AUTHZ_2001` | Generic access denied |
+| `AUTHZ_2002` | Insufficient permissions on the target endpoint |
+| `AUTHZ_2003` | Access denied to the requested project |
 | `AUTHZ_2004` | Group-scoped access failure |
 | `AUTHZ_2005` | Route/resource-specific access failure |
 | `AUTHZ_2006` | Role assignment operation denied |
 | `AUTHZ_2007` | Permission-specific denial |
+| `AUTHZ_2008` | API key has no access to the requested project |
 
 Also watch auth-layer codes when debugging session problems:
 

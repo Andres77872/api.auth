@@ -55,6 +55,30 @@ curl -X GET "http://localhost:8000/admin/activity?limit=50&offset=0&days=30" \
 | `days` | int | 30 | 1-365 | Lookback window |
 | `search` | string | null | — | Free-text search across activity_type, details, username |
 
+**Response shape:**
+
+```json
+{
+  "activities": [...],
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "total": 123,
+    "has_more": true
+  },
+  "filters": {
+    "activity_type_filter": null,
+    "user_id": null,
+    "project_id": null,
+    "days": 30,
+    "search": null
+  },
+  "generated_at": "2026-04-01T12:00:00Z"
+}
+```
+
+The list key is `activities`, not `logs`.
+
 **Example: filter by activity type**
 
 ```bash
@@ -71,14 +95,14 @@ curl -X GET "http://localhost:8000/admin/activity?search=john_doe&days=7" \
 
 ### Get Activity Types
 
-Returns the full list of 29 activity types available for filtering:
+Returns the full list of 30 activity types available for filtering:
 
 ```bash
 curl -X GET "http://localhost:8000/admin/activity/types" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Response includes: `user_login`, `user_logout`, `user_registration`, `user_update`, `user_status_change`, `user_password_reset`, `user_type_changed`, `project_creation`, `project_update`, `project_delete`, `project_member_add`, `project_member_remove`, `project_ownership_transferred`, `project_archived`, `project_unarchived`, `group_creation`, `group_update`, `group_delete`, `user_group_assign`, `user_group_remove`, `permission_grant`, `permission_revoke`, `role_removed`, `bulk_role_assignment`, `bulk_group_assignment`, `bulk_user_update`, `bulk_user_delete`, `admin_action`, `system_event`.
+Response includes: `user_login`, `user_logout`, `user_registration`, `user_update`, `user_status_change`, `user_password_reset`, `user_type_changed`, `project_creation`, `project_update`, `project_delete`, `project_member_add`, `project_member_remove`, `project_member_removed`, `project_ownership_transferred`, `project_archived`, `project_unarchived`, `group_creation`, `group_update`, `group_delete`, `user_group_assign`, `user_group_remove`, `permission_grant`, `permission_revoke`, `role_removed`, `bulk_role_assignment`, `bulk_group_assignment`, `bulk_user_update`, `bulk_user_delete`, `admin_action`, `system_event`.
 
 ---
 
@@ -235,9 +259,13 @@ curl -X GET "http://localhost:8000/admin/users/{user_id}/activity?days=30" \
 
 - `user_id` — the queried user
 - `summary` — combined counts and per-category breakdown
+  - `total_activities` — combined total count
+  - `activity_log_count` — number of semantic activity-log entries
+  - `api_audit_count` — number of API-audit entries
   - `activity_summary` — activity log entries grouped by category/name
   - `api_audit_summary` — API audit summary (total requests, success/failure, unique endpoints)
 - `timeline` — merged timeline (up to 50 entries from each source, sorted by timestamp descending)
+- `generated_at` — response generation timestamp
 
 **Caveat:** the timeline has **no pagination**. It returns a fixed-size merge.
 
@@ -282,9 +310,9 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 - A pre-export count check runs before streaming. If the count exceeds the hard limit, the request is rejected.
 - Response is a `StreamingResponse` with `Content-Disposition: attachment; filename=audit_export_{source}_{timestamp}.{fmt}`
 
-**CSV columns for `api_audit`:** 24 columns — `id`, `request_id`, `http_method`, `endpoint_path`, `route_pattern`, `user_id`, `user_type`, `username`, `user_hash`, `project_id`, `project_name`, `project_hash`, `request_timestamp`, `response_timestamp`, `duration_ms`, `response_status`, `is_success`, `error_code`, `error_message`, `client_ip`, `user_agent`, `security_event`, `tags`
+**CSV columns for `api_audit`:** 23 columns — `id`, `request_id`, `http_method`, `endpoint_path`, `route_pattern`, `user_id`, `user_type`, `username`, `user_hash`, `project_id`, `project_name`, `project_hash`, `request_timestamp`, `response_timestamp`, `duration_ms`, `response_status`, `is_success`, `error_code`, `error_message`, `client_ip`, `user_agent`, `security_event`, `tags`
 
-**CSV columns for `activity`:** 20 columns — `id`, `user_id`, `activity_type`, `details`, `project_id`, `target_user_id`, `ip_address`, `user_agent`, `severity_level`, `created_at`, `username`, `user_hash`, `project_name`, `project_hash`, `target_username`, `target_user_hash`, `activity_name`, `activity_category`, `activity_description`
+**CSV columns for `activity`:** 19 columns — `id`, `user_id`, `activity_type`, `details`, `project_id`, `target_user_id`, `ip_address`, `user_agent`, `severity_level`, `created_at`, `username`, `user_hash`, `project_name`, `project_hash`, `target_username`, `target_user_hash`, `activity_name`, `activity_category`, `activity_description`
 
 **Caveat:** when no data matches export filters, CSV returns a single empty row (not a proper header row).
 

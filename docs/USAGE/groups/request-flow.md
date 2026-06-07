@@ -56,7 +56,7 @@ Flow for `POST /auth/login`:
 
 1. `src/routes/auth.py:login()` verifies credentials
 2. The code resolves accessible projects through the groups-of-groups chain
-3. `_create_session()` loads active user groups for the user
+3. `auth_lifecycle.py:_issue_token_pair()` builds the session payload with active user-group context
 4. The session payload stores:
    - `user_group_ids`
    - `user_group_names`

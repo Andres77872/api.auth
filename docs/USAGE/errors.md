@@ -136,6 +136,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `AUTHZ_2005` | `RESOURCE_ACCESS_DENIED` | Resource access denied | Generic resource access failure | Check resource-level permissions |
 | `AUTHZ_2006` | `ROLE_ASSIGNMENT_DENIED` | Role assignment denied | Cannot assign/remove role | Check role management permissions |
 | `AUTHZ_2007` | `PERMISSION_DENIED` | Permission denied | Generic permission failure | Check specific permission requirements |
+| `AUTHZ_2008` | `API_KEY_NO_ACCESS` | API key has no project access | API-key-authenticated admin is not assigned to the requested project | Verify the API key admin's project assignment |
 
 ### Validation Errors (400)
 
@@ -219,11 +220,18 @@ The following codes exist in the `ErrorCode` enum but are **not currently raised
 | `AUTH_1008` | `MFA_REQUIRED` | Defined but not used (MFA not implemented) |
 | `AUTH_1009` | `MFA_INVALID` | Defined but not used (MFA not implemented) |
 | `VAL_3007` | `WEAK_PASSWORD` | Defined but not used — API has no server-side password validation |
-| `ALREADY_EXISTS` | `ALREADY_EXISTS` | Defined but not used (duplicate of `RESOURCE_EXISTS`) |
-| `NOT_FOUND` | `NOT_FOUND` | Defined but not used (duplicate of `RESOURCE_NOT_FOUND`) |
-| `OPERATION_NOT_ALLOWED` | `OPERATION_NOT_ALLOWED` | Defined but not used |
-| `PERMISSION_GROUP_NOT_FOUND` | `PERMISSION_GROUP_NOT_FOUND` | Defined but not used |
-| `SERVICE_UNAVAILABLE` | `SERVICE_UNAVAILABLE` | Defined but not used |
+| `INT_7003` | `SERVICE_UNAVAILABLE` | Defined but not used |
+
+### Known Route References to Missing Enum Members
+
+Some route paths currently reference names that are **not** defined in `ErrorCode`. Those paths surface as generic `INTERNAL_ERROR` until source code or the enum is fixed:
+
+| Missing name | Known impact |
+|--------------|--------------|
+| `ALREADY_EXISTS` | Duplicate project-catalog role entry path |
+| `NOT_FOUND` | Some generic not-found paths in roles/user-type/group helpers |
+| `OPERATION_NOT_ALLOWED` | System-role delete path |
+| `PERMISSION_GROUP_NOT_FOUND` | Permission-group not-found paths in roles/permissions routes |
 
 ---
 

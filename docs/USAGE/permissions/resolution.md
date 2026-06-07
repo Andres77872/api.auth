@@ -157,7 +157,7 @@ There is a separate stored procedure for project-scoped permission checks:
   - Scoped **deny** with priority >= grant priority wins (deny takes precedence at equal priority)
   - Falls back to global permissions if no scoped rules exist
 
-This is used for fine-grained, project-specific access control beyond the global role system.
+This is a SQL-layer artifact for fine-grained, project-specific access control beyond the global role system. It is **currently unused by application code**; no Python route/helper calls `sp_check_user_permission_for_project_with_deny` today.
 
 ---
 
@@ -234,7 +234,7 @@ Direct assignment: "advanced_analytics" permission group
 
 2. **Role priority is cosmetic**. Despite having a 0-100 priority field, it only affects catalog ordering, not resolution precedence.
 
-3. **No deny support in global permissions**. Deny logic only exists in project-scoped checks (`sp_check_user_permission_for_project_with_deny`).
+3. **No active deny support in global permissions**. Deny logic exists only in the SQL-only project-scoped procedure (`sp_check_user_permission_for_project_with_deny`), and that procedure is not wired into the current Python application path.
 
 4. **One role per user**. The system assigns a single global role per user. There is no multi-role support.
 

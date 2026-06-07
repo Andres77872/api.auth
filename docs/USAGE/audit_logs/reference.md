@@ -36,7 +36,7 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 |----------|--------|------|--------------|---------|
 | `/admin/activity` | GET | root/admin | Query params | Activity feed from `activity_logs` table |
 | `/admin/activity/{activity_id}` | GET | root/admin | — | Single activity log detail by ID |
-| `/admin/activity/types` | GET | root/admin | — | Enum of all 29 activity types |
+| `/admin/activity/types` | GET | root/admin | — | Enum of all 30 activity types |
 
 ---
 
@@ -124,11 +124,11 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 
 ### CSV Columns
 
-**For `api_audit` / `audit` source (24 columns):**
+**For `api_audit` / `audit` source (23 columns):**
 
 `id`, `request_id`, `http_method`, `endpoint_path`, `route_pattern`, `user_id`, `user_type`, `username`, `user_hash`, `project_id`, `project_name`, `project_hash`, `request_timestamp`, `response_timestamp`, `duration_ms`, `response_status`, `is_success`, `error_code`, `error_message`, `client_ip`, `user_agent`, `security_event`, `tags`
 
-**For `activity` source (20 columns):**
+**For `activity` source (19 columns):**
 
 `id`, `user_id`, `activity_type`, `details`, `project_id`, `target_user_id`, `ip_address`, `user_agent`, `severity_level`, `created_at`, `username`, `user_hash`, `project_name`, `project_hash`, `target_username`, `target_user_hash`, `activity_name`, `activity_category`, `activity_description`
 

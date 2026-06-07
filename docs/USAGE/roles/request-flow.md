@@ -120,7 +120,7 @@ DELETE /roles/roles/{role_hash}
 After the guard passes:
 
 1. Look up role by hash
-2. **BLOCK** if `is_system_role = TRUE` → 403 `OPERATION_NOT_ALLOWED`
+2. **INTENDED BLOCK** if `is_system_role = TRUE`; current code references missing `ErrorCode.OPERATION_NOT_ALLOWED`, so this path surfaces as generic 500 until the enum/source is fixed
 3. Call `sp_global_delete_role` → `UPDATE roles SET is_active = FALSE WHERE id = ?`
 4. Return success message
 

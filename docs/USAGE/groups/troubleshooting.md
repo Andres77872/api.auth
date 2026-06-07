@@ -74,9 +74,11 @@ So if you only wanted to remove one project's reach, revoke the project-group li
 
 ## Current Caveats
 
-### Hierarchical group columns are not active runtime features
+### Hierarchical group columns are not public CRUD features
 
-`parent_group_id` exists in schema tables, but current code paths do not actively manage hierarchy behavior for user groups or project groups. Do not assume inheritance is live just because the schema hints at it.
+`parent_group_id` exists in schema tables, and SQL includes hierarchy views, cycle-prevention triggers, and recursive permission logic. The active group-management route layer, however, does not expose `parent_group_id` as a create/update field and the DB helper paths pass `NULL`.
+
+So: do not operate hierarchy through the public group CRUD API. If you rely on SQL-layer hierarchy behavior, verify it directly at the database/procedure level.
 
 ### Dedicated test coverage is weak
 

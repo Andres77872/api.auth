@@ -45,7 +45,7 @@ Flow for `GET /projects/{project_hash}`:
 1. validate session
 2. resolve project by hash
 3. resolve current user
-4. check `get_user_project_permissions(user_id, project.id)` or session-level `admin`
+4. allow session-level `admin`, otherwise verify the user reaches the project through `get_user_accessible_projects()`
 5. load project statistics
 6. load user groups for the current user
 7. load project group information for the project

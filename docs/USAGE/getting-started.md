@@ -52,18 +52,19 @@ The API reads configuration from environment variables. These are the ones you *
 | `REDIS_PORT` | No | `6379` | Redis port |
 | `REDIS_DB` | No | `0` | Redis DB number |
 | `DB_REDIS_PASSWORD` | No | -- | Redis password |
-| `JWT_SECRET_KEY` | **Yes in production** | Random per-process | See critical note below |
-| `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai` | Explicit CORS origins (comma-separated) |
+| `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
+| `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177` | Explicit CORS origins (comma-separated) |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 
 ### Critical: `JWT_SECRET_KEY`
 
-If `JWT_SECRET_KEY` is **not** set, the API auto-generates a random key on startup and prints a WARNING. This means:
+If `JWT_SECRET_KEY` is **not** set, startup fails outside explicit test runtimes. Silent random JWT secrets are not allowed anymore.
 
-- **Every process restart invalidates ALL active sessions**
-- **Multi-instance deployments will reject each other's tokens**
+- **Production/staging/dev services must set a fixed, secure value**
+- **Only explicit test runtimes use the deterministic test secret**
+- **Configuration failures surface as `JWT_CONFIGURATION_FAILURE` (`AUTH_1021`)**
 
-In production, **always** set `JWT_SECRET_KEY` to a fixed, secure value.
+See [Error Reference → JWT Configuration Failure](errors.md#jwt-configuration-failure) for the error envelope and operator guidance.
 
 ### Starting the Server
 
@@ -296,9 +297,9 @@ There is **no rate limiting** on any endpoint, including login. Plan for brute-f
 
 The API still accepts `X-token-user` and `X-token-collection` headers as a fallback. These are **deprecated** and should not be used in new integrations.
 
-### 7. CORS defaults to localhost only
+### 7. CORS defaults to an explicit allow-list
 
-`ALLOWED_ORIGINS` defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai`. In production, you **must** set `ALLOWED_ORIGINS` to the exact browser clients that should call this API directly.
+`ALLOWED_ORIGINS` defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177`. In production, you **must** set `ALLOWED_ORIGINS` to the exact browser clients that should call this API directly.
 
 ### 8. Password complexity is NOT enforced
 

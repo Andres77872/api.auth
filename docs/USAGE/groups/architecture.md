@@ -70,7 +70,7 @@ That means user-group and project-group administration are related, but not auth
 
 ## Login and Session Architecture
 
-During login, `_create_session()` in `src/routes/auth.py` loads the user's groups and embeds them in the session payload:
+During login, `src/Util/auth_lifecycle.py:_issue_token_pair()` builds the session payload and embeds the user's groups:
 
 - `user_group_ids`
 - `user_group_names`
@@ -111,9 +111,11 @@ Operationally, this means historical records may still exist, but they should no
 
 ## Important Current Caveats
 
-### `parent_group_id` exists but is not an active feature
+### `parent_group_id` is not exposed by group CRUD routes
 
-Both `user_groups` and `project_groups` have hierarchy columns, but current runtime code and stored procedures do not actively use them for group operations. Do not document or operate them as if inheritance is live. It isn't.
+Both `user_groups` and `project_groups` have hierarchy columns, but the active group-management routes do not expose `parent_group_id` as a create/update parameter; the DB layer currently passes `NULL` through those public flows.
+
+Do not confuse that route-layer reality with the SQL layer: schema views, cycle-prevention triggers, and a recursive permission CTE do reference `parent_group_id`. Treat hierarchy as SQL-level infrastructure, not as a public CRUD feature.
 
 ### Permission groups are attached separately
 

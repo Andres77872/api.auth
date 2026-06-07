@@ -67,14 +67,14 @@ The endpoint returns:
 - `results`
 - `errors`
 
-### Important implementation caveat
+### Current implementation contract
 
-There is a repo-level mismatch here:
+Bulk update is callable as documented. The route builds the utility contract directly:
 
-- the route calls `bulk_update_users(user_hashes, updates, current_user.id)`
-- the imported utility function signature expects a list of per-user update dictionaries, not that 3-argument shape
+- `user_updates` is a list of dictionaries shaped like `{"user_hash": "...", "updates": {...}}`
+- the utility accepts that list-of-dicts shape and applies the requested fields per user
 
-So the **intended** public contract is clear from the route, but the current implementation should be verified in staging before you rely on it for production bulk updates. No boludez: do not discover this during an incident.
+No boludez: still inspect the partial-success response, but do not treat this endpoint as broken because of the old 3-argument mismatch. That mismatch is gone.
 
 ---
 
@@ -129,7 +129,7 @@ Typical failure causes:
 - protected `root` target
 - invalid `user_type`
 - missing confirmation for bulk delete
-- implementation mismatch on bulk update
+- per-user validation or update failures reported in the partial-success payload
 
 ---
 
@@ -138,7 +138,7 @@ Typical failure causes:
 ### Use bulk update for:
 
 - emergency deactivation of many accounts
-- simple mass flag changes after validating behavior in staging
+- simple mass flag changes where the same update fields apply to many users
 
 ### Use bulk delete for:
 

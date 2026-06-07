@@ -74,7 +74,7 @@ curl -X GET "http://localhost:8000/projects?limit=20&offset=0" \
 
 - admins see all projects through `list_all_projects()` / `search_projects()`
 - non-admin users get projects from `get_user_accessible_projects()`
-- the returned `access_level` is derived from `get_user_project_permissions()`
+- the returned `access_level` is path-based (`group_access` for group-derived users, `admin_access` for admin paths), not derived from `get_user_project_permissions()`; see [architecture.md](architecture.md)
 
 ### Get project details
 

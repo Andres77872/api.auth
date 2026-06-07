@@ -114,7 +114,7 @@ curl -X DELETE "http://localhost:8000/roles/roles/ROLE_HASH" \
 ```
 
 - **SOFT DELETE** — sets `is_active = FALSE`
-- **BLOCKED** if `is_system_role = TRUE` — returns 403 `OPERATION_NOT_ALLOWED`
+- **INTENDED BLOCK** if `is_system_role = TRUE` — current code references missing `ErrorCode.OPERATION_NOT_ALLOWED`, so this path currently surfaces as generic 500 until the enum/source is fixed
 - Does **NOT** cascade-delete user role assignments — `users.role_id` remains pointing to the deleted role
 - Does **NOT** remove permission group assignments from `role_permission_groups`
 
@@ -187,8 +187,10 @@ Individual permissions are the leaf nodes of the authorization tree.
 curl -X POST "http://localhost:8000/roles/permissions" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=read_data&permission_display_name=Read Data&permission_description=Read access to project data"
+  -d "permission_name=read_data&permission_display_name=Read Data&permission_description=Read access to project data&permission_category=data"
 ```
+
+- `permission_category` is optional and defaults to `general`
 
 ### Add a permission to a permission group
 
@@ -234,6 +236,7 @@ curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
 - User must be active — blocked with 403 `ACCOUNT_INACTIVE` if inactive
 - Replaces any existing role (one role per user)
 - Returns user info plus assigned role info
+- The API accepts public `role_hash`; internally the route resolves it to the role's numeric `id` before updating `users.role_id`
 
 ### Get another user's role
 
@@ -269,11 +272,14 @@ The endpoint `POST /admin/projects/{hash}/bulk-assign-roles` **does not work**. 
 
 ```bash
 curl -X POST "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROLE_HASH" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "catalog_purpose=Recommended for project editors&notes=Metadata only"
 ```
 
 - Returns a `"note"` field in the response: `"This is METADATA ONLY"`
-- Duplicate catalog entry returns 409 `ConflictError`
+- `catalog_purpose` and `notes` are optional metadata fields
+- Duplicate catalog entry currently references missing `ErrorCode.ALREADY_EXISTS`, so that path surfaces as generic 500 until the enum/source is fixed
 
 ### List cataloged roles for a project
 
