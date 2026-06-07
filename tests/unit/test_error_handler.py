@@ -151,6 +151,15 @@ class TestErrorEnums:
         assert ErrorCode.INVALID_CREDENTIALS.value == "AUTH_1001"
         assert ErrorCode.SESSION_EXPIRED.value == "AUTH_1002"
         assert ErrorCode.TOKEN_INVALID.value == "AUTH_1004"
+        assert ErrorCode.REFRESH_TOKEN_INVALID.value == "AUTH_1013"
+        assert ErrorCode.REFRESH_TOKEN_MISSING.value == "AUTH_1014"
+        assert ErrorCode.REFRESH_TOKEN_REUSED.value == "AUTH_1015"
+        assert ErrorCode.REFRESH_TOKEN_MISMATCH.value == "AUTH_1016"
+        assert ErrorCode.REFRESH_FAMILY_REVOKED.value == "AUTH_1017"
+        assert ErrorCode.TOKEN_TYPE_INVALID.value == "AUTH_1018"
+        assert ErrorCode.TOKEN_EXPIRED.value == "AUTH_1019"
+        assert ErrorCode.SESSION_REVOKED.value == "AUTH_1020"
+        assert ErrorCode.JWT_CONFIGURATION_FAILURE.value == "AUTH_1021"
 
     def test_error_code_authorization_errors(self):
         assert ErrorCode.ACCESS_DENIED.value == "AUTHZ_2001"
@@ -220,7 +229,7 @@ class TestAppException:
             details={"key": "value"},
         )
         d = exc.to_dict()
-        # In DEBUG_MODE (set by .env.test), details should be present
+        # In debug mode, details should be present.
         assert "details" in d["error"]
 
     def test_to_dict_sanitizes_details_uuids(self):

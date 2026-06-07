@@ -13,7 +13,7 @@ Flow for `POST /auth/register`:
 3. Resolve the target user group by hash
 4. Verify that user group is linked to at least one project
 5. Call `enhanced_register(...)`
-6. Set the session cookie and return the created user and selected project context
+6. Issue an access+refresh token pair, set `session_token` and `refresh_token` cookies, and return the created user and selected project context
 
 Critical operational point:
 
@@ -30,14 +30,14 @@ Flow for `POST /auth/login`:
 3. For root, lookup the requested project directly (no group validation)
 4. For non-root, resolve accessible projects through `get_user_accessible_projects()`
 5. Choose the requested project (mandatory for all users)
-6. `_create_session()` stores `user_group_ids`, `user_group_names`, and project context in Redis
-7. Return token, chosen project, accessible projects, and user groups
+6. Lifecycle issuance stores `session:{access_jti}`, refresh-family records, `user_group_ids`, `user_group_names`, and project context in Redis
+7. Return `access_token`, `refresh_token`, deprecated `session_token` access alias, chosen project, accessible projects, and user groups
 
 Related flows:
 
-- `GET /auth/validate` reads raw session payload from Redis and returns cached group names
-- `POST /auth/refresh` creates a new session with the same project context
-- `POST /auth/switch-project` validates reach to the requested project and emits a new session bound to that project
+- `GET /auth/validate` validates access JWT signature/`exp`/type and Redis session/family state before returning cached group names
+- `POST /auth/refresh` accepts refresh tokens only and rotates the access+refresh pair
+- `POST /auth/switch-project` validates reach to the requested project and rotates both access and refresh credentials into that project
 
 ---
 

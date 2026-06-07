@@ -216,24 +216,20 @@ async def test_audit_middleware_extracts_user_context(
     mock_logger.generate_tags.return_value = []
     mock_logger.filter_sensitive_data = lambda d: d
 
-    # Store a valid session so AuthContextMiddleware populates request.state.user
-    import json
-    session_token = "audit-session-token"
-    session_payload = {
-        "session_id": 99999,
-        "user_id": "1",
-        "user_hash": "usr-audit-001",
-        "user_type": "consumer",
-        "project_id": "1",
-        "project_hash": "prj-audit-001",
-        "project_name": "Audit Test Project",
-        "permissions": [],
-        "groups": [],
-    }
-    fake_redis.set(f"session:{session_token}", json.dumps(session_payload), ex=259200)
+    session_token = "header.payload.signature"
+    session_data = MagicMock()
+    session_data.user_id = "1"
+    session_data.user_hash = "usr-audit-001"
+    session_data.user_type = "consumer"
+    session_data.username = "audit-user"
+    session_data.project_id = "1"
+    session_data.project_hash = "prj-audit-001"
+    session_data.permissions = []
+    session_data.groups = []
 
     with patch("src.Util.api_audit_logger.APIAuditLogger", mock_logger), \
-         patch("src.middleware.api_audit.APIAuditLogger", mock_logger):
+         patch("src.middleware.api_audit.APIAuditLogger", mock_logger), \
+         patch("src.Util.db.db_enhanced.validate_session", return_value=session_data):
         await client.get(
             "/users/profile",
             headers={

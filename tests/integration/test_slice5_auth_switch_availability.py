@@ -75,29 +75,73 @@ async def test_switch_project_valid(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Valid project switch returns 200 + new session token through REAL middleware stack."""
-    _store_session_in_redis(fake_redis, SESSION_TOKEN, _make_redis_session_payload())
+    """Valid switch requires access + current refresh and rotates both credentials."""
+    from src.Util.auth_lifecycle import issue_project_token_pair
 
     user = _make_user()
+    current_project = _make_project(project_hash="prj-test-001", project_name="Test Project")
     new_project = _make_project(project_hash="prj-other-002", project_name="Other Project")
     group = _make_group()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_project_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            project={"id": current_project.id, "project_hash": current_project.project_hash, "project_name": current_project.project_name},
+            groups=[group.group_name],
+            permissions=[],
+        )
+    old_access_jti = pair.access_claims["jti"]
 
     with patch("src.routes.auth.get_user_by_hash", return_value=user), \
-         patch("src.routes.auth.get_project_by_hash", return_value=new_project), \
-         patch("src.routes.auth.get_user_accessible_projects", return_value=[new_project]), \
-         patch("src.routes.auth.get_user_groups_in_project", return_value=[group]):
+          patch("src.routes.auth.get_project_by_hash", return_value=new_project), \
+          patch("src.routes.auth.get_user_accessible_projects", return_value=[new_project]), \
+          patch("src.routes.auth.get_user_groups_in_project", return_value=[group]):
         response = await client.post(
             "/auth/switch-project",
-            data={"project_hash": "prj-other-002"},
-            headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+            data={"project_hash": "prj-other-002", "refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"Authorization": f"Bearer {pair.access_token}", "User-Agent": "test"},
         )
 
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
-    assert "session_token" in data
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
     assert data["project"]["project_hash"] == "prj-other-002"
-    assert fake_redis.get(f"session:{SESSION_TOKEN}") is None
+    assert fake_redis.get(f"session:{old_access_jti}") is None
+
+
+@pytest.mark.asyncio
+async def test_switch_project_rejects_refresh_token_as_access_credential(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Refresh JWTs are not valid access credentials for switch-project."""
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    current_project = _make_project(project_hash="prj-test-001", project_name="Test Project")
+    group = _make_group()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_project_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            project={"id": current_project.id, "project_hash": current_project.project_hash, "project_name": current_project.project_name},
+            groups=[group.group_name],
+            permissions=[],
+        )
+
+    response = await client.post(
+        "/auth/switch-project",
+        data={"project_hash": "prj-other-002", "refresh_token": pair.refresh_token},
+        headers={"Authorization": f"Bearer {pair.refresh_token}", "User-Agent": "test"},
+    )
+
+    assert response.status_code == 401
+    data = response.json()
+    assert data["status"] == "error"
+    assert "type" in data["error"]["message"].lower() or "access" in data["error"]["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -107,16 +151,28 @@ async def test_switch_project_not_found(
     patched_db_error_logger,
 ):
     """Switch to nonexistent project returns 404 through REAL middleware stack."""
-    _store_session_in_redis(fake_redis, SESSION_TOKEN, _make_redis_session_payload())
+    from src.Util.auth_lifecycle import issue_project_token_pair
 
     user = _make_user()
+    current_project = _make_project(project_hash="prj-test-001", project_name="Test Project")
+    group = _make_group()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_project_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            project={"id": current_project.id, "project_hash": current_project.project_hash, "project_name": current_project.project_name},
+            groups=[group.group_name],
+            permissions=[],
+        )
 
     with patch("src.routes.auth.get_user_by_hash", return_value=user), \
-         patch("src.routes.auth.get_project_by_hash", return_value=None):
+         patch("src.routes.auth.get_project_by_hash", side_effect=[current_project, None]), \
+         patch("src.routes.auth.get_user_groups_in_project_by_hash", return_value=[group]), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[current_project]):
         response = await client.post(
             "/auth/switch-project",
-            data={"project_hash": "prj-nonexistent"},
-            headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+            data={"project_hash": "prj-nonexistent", "refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"Authorization": f"Bearer {pair.access_token}", "User-Agent": "test"},
         )
 
     assert response.status_code == 404
@@ -131,18 +187,29 @@ async def test_switch_project_access_denied(
     patched_db_error_logger,
 ):
     """Switch to project user doesn't have access to returns 403 through REAL middleware stack."""
-    _store_session_in_redis(fake_redis, SESSION_TOKEN, _make_redis_session_payload())
+    from src.Util.auth_lifecycle import issue_project_token_pair
 
     user = _make_user()
+    current_project = _make_project(project_hash="prj-test-001", project_name="Test Project")
     other_project = _make_project(project_hash="prj-other-002", project_name="Other Project")
+    group = _make_group()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_project_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            project={"id": current_project.id, "project_hash": current_project.project_hash, "project_name": current_project.project_name},
+            groups=[group.group_name],
+            permissions=[],
+        )
 
     with patch("src.routes.auth.get_user_by_hash", return_value=user), \
-         patch("src.routes.auth.get_project_by_hash", return_value=other_project), \
+         patch("src.routes.auth.get_project_by_hash", side_effect=[current_project, other_project]), \
+         patch("src.routes.auth.get_user_groups_in_project_by_hash", return_value=[group]), \
          patch("src.routes.auth.get_user_accessible_projects", return_value=[]):
         response = await client.post(
             "/auth/switch-project",
-            data={"project_hash": "prj-other-002"},
-            headers={"Authorization": f"Bearer {SESSION_TOKEN}", "User-Agent": "test"},
+            data={"project_hash": "prj-other-002", "refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"Authorization": f"Bearer {pair.access_token}", "User-Agent": "test"},
         )
 
     assert response.status_code == 403

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from starlette.responses import RedirectResponse
 from pathlib import Path
 from typing import Optional
@@ -57,7 +57,7 @@ app.include_router(api_keys.router, tags=["API Keys - Admin"])
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 
@@ -207,9 +207,9 @@ async def serve_usage_docs_legacy(
 
 
 @app.get('/ping', status_code=204)
-def ping():
+async def ping():
     """Health check endpoint"""
-    pass
+    return Response(status_code=204)
 
 
 @app.get("/", include_in_schema=False)

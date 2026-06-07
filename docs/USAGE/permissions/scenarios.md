@@ -166,15 +166,18 @@ curl -X GET "http://localhost:8000/permissions/users/me/permissions" \
 curl -X GET "http://localhost:8000/permissions/users/me/permission-sources" \
   -H "Authorization: Bearer $USER_TOKEN"
 
-# 3) Refresh the user's session
+# 3) Refresh the user's access context with the refresh token
 curl -X POST "http://localhost:8000/auth/refresh" \
-  -H "Authorization: Bearer $USER_TOKEN"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
+  -d "refresh_token=$REFRESH_TOKEN"
 
 # 4) If the route is project-sensitive, switch project context explicitly
 curl -X POST "http://localhost:8000/auth/switch-project" \
   -H "Authorization: Bearer $USER_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH"
+  -H "User-Agent: my-client/1.0" \
+  -d "project_hash=$PROJECT_HASH&refresh_token=$REFRESH_TOKEN"
 ```
 
 If the self-query endpoints say the permission exists, but the target route still denies access, the most likely next step is to check whether that route uses:

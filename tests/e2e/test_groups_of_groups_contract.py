@@ -132,11 +132,12 @@ async def test_grant_ug_pg_unauthorized_no_session(
     patched_db_error_logger,
 ):
     """No valid session returns 401."""
-    response = await client.post(
-        "/admin/user-groups/grp-ug-contract-001/project-groups",
-        data={"project_group_hash": "grp-pg-contract-001"},
-        headers={"Authorization": "Bearer invalid-token"},
-    )
+    with patch("src.routes.admin_user_groups.validate_session", return_value=None):
+        response = await client.post(
+            "/admin/user-groups/grp-ug-contract-001/project-groups",
+            data={"project_group_hash": "grp-pg-contract-001"},
+            headers={"Authorization": "Bearer invalid-token"},
+        )
 
     assert response.status_code == 401
 

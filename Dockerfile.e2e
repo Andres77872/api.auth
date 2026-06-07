@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace
+
+WORKDIR /workspace
+
+COPY requirements.txt requirements-test.txt /tmp/api-auth-deps/
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install -r /tmp/api-auth-deps/requirements-test.txt
+
+ENTRYPOINT ["bash", "scripts/e2e-entrypoint.sh"]
+CMD ["python", "-m", "pytest", "tests/e2e"]

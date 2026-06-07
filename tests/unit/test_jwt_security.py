@@ -5,6 +5,7 @@ Uses freezegun for deterministic expiration tests.
 """
 
 import time
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -77,8 +78,6 @@ class TestCreateAccessToken:
         assert payload["scope"] == "platform"
 
     def test_custom_expires_delta(self, frozen_time):
-        from datetime import timedelta
-
         token = JWTTokenHandler.create_access_token(
             1, "usr-abc", "proj-xyz",
             expires_delta=timedelta(hours=1)
@@ -86,6 +85,47 @@ class TestCreateAccessToken:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
         # exp should be 1 hour after iat
         assert payload["exp"] - payload["iat"] == 3600
+
+    def test_access_token_new_contract_has_short_ttl_and_family_claims(self, frozen_time):
+        token = JWTTokenHandler.create_access_token(
+            session_id="ses-access-001",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="acc-jti-001",
+            family_id="fam-001",
+            scope="project",
+        )
+
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
+
+        assert payload["type"] == "access_token"
+        assert payload["jti"] == "acc-jti-001"
+        assert payload["session_id"] == "ses-access-001"
+        assert payload["family_id"] == "fam-001"
+        assert payload["scope"] == "project"
+        assert payload["iat"] == int(datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc).timestamp())
+        assert payload["exp"] - payload["iat"] < 72 * 60 * 60
+
+
+class TestCreateRefreshToken:
+    def test_refresh_token_new_contract_has_72h_ttl_and_family_claims(self, frozen_time):
+        token = JWTTokenHandler.create_refresh_token(
+            session_id="ses-refresh-001",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="ref-jti-001",
+            family_id="fam-001",
+            scope="project",
+        )
+
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
+
+        assert payload["type"] == "refresh_token"
+        assert payload["jti"] == "ref-jti-001"
+        assert payload["session_id"] == "ses-refresh-001"
+        assert payload["family_id"] == "fam-001"
+        assert payload["scope"] == "project"
+        assert payload["exp"] - payload["iat"] == 72 * 60 * 60
 
 
 # ─── decode_access_token ────────────────────────────────────────────────────
@@ -99,8 +139,6 @@ class TestDecodeAccessToken:
         assert payload["collection"] == "proj-xyz"
 
     def test_decode_expired_token_raises(self, frozen_time):
-        from datetime import timedelta
-
         # Create a token that expires in 1 second
         token = JWTTokenHandler.create_access_token(
             1, "usr-abc", "proj-xyz",
@@ -126,8 +164,6 @@ class TestDecodeAccessToken:
 
     def test_decode_wrong_type_token_raises(self):
         # Create a token with wrong type
-        from datetime import datetime, timedelta, timezone
-
         payload = {
             "session_id": 1,
             "user_hash": "usr-abc",
@@ -143,10 +179,132 @@ class TestDecodeAccessToken:
         assert exc_info.value.status_code == 401
         assert "type" in exc_info.value.detail.lower()
 
+    def test_decode_access_requires_new_contract_claims(self):
+        legacy_payload = {
+            "session_id": 1,
+            "user_hash": "usr-abc",
+            "collection": "proj-xyz",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+            "iat": datetime.now(timezone.utc),
+            "type": "access_token",
+        }
+        token = jwt.encode(legacy_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+        with pytest.raises(HTTPException) as exc_info:
+            JWTTokenHandler.decode_access_token(token)
+
+        assert exc_info.value.status_code == 401
+        assert "claim" in exc_info.value.detail.lower() or "jti" in exc_info.value.detail.lower()
+
+    def test_decode_access_rejects_refresh_token_created_by_helper(self):
+        token = JWTTokenHandler.create_refresh_token(
+            session_id="ses-refresh-002",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="ref-jti-002",
+            family_id="fam-002",
+            scope="project",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            JWTTokenHandler.decode_access_token(token)
+
+        assert exc_info.value.status_code == 401
+        assert "type" in exc_info.value.detail.lower()
+
     def test_decode_completely_invalid_string_raises(self):
         with pytest.raises(HTTPException) as exc_info:
             JWTTokenHandler.decode_access_token("not.a.token")
         assert exc_info.value.status_code == 401
+
+
+class TestDecodeRefreshToken:
+    def test_decode_valid_refresh_token(self):
+        token = JWTTokenHandler.create_refresh_token(
+            session_id="ses-refresh-003",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="ref-jti-003",
+            family_id="fam-003",
+            scope="project",
+        )
+
+        payload = JWTTokenHandler.decode_refresh_token(token)
+
+        assert payload["type"] == "refresh_token"
+        assert payload["jti"] == "ref-jti-003"
+        assert payload["family_id"] == "fam-003"
+
+    def test_decode_refresh_rejects_access_token(self):
+        token = JWTTokenHandler.create_access_token(
+            session_id="ses-access-003",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="acc-jti-003",
+            family_id="fam-003",
+            scope="project",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            JWTTokenHandler.decode_refresh_token(token)
+
+        assert exc_info.value.status_code == 401
+        assert "type" in exc_info.value.detail.lower()
+
+    def test_decode_refresh_rejects_expired_token(self, frozen_time):
+        token = JWTTokenHandler.create_refresh_token(
+            session_id="ses-refresh-expired",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="ref-jti-expired",
+            family_id="fam-expired",
+            scope="project",
+            expires_delta=timedelta(seconds=1),
+        )
+        frozen_time.tick(delta=timedelta(seconds=2))
+
+        with pytest.raises(HTTPException) as exc_info:
+            JWTTokenHandler.decode_refresh_token(token)
+
+        assert exc_info.value.status_code == 401
+        assert "expired" in exc_info.value.detail.lower()
+
+    def test_decode_refresh_rejects_invalid_signature(self):
+        token = JWTTokenHandler.create_refresh_token(
+            session_id="ses-refresh-bad-sig",
+            user_hash="usr-abc",
+            collection="prj-abc",
+            jti="ref-jti-bad-sig",
+            family_id="fam-bad-sig",
+            scope="project",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            JWTTokenHandler.decode_refresh_token(token[:-5] + "abcde")
+
+        assert exc_info.value.status_code == 401
+        assert "invalid" in exc_info.value.detail.lower()
+
+
+class TestJWTSecretConfiguration:
+    def test_missing_jwt_secret_fails_fast_outside_tests(self, monkeypatch):
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            JWTTokenHandler.resolve_secret_for_runtime()
+
+        assert "JWT_SECRET_KEY" in str(exc_info.value)
+
+    def test_tests_may_use_explicit_fallback_secret(self, monkeypatch):
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+        monkeypatch.setenv("APP_ENV", "test")
+
+        secret = JWTTokenHandler.resolve_secret_for_runtime()
+
+        assert secret
+        assert "test" in secret.lower()
 
 
 # ─── extract_* methods ──────────────────────────────────────────────────────

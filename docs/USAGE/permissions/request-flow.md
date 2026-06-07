@@ -10,9 +10,10 @@ End-to-end runtime flows for how the permissions system behaves in `api.auth`.
 CLIENT REQUEST
   └─► Authorization header or `session_token` cookie
         └─► HTTPBearerOrCookie
-              └─► validate_session(token)
-                    ├─► cache_manager session lookup (1h cache)
-                    ├─► Redis fallback `session:{token}`
+              └─► validate_session(access_token)
+                    ├─► access JWT signature/exp/type/claim checks
+                    ├─► Redis `session:{access_jti}` + `refresh_family:{family_id}` checks
+                    ├─► derived `session_full:{access_jti}` cache only after lifecycle checks
                     └─► user-type-specific reconstruction
 ```
 
@@ -145,17 +146,17 @@ This is your best audit endpoint when an operator says, “why does this user ha
 permission or group assignment changes
   └─► DB state updated
         ├─► some request paths see fresh state immediately
-        └─► some session-derived views still reflect prior login context
-              ├─► POST /auth/refresh
-              ├─► POST /auth/switch-project
+        └─► some access-token/session-derived views still reflect prior login context
+              ├─► POST /auth/refresh with refresh_token cookie/body
+              ├─► POST /auth/switch-project with access token + current refresh token
               └─► POST /auth/login again
 ```
 
 ### Practical meaning
 
 - self-query endpoints under `/permissions/users/me/...` are the best live verification paths
-- `/auth/validate` reflects raw session payload such as cached `user_group_names`
-- after major RBAC or group changes, refresh or re-login is the safe operator move
+- `/auth/validate` reflects the validated access session payload such as cached `user_group_names`
+- after major RBAC or group changes, refresh with the refresh token or re-login is the safe operator move
 
 ---
 

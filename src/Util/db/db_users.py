@@ -972,6 +972,9 @@ def invalidate_user_sessions(user_id: str) -> bool:
         DatabaseError: On Redis operation errors
     """
     def _invalidate():
+        from src.Util.auth_lifecycle import revoke_user_auth_state
+
+        revoke_user_auth_state(user_id, reason="user_invalidated")
         return cache_manager.invalidate_user_sessions(user_id) > 0
     
     return handle_db_operation(

@@ -49,6 +49,7 @@ from src.Util.db import (
     update_user_type, get_project_by_id
 )
 from src.Util.password_generator import create_password_reset_data
+from src.Util.auth_lifecycle import revoke_user_auth_state
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -735,6 +736,7 @@ async def update_user_status(
         from src.Util.cache_manager import cache_manager
         
         # Invalidate sessions from Redis
+        revoke_user_auth_state(target_user.id, reason="user_deactivated")
         invalidate_user_sessions(target_user.id)
         
         # Invalidate all cached data including cached sessions
@@ -962,6 +964,7 @@ async def delete_user_endpoint(
     from src.Util.db import invalidate_user_sessions
     from src.Util.cache_manager import cache_manager
     
+    revoke_user_auth_state(target_user.id, reason="user_deleted")
     invalidate_user_sessions(target_user.id)
     cache_manager.invalidate_user_cache(target_user.id)
 

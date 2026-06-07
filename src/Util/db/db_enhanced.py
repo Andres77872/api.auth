@@ -22,9 +22,12 @@ import secrets
 import time
 from typing import Optional
 
+from fastapi import HTTPException
+
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import EnhancedUserLogin, UserLogin
 from src.Util.cache_manager import cache_manager
+from src.Util.auth_lifecycle import issue_project_token_pair, validate_access_session
 # -- Database helpers --------------------------------------------------------
 from src.Util.db.db_projects import (
     # Project operations
@@ -38,6 +41,7 @@ from src.Util.db.db_users import (
     get_user_type, get_admin_assigned_project,
     get_user_project_access,  # legacy accessor still used in some paths
     get_session_data,
+    get_user_by_hash,
 )
 
 # User-group utilities
@@ -68,24 +72,27 @@ def is_root_user(user_id: str) -> bool:
     """Check if user is a root user"""
     try:
         return get_user_type(user_id) == "root"
-    except:
-        return False
+    except Exception:
+        logger.error(f"is_root_user: DB error for user_id={user_id}", exc_info=True)
+        raise
 
 
 def is_admin_user(user_id: str) -> bool:
     """Check if user is an admin user"""
     try:
         return get_user_type(user_id) == "admin"
-    except:
-        return False
+    except Exception:
+        logger.error(f"is_admin_user: DB error for user_id={user_id}", exc_info=True)
+        raise
 
 
 def is_consumer_user(user_id: str) -> bool:
     """Check if user is a consumer user"""
     try:
         return get_user_type(user_id) == "consumer"
-    except:
-        return False
+    except Exception:
+        logger.error(f"is_consumer_user: DB error for user_id={user_id}", exc_info=True)
+        raise
 
 
 def check_admin_project_access(user_id: str, project_id: str) -> bool:
@@ -95,8 +102,9 @@ def check_admin_project_access(user_id: str, project_id: str) -> bool:
             return False
         from src.Util.db.db_users import check_admin_multi_project_access
         return check_admin_multi_project_access(user_id, project_id)
-    except:
-        return False
+    except Exception:
+        logger.error(f"check_admin_project_access: error user_id={user_id} project_id={project_id}", exc_info=True)
+        raise
 
 
 # =================== ENHANCED AUTHENTICATION WITH USER TYPES ===================
@@ -268,28 +276,9 @@ def enhanced_register(
     # 4. Add the user to the requested group
     assign_user_to_group(user.id, user_group.id)
 
-    # 5. Create session directly, bypassing enhanced_login
-    session_length = 60 * 60 * 24 * 3  # 3 days for project-scoped sessions
-    session_id = secrets.randbelow(2 ** 31)
-
-    session_token = JWTTokenHandler.create_access_token(
-        session_id=session_id,
-        user_hash=user.user_hash,
-        collection=default_project_hash,
-    )
-
-    # Base session payload
-    session_data = {
-        'session_id': session_id,
-        'user_id': user.id,
-        'user_hash': user.user_hash,
-        'project_id': default_project_id,
-        'project_hash': default_project_hash,
-        'user_type': user_type,
-        'username': username,
-    }
-
-    # User-type specific session details
+    # 5. Build registration context. Project-scoped registrations issue the
+    # same lifecycle token pair as login instead of writing divergent legacy
+    # session:{raw_jwt} state.
     groups = []
     permissions = []
     assigned_project_id = None
@@ -305,7 +294,6 @@ def enhanced_register(
         except Exception as e:
             logger.warning(f"Failed to load global role permissions for user {user.id}: {str(e)}")
             permissions = []
-        session_data.update({'groups': groups, 'permissions': permissions})
         # Get all projects accessible to the user
         available_projects = get_user_accessible_projects(user.id)
 
@@ -313,24 +301,28 @@ def enhanced_register(
         assigned_project_id = default_project_id
         groups = ['project_admins']
         permissions = ['admin', 'project_admin', 'manage_users', 'manage_groups', 'manage_permissions']
-        session_data.update({
-            'assigned_project_id': assigned_project_id,
-            'permissions': permissions,
-            'groups': groups,
-        })
         available_projects = get_user_accessible_projects(user.id)
 
     elif user_type == "root":
         groups = ['root_users']
         permissions = ['admin', 'global_admin', 'unrestricted_access']
-        session_data.update({'groups': groups, 'permissions': permissions})
         # Root users can access all projects, so this list could be populated differently
         # For now, keeping it simple as per original logic.
 
-    # Persist session
-    cache_manager.set_session(session_token, session_data)
-    client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-    logging.debug(f"Created session for user {user.username} ({user.id})")
+    token_pair = None
+    if default_project_hash:
+        token_pair = issue_project_token_pair(
+            user=user,
+            project={
+                "id": default_project_id,
+                "project_hash": default_project_hash,
+                "project_name": project_name,
+            },
+            permissions=permissions,
+            groups=groups,
+        )
+        logging.debug(f"Created lifecycle token pair for registered user {user.username} ({user.id})")
+
     # Build response object
     return EnhancedUserLogin(
         user_hash=user.user_hash,
@@ -338,8 +330,8 @@ def enhanced_register(
         project_hash=default_project_hash,
         project_name=project_name,
         user_project_hash='',  # Deprecated
-        session_token=session_token,
-        session_length=session_length,
+        session_token=token_pair.session_token if token_pair else "",
+        session_length=token_pair.expires_in if token_pair else 0,
         user_id=user.id,
         project_id=default_project_id,
         user_project_id=None,  # Deprecated
@@ -348,11 +340,46 @@ def enhanced_register(
         available_projects=available_projects,
         user_type=user_type,
         assigned_project_id=assigned_project_id,
+        access_token=token_pair.access_token if token_pair else None,
+        refresh_token=token_pair.refresh_token if token_pair else None,
+        token_type=token_pair.token_type if token_pair else "Bearer",
+        expires_in=token_pair.expires_in if token_pair else None,
+        refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
+        expires_at=token_pair.expires_at if token_pair else None,
+        refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
+        cookie_metadata=token_pair.cookie_metadata if token_pair else {},
     )
 
 
 # Phase 0.8: Module-level call counter for validate_session()
 _validation_call_counter: int = 0
+
+
+def _looks_like_jwt(token: str) -> bool:
+    return isinstance(token, str) and token.count(".") == 2
+
+
+def _prevalidate_access_token_for_cache(session_token: str) -> tuple[Optional[dict], str]:
+    """Validate JWT authority before consulting derived full-session cache.
+
+    Phase 2 keeps a legacy fallback for non-JWT test/compatibility tokens so we
+    do not break current issuance paths before Phase 3 migrates every route to
+    jti-keyed session writes. If a credential is shaped like a JWT, however,
+    signature/type/claim validation and family-revocation checks happen before
+    ``session_full`` can be used.
+    """
+    if not _looks_like_jwt(session_token):
+        return None, session_token
+
+    claims = JWTTokenHandler.decode_access_token(session_token)
+    family_id = claims.get("family_id")
+    if family_id:
+        from src.Util import auth_lifecycle
+
+        if auth_lifecycle.is_refresh_family_revoked(str(family_id)):
+            raise HTTPException(status_code=401, detail="Refresh family revoked")
+
+    return claims, str(claims.get("jti") or session_token)
 
 
 def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
@@ -361,10 +388,29 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     _validation_call_counter += 1
 
     t_total = time.monotonic()
+    if _looks_like_jwt(session_token):
+        # Keep the prevalidation call for existing diagnostics/tests, but do not
+        # authorize from cache here. Canonical lifecycle validation owns JWT,
+        # session, family, active-user, and derived-cache ordering.
+        _prevalidate_access_token_for_cache(session_token)
+        login_data = validate_access_session(
+            session_token,
+            get_user_by_hash_fn=get_user_by_hash,
+            get_project_by_hash_fn=get_project_by_hash,
+            check_admin_project_access_fn=check_admin_project_access,
+            get_user_groups_in_project_by_hash_fn=get_user_groups_in_project_by_hash,
+            get_user_accessible_projects_fn=get_user_accessible_projects,
+        )
+        duration_ms = (time.monotonic() - t_total) * 1000
+        logger.info(f"AUTH_PERF|validate_session|canonical|{duration_ms:.3f}")
+        return login_data
+
+    access_claims = None
+    session_lookup_key = session_token
 
     # Phase 2.1: Try full-session cache first (serialized EnhancedUserLogin)
     if VALIDATE_CACHE_ENABLED:
-        cached_full = cache_manager.get_session_full(session_token)
+        cached_full = cache_manager.get_session_full(session_lookup_key)
         if cached_full is not None:
             duration_ms = (time.monotonic() - t_total) * 1000
             logger.info(f"AUTH_PERF|validate_session|hit|{duration_ms:.3f}")
@@ -373,17 +419,31 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     cache_hit = True
 
     # Try cache first (raw session dict)
-    session_data = cache_manager.get_session(session_token)
+    session_data = cache_manager.get_session(session_lookup_key)
+    session_data_cache_key = session_lookup_key
+
+    # Temporary compatibility: current route-local issuance still writes
+    # session:{raw_jwt}. Once Phase 3 migrates issuance to lifecycle writes,
+    # Phase 4 can remove this fallback and require session:{access_jti}.
+    if not session_data and access_claims and session_lookup_key != session_token:
+        session_data = cache_manager.get_session(session_token)
+        session_data_cache_key = session_token
     
     # If not in cache, check database/Redis
     if not session_data:
         cache_hit = False
-        session_data = get_session_data(session_token)
+        session_data = get_session_data(session_lookup_key)
+        if not session_data and access_claims and session_lookup_key != session_token:
+            session_data = get_session_data(session_token)
+            session_data_cache_key = session_token
         if not session_data:
             return None
 
-        # Cache the session data for future requests
-        cache_manager.set_session(session_token, session_data)
+        # Cache legacy opaque sessions only. New jti-keyed access sessions are
+        # authoritative state with access-token TTL and must not be rewritten by
+        # validation using the legacy SESSION_TTL.
+        if not access_claims:
+            cache_manager.set_session(session_data_cache_key, session_data)
 
     user_type = session_data.get('user_type', 'consumer')
     scope = session_data.get('scope')
@@ -419,7 +479,7 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         )
         # Phase 2.1: Cache full result for subsequent requests
         if VALIDATE_CACHE_ENABLED:
-            cache_manager.set_session_full(session_token, login_data)
+            cache_manager.set_session_full(session_lookup_key, login_data)
         logger.info(f"AUTH_PERF|validate_session|{outcome}|{duration_ms:.3f}")
         return login_data
 
@@ -472,7 +532,10 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
             permissions = get_user_permissions(session_data['user_id'])
             logger.info(f"AUTH_PERF|query_permissions|{(time.monotonic() - t0) * 1000:.3f}")
         except Exception as e:
-            logger.warning(f"Failed to load global role permissions for user {session_data['user_id']}: {str(e)}")
+            logger.warning(
+                f"Failed to load global role permissions for user {session_data['user_id']}: {str(e)}",
+                exc_info=True
+            )
             permissions = []
         t0 = time.monotonic()
         available_projects = get_user_accessible_projects(session_data['user_id'])
@@ -501,10 +564,9 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
     )
     # Phase 2.1: Cache full result for subsequent requests
     if VALIDATE_CACHE_ENABLED:
-        cache_manager.set_session_full(session_token, login_data)
+        cache_manager.set_session_full(session_lookup_key, login_data)
     logger.info(f"AUTH_PERF|validate_session|{outcome}|{duration_ms:.3f}")
     return login_data
 
 
 # =================== USER TYPE SPECIFIC FUNCTIONS ===================
-

@@ -78,15 +78,18 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                 # Don't fail the request, just log and fall through to Bearer
                 logger.debug(f"API key context extraction failed: {e}")
 
-        # --- Path 2: Session Authentication (Bearer token) — fallback ---
-        auth_header = request.headers.get("authorization")
+        # --- Path 2: Access-token authentication (Bearer/session_token cookie) ---
+        from src.Util.Seccurity import extract_jwt_token_from_request
 
-        if auth_header and auth_header.startswith("Bearer "):
-            session_token = auth_header.replace("Bearer ", "")
+        session_token = extract_jwt_token_from_request(request)
+
+        if session_token and session_token.count(".") == 2:
 
             try:
-                # Validate session and get user info
-                from src.Util.db import validate_session
+                # Validate access-session and get user info. Wrong token types,
+                # revoked families, and inactive users simply leave request.state
+                # unauthenticated; route dependencies still enforce auth.
+                from src.Util.db.db_enhanced import validate_session
                 session_data = validate_session(session_token)
 
                 if session_data:
@@ -101,6 +104,7 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                             self.groups = session_data.groups
 
                     request.state.user = UserContext(session_data)
+                    request.state.user_id = session_data.user_id
                     request.state.session_id = session_token
                     request.state.project_id = session_data.project_id
                     request.state.project_hash = session_data.project_hash
@@ -280,7 +284,11 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
             try:
                 from src.Util.db.db_global_roles import get_user_permissions
                 permissions = get_user_permissions(owner_user_id)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Failed to resolve consumer permissions for user {owner_user_id}: {e}",
+                    exc_info=True
+                )
                 permissions = []
 
         return permissions, groups

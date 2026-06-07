@@ -53,7 +53,14 @@ def mock_redis():
         pytest.skip("fakeredis not installed")
 
     fake = fakeredis.FakeStrictRedis()
-    with patch("src.Util.db_config.redis_client", fake):
+    with patch("src.Util.db_config.redis_client", fake), \
+         patch("src.Util.cache_manager.redis_client", fake), \
+         patch("src.Util.auth_lifecycle.redis_client", fake), \
+         patch("src.Util.db.db_enhanced.client", fake), \
+         patch("src.Util.db.db_users.client", fake), \
+         patch("src.Util.db.db_session_analytics.redis_client", fake), \
+         patch("src.Util.system_metrics.redis_client", fake), \
+         patch("src.routes.auth.redis_client", fake):
         yield fake
     fake.flushall()
 

@@ -15,6 +15,7 @@ Trace: explore.md Gap 2, Gap 5, RISK 1 (CRITICAL)
 import json
 import secrets
 import uuid
+import os
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -22,15 +23,17 @@ import pymysql
 import pytest
 import redis
 
+from src.Util.JWT_Security import JWTTokenHandler
 from tests.integration.conftest import _REAL_DB_CONFIG
 
 
 # ─── Live Redis Config ──────────────────────────────────────────────────────
 
 _REAL_REDIS_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 6380,
-    "db": 0,
+    "host": os.environ.get("REAL_REDIS_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("REAL_REDIS_PORT", "6380")),
+    "db": int(os.environ.get("REDIS_DB", "0")),
+    "password": os.environ.get("DB_REDIS_PASSWORD") or None,
     "decode_responses": True,
 }
 
@@ -38,6 +41,11 @@ _REAL_REDIS_CONFIG = {
 def _get_live_redis():
     """Return a live Redis client for the test instance."""
     return redis.StrictRedis(**_REAL_REDIS_CONFIG)
+
+
+def _get_access_session_from_redis(live_redis, access_token):
+    access_jti = JWTTokenHandler.decode_access_token(access_token)["jti"]
+    return access_jti, live_redis.get(f"session:{access_jti}")
 
 
 def _get_tuple_connection():
@@ -61,6 +69,7 @@ _DB_PATCHES = {
 _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
     "src.Util.cache_manager.redis_client",
+    "src.Util.auth_lifecycle.redis_client",
     "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
@@ -203,8 +212,8 @@ async def test_full_register_login_access_chain_live_redis(
     assert reg_data["project"]["project_hash"] == proj["project_hash"]
 
     # Step 3: Verify session is stored in LIVE Redis
-    session_raw = live_redis.get(f"session:{reg_token}")
-    assert session_raw is not None, f"Session {reg_token} should exist in live Redis"
+    reg_access_jti, session_raw = _get_access_session_from_redis(live_redis, reg_token)
+    assert session_raw is not None, f"Session {reg_access_jti} should exist in live Redis"
     session_data = json.loads(session_raw)
     assert session_data["user_type"] == "consumer"
     assert session_data["project_hash"] == proj["project_hash"]
@@ -240,7 +249,7 @@ async def test_full_register_login_access_chain_live_redis(
 
     # Step 6: Verify login session in LIVE Redis has group data
     login_token = login_data.get("session_token")
-    login_session_raw = live_redis.get(f"session:{login_token}")
+    _, login_session_raw = _get_access_session_from_redis(live_redis, login_token)
     assert login_session_raw is not None, f"Login session should exist in live Redis"
     login_session = json.loads(login_session_raw)
     assert "user_group_ids" in login_session, "Login session should contain user_group_ids"
@@ -290,7 +299,7 @@ async def test_register_login_session_persistence_live_redis(
     assert token is not None, "Registration should set session_token cookie"
 
     # Verify session exists in live Redis
-    session_raw = live_redis.get(f"session:{token}")
+    _, session_raw = _get_access_session_from_redis(live_redis, token)
     assert session_raw is not None, f"Session should exist in live Redis"
     session_data = json.loads(session_raw)
     assert session_data["project_hash"] == proj["project_hash"]

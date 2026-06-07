@@ -18,7 +18,83 @@ def _make_session(user_id="2", user_hash="usr-admin-001", user_type="admin"):
     session.session_token = "platform-token"
     session.session_length = 259200
     session.scope = "platform"
+    session.username = "adminuser"
     return session
+
+
+def _make_platform_user(user_id="2", user_hash="usr-admin-001", user_type="admin"):
+    user = MagicMock()
+    user.id = user_id
+    user.user_hash = user_hash
+    user.username = "adminuser"
+    user.email = "admin@example.com"
+    user.user_type = user_type
+    user.is_active = True
+    user.assigned_project_id = None
+    return user
+
+
+@pytest.mark.asyncio
+async def test_platform_login_returns_access_refresh_pair_and_refresh_cookie(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """/auth/platform/login must issue refreshable platform token pairs."""
+    user = _make_platform_user()
+
+    with patch("src.routes.auth.get_user_by_credentials", return_value=user):
+        response = await client.post(
+            "/auth/platform/login",
+            data={"username": "adminuser", "password": "secret"},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
+    assert data["project"] is None
+    assert data["accessible_projects"] == []
+
+    set_cookie_values = [value.decode().lower() for key, value in response.headers.raw if key.lower() == b"set-cookie"]
+    assert any("session_token=" in value for value in set_cookie_values)
+    assert any("refresh_token=" in value for value in set_cookie_values)
+
+
+@pytest.mark.asyncio
+async def test_platform_refresh_preserves_platform_scope_and_permissions(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """A platform refresh token refreshes through /auth/refresh without project binding."""
+    from src.Util.auth_lifecycle import issue_platform_token_pair
+
+    user = _make_platform_user()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_platform_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            permissions=["admin", "manage_users", "manage_roles"],
+            groups=["platform_admins"],
+        )
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user):
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["project"] is None
+    assert data["accessible_projects"] == []
+    assert "outdated" not in data.get("message", "").lower()
 
 
 @pytest.mark.asyncio

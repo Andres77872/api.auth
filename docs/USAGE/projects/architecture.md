@@ -123,19 +123,20 @@ Project context is embedded during login and project switching.
 
 - resolves accessible projects
 - binds non-root users to a requested or default project
-- issues a session containing project context
+- issues an access+refresh token pair containing project context
 - also exposes `accessible_projects` to the client
 
 ### Switch project
 
 `src/routes/auth.py:switch_project()`:
 
-- validates the current session
+- validates the current access token
+- validates the current refresh token through the documented refresh transport
 - verifies the requested project is in `get_user_accessible_projects()`
-- creates a new session bound to the new project
-- deletes the old session
+- rotates both access and refresh credentials into the new project context
+- deletes the old access session and old full-session cache
 
-So when access changes, session refresh or re-login may be required before the client sees the new reality.
+So when access changes, refresh with the current refresh token, switch-project, or re-login may be required before the client sees the new reality.
 
 ---
 

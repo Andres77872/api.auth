@@ -10,6 +10,8 @@ from typing import List, Optional, Dict, Any
 
 from pydantic import BaseModel, Field, ConfigDict
 
+from src.Util.auth_constants import TOKEN_TYPE_BEARER
+
 
 # =================== CONFIGURATION ===================
 
@@ -276,21 +278,32 @@ class RoleInfo(BaseModelConfig):
 
 # =================== AUTHENTICATION RESPONSES ===================
 
-class LoginResponse(BaseResponse):
+class TokenPairFields(BaseModelConfig):
+    """Shared token-pair response fields for auth credential issuers."""
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    session_token: Optional[str] = None  # Deprecated access-token alias
+    token_type: str = TOKEN_TYPE_BEARER
+    expires_in: Optional[int] = None
+    refresh_expires_in: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    refresh_expires_at: Optional[datetime] = None
+
+
+class LoginResponse(BaseResponse, TokenPairFields):
     """Login endpoint response"""
-    session_token: Optional[str] = None
     user: Optional[UserInfo] = None
     project: Optional[ProjectInfo] = None
     accessible_projects: List[ProjectInfo] = Field(default_factory=list)
     user_groups: List[UserGroupInfo] = Field(default_factory=list, description="User groups the user belongs to")
-    expires_at: Optional[datetime] = None
     user_id: Optional[str] = None  # Internal field for logging, not exposed in API docs
 
 
-class RegisterResponse(BaseResponse):
+class RegisterResponse(BaseResponse, TokenPairFields):
     """Register endpoint response"""
     user: Optional[UserInfo] = None
     project: Optional[ProjectInfo] = None
+    user_id: Optional[str] = None
 
 
 class ValidateSessionResponse(BaseResponse):
@@ -307,9 +320,8 @@ class LogoutResponse(BaseResponse):
     pass
 
 
-class SwitchProjectResponse(BaseResponse):
+class SwitchProjectResponse(BaseResponse, TokenPairFields):
     """Switch project response"""
-    session_token: Optional[str] = None
     project: Optional[ProjectInfo] = None
     user_groups: List[str] = Field(default_factory=list)
 
@@ -904,6 +916,14 @@ class EnhancedUserLogin(BaseModelConfig):
     available_projects: List['ProjectSummary'] = Field(default_factory=list)
     user_type: str = 'consumer'
     assigned_project_id: Optional[str] = None
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    token_type: str = TOKEN_TYPE_BEARER
+    expires_in: Optional[int] = None
+    refresh_expires_in: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    refresh_expires_at: Optional[datetime] = None
+    cookie_metadata: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 # =================== SPECIALIZED MODELS ===================

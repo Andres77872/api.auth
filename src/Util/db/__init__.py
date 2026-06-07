@@ -316,11 +316,8 @@ def check_user_type_permission(user_id: str, operation: str, project_id: str = N
         elif user_type == "consumer":
             # Global role system - no project context needed for permission checks
             # Import global role functions
-            try:
-                from src.Util.db.db_global_roles import check_user_has_permission
-                return check_user_has_permission(user_id, operation)
-            except Exception:
-                return False
+            from src.Util.db.db_global_roles import check_user_has_permission
+            return check_user_has_permission(user_id, operation)
 
         return False
     
@@ -377,11 +374,8 @@ def create_user_type_session(user_id: str, project_id: str, session_length: int 
         elif user_type == "consumer":
             session_data["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
             # Get permissions from global role system
-            try:
-                from src.Util.db.db_global_roles import get_user_permissions
-                session_data["permissions"] = get_user_permissions(user_id)
-            except Exception:
-                session_data["permissions"] = []
+            from src.Util.db.db_global_roles import get_user_permissions
+            session_data["permissions"] = get_user_permissions(user_id)
 
         return session_data
     

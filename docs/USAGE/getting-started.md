@@ -203,7 +203,7 @@ curl -X POST "{BASE_URL}/auth/login" \
 
 ## Authentication Modes
 
-The API accepts tokens in **two ways** — both are equivalent:
+Protected endpoints currently accept access JWTs in **two ways**. Both are equivalent for protected-route authorization:
 
 ### Mode 1: Bearer Header (API clients, scripts, server-to-server)
 
@@ -219,13 +219,23 @@ On login, the API sets an HTTP-only cookie named `session_token`:
 
 | Property | Value |
 |----------|-------|
-| Name | `session_token` |
-| Max-Age | 259200 seconds (72 hours) |
+| Access cookie | `session_token` (deprecated alias for `access_token`) |
+| Refresh cookie | `refresh_token` |
+| Access Max-Age | Short-lived access-token TTL |
+| Refresh Max-Age | 259200 seconds (72 hours), sliding on successful refresh |
 | HttpOnly | true |
 | Secure | true |
 | SameSite | strict |
 
-Browsers automatically send this cookie on subsequent requests. No `Authorization` header needed.
+Browsers automatically send these cookies on subsequent requests. No `Authorization` header is needed for browser flows when cookies are used.
+
+### Not a Protected-Route Mode: API Keys
+
+API keys can be created, listed, updated, and revoked through the API-key lifecycle endpoints, but they are **not currently accepted as protected-route authentication**.
+
+- `X-API-Key` alone on protected endpoints currently returns `401`.
+- API-key middleware can populate request/audit context, but route authorization still requires Bearer access JWT or the `session_token` cookie.
+- Future behavior should allow a valid API token generated for a user/project to authenticate protected routes as that user, but that unified auth dependency and route migration are not wired yet.
 
 ### Which to use?
 
@@ -241,11 +251,12 @@ Three different TTLs operate independently — don't confuse them:
 
 | TTL | Value | What it controls |
 |-----|-------|-----------------|
-| **JWT/cookie TTL** | 72 hours (259200s) | How long the session token itself is valid. Set on login, refreshed via `POST /auth/refresh`. |
-| **Redis session TTL** | 72 hours | How long the session entry lives in Redis. Tied to the JWT lifetime. |
+| **Access JWT/cookie TTL** | Short-lived | How long the access token itself is valid for protected requests. |
+| **Refresh JWT/family TTL** | 72 hours (259200s), sliding | How long refresh continuity lives. Renewed on successful `POST /auth/refresh`. |
+| **Redis access session TTL** | Access-token TTL | How long `session:{access_jti}` lives in Redis. |
 | **Cache layer TTL** | 1 hour (session) / 30 min (permission checks) | How long cached permission/access-check results live in Redis. **Separate from auth sessions.** A user's session can be valid while their cached permissions are stale. |
 
-- **Refresh**: `POST /auth/refresh` creates a brand new session with the same context and deletes the old one. This is **session rotation**, not a refresh-token pattern.
+- **Refresh**: `POST /auth/refresh` requires a valid `refresh_token` cookie/body value, issues a new access+refresh pair, marks the old refresh token used, and deletes the old access session. Access/session tokens are rejected as refresh credentials.
 - After admin permission changes, the user may need to wait for cache expiry (30 min) or manually invalidate their cache (`POST /system/cache/invalidate/user/{hash}`) to see updated permissions.
 
 ---
@@ -318,5 +329,5 @@ Error messages mask UUIDs (e.g., `usr-[550e]...[0000]`). Clients cannot parse fu
 
 ---
 
-**Last Updated**: April 2026
+**Last Updated**: June 2026
 **API Version**: 2.2.0

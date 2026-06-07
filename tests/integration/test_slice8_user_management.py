@@ -162,6 +162,42 @@ async def test_admin_update_user_status_returns_200(client, fake_redis, patched_
 
 
 @pytest.mark.asyncio
+async def test_admin_deactivate_user_revokes_refresh_families(client, fake_redis, patched_db_connection,
+                                                              patched_db_error_logger, patched_audit_logger,
+                                                              patched_audit_ids, patched_cache_manager,
+                                                              patched_activity_logger):
+    """Deactivation must call lifecycle user-wide auth revocation, not just legacy sessions."""
+    token = "test-admin-status-revoke-token"
+    session = _make_session(session_token=token)
+    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+
+    admin_user = _make_user()
+    target_user = _make_user(user_id="2", user_hash="usr-target-001")
+    shared_project = MagicMock()
+    shared_project.id = "1"
+    shared_project.project_hash = "prj-test-001"
+    shared_project.project_name = "Shared Project"
+
+    with patch("src.Util.Seccurity.validate_session", return_value=session), \
+         patch("src.Util.decorators.validate_session", return_value=session), \
+         patch("src.Util.decorators.get_user_by_hash", side_effect=lambda h, **kw: admin_user if h == "usr-admin-001" else target_user), \
+         patch("src.routes.users.get_user_by_hash", side_effect=lambda h, **kw: admin_user if h == "usr-admin-001" else target_user), \
+         patch("src.routes.users.is_root_user", return_value=False), \
+         patch("src.routes.users.get_user_type", return_value="admin"), \
+         patch("src.routes.users.get_user_accessible_projects", return_value=[shared_project]), \
+         patch("src.routes.users.update_user", return_value={"success": True}), \
+         patch("src.routes.users.revoke_user_auth_state", create=True) as revoke_auth_state:
+        response = await client.put(
+            "/users/usr-target-001/status",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
+            params={"is_active": "false"},
+        )
+
+    assert response.status_code == 200
+    revoke_auth_state.assert_called_once_with("2", reason="user_deactivated")
+
+
+@pytest.mark.asyncio
 async def test_admin_reset_password_no_plaintext(client, fake_redis, patched_db_connection,
                                                   patched_db_error_logger, patched_audit_logger,
                                                   patched_audit_ids, patched_cache_manager,
@@ -233,3 +269,38 @@ async def test_admin_delete_user_returns_200(client, fake_redis, patched_db_conn
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_user_revokes_refresh_families(client, fake_redis, patched_db_connection,
+                                                          patched_db_error_logger, patched_audit_logger,
+                                                          patched_audit_ids, patched_cache_manager,
+                                                          patched_activity_logger):
+    """Delete/soft-delete must revoke access sessions and refresh families centrally."""
+    token = "test-admin-delete-revoke-token"
+    session = _make_session(session_token=token)
+    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+
+    admin_user = _make_user()
+    target_user = _make_user(user_id="2", user_hash="usr-target-001")
+    shared_project = MagicMock()
+    shared_project.id = "1"
+    shared_project.project_hash = "prj-test-001"
+    shared_project.project_name = "Shared Project"
+
+    with patch("src.Util.Seccurity.validate_session", return_value=session), \
+         patch("src.Util.decorators.validate_session", return_value=session), \
+         patch("src.Util.decorators.get_user_by_hash", side_effect=lambda h, **kw: admin_user if h == "usr-admin-001" else target_user), \
+         patch("src.routes.users.get_user_by_hash", side_effect=lambda h, **kw: admin_user if h == "usr-admin-001" else target_user), \
+         patch("src.routes.users.is_root_user", return_value=False), \
+         patch("src.routes.users.get_user_type", return_value="admin"), \
+         patch("src.routes.users.get_user_accessible_projects", return_value=[shared_project]), \
+         patch("src.Util.db.delete_user", return_value={"success": True}), \
+         patch("src.routes.users.revoke_user_auth_state", create=True) as revoke_auth_state:
+        response = await client.delete(
+            "/users/usr-target-001",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    revoke_auth_state.assert_called_once_with("2", reason="user_deleted")

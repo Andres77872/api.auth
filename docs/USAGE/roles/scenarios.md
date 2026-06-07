@@ -197,14 +197,17 @@ curl -X GET "http://localhost:8000/permissions/users/me/permission-sources" \
 ### Scenario 10: Role Changed but Permissions Don't Seem Updated
 
 ```bash
-# The session still has old permissions. Refresh to get new ones:
+# The access context may still have old permissions. Refresh with the refresh token:
 curl -X POST "http://localhost:8000/auth/refresh" \
-  -H "Authorization: Bearer $USER_TOKEN"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
+  -d "refresh_token=$REFRESH_TOKEN"
 
 # Or re-login entirely:
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=myuser&password=mypass"
+  -H "User-Agent: my-client/1.0" \
+  -d "username=myuser&password=mypass&project_hash=$PROJECT_HASH"
 ```
 
 ---

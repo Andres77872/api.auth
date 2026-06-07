@@ -28,10 +28,12 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 ## ✨ Features
 
 ### 🔐 Authentication & Sessions
-- JWT-based session management with HTTP-only cookies
-- Dual authentication (Bearer token + secure cookies)
+- Two-token JWT model with short-lived access tokens and 72-hour sliding refresh families
+- Dual access-token authentication (Bearer access token + secure `session_token` access cookie)
+- Refresh-token transport through HttpOnly Secure `refresh_token` cookie or explicit `refresh_token` body/form field
 - Multi-project login and project switching
-- Session validation and token refresh (72-hour sessions)
+- Platform login for root/admin users and platform refresh through `/auth/refresh`
+- Session validation, strict single-use refresh rotation, logout, switch-project, and deactivation revocation
 
 ### 👥 Hierarchical Group Management
 - **User Groups**: Organize users globally, control project access
@@ -68,13 +70,14 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 
 ## 📡 API Endpoints Overview
 
-### Authentication (`/auth`) - 7 endpoints
+### Authentication (`/auth`) - 8 endpoints
 - `POST /auth/login` - User login
+- `POST /auth/platform/login` - Root/admin platform login without project binding; refreshable through `/auth/refresh`
 - `POST /auth/register` - New user registration
-- `GET /auth/validate` - Validate current session
-- `POST /auth/logout` - End session
-- `POST /auth/refresh` - Refresh token
-- `POST /auth/switch-project` - Switch project context
+- `GET /auth/validate` - Validate access token only
+- `POST /auth/logout` - End session and revoke refresh continuity
+- `POST /auth/refresh` - Rotate using refresh token only; access/session tokens are rejected
+- `POST /auth/switch-project` - Switch project context and rotate access+refresh credentials
 - `POST /auth/check-availability` - Check username/email
 
 ### Users (`/users`) - 9 endpoints
@@ -188,24 +191,41 @@ All API endpoints use **Form Data** (`application/x-www-form-urlencoded`):
 - Bulk operations use JSON for arrays
 - Responses are JSON with Pydantic validation
 
-### Dual Authentication
-- **Bearer Token**: `Authorization: Bearer <token>`
-- **HTTP-Only Cookies**: Secure `session_token` cookie
-- Automatic fallback between methods
+### Auth Token Contract
+- **Access token**: short-lived JWT used for protected routes, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
+- **Refresh token**: 72-hour sliding JWT used only for `/auth/refresh`; returned in the JSON body and as HttpOnly Secure `refresh_token` cookie.
+- **`session_token`**: deprecated alias for the access token in response bodies and access cookie.
+- **Refresh transport**: `refresh_token` cookie or explicit `refresh_token` body/form field. `Authorization: Bearer <access_token>` is not accepted by `/auth/refresh`.
+- **JWT authority**: request paths enforce signature, `exp`, `type`, `jti`, `session_id`, `family_id`, and Redis session/family state.
+
+### Access Authentication
+- **Bearer Access Token**: `Authorization: Bearer <access_token>`
+- **HTTP-Only Access Cookie**: Secure `session_token` cookie
+- Automatic fallback between access-token methods
 
 ### Caching Strategy
-- **Session Cache**: 1 hour TTL
+- **Access Session Cache**: short-lived, keyed by access-token `jti`
+- **Refresh Family Cache**: 72-hour sliding TTL, keyed by `family_id`/refresh `jti`
 - **Permission Cache**: 30 minutes TTL
 - **Access Cache**: 30 minutes TTL
 - **Automatic Invalidation**: On user/role changes
+
+## 🚚 Deployment, Migration, and Rollback
+
+- `JWT_SECRET_KEY` is mandatory outside explicit tests. Missing it is a startup/auth configuration failure, not a recoverable credential error.
+- This auth contract is intentionally breaking: legacy access/session tokens cannot refresh and may require users to log in again.
+- Clients must store/use `refresh_token`, serialize refresh calls, retry the original request once after successful refresh, and stop retrying if refresh fails due to invalid/reused/revoked/expired refresh token.
+- New Redis namespaces (`refresh_family:*`, `refresh_token:*`, `refresh_used:*`, `revoked_family:*`, `user_sessions:*`, `user_refresh_families:*`) can expire naturally. Rollback means redeploying the previous release and clearing/expiring those namespaces if needed.
+- Do not silently re-enable legacy access-token refresh unless a new spec explicitly supersedes this contract.
 
 ## 🆘 Quick Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| Authentication failing | Check JWT_SECRET_KEY env variable |
+| Authentication failing | Check `JWT_SECRET_KEY`; it is required outside tests |
 | Permission errors | Verify role and permission group assignments |
-| Session expired | Re-authenticate or use `/auth/refresh` |
+| Access token expired | Use `/auth/refresh` with the refresh token; re-authenticate if refresh fails |
+| Refresh rejected | Send a valid `refresh_token`; `/auth/refresh` rejects access/session tokens and `Authorization: Bearer` refresh transport |
 | Database errors | Verify MySQL connection and schema |
 | Cache issues | Use `/system/cache/clear` endpoint |
 

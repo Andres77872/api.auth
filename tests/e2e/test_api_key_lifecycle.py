@@ -11,9 +11,9 @@ Proof layer: Layer 3 (E2E — real MySQL stored procedures + real Redis)
 Trace: strategy.md Slice 25, spec.md success criteria items 1-7, 11
 """
 
-import json
 import secrets
 import uuid
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
@@ -22,14 +22,16 @@ import pymysql
 import pytest
 import redis
 
+from src.Util.auth_lifecycle import issue_project_token_pair
+
 # ─── Real DB Config ─────────────────────────────────────────────────────────
 
 _REAL_DB_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 3307,
-    "user": "test_user",
-    "password": "test_mysql_password",
-    "database": "magic_auth",
+    "host": os.environ.get("REAL_DB_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("REAL_DB_PORT", "3307")),
+    "user": os.environ.get("REAL_DB_USER", "test_user"),
+    "password": os.environ.get("REAL_DB_PASSWORD", "test_mysql_password"),
+    "database": os.environ.get("REAL_DB_NAME", "magic_auth"),
     "charset": "utf8mb4",
 }
 
@@ -44,9 +46,10 @@ def _get_tuple_connection():
 # ─── Live Redis Config ──────────────────────────────────────────────────────
 
 _REAL_REDIS_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 6380,
-    "db": 0,
+    "host": os.environ.get("REAL_REDIS_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("REAL_REDIS_PORT", "6380")),
+    "db": int(os.environ.get("REDIS_DB", "0")),
+    "password": os.environ.get("DB_REDIS_PASSWORD") or None,
     "decode_responses": True,
 }
 
@@ -73,6 +76,7 @@ _DB_PATCH_LOCATIONS = [
 _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
     "src.Util.cache_manager.redis_client",
+    "src.Util.auth_lifecycle.redis_client",
     "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
@@ -200,24 +204,24 @@ def _link_ug_to_pg(conn, ug_id, pg_id):
 
 
 def _create_session_in_redis(r, user, project, session_token=None):
-    """Create a session in Redis for the given user/project."""
-    if session_token is None:
-        session_token = f"e2e-{uuid.uuid4().hex[:32]}"
-    payload = {
-        "session_id": 99999,
-        "user_hash": user["user_hash"],
-        "user_id": user["id"],
-        "user_type": "consumer",
-        "project_hash": project["project_hash"],
-        "project_name": project["project_name"],
-        "project_id": project["id"],
-        "permissions": [],
-        "groups": [],
-        "session_token": session_token,
-        "session_length": 259200,
-    }
-    r.set(f"session:{session_token}", json.dumps(payload), ex=259200)
-    return session_token
+    """Create a lifecycle access session in Redis for the given user/project."""
+    with patch("src.Util.auth_lifecycle.redis_client", r):
+        pair = issue_project_token_pair(
+            user={
+                "id": user["id"],
+                "user_hash": user["user_hash"],
+                "username": user["username"],
+                "user_type": "consumer",
+            },
+            project={
+                "id": project["id"],
+                "project_hash": project["project_hash"],
+                "project_name": project["project_name"],
+            },
+            permissions=[],
+            groups=[],
+        )
+    return pair.access_token
 
 
 # ─── E2E Tests ──────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
+from src.Util.auth_lifecycle import revoke_user_auth_state
 from src.Util.bulk_operations import (
     bulk_update_users, bulk_delete_users,
     bulk_assign_roles, bulk_add_users_to_group
@@ -35,6 +36,17 @@ security = HTTPBearerOrCookie()
 
 
 # Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
+
+
+def _revoke_bulk_deactivated_auth_state(result: Dict[str, Any]) -> None:
+    """Revoke auth lifecycle state for users successfully deactivated in bulk."""
+    for item in result.get("results", []):
+        if not item.get("success"):
+            continue
+        user_id = item.get("user_id")
+        if user_id is None:
+            continue
+        revoke_user_auth_state(str(user_id), reason="bulk_user_deactivated")
 
 
 @router.post("/users/bulk-update")
@@ -126,11 +138,22 @@ async def bulk_update_users_endpoint(
             details={"required_fields": ["is_active", "user_type", "force_password_reset"]}
         )
 
+    user_updates = [
+        {"user_hash": user_hash, "updates": dict(updates)}
+        for user_hash in user_hashes
+    ]
+
     # Perform bulk update
     result = handle_db_operation(
-        lambda: bulk_update_users(user_hashes, updates, current_user.id),
+        lambda: bulk_update_users(user_updates, updated_by=str(current_user.id)),
         error_context="bulk user update operation"
     )
+
+    if updates.get('is_active') is False:
+        handle_db_operation(
+            lambda: _revoke_bulk_deactivated_auth_state(result),
+            error_context="bulk user auth revocation"
+        )
 
     # Log the activity
     ActivityLogger.log_bulk_user_update(

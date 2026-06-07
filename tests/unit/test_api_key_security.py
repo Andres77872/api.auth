@@ -7,6 +7,7 @@ and pepper configuration.
 
 import hmac
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -269,15 +270,19 @@ class TestPepperConfiguration:
         from src.Util.api_key_security import API_KEY_PEPPER
         assert isinstance(API_KEY_PEPPER, bytes)
 
-    def test_missing_pepper_raises_key_error(self):
+    def test_missing_pepper_raises_key_error(self, monkeypatch):
         """Verify that missing API_KEY_PEPPER raises KeyError at import time."""
-        # We can't easily test this in-process since the module is already imported.
-        # Instead, verify the module-level code path by checking that the env var exists.
-        assert "API_KEY_PEPPER" in os.environ
+        module_name = "src.Util.api_key_security"
+        original_module = sys.modules.pop(module_name, None)
+        monkeypatch.delenv("API_KEY_PEPPER", raising=False)
 
-    def test_test_pepper_is_set(self):
-        """Verify .env.test has the pepper set."""
-        assert os.environ.get("API_KEY_PEPPER") == "test-pepper-do-not-use-in-production-32bytes!"
+        try:
+            with pytest.raises(KeyError):
+                __import__(module_name, fromlist=["API_KEY_PEPPER"])
+        finally:
+            sys.modules.pop(module_name, None)
+            if original_module is not None:
+                sys.modules[module_name] = original_module
 
     def test_consistent_hash_with_same_pepper(self):
         """Two tokens generated with the same inputs produce the same hash."""

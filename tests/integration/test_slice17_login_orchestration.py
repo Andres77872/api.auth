@@ -14,6 +14,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from src.Util.JWT_Security import JWTTokenHandler
+
 
 def _make_user(user_type="consumer", user_id="1", user_hash="usr-login-001",
                username="loginuser", email="login@example.com"):
@@ -165,9 +167,10 @@ async def test_login_stores_user_groups_in_redis_session(
     assert response.status_code == 200
     data = response.json()
     token = data["session_token"]
+    access_jti = JWTTokenHandler.decode_access_token(token)["jti"]
 
     # Verify session was stored in Redis with group data
-    session_raw = fake_redis.get(f"session:{token}")
+    session_raw = fake_redis.get(f"session:{access_jti}")
     assert session_raw is not None
     session_data = json.loads(session_raw)
     assert "user_group_ids" in session_data

@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 
 from src.Util.Seccurity import (
     extract_jwt_token_from_request,
+    extract_refresh_token_from_request,
     returnJson_401,
     returnJson_403,
     returnJson_404,
@@ -22,6 +23,7 @@ from src.Util.Seccurity import (
     returnJson_200,
     HTTPBearerOrCookie,
     JWT_COOKIE_NAME,
+    REFRESH_JWT_COOKIE_NAME,
     middleware_user_token_validation,
     PLATFORM_COLLECTION_SENTINEL,
 )
@@ -61,6 +63,51 @@ class TestExtractJwtTokenFromRequest:
 
         result = extract_jwt_token_from_request(request)
         assert result is None
+
+
+class TestExtractRefreshTokenFromRequest:
+    def test_extracts_refresh_token_from_cookie(self):
+        request = MagicMock()
+        request.headers = {"Authorization": "Bearer access-token-ignored"}
+        request.cookies = {REFRESH_JWT_COOKIE_NAME: "refresh-cookie-token"}
+
+        assert extract_refresh_token_from_request(request) == "refresh-cookie-token"
+
+    def test_extracts_refresh_token_from_explicit_body_value(self):
+        request = MagicMock()
+        request.headers = {}
+        request.cookies = {}
+
+        assert extract_refresh_token_from_request(request, "refresh-body-token") == "refresh-body-token"
+
+    def test_matching_cookie_and_body_is_allowed(self):
+        request = MagicMock()
+        request.headers = {}
+        request.cookies = {REFRESH_JWT_COOKIE_NAME: "same-refresh-token"}
+
+        assert extract_refresh_token_from_request(request, "same-refresh-token") == "same-refresh-token"
+
+    def test_mismatched_cookie_and_body_raises(self):
+        request = MagicMock()
+        request.headers = {}
+        request.cookies = {REFRESH_JWT_COOKIE_NAME: "cookie-token"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            extract_refresh_token_from_request(request, "body-token")
+
+        assert exc_info.value.status_code == 401
+        assert "mismatch" in exc_info.value.detail.lower() or "match" in exc_info.value.detail.lower()
+
+    def test_authorization_header_is_not_refresh_transport(self):
+        request = MagicMock()
+        request.headers = {"Authorization": "Bearer access-token"}
+        request.cookies = {}
+
+        with pytest.raises(HTTPException) as exc_info:
+            extract_refresh_token_from_request(request)
+
+        assert exc_info.value.status_code == 401
+        assert "refresh token" in exc_info.value.detail.lower()
 
     def test_returns_none_with_non_bearer_auth(self):
         request = MagicMock()
@@ -150,33 +197,6 @@ class TestMiddlewareUserTokenValidation:
 
         assert result.user_collection == PLATFORM_COLLECTION_SENTINEL
         assert result.user_type == "admin"
-
-    def test_accepts_platform_session_from_legacy_headers(self):
-        request = MagicMock()
-        request.headers = {
-            "X-token-user": "test-token",
-            "X-token-collection": PLATFORM_COLLECTION_SENTINEL,
-        }
-        request.cookies = {}
-
-        session = MagicMock()
-        session.scope = "platform"
-        session.project_hash = None
-        session.session_token = "test-token"
-        session.session_length = 259200
-        session.user_hash = "usr-root-001"
-        session.user_id = "0"
-        session.project_id = None
-        session.user_project_id = None
-        session.groups = ["platform_root_users"]
-        session.user_type = "root"
-        session.assigned_project_id = None
-
-        with patch("src.Util.Seccurity.validate_session", return_value=session):
-            result = middleware_user_token_validation(request)
-
-        assert result.user_collection == PLATFORM_COLLECTION_SENTINEL
-        assert result.user_type == "root"
 
 
 # ─── returnJson_* helpers ───────────────────────────────────────────────────

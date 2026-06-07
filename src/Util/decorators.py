@@ -14,7 +14,7 @@ from functools import wraps
 from datetime import datetime, timezone
 from inspect import signature
 
-from fastapi import Request
+from fastapi import Request, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.log_context_models import LogContext, UnauthenticatedLogContext, OperationMetadata
@@ -262,7 +262,14 @@ def log_and_handle_errors(
                     )
                 
                 raise  # Re-raise to be handled by FastAPI exception handler
-                
+
+            except HTTPException:
+                # An HTTPException carries an intended status (e.g. 401 "Token
+                # expired" from JWT validation, or a 4xx raised by the handler).
+                # Let FastAPI's handler return that status — never mask it as a
+                # 500 InternalError.
+                raise
+
             except Exception as e:
                 # Handle unexpected exceptions
                 duration = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -475,7 +482,14 @@ def log_unauthenticated_operation(
                     )
                 
                 raise  # Re-raise to be handled by FastAPI exception handler
-                
+
+            except HTTPException:
+                # An HTTPException carries an intended status (e.g. 401 "Token
+                # expired" from JWT validation, or a 4xx raised by the handler).
+                # Let FastAPI's handler return that status — never mask it as a
+                # 500 InternalError.
+                raise
+
             except Exception as e:
                 # Handle unexpected exceptions
                 duration = (datetime.now(timezone.utc) - start_time).total_seconds()

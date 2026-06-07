@@ -36,6 +36,12 @@ VALIDATE_CACHE_TTL = int(os.environ.get("VALIDATE_CACHE_TTL", "30"))  # Phase 2.
 # Cache key prefixes
 SESSION_PREFIX = "session:"
 SESSION_FULL_PREFIX = "session_full:"  # Phase 2.1: full EnhancedUserLogin cache
+REFRESH_FAMILY_PREFIX = "refresh_family:"
+REFRESH_TOKEN_PREFIX = "refresh_token:"
+REFRESH_USED_PREFIX = "refresh_used:"
+REVOKED_FAMILY_PREFIX = "revoked_family:"
+USER_SESSIONS_PREFIX = "user_sessions:"
+USER_REFRESH_FAMILIES_PREFIX = "user_refresh_families:"
 ACCESS_PREFIX = "access:"
 ROLE_PREFIX = "role:"
 USER_INFO_PREFIX = "user_info:"
@@ -128,6 +134,70 @@ class CacheManager:
     # =============================================================================
     # SESSION MANAGEMENT
     # =============================================================================
+
+    @staticmethod
+    def session_key(access_jti: str) -> str:
+        return f"{SESSION_PREFIX}{access_jti}"
+
+    @staticmethod
+    def session_full_key(access_jti: str) -> str:
+        return f"{SESSION_FULL_PREFIX}{access_jti}"
+
+    @staticmethod
+    def refresh_family_key(family_id: str) -> str:
+        return f"{REFRESH_FAMILY_PREFIX}{family_id}"
+
+    @staticmethod
+    def refresh_token_key(refresh_jti: str) -> str:
+        return f"{REFRESH_TOKEN_PREFIX}{refresh_jti}"
+
+    @staticmethod
+    def refresh_used_key(family_id: str) -> str:
+        return f"{REFRESH_USED_PREFIX}{family_id}"
+
+    @staticmethod
+    def revoked_family_key(family_id: str) -> str:
+        return f"{REVOKED_FAMILY_PREFIX}{family_id}"
+
+    @staticmethod
+    def user_sessions_key(user_id: str) -> str:
+        return f"{USER_SESSIONS_PREFIX}{user_id}"
+
+    @staticmethod
+    def user_refresh_families_key(user_id: str) -> str:
+        return f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}"
+
+    def set_json(self, key: str, value: Dict[str, Any], ttl_seconds: int) -> bool:
+        try:
+            return bool(self.redis.set(key, json.dumps(value, default=str), ex=ttl_seconds))
+        except Exception as e:
+            logger.error(f"Failed to set JSON cache key {key}: {e}")
+            return False
+
+    def get_json(self, key: str) -> Optional[Dict[str, Any]]:
+        try:
+            raw = self.redis.get(key)
+            if not raw:
+                return None
+            if isinstance(raw, bytes):
+                raw = raw.decode()
+            return json.loads(raw)
+        except Exception as e:
+            logger.error(f"Failed to get JSON cache key {key}: {e}")
+            return None
+
+    def delete_access_session(self, access_jti: str) -> int:
+        return self._delete_keys([self.session_key(access_jti), self.session_full_key(access_jti)])
+
+    def add_user_session_index(self, user_id: str, access_jti: str, ttl_seconds: int) -> None:
+        key = self.user_sessions_key(user_id)
+        self.redis.sadd(key, access_jti)
+        self.redis.expire(key, ttl_seconds)
+
+    def add_user_refresh_family_index(self, user_id: str, family_id: str, ttl_seconds: int) -> None:
+        key = self.user_refresh_families_key(user_id)
+        self.redis.sadd(key, family_id)
+        self.redis.expire(key, ttl_seconds)
 
     def set_session(self, session_token: str, session_data: Dict[str, Any]) -> bool:
         """

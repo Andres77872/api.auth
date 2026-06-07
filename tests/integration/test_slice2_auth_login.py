@@ -75,6 +75,9 @@ async def test_login_valid_consumer_credentials(
     data = response.json()
     assert data["success"] is True
     assert "session_token" in data
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
     assert data["user"]["username"] == "testuser"
     assert data["user"]["user_type"] == "consumer"
     assert len(data["accessible_projects"]) >= 1
@@ -83,6 +86,7 @@ async def test_login_valid_consumer_credentials(
     # Cookie should be set
     cookies = response.cookies
     assert "session_token" in cookies
+    assert "refresh_token" in cookies
 
 
 @pytest.mark.asyncio
@@ -153,7 +157,9 @@ async def test_login_root_user_with_project(
     assert data["user"]["user_type"] == "root"
     assert data["project"] is not None
     assert data["project"]["project_hash"] == "prj-test-001"
-    assert "session_token" in data
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio
@@ -487,8 +493,13 @@ async def test_platform_login_root_success(
     assert data["success"] is True
     assert data["user"]["user_type"] == "root"
     assert data["project"] is None
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
     token = data["session_token"]
-    session_raw = fake_redis.get(f"session:{token}")
+    from src.Util.JWT_Security import JWTTokenHandler
+    access_jti = JWTTokenHandler.decode_access_token(token)["jti"]
+    session_raw = fake_redis.get(f"session:{access_jti}")
     assert session_raw is not None
 
 
@@ -514,6 +525,9 @@ async def test_platform_login_admin_success(
     assert data["success"] is True
     assert data["user"]["user_type"] == "admin"
     assert data["project"] is None
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio

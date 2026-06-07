@@ -11,6 +11,8 @@ Practical guide for integrating with the `api.auth` authentication system from b
 - [Overview](#overview)
 - [Authentication Flow](#authentication-flow)
 - [Token & Cookie Details](#token--cookie-details)
+- [Supported Protected-Route Credentials](#supported-protected-route-credentials)
+- [API Keys](#api-keys)
 - [Client Integration Patterns](#client-integration-patterns)
 - [Code Examples](#code-examples)
 - [Error Handling](#error-handling)
@@ -20,9 +22,11 @@ Practical guide for integrating with the `api.auth` authentication system from b
 
 ## Overview
 
-The API provides authentication via JWT tokens stored in HTTP-only cookies. Clients can authenticate using either:
-- **Cookies** (browsers, SPAs) — automatic, no manual token handling
-- **Bearer header** (mobile, server-to-server, scripts) — manual token management
+The API uses a **true access/refresh token model**:
+- **Access tokens** authorize protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
+- **Refresh tokens** authorize only `/auth/refresh` and rotate the session family.
+- **Cookies** (browsers, SPAs) can carry both tokens automatically.
+- **Bearer header** clients use the access token manually and must store/use the refresh token separately.
 
 ### Key Integration Points
 
@@ -31,7 +35,7 @@ The API provides authentication via JWT tokens stored in HTTP-only cookies. Clie
 | Content-Type | Almost all POST/PUT/PATCH use `multipart/form-data`. Exceptions: `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export` use JSON. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
 | CORS | Defaults to explicit local origins `http://localhost:3000,http://localhost:5173,http://localhost:4173` plus dashboard origin `https://auth-ui.arz.ai`. Set `ALLOWED_ORIGINS` in production. |
-| Cookie | `session_token`, HTTP-only, Secure, SameSite=Strict, 72-hour max-age |
+| Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
 
 ---
 
@@ -39,12 +43,12 @@ The API provides authentication via JWT tokens stored in HTTP-only cookies. Clie
 
 ```
 1. Check Availability (optional)    → POST /auth/check-availability
-2. Register                         → POST /auth/register        → cookie set automatically
-3. Login (subsequent visits)        → POST /auth/login           → cookie set automatically
-4. Validate Session (each request)  → GET  /auth/validate        → auto via cookie or Bearer header
-5. Switch Project (optional)        → POST /auth/switch-project  → new cookie, old session deleted
-6. Refresh Token (before expiry)    → POST /auth/refresh         → session rotation (new token, delete old)
-7. Logout                           → POST /auth/logout          → cookie cleared, session deleted
+2. Register                         → POST /auth/register        → access + refresh token pair
+3. Login (subsequent visits)        → POST /auth/login           → access + refresh token pair
+4. Validate access token            → GET  /auth/validate        → access cookie or Bearer access token
+5. Refresh access token             → POST /auth/refresh         → refresh cookie/body only; rotates refresh token
+6. Switch Project (optional)        → POST /auth/switch-project  → access token + current refresh token
+7. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked
 ```
 
 For detailed endpoint parameters and response shapes, see [Authentication Usage Cases](authentication-usage-cases.md).
@@ -55,12 +59,49 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 
 | Property | Value |
 |----------|-------|
-| Token Type | JWT (JSON Web Token) |
-| Cookie Name | `session_token` |
-| Cookie Lifetime | 72 hours (259200 seconds) |
-| Cookie Flags | HTTP-only, Secure, SameSite=Strict |
-| Session Storage | Redis-backed |
-| Refresh Strategy | Session rotation — new token issued, old session deleted (not a refresh-token pattern) |
+| Access Token | Short-lived JWT returned as `access_token` and deprecated `session_token` alias |
+| Refresh Token | 72-hour sliding JWT returned as `refresh_token` in JSON and `refresh_token` cookie |
+| Access Cookie | `session_token`, HTTP-only, Secure, SameSite=Strict, access-token TTL |
+| Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`, 72-hour sliding Max-Age |
+| Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
+| Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family |
+
+`POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
+
+---
+
+## Supported Protected-Route Credentials
+
+For protected endpoints, clients must use one of the currently wired session credentials:
+
+| Client type | Credential to send |
+|-------------|--------------------|
+| Browser/SPA | `session_token` cookie carrying the access JWT |
+| API clients, scripts, mobile apps, server-to-server callers | `Authorization: Bearer <access_token>` |
+
+Do not send refresh tokens to protected endpoints. Refresh tokens are accepted only by `/auth/refresh`.
+
+---
+
+## API Keys
+
+API keys currently have lifecycle support but are **not wired as protected-route authentication**.
+
+What clients can do today:
+
+- Create, list, inspect, update, and revoke API keys through `/users/api-keys` and admin `/api-keys` endpoints.
+- Receive the full key value only once at creation time.
+- Rely on server-side hashing, storage, cache validation, expiration, and revocation behavior for the key records.
+
+Current limitation:
+
+- `X-API-Key: sk_<public_id>.<secret>` by itself currently returns `401` on protected endpoints such as `/users/profile`.
+- Middleware may read the key and set request/audit context, but that context does not satisfy route authorization.
+- API-key lifecycle endpoints still require Bearer access JWT or `session_token` cookie authentication.
+
+Expected future behavior:
+
+API tokens generated for a specific user and project should authenticate protected routes as that user. That requires a unified auth dependency and route migration. Until then, client integrations must use Bearer access JWTs or the `session_token` cookie for protected requests.
 
 ---
 
@@ -68,7 +109,7 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 
 ### Browser Applications (Cookies)
 
-Browsers automatically handle the `session_token` cookie. Your client code only needs:
+Browsers automatically handle both the `session_token` access cookie and `refresh_token` cookie. Your client code must send `credentials: 'include'` and serialize refresh attempts so two concurrent refreshes do not reuse the same refresh token:
 
 ```javascript
 fetch('/auth/login', {
@@ -77,33 +118,46 @@ fetch('/auth/login', {
     'Content-Type': 'application/x-www-form-urlencoded',
     'User-Agent': 'my-app/1.0',
   },
-  body: new URLSearchParams({ username, password }),
+  body: new URLSearchParams({ username, password, project_hash: projectHash }),
   credentials: 'include',  // Critical: sends/receives cookies
 });
 ```
 
-No manual token storage needed. The cookie is inaccessible to JavaScript (XSS protection).
+No manual token storage is required for browser clients. Cookies are inaccessible to JavaScript (XSS protection), and `/auth/refresh` can use the `refresh_token` cookie.
 
 ### Mobile / Server-to-Server (Bearer Header)
 
-Extract the `session_token` from the login response and include it in subsequent requests:
+Extract `access_token` and `refresh_token` from the login/register/platform-login response. Use the access token in `Authorization` for protected requests; use the refresh token only on `/auth/refresh`:
 
 ```python
 # Login
 response = requests.post(f"{BASE_URL}/auth/login", data={
     'username': username,
     'password': password,
+    'project_hash': project_hash,
 }, headers={'User-Agent': 'my-app/1.0'})
-token = response.json()['session_token']
+tokens = response.json()
+access_token = tokens['access_token']
+refresh_token = tokens['refresh_token']
 
 # Subsequent requests
 requests.get(f"{BASE_URL}/users/profile", headers={
-    'Authorization': f'Bearer {token}',
+    'Authorization': f'Bearer {access_token}',
     'User-Agent': 'my-app/1.0',
 })
+
+# Refresh: no Authorization Bearer; send refresh_token cookie/body only
+response = requests.post(
+    f"{BASE_URL}/auth/refresh",
+    data={'refresh_token': refresh_token},
+    headers={'User-Agent': 'my-app/1.0'},
+)
+tokens = response.json()
+access_token = tokens['access_token']
+refresh_token = tokens['refresh_token']
 ```
 
-Store tokens in secure storage (Keychain on iOS, KeyStore on Android). Never in plain text.
+Store both tokens in secure storage (Keychain on iOS, KeyStore on Android). Never store tokens in plain text, URLs, or logs.
 
 ---
 
@@ -112,6 +166,41 @@ Store tokens in secure storage (Keychain on iOS, KeyStore on Android). Never in 
 ### JavaScript/TypeScript (Browser)
 
 ```javascript
+function authErrorMessage(error, fallback) {
+  return error?.error?.message || error?.detail?.message || fallback;
+}
+
+let refreshInFlight = null;
+
+async function refreshAccessToken() {
+  // Browser flow: refresh_token cookie is sent automatically.
+  // Never send Authorization: Bearer <access_token> to /auth/refresh.
+  if (!refreshInFlight) {
+    refreshInFlight = fetch('https://api.example.com/auth/refresh', {
+      method: 'POST',
+      headers: { 'User-Agent': 'my-app/1.0' },
+      credentials: 'include'
+    }).finally(() => { refreshInFlight = null; });
+  }
+
+  const response = await refreshInFlight;
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(authErrorMessage(error, 'Refresh failed; user must log in again'));
+  }
+
+  return await response.json(); // includes new access_token + refresh_token fields
+}
+
+async function fetchWithAuthRetry(url, options = {}) {
+  let response = await fetch(url, { ...options, credentials: 'include' });
+  if (response.status !== 401) return response;
+
+  await refreshAccessToken();
+  response = await fetch(url, { ...options, credentials: 'include' });
+  return response;
+}
+
 // Registration
 async function register(username, password, email, groupHash) {
   const formData = new URLSearchParams();
@@ -132,9 +221,10 @@ async function register(username, password, email, groupHash) {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail?.message || 'Registration failed');
+    throw new Error(authErrorMessage(error, 'Registration failed'));
   }
 
+  // Response includes access_token, refresh_token, and session_token access alias.
   return await response.json();
 }
 
@@ -162,9 +252,35 @@ async function login(username, password, projectHash) {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail?.message || 'Login failed');
+    throw new Error(authErrorMessage(error, 'Login failed'));
   }
 
+  // Response includes access_token, refresh_token, and session_token access alias.
+  return await response.json();
+}
+
+// Platform Login (root/admin only, no project_hash)
+async function platformLogin(username, password) {
+  const formData = new URLSearchParams();
+  formData.append('username', username);
+  formData.append('password', password);
+
+  const response = await fetch('https://api.example.com/auth/platform/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'my-app/1.0',
+    },
+    body: formData,
+    credentials: 'include'
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(authErrorMessage(error, 'Platform login failed'));
+  }
+
+  // Response includes platform access_token + refresh_token with no project binding.
   return await response.json();
 }
 
@@ -197,9 +313,10 @@ async function switchProject(projectHash) {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail?.message || 'Switch failed');
+    throw new Error(authErrorMessage(error, 'Switch failed'));
   }
 
+  // Response includes the new project-scoped access_token + refresh_token pair.
   return await response.json();
 }
 
@@ -213,7 +330,7 @@ async function logout() {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail?.message || 'Logout failed');
+    throw new Error(authErrorMessage(error, 'Logout failed'));
   }
 
   return await response.json();
@@ -232,7 +349,12 @@ class AuthClient:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers['User-Agent'] = 'my-app/1.0'
-        self.token = None
+        self.access_token = None
+        self.refresh_token = None
+
+    def _store_tokens(self, result: Dict[Any, Any]) -> None:
+        self.access_token = result.get('access_token') or result.get('session_token')
+        self.refresh_token = result.get('refresh_token')
 
     def register(self, username: str, password: str,
                  user_group_hash: str, email: Optional[str] = None) -> Dict[Any, Any]:
@@ -243,7 +365,7 @@ class AuthClient:
         response = self.session.post(f"{BASE_URL}/auth/register", data=data)
         response.raise_for_status()
         result = response.json()
-        self.token = result.get('session_token')
+        self._store_tokens(result)
         return result
 
     def login(self, username: str, password: str,
@@ -255,7 +377,20 @@ class AuthClient:
         response = self.session.post(f"{BASE_URL}/auth/login", data=data)
         response.raise_for_status()
         result = response.json()
-        self.token = result.get('session_token')
+        self._store_tokens(result)
+        return result
+
+    def refresh(self) -> Dict[Any, Any]:
+        """Refresh using refresh_token only. Do not send Authorization Bearer here."""
+        if not self.refresh_token:
+            raise ValueError("No refresh token. Please login first.")
+        response = self.session.post(
+            f"{BASE_URL}/auth/refresh",
+            data={'refresh_token': self.refresh_token},
+        )
+        response.raise_for_status()
+        result = response.json()
+        self._store_tokens(result)
         return result
 
     def validate_session(self) -> Dict[Any, Any]:
@@ -269,18 +404,19 @@ class AuthClient:
         response = self.session.post(
             f"{BASE_URL}/auth/switch-project",
             headers=headers,
-            data={'project_hash': project_hash}
+            data={'project_hash': project_hash, 'refresh_token': self.refresh_token}
         )
         response.raise_for_status()
         result = response.json()
-        self.token = result.get('session_token')
+        self._store_tokens(result)
         return result
 
     def logout(self) -> Dict[Any, Any]:
         headers = self._get_auth_headers()
         response = self.session.post(f"{BASE_URL}/auth/logout", headers=headers)
         response.raise_for_status()
-        self.token = None
+        self.access_token = None
+        self.refresh_token = None
         return response.json()
 
     def get_profile(self) -> Dict[Any, Any]:
@@ -303,9 +439,9 @@ class AuthClient:
         return response.json()
 
     def _get_auth_headers(self) -> Dict[str, str]:
-        if not self.token:
+        if not self.access_token:
             raise ValueError("Not authenticated. Please login first.")
-        return {'Authorization': f'Bearer {self.token}'}
+        return {'Authorization': f'Bearer {self.access_token}'}
 ```
 
 ### React Hook Example
@@ -382,7 +518,7 @@ export function useAuth() {
 
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.detail?.message || 'Login failed');
+      throw new Error(error?.error?.message || 'Login failed');
     }
 
     const data = await response.json();
@@ -422,7 +558,7 @@ export function useAuth() {
 
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.detail?.message || 'Switch failed');
+      throw new Error(error?.error?.message || 'Switch failed');
     }
 
     const data = await response.json();
@@ -442,15 +578,16 @@ export function useAuth() {
 
 ```json
 {
-  "detail": {
-    "error_code": "INVALID_CREDENTIALS",
-    "message": "Invalid username or password",
-    "details": { "username": "john_doe" },
-    "timestamp": "2024-12-14T10:30:00Z",
-    "request_id": "req_abc123xyz"
+  "status": "error",
+  "error": {
+    "code": "AUTH_1001",
+    "category": "authentication",
+    "message": "Invalid username or password"
   }
 }
 ```
+
+Always parse client-facing text from `error.message`, not from legacy `detail.message`.
 
 ### Common Error Codes
 
@@ -462,6 +599,11 @@ For the complete error code catalog, see [Error Reference](errors.md).
 | 401 | `SESSION_EXPIRED` | Token expired | Re-authenticate |
 | 401 | `SESSION_INVALID` | Token malformed | Re-authenticate |
 | 401 | `ACCOUNT_INACTIVE` | User is inactive | Contact admin |
+| 401 | `REFRESH_TOKEN_INVALID` | Refresh token invalid/expired/revoked | Re-authenticate |
+| 401 | `REFRESH_TOKEN_REUSED` | Old refresh token reused; family revoked | Clear tokens and re-authenticate |
+| 401 | `TOKEN_TYPE_INVALID` | Refresh token used as access token, or access token used for refresh | Use the right token type |
+| 401 | `TOKEN_EXPIRED` | JWT `exp` elapsed | Refresh access token or re-authenticate |
+| 401 | `SESSION_REVOKED` | Access session or family revoked | Re-authenticate |
 | 403 | `ACCESS_DENIED` | No project access | Contact admin |
 | 403 | `PROJECT_ACCESS_DENIED` | Cannot access requested project | Use accessible project |
 | 400 | `MISSING_REQUIRED_FIELD` | Required parameter missing | Include all required fields |
@@ -479,6 +621,8 @@ For the complete error code catalog, see [Error Reference](errors.md).
 
 **Mobile/Desktop Applications**: Store token in secure storage (Keychain on iOS, KeyStore on Android). Include token in `Authorization` header. Never store in plain text.
 
+**API Keys**: Store API keys like credentials, but do not use them as protected-route auth until the API-key auth dependency is wired into routes.
+
 **Avoid**: localStorage/sessionStorage (XSS vulnerable), URL parameters, console logging.
 
 ### Session Lifecycle
@@ -486,13 +630,13 @@ For the complete error code catalog, see [Error Reference](errors.md).
 ```
 Token Created (Login/Register)
     ↓
-Active Session (72 hours)
+Access Token Active (short-lived)
     ↓
-Refresh Token (optional, session rotation — new token, old deleted)
+Refresh Token Rotation (72h sliding family; old refresh token becomes invalid)
     ↓
 Logout or Expiration
     ↓
-Session Invalidated
+Access sessions and refresh family invalidated
 ```
 
 ### HTTPS Required
@@ -505,6 +649,16 @@ The `session_token` cookie uses `SameSite=Strict`. Ensure your client is served 
 
 ---
 
+## Migration and Rollback Notes for Clients
+
+- This is a breaking auth-contract deployment: clients using the old "send the session/access token to `/auth/refresh`" flow will receive HTTP 401.
+- Users with legacy sessions may need to log in again so the server can issue a refresh-family-backed token pair.
+- Deployments must configure `JWT_SECRET_KEY`; missing configuration fails outside explicit tests and cannot be fixed client-side.
+- Clients should serialize refresh calls. A late duplicate refresh attempt is treated as refresh-token reuse and revokes the whole family.
+- On rollback to a pre-refresh-family release, tokens issued by this release may not be usable; operators may clear/expire `refresh_family:*`, `refresh_token:*`, `refresh_used:*`, and `revoked_family:*` Redis namespaces and require re-login.
+
+---
+
 ## Related Documentation
 
 - **[Authentication Usage Cases](authentication-usage-cases.md)** — Raw endpoint documentation: login, register, session management, project switching
@@ -513,5 +667,5 @@ The `session_token` cookie uses `SameSite=Strict`. Ensure your client is served 
 
 ---
 
-**Last Updated**: April 2026
+**Last Updated**: June 2026
 **API Version**: 2.2.0

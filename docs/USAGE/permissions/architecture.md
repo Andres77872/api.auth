@@ -165,17 +165,18 @@ This documentation describes the **intended extended behavior** because that is 
 
 ### Validation behavior
 
-`db_enhanced.validate_session()` is cache-first:
+`db_enhanced.validate_session()` delegates JWT-shaped access tokens to the lifecycle validator before any cached full-session data is trusted:
 
-- 1-hour session cache in `src/Util/cache_manager.py`
-- Redis fallback under `session:{token}`
+- JWT signature, `exp`, `type`, `jti`, `session_id`, and `family_id` are checked first
+- Redis authority lives under `session:{access_jti}` and `refresh_family:{family_id}`
+- `session_full:{access_jti}` is only a derived cache after session/family/user checks pass
 - root/admin/consumer handled differently
 
 ### What can go stale
 
-- `/auth/validate` reads the raw session payload and returns cached `user_group_names`
+- `/auth/validate` returns the validated access session payload and cached `user_group_names`
 - admin guard behavior that relies on session-derived permission snapshots can lag behind configuration changes
-- refresh, switch-project, or full re-login recreates session context from current DB state
+- refresh with `refresh_token`, switch-project with access+refresh credentials, or full re-login recreates session context from current DB state
 
 ### What is recalculated
 

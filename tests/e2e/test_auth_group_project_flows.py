@@ -126,7 +126,8 @@ class TestRegistrationGroupNoProjects:
         data = response.json()
         assert data["success"] is True
         assert data["project"] is None
-        assert "session_token" in response.cookies
+        assert data["session_token"] is None
+        assert "session_token" not in response.cookies
 
 
 # ─── Login: project-scoped with multi-group resilience ───────────────────────

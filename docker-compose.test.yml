@@ -1,8 +1,7 @@
-# docker-compose.test.yml — MySQL 8.0 + Redis for real-DB integration tests
+# docker-compose.test.yml — isolated e2e runner + MySQL 8.0 + Redis
 #
 # Usage:
-#   docker compose -f docker-compose.test.yml up -d
-#   pytest -m real_db -v
+#   bash scripts/run-e2e.sh
 #   docker compose -f docker-compose.test.yml down -v
 
 services:
@@ -37,8 +36,10 @@ services:
       - ./schemas/stored_procedures/10_error_logging.sql:/docker-entrypoint-initdb.d/19_sp_10_error_logging.sql
       - ./schemas/stored_procedures/11_activity_logging.sql:/docker-entrypoint-initdb.d/20_sp_11_activity_logging.sql
       - ./schemas/stored_procedures/12_activity_context.sql:/docker-entrypoint-initdb.d/21_sp_12_activity_context.sql
+      - ./schemas/stored_procedures/13_api_keys.sql:/docker-entrypoint-initdb.d/22_sp_13_api_keys.sql
       - ./schemas/triggers/01_activity_logging_triggers.sql:/docker-entrypoint-initdb.d/30_tr_01_activity_logging.sql
       - ./schemas/triggers/02_permission_activity_triggers.sql:/docker-entrypoint-initdb.d/31_tr_02_permission_activity.sql
+      - ./schemas/triggers/03_api_key_activity_triggers.sql:/docker-entrypoint-initdb.d/32_tr_03_api_key_activity.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -58,3 +59,33 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  e2e-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    image: api-auth-e2e:py312
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    env_file:
+      - .env.test
+    environment:
+      DB_HOST: mysql-test
+      DB_PORT: "3306"
+      REDIS_HOST: redis-test
+      REDIS_PORT: "6379"
+      REAL_DB_HOST: mysql-test
+      REAL_DB_PORT: "3306"
+      REAL_DB_USER: test_user
+      REAL_DB_PASSWORD: test_mysql_password
+      REAL_DB_NAME: magic_auth
+      REAL_REDIS_HOST: redis-test
+      REAL_REDIS_PORT: "6379"
+      E2E_SERVICE_WAIT_SECONDS: "120"
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: ["python", "-m", "pytest", "tests/e2e"]

@@ -28,10 +28,13 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 ## ✨ Features
 
 ### 🔐 Authentication & Sessions
-- JWT-based session management with HTTP-only cookies
+- True access/refresh JWT model with Redis-backed revocation authority
+- Short-lived access tokens for protected requests and `/auth/validate`
+- 72-hour sliding refresh-token families for `/auth/refresh`
+- HttpOnly Secure cookies for both `session_token` (access alias) and `refresh_token`
 - Multi-project login and project switching
 - Platform-scoped login for root/admin users
-- Session validation and token refresh
+- Session validation, strict refresh rotation, logout, and deactivation revocation
 - Username/email availability checking
 
 ### 👥 Hierarchical Group Management
@@ -106,10 +109,10 @@ curl http://localhost:8000/system/ping
 | `/auth/login` | POST | User login (requires `project_hash`) |
 | `/auth/platform/login` | POST | Platform-scoped login for root/admin (no project required) |
 | `/auth/register` | POST | New user registration |
-| `/auth/validate` | GET | Validate current session |
-| `/auth/logout` | POST | End session |
-| `/auth/refresh` | POST | Refresh token |
-| `/auth/switch-project` | POST | Switch project context |
+| `/auth/validate` | GET | Validate an access token only |
+| `/auth/logout` | POST | End session and revoke refresh continuity |
+| `/auth/refresh` | POST | Rotate with a refresh token only |
+| `/auth/switch-project` | POST | Switch project context and rotate access+refresh tokens |
 | `/auth/check-availability` | POST | Check username/email availability |
 
 ### Users (`/users`)
@@ -298,21 +301,42 @@ curl http://localhost:8000/system/ping
 
 ## 💡 API Usage
 
+### Auth Token Contract
+
+This release uses a **two-token model**:
+
+- `access_token`: short-lived JWT used for protected API requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
+- `refresh_token`: 72-hour sliding JWT used **only** for `/auth/refresh`; it is returned in the JSON body and as an HttpOnly Secure `refresh_token` cookie.
+- `session_token`: deprecated compatibility alias for `access_token` in response bodies and the access cookie.
+
+`POST /auth/refresh` rejects legacy access/session tokens immediately. Do not send `Authorization: Bearer <access_token>` to refresh; send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
+
+Access JWT signature, `exp`, `type`, `jti`, `session_id`, `family_id`, and server-side Redis session/family state are all enforced before a request is trusted.
+
 ### Authentication
 ```bash
 # Login (requires a project_hash context)
 curl -X POST "http://localhost:8000/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=john_doe&password=SecurePass123!&project_hash=proj-xxxx"
 
 # Platform login for root/admin (no project required)
 curl -X POST "http://localhost:8000/auth/platform/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
   -d "username=admin_user&password=SecurePass123!"
 
-# Use token for authenticated requests
+# Use the access_token/session_token alias for authenticated requests
 curl -X GET "http://localhost:8000/users/profile" \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+# Refresh with the refresh token only; Authorization Bearer is not refresh transport
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
+  -d "refresh_token=YOUR_REFRESH_TOKEN"
 ```
 
 ### Request Format
@@ -377,9 +401,9 @@ DB_MYSQL_PASSWORD=your_password # required
 DB_NAME=magic-auth              # required
 
 # JWT
-JWT_SECRET_KEY=your_secure_jwt_secret_key   # auto-generated if missing (warns)
+JWT_SECRET_KEY=your_secure_jwt_secret_key   # required outside explicit tests; missing value fails startup/auth initialization
 JWT_ALGORITHM=HS256
-JWT_ACCESS_TOKEN_EXPIRE_HOURS=72
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=15          # access token TTL; refresh family remains 72h sliding
 
 # Redis
 REDIS_HOST=192.168.1.90
@@ -405,12 +429,24 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:417
 
 | Problem | Solution |
 |---------|----------|
-| Session expired | Re-authenticate via `/auth/login` |
+| Access token expired | Call `/auth/refresh` with the refresh token; if refresh fails, re-authenticate via `/auth/login` |
+| Legacy client cannot refresh | Update client to store/use `refresh_token`; old access/session tokens are not refresh credentials |
+| Missing JWT secret | Set `JWT_SECRET_KEY`; non-test runtime fails fast without it |
 | Access denied | Check user group membership and project group access |
 | Permission denied | Verify permission groups assigned to user/group |
 | Database errors | Verify MySQL connection and schema |
 | Cache issues | Use `/system/cache/clear` to reset |
 | API key errors | Verify `API_KEY_PEPPER` env var is set |
+
+## 🚚 Migration and Rollback Notes
+
+This is a breaking auth-contract deployment:
+
+- Old access/session tokens cannot be used on `/auth/refresh` and may require users to log in again.
+- Deployments MUST set `JWT_SECRET_KEY`; there is no non-test random fallback.
+- New Redis namespaces include `session:{access_jti}`, `session_full:{access_jti}`, `refresh_family:{family_id}`, `refresh_token:{refresh_jti}`, `refresh_used:{family_id}`, `revoked_family:{family_id}`, `user_sessions:{user_id}`, and `user_refresh_families:{user_id}`.
+- Rollback means redeploying the previous release. If needed, clear or let expire the new refresh-family Redis namespaces; tokens issued by this true-refresh release are not compatible with the older session-rotation contract.
+- Do not re-enable legacy access-token refresh silently unless a separate approved spec changes the auth contract.
 
 ### Quick Diagnostics
 ```bash

@@ -119,7 +119,7 @@ async def test_registration_sets_cookie(
     """Valid registration must set session_token cookie."""
     group = _make_user_group()
     project = _make_project()
-    result = _make_register_result(session_token="cookie-test-token")
+    result = _make_register_result()
 
     with patch("src.routes.auth.check_username_email_available", return_value=True), \
          patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
@@ -136,8 +136,10 @@ async def test_registration_sets_cookie(
         )
 
     assert response.status_code == 200
+    data = response.json()
     assert "session_token" in response.cookies
-    assert response.cookies["session_token"] == "cookie-test-token"
+    assert response.cookies["session_token"] == data["session_token"]
+    assert response.cookies["session_token"].count(".") == 2
 
 
 @pytest.mark.asyncio

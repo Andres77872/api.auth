@@ -6,6 +6,7 @@ from fastapi.security.http import HTTPAuthorizationCredentials
 from starlette.responses import JSONResponse
 
 from src.Util.Models import UserLogin
+from src.Util.auth_constants import ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, PLATFORM_COLLECTION_SENTINEL
 from src.Util.db.db_enhanced import validate_session
 from src.Util.db_config import redis_client as client
 
@@ -16,9 +17,9 @@ x_token_collection_name = 'X-token-collection'
 x_token_user = APIKeyHeader(name=x_token_user_name, auto_error=True, scheme_name=x_token_user_name)
 x_token_collection = APIKeyHeader(name=x_token_collection_name, auto_error=True, scheme_name=x_token_collection_name)
 
-# JWT token constants
-JWT_COOKIE_NAME = "session_token"
-PLATFORM_COLLECTION_SENTINEL = "__platform__"
+# JWT token constants (legacy exported names kept for tests/imports)
+JWT_COOKIE_NAME = ACCESS_COOKIE_NAME
+REFRESH_JWT_COOKIE_NAME = REFRESH_COOKIE_NAME
 
 
 class HTTPBearerOrCookie(HTTPBearer):
@@ -77,6 +78,36 @@ def extract_jwt_token_from_request(request: Request) -> str:
         return cookie_token
 
     return None
+
+
+def extract_refresh_token_from_request(request: Request, explicit_refresh_token: str = None) -> str:
+    """
+    Extract a refresh token from the documented refresh transport only.
+
+    Refresh credentials are accepted from the ``refresh_token`` HttpOnly cookie
+    and/or an explicit body/form value supplied by the route. Authorization
+    bearer tokens are intentionally ignored for refresh so access tokens cannot
+    renew themselves.
+    """
+    cookie_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    body_token = explicit_refresh_token or None
+
+    if cookie_token and body_token and cookie_token != body_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Mismatched refresh token transports",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = cookie_token or body_token
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing refresh token: provide refresh_token cookie or body field",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return token
 
 
 def middleware_user_token_validation(request: Request) -> UserLogin:

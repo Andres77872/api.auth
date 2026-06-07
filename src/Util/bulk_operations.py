@@ -41,7 +41,11 @@ class BulkOperations:
             "successful": 0,
             "failed": 0,
             "errors": [],
-            "updated_users": []
+            "updated_users": [],
+            "success_count": 0,
+            "error_count": 0,
+            "skipped_count": 0,
+            "results": []
         }
 
         try:
@@ -54,6 +58,12 @@ class BulkOperations:
                         if not user_hash:
                             results["errors"].append({"user": "unknown", "error": "Missing user_hash"})
                             results["failed"] += 1
+                            results["error_count"] += 1
+                            results["results"].append({
+                                "user_hash": "unknown",
+                                "success": False,
+                                "error": "Missing user_hash"
+                            })
                             continue
 
                         # Get user
@@ -61,34 +71,91 @@ class BulkOperations:
                         if not user:
                             results["errors"].append({"user": user_hash, "error": "User not found"})
                             results["failed"] += 1
+                            results["error_count"] += 1
+                            results["results"].append({
+                                "user_hash": user_hash,
+                                "success": False,
+                                "error": "User not found"
+                            })
                             continue
 
-                        # Prepare update fields
-                        username = update_data.get('username')
-                        email = update_data.get('email')
-                        password = update_data.get('password')
-                        user_type = update_data.get('user_type')
-                        is_active = update_data.get('is_active')
+                        # Prepare update fields. The active route passes
+                        # {"user_hash": ..., "updates": {...}}; keep support for
+                        # the older flat template shape for callers that still use it.
+                        requested_updates = dict(update_data.get('updates') or {})
+                        requested_updates.update({
+                            key: value
+                            for key, value in update_data.items()
+                            if key not in {'user_hash', 'updates'}
+                        })
 
-                        # Update user
-                        updated_user = update_user(
-                            user.id,
-                            username=username,
-                            email=email,
-                            password=password,
-                            user_type=user_type
+                        username = requested_updates.get('username')
+                        email = requested_updates.get('email')
+                        password = requested_updates.get('password')
+                        user_type = requested_updates.get('user_type')
+                        is_active = requested_updates.get('is_active')
+
+                        profile_update_requested = any(
+                            value is not None
+                            for value in (username, email, password, user_type)
                         )
+                        status_update_requested = 'is_active' in requested_updates
 
-                        # Handle active status separately if needed
-                        if is_active is not None and is_active != user.is_active:
-                            BulkOperations._update_user_status(user.id, is_active)
+                        if not profile_update_requested and not status_update_requested:
+                            results["errors"].append({"user": user_hash, "error": "No supported update fields"})
+                            results["failed"] += 1
+                            results["error_count"] += 1
+                            results["results"].append({
+                                "user_hash": user_hash,
+                                "success": False,
+                                "error": "No supported update fields"
+                            })
+                            continue
 
-                        if updated_user:
+                        updated_user = user
+                        if profile_update_requested:
+                            updated_user = update_user(
+                                user.id,
+                                username=username,
+                                email=email,
+                                password=password,
+                                user_type=user_type
+                            )
+
+                        status_updated = True
+                        if status_update_requested and is_active != getattr(user, 'is_active', None):
+                            status_updated = BulkOperations._update_user_status(user.id, is_active)
+
+                        if updated_user and status_updated:
+                            if status_update_requested and is_active is False:
+                                try:
+                                    from src.Util.auth_lifecycle import revoke_user_auth_state
+
+                                    revoke_user_auth_state(str(user.id), reason="bulk_user_deactivated")
+                                except Exception as revoke_error:
+                                    results["errors"].append({"user": user_hash, "error": f"Auth revocation failed: {revoke_error}"})
+                                    results["failed"] += 1
+                                    results["error_count"] += 1
+                                    results["results"].append({
+                                        "user_hash": user_hash,
+                                        "success": False,
+                                        "user_id": str(user.id),
+                                        "error": "Auth revocation failed"
+                                    })
+                                    logger.error(f"Bulk auth revocation error for user {user_hash}: {revoke_error}")
+                                    continue
+
                             results["successful"] += 1
+                            results["success_count"] += 1
                             results["updated_users"].append({
                                 "user_hash": user_hash,
                                 "username": updated_user.username,
-                                "changes": {k: v for k, v in update_data.items() if k != 'user_hash' and v is not None}
+                                "changes": {k: v for k, v in requested_updates.items() if v is not None}
+                            })
+                            results["results"].append({
+                                "user_hash": user_hash,
+                                "success": True,
+                                "user_id": str(user.id)
                             })
 
                             # Log the update
@@ -98,13 +165,20 @@ class BulkOperations:
                                 details={
                                     "action": "bulk_update_user",
                                     "target_user_hash": user_hash,
-                                    "changes": update_data
+                                    "changes": requested_updates
                                 },
                                 target_user_id=user.id
                             )
                         else:
                             results["errors"].append({"user": user_hash, "error": "Update failed"})
                             results["failed"] += 1
+                            results["error_count"] += 1
+                            results["results"].append({
+                                "user_hash": user_hash,
+                                "success": False,
+                                "user_id": str(user.id),
+                                "error": "Update failed"
+                            })
 
                     except Exception as e:
                         results["errors"].append({
@@ -112,6 +186,12 @@ class BulkOperations:
                             "error": str(e)
                         })
                         results["failed"] += 1
+                        results["error_count"] += 1
+                        results["results"].append({
+                            "user_hash": update_data.get('user_hash', 'unknown'),
+                            "success": False,
+                            "error": str(e)
+                        })
                         logger.error(f"Bulk update error for user {update_data.get('user_hash')}: {e}")
 
                 con.commit()
@@ -119,6 +199,8 @@ class BulkOperations:
         except Exception as e:
             logger.error(f"Bulk update users error: {e}")
             results["errors"].append({"operation": "bulk_update", "error": str(e)})
+            results["failed"] += 1
+            results["error_count"] += 1
 
         return results
 

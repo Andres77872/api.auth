@@ -1,184 +1,224 @@
 import os
-import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
+from uuid import uuid4
 
 import jwt
 from fastapi import HTTPException
-from jose import JWTError
 
-# JWT Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(64))
+from src.Util.auth_constants import (
+    ACCESS_TOKEN_TYPE,
+    APP_ENV_ENV,
+    AUTH_REQUIRED_JWT_CLAIMS,
+    AUTH_SCOPE_PROJECT,
+    BASE_REQUIRED_JWT_CLAIMS,
+    DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES,
+    EXPLICIT_TEST_JWT_SECRET,
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES_ENV,
+    JWT_SECRET_KEY_ENV,
+    NON_TEST_ENV_NAMES,
+    PYTEST_CURRENT_TEST_ENV,
+    REFRESH_FAMILY_TTL_SECONDS,
+    REFRESH_TOKEN_TYPE,
+    TEST_ENV_NAMES,
+)
+
+
 JWT_ALGORITHM = "HS256"
-JWT_ACCESS_TOKEN_EXPIRE_HOURS = 72  # 3 days, same as original system
+
+
+def _is_explicit_test_runtime() -> bool:
+    runtime = os.getenv(APP_ENV_ENV, "").strip().lower()
+    if runtime in TEST_ENV_NAMES:
+        return True
+    if runtime in NON_TEST_ENV_NAMES:
+        return False
+    return bool(os.getenv(PYTEST_CURRENT_TEST_ENV)) or "pytest" in sys.modules
+
+
+def _resolve_jwt_secret_for_runtime() -> str:
+    secret = os.getenv(JWT_SECRET_KEY_ENV)
+    if secret:
+        return secret
+
+    if _is_explicit_test_runtime():
+        return EXPLICIT_TEST_JWT_SECRET
+
+    raise RuntimeError(
+        "JWT_SECRET_KEY is required outside explicit test runtime; "
+        "silent random JWT secrets are not allowed."
+    )
+
+
+JWT_SECRET_KEY = _resolve_jwt_secret_for_runtime()
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES
+# Backward-compatible name for old imports/tests. Access tokens are no longer
+# 72h by default; this value mirrors the configured minute TTL as a fraction of
+# hours instead of reviving the old long-lived behavior.
+JWT_ACCESS_TOKEN_EXPIRE_HOURS = JWT_ACCESS_TOKEN_EXPIRE_MINUTES / 60
 
 
 class JWTTokenHandler:
     """
-    JWT Token Handler to replace the custom Cypher system
-    Maintains the same interface for easy migration
+    JWT token helper for the access/refresh-token contract.
+
+    The request path must validate signature, exp, type, and the lifecycle claims
+    before Redis state is trusted. Legacy compatibility helpers remain at the
+    bottom of the file, but new tokens include jti/family_id/scope claims.
     """
 
     @staticmethod
-    def create_access_token(session_id: int, user_hash: str, collection: Optional[str] = None,
-                            expires_delta: Optional[timedelta] = None,
-                            scope: Optional[str] = None) -> str:
-        """
-        Create a JWT access token with session data
-        
-        Args:
-            session_id: Unique session identifier
-            user_hash: User hash for identification
-            collection: Collection identifier
-            expires_delta: Token expiration time
-            scope: Optional session scope marker
-            
-        Returns:
-            JWT token string
-        """
-        if expires_delta:
-            expire = datetime.now(timezone.utc) + expires_delta
-        else:
-            expire = datetime.now(timezone.utc) + timedelta(hours=JWT_ACCESS_TOKEN_EXPIRE_HOURS)
+    def resolve_secret_for_runtime() -> str:
+        return _resolve_jwt_secret_for_runtime()
 
-        # Create JWT payload with same data structure as original system
-        payload = {
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _base_payload(
+        *,
+        token_type: str,
+        session_id: Any,
+        user_hash: str,
+        collection: Optional[str],
+        expires_delta: timedelta,
+        jti: Optional[str],
+        family_id: Optional[str],
+        scope: Optional[str],
+    ) -> Dict[str, Any]:
+        now = JWTTokenHandler._now()
+        return {
             "session_id": session_id,
             "user_hash": user_hash,
             "collection": collection,
-            "exp": expire,
-            "iat": datetime.now(timezone.utc),
-            "type": "access_token"
+            "exp": int((now + expires_delta).timestamp()),
+            "iat": int(now.timestamp()),
+            "type": token_type,
+            "jti": jti or str(uuid4()),
+            "family_id": family_id or str(uuid4()),
+            "scope": scope or AUTH_SCOPE_PROJECT,
         }
 
-        if scope:
-            payload["scope"] = scope
-
+    @staticmethod
+    def create_access_token(
+        session_id: Any,
+        user_hash: str,
+        collection: Optional[str] = None,
+        expires_delta: Optional[timedelta] = None,
+        scope: Optional[str] = None,
+        jti: Optional[str] = None,
+        family_id: Optional[str] = None,
+    ) -> str:
+        """Create a short-lived signed access JWT."""
+        ttl = expires_delta or timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        payload = JWTTokenHandler._base_payload(
+            token_type=ACCESS_TOKEN_TYPE,
+            session_id=session_id,
+            user_hash=user_hash,
+            collection=collection,
+            expires_delta=ttl,
+            jti=jti,
+            family_id=family_id,
+            scope=scope,
+        )
         return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
     @staticmethod
-    def decode_access_token(token: str) -> Dict[str, Any]:
-        """
-        Decode and validate JWT access token
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            Decoded token payload
-            
-        Raises:
-            HTTPException: If token is invalid or expired
-        """
-        try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-
-            # Validate token type
-            if payload.get("type") != "access_token":
-                raise HTTPException(status_code=401, detail="Invalid token type")
-
-            # Check if token is expired (jwt.decode already handles this, but double-check)
-            if datetime.fromtimestamp(payload.get("exp", 0), timezone.utc) < datetime.now(timezone.utc):
-                raise HTTPException(status_code=401, detail="Token expired")
-
-            return payload
-
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        except JWTError:
-            raise HTTPException(status_code=401, detail="Token validation failed")
+    def create_refresh_token(
+        session_id: Any,
+        user_hash: str,
+        collection: Optional[str] = None,
+        expires_delta: Optional[timedelta] = None,
+        scope: Optional[str] = None,
+        jti: Optional[str] = None,
+        family_id: Optional[str] = None,
+    ) -> str:
+        """Create a 72h sliding-window refresh JWT."""
+        ttl = expires_delta or timedelta(seconds=REFRESH_FAMILY_TTL_SECONDS)
+        payload = JWTTokenHandler._base_payload(
+            token_type=REFRESH_TOKEN_TYPE,
+            session_id=session_id,
+            user_hash=user_hash,
+            collection=collection,
+            expires_delta=ttl,
+            jti=jti,
+            family_id=family_id,
+            scope=scope,
+        )
+        return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
     @staticmethod
-    def extract_session_id(token: str) -> int:
-        """
-        Extract session ID from JWT token (maintains compatibility with original interface)
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            Session ID as integer
-        """
+    def _decode_typed_token(token: str, expected_type: str) -> Dict[str, Any]:
+        try:
+            payload = jwt.decode(
+                token,
+                JWT_SECRET_KEY,
+                algorithms=[JWT_ALGORITHM],
+                options={"require": BASE_REQUIRED_JWT_CLAIMS},
+            )
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.MissingRequiredClaimError as exc:
+            raise HTTPException(status_code=401, detail=f"Missing required claim: {exc.claim}")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        if payload.get("type") != expected_type:
+            raise HTTPException(status_code=401, detail="Invalid token type")
+
+        for claim in AUTH_REQUIRED_JWT_CLAIMS:
+            if claim not in payload:
+                raise HTTPException(status_code=401, detail=f"Missing required claim: {claim}")
+
+        return payload
+
+    @staticmethod
+    def decode_access_token(token: str) -> Dict[str, Any]:
+        """Decode an access JWT and enforce signature, exp, type, and claims."""
+        return JWTTokenHandler._decode_typed_token(token, ACCESS_TOKEN_TYPE)
+
+    @staticmethod
+    def decode_refresh_token(token: str) -> Dict[str, Any]:
+        """Decode a refresh JWT and enforce signature, exp, type, and claims."""
+        return JWTTokenHandler._decode_typed_token(token, REFRESH_TOKEN_TYPE)
+
+    @staticmethod
+    def extract_session_id(token: str) -> Any:
         payload = JWTTokenHandler.decode_access_token(token)
         return payload.get("session_id")
 
     @staticmethod
     def extract_user_hash(token: str) -> str:
-        """
-        Extract user hash from JWT token
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            User hash string
-        """
         payload = JWTTokenHandler.decode_access_token(token)
         return payload.get("user_hash")
 
     @staticmethod
-    def extract_collection(token: str) -> str:
-        """
-        Extract collection from JWT token
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            Collection string
-        """
+    def extract_collection(token: str) -> Optional[str]:
         payload = JWTTokenHandler.decode_access_token(token)
         return payload.get("collection")
 
     @staticmethod
     def validate_token_structure(token: str) -> bool:
-        """
-        Validate if token has the expected structure without full validation
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            True if token structure is valid
-        """
         try:
-            # Just decode without verification to check structure
             unverified_payload = jwt.decode(token, options={"verify_signature": False})
-            required_fields = ["session_id", "user_hash", "collection", "exp", "iat", "type"]
+            required_fields = BASE_REQUIRED_JWT_CLAIMS + AUTH_REQUIRED_JWT_CLAIMS
             return all(field in unverified_payload for field in required_fields)
-        except:
+        except Exception:
             return False
 
 
-# Compatibility functions to maintain the same interface as Cypher.py
 def jwt_encode(session_id: int, user_hash: str, collection: str) -> tuple[str, None]:
-    """
-    Compatibility function that mimics cypher_x_encode interface
-    
-    Returns:
-        Tuple of (token_string, None) to match original interface
-    """
+    """Compatibility function that mimics cypher_x_encode interface."""
     token = JWTTokenHandler.create_access_token(session_id, user_hash, collection)
     return token, None
 
 
-def jwt_decode(token: str) -> tuple[list[int], None]:
-    """
-    Compatibility function that mimics cypher_x_decode interface
-    
-    Returns:
-        Tuple of ([session_id], None) to match original interface
-    """
+def jwt_decode(token: str) -> tuple[list[Any], None]:
+    """Compatibility function that mimics cypher_x_decode interface."""
     try:
         session_id = JWTTokenHandler.extract_session_id(token)
         return [session_id], None
     except HTTPException:
         return [0], None
-
-
-# Environment variable check
-if not os.getenv("JWT_SECRET_KEY"):
-    print("WARNING: JWT_SECRET_KEY environment variable not set. Using auto-generated key.")
-    print("For production, set JWT_SECRET_KEY environment variable to a secure random string.")

@@ -176,6 +176,7 @@ def fake_redis():
 
     with patch("src.Util.db_config.redis_client", fake), \
          patch("src.Util.cache_manager.redis_client", fake), \
+         patch("src.Util.auth_lifecycle.redis_client", fake), \
          patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake), \
          patch("src.Util.db.db_session_analytics.redis_client", fake), \
@@ -238,7 +239,26 @@ def patched_db_connection():
 @pytest.fixture
 def patched_audit_logger():
     mock_cls = MagicMock()
-    mock_cls.should_log_request.return_value = True
+    excluded_paths = (
+        "/ping",
+        "/health",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/auth/validate",
+    )
+
+    def should_log_request(path, method):
+        if method == "OPTIONS":
+            return False
+        path_without_query = path.split("?")[0]
+        return not any(
+            path_without_query == excluded or path_without_query.startswith(excluded + "/")
+            for excluded in excluded_paths
+        )
+
+    mock_cls.should_log_request.side_effect = should_log_request
     mock_cls.log_request = MagicMock()
     mock_cls.log_response = MagicMock()
     mock_cls.extract_resource_info.return_value = (None, None)
@@ -259,6 +279,16 @@ def patched_audit_ids():
 
 # ─── Other Infrastructure ────────────────────────────────────────────────────
 
+async def _noop_access_logger(*args, **kwargs):
+    return None
+
+
+@pytest.fixture(autouse=True)
+def patched_request_access_logger():
+    with patch("src.middleware.request_validation.logger", _noop_access_logger):
+        yield
+
+
 @pytest.fixture
 def patched_cache_manager():
     mock = MagicMock()
@@ -267,7 +297,9 @@ def patched_cache_manager():
     mock.invalidate_user_cache.return_value = True
     mock.invalidate_project_cache.return_value = True
     mock.get_session.return_value = None
+    mock.get_session_full.return_value = None
     mock.set_session = MagicMock()
+    mock.set_session_full = MagicMock(return_value=True)
     mock.delete_session = MagicMock()
     with patch("src.Util.cache_manager.cache_manager", mock), \
          patch("src.Util.db.db_enhanced.cache_manager", mock), \

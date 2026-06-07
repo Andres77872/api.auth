@@ -113,8 +113,17 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `AUTH_1001` | `INVALID_CREDENTIALS` | Invalid username or password | Wrong credentials on login | Verify username and password |
 | `AUTH_1002` | `SESSION_EXPIRED` | Invalid or expired session | Token expired, deleted, or malformed | Re-authenticate via login |
 | `AUTH_1003` | `SESSION_INVALID` | Session is invalid | Token malformed or not found | Re-authenticate via login |
+| `AUTH_1004` | `TOKEN_INVALID` | Token invalid | JWT malformed or failed validation | Use a valid access/refresh token for the endpoint |
 | `AUTH_1005` | `ACCOUNT_INACTIVE` | Account is inactive | User status is `inactive` | Contact admin to reactivate |
-| `AUTH_1006` | `SESSION_NOT_FOUND` | Session not found in Redis | Session was cleared or Redis restarted | Re-authenticate via login |
+| `AUTH_1013` | `REFRESH_TOKEN_INVALID` | Invalid refresh token | Refresh token invalid, expired, revoked, missing Redis family/token record, or hash mismatch | Re-authenticate via login |
+| `AUTH_1014` | `REFRESH_TOKEN_MISSING` | Refresh token required | `/auth/refresh` called without `refresh_token` cookie/body | Send a valid refresh token or log in again |
+| `AUTH_1015` | `REFRESH_TOKEN_REUSED` | Refresh token reused | Old/used refresh token presented again; family revoked | Clear credentials and force re-login |
+| `AUTH_1016` | `REFRESH_TOKEN_MISMATCH` | Refresh token mismatch | Cookie and explicit body refresh tokens differ | Send one matching refresh token source |
+| `AUTH_1017` | `REFRESH_FAMILY_REVOKED` | Refresh family revoked | Logout, reuse detection, deactivation, or admin revocation invalidated the family | Re-authenticate via login |
+| `AUTH_1018` | `TOKEN_TYPE_INVALID` | Wrong token type | Refresh token used as access token, or access/session token used for refresh | Use the correct token type for the endpoint |
+| `AUTH_1019` | `TOKEN_EXPIRED` | Token expired | JWT `exp` claim elapsed | Refresh access token or re-authenticate |
+| `AUTH_1020` | `SESSION_REVOKED` | Session revoked | Access session or refresh family revoked server-side | Re-authenticate via login |
+| `AUTH_1021` | `JWT_CONFIGURATION_FAILURE` | JWT configuration failure | `JWT_SECRET_KEY` missing/invalid outside tests | Set `JWT_SECRET_KEY`; this is an operator issue |
 
 ### Authorization Errors (403)
 
@@ -206,7 +215,6 @@ The following codes exist in the `ErrorCode` enum but are **not currently raised
 
 | Code | Enum Value | Notes |
 |------|-----------|-------|
-| `AUTH_1004` | `TOKEN_INVALID` | Defined but not used |
 | `AUTH_1007` | `PASSWORD_RESET_REQUIRED` | Defined but not used |
 | `AUTH_1008` | `MFA_REQUIRED` | Defined but not used (MFA not implemented) |
 | `AUTH_1009` | `MFA_INVALID` | Defined but not used (MFA not implemented) |
@@ -265,13 +273,97 @@ Instead of:
 
 ### Session Suddenly Invalid
 
-**Symptoms**: `401 SESSION_EXPIRED` or `SESSION_NOT_FOUND` on any authenticated endpoint
+**Symptoms**: `401 SESSION_EXPIRED`, `TOKEN_EXPIRED`, `SESSION_INVALID`, `SESSION_REVOKED`, or `REFRESH_FAMILY_REVOKED` on authenticated endpoints
 
 **Checklist**:
-1. Token expired (72h TTL) — re-authenticate
-2. Redis restarted or flushed — sessions lost, re-authenticate
-3. `JWT_SECRET_KEY` changed or process restarted without a fixed key — all tokens invalid
-4. Admin invalidated the user's cache (`POST /system/cache/invalidate/user/{hash}`)
+1. Access token expired — call `/auth/refresh` with a valid refresh token
+2. Refresh token expired/revoked/reused — clear credentials and re-authenticate
+3. Redis restarted or flushed — access sessions/refresh families lost, re-authenticate
+4. `JWT_SECRET_KEY` changed — all existing JWTs invalid; re-authenticate after operator fixes config
+5. Admin deactivated/deleted/bulk-deactivated the user — sessions and refresh families are centrally revoked
+
+### Refresh Token Required / Invalid
+
+**Symptoms**: `401 REFRESH_TOKEN_MISSING`, `REFRESH_TOKEN_INVALID`, or `TOKEN_TYPE_INVALID` on `POST /auth/refresh`
+
+Correct refresh request for non-browser clients:
+
+```bash
+curl -X POST "{BASE_URL}/auth/refresh" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "User-Agent: my-client/1.0" \
+  -d "refresh_token=$REFRESH_TOKEN"
+```
+
+Canonical error envelope example:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "AUTH_1014",
+    "category": "authentication",
+    "message": "A valid refresh token is required"
+  }
+}
+```
+
+Do **not** send `Authorization: Bearer <access_token>` to `/auth/refresh`; access/session tokens are rejected immediately and are not upgrade credentials.
+
+### Refresh Token Reuse or Family Revoked
+
+**Symptoms**: `401 REFRESH_TOKEN_REUSED` or `REFRESH_FAMILY_REVOKED`
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "AUTH_1015",
+    "category": "authentication",
+    "message": "Refresh token reuse detected"
+  }
+}
+```
+
+**Checklist**:
+1. Stop retrying refresh; the whole family is revoked.
+2. Clear access and refresh tokens/cookies.
+3. Force re-login.
+4. Serialize refresh calls in clients so duplicate 401 handlers do not reuse the same refresh token.
+
+### Inactive Account / Revoked Session
+
+**Symptoms**: `401 ACCOUNT_INACTIVE`, `SESSION_REVOKED`, or `REFRESH_FAMILY_REVOKED` after deactivation/delete/bulk-deactivation
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "AUTH_1020",
+    "category": "authentication",
+    "message": "Session has been revoked"
+  }
+}
+```
+
+Once an account is inactive, deleted, or bulk-deactivated, old access and refresh credentials fail closed. Contact an administrator; clients should not refresh-loop.
+
+### JWT Configuration Failure
+
+**Symptoms**: startup/auth initialization failure or `JWT_CONFIGURATION_FAILURE`/configuration error
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "AUTH_1021",
+    "category": "authentication",
+    "message": "JWT secret key is not configured"
+  }
+}
+```
+
+This is an operator/configuration issue. Set `JWT_SECRET_KEY` outside explicit tests; the service no longer uses a silent random runtime fallback.
 
 ### Access Denied to Project
 

@@ -20,7 +20,7 @@ from src.Util.Models import (
     LoginResponse, RegisterResponse, ValidateSessionResponse, LogoutResponse,
     SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo, UserGroupInfo
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.Seccurity import HTTPBearerOrCookie, extract_refresh_token_from_request
 from src.Util.decorators import log_and_handle_errors, log_unauthenticated_operation
 from src.Util.log_context_models import LogContext, UnauthenticatedLogContext
 from src.Util.activity_logger import ActivityType
@@ -56,9 +56,11 @@ from src.Util.db_config import redis_client  # Central redis client
 from src.Util.JWT_Security import JWTTokenHandler
 
 # NEW: helpers aligned with the group-based schema
-from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project
+from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project, get_user_groups_in_project_by_hash
 from src.Util.db.db_projects import get_project_by_hash
 from src.Util.auth_flow import resolve_target_project
+from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, validate_access_session
+from src.Util.db.db_enhanced import validate_session as validate_enhanced_session
 
 # ---------------------------------------------------------------------------
 # Session helpers (group-based, no user_projects table required)
@@ -118,6 +120,10 @@ def _create_session(user: Any, project: Optional[Any] = None) -> tuple[str, int]
         "project_name": getattr(project, "project_name", None) if project else None,
         "user_group_ids": user_group_ids,
         "user_group_names": user_group_names,
+        # Fix 1: Add canonical 'groups' key matching what validate_session() reads
+        "groups": user_group_names,
+        # Fix 1: Add username for downstream decorator use
+        "username": user.username,
     }
 
     # Persist
@@ -157,11 +163,167 @@ def _create_platform_session(user: Any) -> tuple[str, int]:
         "groups": groups,
         "user_group_ids": [],
         "user_group_names": [],
+        "username": user.username,
         "assigned_project_id": getattr(user, "assigned_project_id", None),
     }
 
     _store_session(token, payload)
     return token, SESSION_EXPIRE_HOURS * 3600
+
+
+def _set_token_pair_cookies(response: Response, token_pair) -> None:
+    """Apply access and refresh cookies from lifecycle token metadata."""
+    access_cookie = token_pair.cookie_metadata["access"]
+    response.set_cookie(
+        key=access_cookie["name"],
+        value=token_pair.access_token,
+        max_age=access_cookie["max_age"],
+        httponly=access_cookie["httponly"],
+        secure=access_cookie["secure"],
+        samesite=access_cookie["samesite"],
+        path=access_cookie["path"],
+    )
+
+    refresh_cookie = token_pair.cookie_metadata["refresh"]
+    response.set_cookie(
+        key=refresh_cookie["name"],
+        value=token_pair.refresh_token,
+        max_age=refresh_cookie["max_age"],
+        httponly=refresh_cookie["httponly"],
+        secure=refresh_cookie["secure"],
+        samesite=refresh_cookie["samesite"],
+        path=refresh_cookie["path"],
+    )
+
+
+def _route_refresh_groups(user_id: str, project_hash: str):
+    try:
+        groups = get_user_groups_in_project_by_hash(user_id, project_hash)
+        if groups:
+            return groups
+    except Exception:
+        logger.debug("Falling back to user groups for refresh context", exc_info=True)
+    try:
+        project = get_project_by_hash(project_hash)
+        if project:
+            groups = get_user_groups_in_project(user_id, project.id)
+            if groups:
+                return groups
+    except Exception:
+        logger.debug("Falling back to user-wide groups for refresh context", exc_info=True)
+    return get_user_groups_for_user(user_id)
+
+
+def _project_info_from_any(project: Any) -> Optional[ProjectInfo]:
+    project_hash = getattr(project, "project_hash", None)
+    if not project_hash and isinstance(project, dict):
+        project_hash = project.get("project_hash")
+    if not project_hash:
+        return None
+    project_name = getattr(project, "project_name", None)
+    project_description = getattr(project, "project_description", None)
+    if isinstance(project, dict):
+        project_name = project.get("project_name", project_name)
+        project_description = project.get("project_description", project_description)
+    return ProjectInfo(
+        project_hash=project_hash,
+        project_name=project_name or "",
+        project_description=project_description,
+    )
+
+
+def _login_response_from_rotation(rotation) -> LoginResponse:
+    token_pair = rotation.token_pair
+    login_data = rotation.login_data
+    project_info = None
+    if login_data.project_hash:
+        project_info = ProjectInfo(
+            project_hash=login_data.project_hash,
+            project_name=login_data.project_name or "",
+        )
+
+    accessible_projects_info = [
+        project_info_item
+        for project_info_item in (_project_info_from_any(project) for project in (login_data.available_projects or []))
+        if project_info_item is not None
+    ]
+    user_groups_info = [
+        UserGroupInfo(group_hash=str(group), group_name=str(group))
+        for group in (login_data.groups or [])
+    ]
+
+    return LoginResponse(
+        success=True,
+        message="Token refreshed successfully",
+        access_token=token_pair.access_token,
+        refresh_token=token_pair.refresh_token,
+        session_token=token_pair.session_token,
+        token_type=token_pair.token_type,
+        expires_in=token_pair.expires_in,
+        refresh_expires_in=token_pair.refresh_expires_in,
+        expires_at=token_pair.expires_at,
+        refresh_expires_at=token_pair.refresh_expires_at,
+        user=UserInfo(
+            user_hash=login_data.user_hash,
+            username=login_data.username or login_data.user_hash,
+            user_type=login_data.user_type,
+        ),
+        project=project_info,
+        accessible_projects=accessible_projects_info,
+        user_groups=user_groups_info,
+        user_id=login_data.user_id,
+    )
+
+
+def _string_attr(value: Any, attr: str) -> Optional[str]:
+    candidate = getattr(value, attr, None)
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
+def _registration_token_pair(register_result: Any):
+    """Return or create a project-scoped token pair for registration.
+
+    Real `enhanced_register()` now returns token-pair metadata. Some integration
+    tests patch that function with legacy lightweight objects, so this fallback
+    keeps route behavior aligned with the public contract while the DB helper is
+    still covered through its own real path.
+    """
+    if _string_attr(register_result, "access_token") and _string_attr(register_result, "refresh_token"):
+        return register_result
+
+    project_hash = _string_attr(register_result, "project_hash")
+    if not project_hash:
+        return None
+
+    user_id = _string_attr(register_result, "user_id")
+    user_hash = _string_attr(register_result, "user_hash")
+    if not user_id or not user_hash:
+        return None
+
+    project_id = _string_attr(register_result, "project_id")
+    project_name = _string_attr(register_result, "project_name")
+    username = _string_attr(register_result, "username") or user_hash
+    user_type = _string_attr(register_result, "user_type") or "consumer"
+    groups = list(getattr(register_result, "groups", []) or [])
+    group_ids = [str(group_id) for group_id in (getattr(register_result, "user_group_ids", []) or [])]
+    permissions = list(getattr(register_result, "permissions", []) or [])
+
+    return issue_project_token_pair(
+        user={
+            "id": user_id,
+            "user_hash": user_hash,
+            "username": username,
+            "user_type": user_type,
+        },
+        project={
+            "id": project_id,
+            "project_hash": project_hash,
+            "project_name": project_name,
+        },
+        permissions=permissions,
+        groups=groups,
+        group_ids=group_ids,
+    )
 
 # ---------------------------------------------------------------------------
 
@@ -238,17 +400,13 @@ async def login(
                 details={"project_hash": mask_uuid(project_hash)},
             )
 
-        session_token, _ = _create_session(user_record, target_project)
-
-        # Persist cookie
-        response.set_cookie(
-            key=COOKIE_NAME,
-            value=session_token,
-            max_age=COOKIE_MAX_AGE,
-            httponly=True,
-            secure=True,
-            samesite="strict",
+        token_pair = issue_project_token_pair(
+            user=user_record,
+            project=target_project,
+            permissions=["admin", "global_admin", "unrestricted_access"],
+            groups=["root_users"],
         )
+        _set_token_pair_cookies(response, token_pair)
 
         # Even for root we still expose list of projects for UI convenience
         accessible_projects = get_user_accessible_projects(user_record.id)
@@ -264,7 +422,14 @@ async def login(
         return LoginResponse(
             success=True,
             message="Root user login successful",
-            session_token=session_token,
+            access_token=token_pair.access_token,
+            refresh_token=token_pair.refresh_token,
+            session_token=token_pair.session_token,
+            token_type=token_pair.token_type,
+            expires_in=token_pair.expires_in,
+            refresh_expires_in=token_pair.refresh_expires_in,
+            expires_at=token_pair.expires_at,
+            refresh_expires_at=token_pair.refresh_expires_at,
             user=UserInfo(
                 user_hash=user_record.user_hash,
                 username=user_record.username,
@@ -290,19 +455,6 @@ async def login(
         requested_project_hash=project_hash,
         get_project_by_hash_fn=get_project_by_hash,
         handle_db_operation_fn=handle_db_operation,
-    )
-
-    # Build session & response
-    session_token, _ = _create_session(user_record, target_project)
-
-    # Set secure HTTP-only cookie
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=session_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=True,
-        samesite="strict",
     )
 
     # Build project info object for the chosen default project
@@ -332,11 +484,37 @@ async def login(
         )
         for g in user_groups
     ]
+    user_group_names = [g.group_name for g in user_groups]
+    user_group_ids = [str(g.id) for g in user_groups]
+    if user_record.user_type == "admin":
+        session_groups = ["project_admins"]
+        session_group_ids = []
+        session_permissions = ["admin", "project_admin", "manage_users", "manage_groups", "manage_permissions"]
+    else:
+        session_groups = user_group_names
+        session_group_ids = user_group_ids
+        session_permissions = []
+
+    token_pair = issue_project_token_pair(
+        user=user_record,
+        project=target_project,
+        permissions=session_permissions,
+        groups=session_groups,
+        group_ids=session_group_ids,
+    )
+    _set_token_pair_cookies(response, token_pair)
 
     return LoginResponse(
         success=True,
         message="Login successful",
-        session_token=session_token,
+        access_token=token_pair.access_token,
+        refresh_token=token_pair.refresh_token,
+        session_token=token_pair.session_token,
+        token_type=token_pair.token_type,
+        expires_in=token_pair.expires_in,
+        refresh_expires_in=token_pair.refresh_expires_in,
+        expires_at=token_pair.expires_at,
+        refresh_expires_at=token_pair.refresh_expires_at,
         user=UserInfo(
             user_hash=user_record.user_hash,
             username=user_record.username,
@@ -390,21 +568,31 @@ async def platform_login(
             details={"allowed_user_types": ["root", "admin"]}
         )
 
-    session_token, _ = _create_platform_session(user_record)
+    if user_record.user_type == "root":
+        permissions = ["admin", "global_admin", "manage_users", "manage_roles", "unrestricted_access"]
+        groups = ["platform_root_users"]
+    else:
+        permissions = ["admin", "project_admin", "manage_users", "manage_roles", "manage_permissions"]
+        groups = ["platform_admins"]
 
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=session_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=True,
-        samesite="strict",
+    token_pair = issue_platform_token_pair(
+        user=user_record,
+        permissions=permissions,
+        groups=groups,
     )
+    _set_token_pair_cookies(response, token_pair)
 
     return LoginResponse(
         success=True,
         message="Platform login successful",
-        session_token=session_token,
+        access_token=token_pair.access_token,
+        refresh_token=token_pair.refresh_token,
+        session_token=token_pair.session_token,
+        token_type=token_pair.token_type,
+        expires_in=token_pair.expires_in,
+        refresh_expires_in=token_pair.refresh_expires_in,
+        expires_at=token_pair.expires_at,
+        refresh_expires_at=token_pair.refresh_expires_at,
         user=UserInfo(
             user_hash=user_record.user_hash,
             username=user_record.username,
@@ -512,15 +700,9 @@ async def register(
             }
         )
 
-    # Set HTTP-only cookie with JWT token
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=register_result.session_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=True,
-        samesite="strict"
-    )
+    token_pair = _registration_token_pair(register_result)
+    if token_pair is not None:
+        _set_token_pair_cookies(response, token_pair)
 
     user_info = UserInfo(
         user_hash=register_result.user_hash,
@@ -539,6 +721,14 @@ async def register(
     return RegisterResponse(
         success=True,
         message="User registered successfully",
+        access_token=token_pair.access_token if token_pair else None,
+        refresh_token=token_pair.refresh_token if token_pair else None,
+        session_token=token_pair.session_token if token_pair else None,
+        token_type=token_pair.token_type if token_pair else "Bearer",
+        expires_in=token_pair.expires_in if token_pair else None,
+        refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
+        expires_at=token_pair.expires_at if token_pair else None,
+        refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
         user=user_info,
         project=project_info,
         user_id=getattr(register_result, 'user_id', None)
@@ -567,12 +757,23 @@ async def validate_user_session(
     session_token = credentials.credentials
 
     try:
-        raw = handle_db_operation(
-            lambda: _get_session(session_token),
-            error_context="session validation"
-        )
-        
-        if not raw:
+        if not isinstance(session_token, str) or session_token.count(".") != 2:
+            raise AuthenticationError(
+                message="Invalid access token",
+                error_code=ErrorCode.SESSION_EXPIRED,
+                details={"hint": "Please log in again with a valid access token"}
+            )
+
+        try:
+            login_data = validate_enhanced_session(session_token)
+        except HTTPException as exc:
+            raise AuthenticationError(
+                message=str(exc.detail),
+                error_code=ErrorCode.SESSION_EXPIRED,
+                details={"hint": "Please log in again"}
+            )
+
+        if not login_data:
             raise AuthenticationError(
                 message="Invalid or expired session",
                 error_code=ErrorCode.SESSION_EXPIRED,
@@ -580,21 +781,20 @@ async def validate_user_session(
             )
 
         user_info = UserInfo(
-            user_hash=raw["user_hash"],
-            username=raw.get("username", "user"),
-            user_type=raw.get("user_type", "consumer"),
+            user_hash=login_data.user_hash,
+            username=login_data.username or login_data.user_hash,
+            user_type=login_data.user_type or "consumer",
         )
 
-        if raw.get("project_hash"):
+        if login_data.project_hash:
             project_info = ProjectInfo(
-                project_hash=raw["project_hash"],
-                project_name=raw.get("project_name", ""),
+                project_hash=login_data.project_hash,
+                project_name=login_data.project_name or "",
             )
         else:
             project_info = None
 
-        # Get user groups from session (cached during login)
-        user_group_names = raw.get("user_group_names", [])
+        user_group_names = list(login_data.groups or [])
 
         duration_ms = (time.monotonic() - _t_start) * 1000
         if response is not None:
@@ -604,7 +804,7 @@ async def validate_user_session(
             valid=True,
             user=user_info,
             project=project_info,
-            session={"created_at": None, "scope": raw.get("scope", "project")},
+            session={"created_at": None, "scope": login_data.scope or "project"},
             user_groups=user_group_names,
         )
     except Exception:
@@ -634,9 +834,19 @@ async def logout(
     """
     session_token = credentials.credentials
 
-    _delete_session(session_token)
-    # Clear the session cookie with matching security attributes
+    try:
+        claims = JWTTokenHandler.decode_access_token(session_token)
+        validate_enhanced_session(session_token)
+        revoke_refresh_family(str(claims["family_id"]), reason="logout")
+    except HTTPException as exc:
+        raise AuthenticationError(
+            message=str(exc.detail),
+            error_code=ErrorCode.SESSION_EXPIRED,
+        )
+
+    # Clear access and refresh cookies with matching security attributes.
     response.delete_cookie(key=COOKIE_NAME, path="/", httponly=True, secure=True, samesite="strict")
+    response.delete_cookie(key="refresh_token", path="/auth", httponly=True, secure=True, samesite="strict")
     return LogoutResponse(success=True, message="Logged out successfully")
 
 
@@ -648,7 +858,8 @@ async def logout(
 )
 async def refresh_token(
         response: Response,
-        credentials: HTTPAuthorizationCredentials = Depends(security),
+        request: Request,
+        refresh_token_value: Optional[str] = Form(None, alias="refresh_token"),
         log_context: LogContext = None
 ) -> LoginResponse:
     """
@@ -658,96 +869,22 @@ async def refresh_token(
     Returns:
         New session token with same user and project context
     """
-    session_token = credentials.credentials
-
-    raw = _get_session(session_token)
-    if not raw:
-        raise AuthenticationError(
-            message="Invalid or expired session",
-            error_code=ErrorCode.SESSION_EXPIRED
+    try:
+        presented_refresh_token = extract_refresh_token_from_request(request, refresh_token_value)
+        rotation = rotate_refresh_family(
+            presented_refresh_token,
+            get_user_by_hash_fn=get_user_by_hash,
+            get_project_by_hash_fn=get_project_by_hash,
+            get_user_groups_in_project_by_hash_fn=_route_refresh_groups,
+            get_user_accessible_projects_fn=get_user_accessible_projects,
         )
-
-    # Fetch fresh user & project records
-    user_data = get_user_by_hash(raw["user_hash"])
-    if not user_data:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND
-        )
-
-    current_project = None
-    if raw.get("project_hash"):
-        current_project = get_project_by_hash(raw["project_hash"])
-        if not current_project:
-            raise NotFoundError(
-                message="Project not found",
-                error_code=ErrorCode.PROJECT_NOT_FOUND
-            )
-    else:
+    except HTTPException as exc:
         raise AuthenticationError(
-            message="Session format outdated, please log in again",
+            message=str(exc.detail),
             error_code=ErrorCode.SESSION_EXPIRED,
-            details={"hint": "Project-scoped session required"}
         )
-
-    # Create brand-new session with same context
-    new_token, _ = _create_session(user_data, current_project)
-
-    # Delete old session & set cookie
-    _delete_session(session_token)
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=new_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=True,
-        samesite="strict",
-    )
-
-    project_info = None
-    if current_project:
-        project_info = ProjectInfo(
-            project_hash=current_project.project_hash,
-            project_name=current_project.project_name,
-            project_description=current_project.project_description,
-        )
-
-    # Get accessible projects
-    accessible = get_user_accessible_projects(user_data.id)
-    accessible_projects_info = [
-        ProjectInfo(
-            project_hash=p.project_hash,
-            project_name=p.project_name,
-            project_description=p.project_description,
-        )
-        for p in accessible
-    ]
-
-    # Get user groups for response
-    user_groups = get_user_groups_for_user(user_data.id) if user_data.user_type != "root" else []
-    user_groups_info = [
-        UserGroupInfo(
-            group_hash=g.group_hash,
-            group_name=g.group_name,
-            description=getattr(g, 'group_description', None),
-        )
-        for g in user_groups
-    ]
-
-    return LoginResponse(
-        success=True,
-        message="Token refreshed successfully",
-        session_token=new_token,
-        user=UserInfo(
-            user_hash=user_data.user_hash,
-            username=user_data.username,
-            email=user_data.email,
-            user_type=user_data.user_type,
-        ),
-        project=project_info,
-        accessible_projects=accessible_projects_info,
-        user_groups=user_groups_info,
-    )
+    _set_token_pair_cookies(response, rotation.token_pair)
+    return _login_response_from_rotation(rotation)
 
 
 @router.post("/switch-project", response_model=SwitchProjectResponse)
@@ -758,7 +895,9 @@ async def refresh_token(
 )
 async def switch_project(
         response: Response,
+        request: Request,
         project_hash: str = Form(...),
+        refresh_token_value: Optional[str] = Form(None, alias="refresh_token"),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> SwitchProjectResponse:
@@ -773,18 +912,19 @@ async def switch_project(
         New session token with updated project context
     """
     session_token = credentials.credentials
-    current_raw = _get_session(session_token)
-    if not current_raw:
-        raise AuthenticationError(
-            message="Invalid session",
-            error_code=ErrorCode.SESSION_INVALID
+    try:
+        access_claims = JWTTokenHandler.decode_access_token(session_token)
+        current_session = validate_access_session(
+            session_token,
+            get_user_by_hash_fn=get_user_by_hash,
+            get_project_by_hash_fn=get_project_by_hash,
+            get_user_groups_in_project_by_hash_fn=_route_refresh_groups,
+            get_user_accessible_projects_fn=get_user_accessible_projects,
         )
-
-    user_data = get_user_by_hash(current_raw["user_hash"])
-    if not user_data:
-        raise NotFoundError(
-            message="User not found",
-            error_code=ErrorCode.USER_NOT_FOUND
+    except HTTPException as exc:
+        raise AuthenticationError(
+            message=str(exc.detail),
+            error_code=ErrorCode.SESSION_INVALID
         )
 
     # Validate desired project exists & user has access
@@ -795,7 +935,7 @@ async def switch_project(
             error_code=ErrorCode.PROJECT_NOT_FOUND
         )
 
-    accessible = get_user_accessible_projects(user_data.id)
+    accessible = get_user_accessible_projects(current_session.user_id)
     if not any(p.project_hash == project_hash for p in accessible):
         raise AuthorizationError(
             message="Access denied to requested project",
@@ -803,18 +943,27 @@ async def switch_project(
             details={"project_hash": mask_uuid(project_hash)}
         )
 
-    # Create new session and update cookie
-    new_token, _ = _create_session(user_data, new_project)
-    _delete_session(session_token)
+    try:
+        presented_refresh_token = extract_refresh_token_from_request(request, refresh_token_value)
+        refresh_claims = JWTTokenHandler.decode_refresh_token(presented_refresh_token)
+        if str(refresh_claims.get("family_id")) != str(access_claims.get("family_id")):
+            raise HTTPException(status_code=401, detail="Refresh token does not match access token family")
 
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=new_token,
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=True,
-        samesite="strict",
-    )
+        rotation = rotate_refresh_family(
+            presented_refresh_token,
+            target_project=new_project,
+            get_user_by_hash_fn=get_user_by_hash,
+            get_project_by_hash_fn=get_project_by_hash,
+            get_user_groups_in_project_by_hash_fn=lambda user_id, _project_hash: get_user_groups_in_project(user_id, new_project.id),
+            get_user_accessible_projects_fn=get_user_accessible_projects,
+        )
+    except HTTPException as exc:
+        raise AuthenticationError(
+            message=str(exc.detail),
+            error_code=ErrorCode.SESSION_INVALID,
+        )
+
+    _set_token_pair_cookies(response, rotation.token_pair)
 
     project_info = ProjectInfo(
         project_hash=new_project.project_hash,
@@ -822,14 +971,19 @@ async def switch_project(
         project_description=new_project.project_description,
     )
 
-    # Get user groups that have access to this project (groups-of-groups)
-    user_groups_in_project = get_user_groups_in_project(user_data.id, new_project.id)
-    user_group_names = [g.group_name for g in user_groups_in_project]
+    user_group_names = list(rotation.login_data.groups or [])
 
     return SwitchProjectResponse(
         success=True,
         message=f"Successfully switched to project: {new_project.project_name}",
-        session_token=new_token,
+        access_token=rotation.token_pair.access_token,
+        refresh_token=rotation.token_pair.refresh_token,
+        session_token=rotation.token_pair.session_token,
+        token_type=rotation.token_pair.token_type,
+        expires_in=rotation.token_pair.expires_in,
+        refresh_expires_in=rotation.token_pair.refresh_expires_in,
+        expires_at=rotation.token_pair.expires_at,
+        refresh_expires_at=rotation.token_pair.refresh_expires_at,
         project=project_info,
         user_groups=user_group_names,
     )

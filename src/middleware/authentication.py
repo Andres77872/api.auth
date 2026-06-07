@@ -10,20 +10,22 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from fastapi import HTTPException, Depends, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, APIKeyHeader
+from fastapi.security import HTTPAuthorizationCredentials, APIKeyHeader
 
-from src.Util.db import validate_session, is_root_user, is_admin_user
+from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.db import is_root_user, is_admin_user
+from src.Util.db.db_enhanced import validate_session
 from src.Util.db.db_api_keys import validate_api_key_lookup
 from src.Util.db.db_projects import get_project_by_id
 from src.Util.db.db_user_groups import get_user_groups_in_project_by_hash
 from src.Util.api_key_security import verify_api_key_token
 from src.Util.cache_manager import cache_manager
-from src.Util.error_handler import ErrorCode
+from src.Util.error_handler import ErrorCode, DatabaseError, InternalError
 
 logger = logging.getLogger(__name__)
 
-# HTTP Bearer token security
-security = HTTPBearer()
+# Access token security: Bearer first, then session_token cookie.
+security = HTTPBearerOrCookie()
 
 # API Key header extractor (auto_error=False so missing header is handled gracefully)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -44,6 +46,13 @@ async def verify_session(credentials: HTTPAuthorizationCredentials = Depends(sec
     """
     try:
         session_token = credentials.credentials
+        if not isinstance(session_token, str) or session_token.count(".") != 2:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         session_data = validate_session(session_token)
 
         if not session_data:
@@ -61,10 +70,14 @@ async def verify_session(credentials: HTTPAuthorizationCredentials = Depends(sec
             "project_hash": session_data.project_hash,
             "permissions": session_data.permissions,
             "groups": session_data.groups,
-            "session_token": session_token
+            "session_token": session_token,
+            "scope": session_data.scope,
+            "username": getattr(session_data, "username", None),
         }
 
     except HTTPException:
+        raise
+    except (DatabaseError, InternalError, RuntimeError):
         raise
     except Exception as e:
         raise HTTPException(
@@ -308,6 +321,8 @@ async def verify_admin_access(current_user: Dict[str, Any] = Depends(verify_sess
 
     except HTTPException:
         raise
+    except (DatabaseError, InternalError):
+        raise  # Let system failures propagate → FastAPI error handler → 500
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -352,6 +367,8 @@ async def verify_root_access(current_user: Dict[str, Any] = Depends(verify_sessi
 
     except HTTPException:
         raise
+    except (DatabaseError, InternalError):
+        raise  # Let system failures propagate → FastAPI error handler → 500
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -409,6 +426,8 @@ async def verify_project_access(
 
     except HTTPException:
         raise
+    except (DatabaseError, InternalError):
+        raise  # Let system failures propagate → FastAPI error handler → 500
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -467,16 +486,23 @@ def require_permission(permission: str):
 
 
 # Optional authentication (for endpoints that work with or without auth)
-async def optional_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))) -> \
+async def optional_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearerOrCookie(auto_error=False))) -> \
 Optional[Dict[str, Any]]:
     """
     Optional authentication - returns user data if authenticated, None otherwise
-    
+
+    No credentials → returns None (anonymous).
+    Malformed/invalid JWT → key miss in Redis → returns None (anonymous).
+    System/infrastructure failure (Redis/DB down) → raises HTTPException(500).
+
     Args:
         credentials: Optional HTTP Bearer token
-        
+
     Returns:
         User session data if authenticated, None otherwise
+
+    Raises:
+        HTTPException(500): On authentication system failure
     """
     if not credentials:
         return None
@@ -497,6 +523,10 @@ Optional[Dict[str, Any]]:
                 "session_token": session_token
             }
     except Exception:
-        pass  # Ignore errors for optional auth
+        logger.warning(f"optional_auth: validate_session failed for token {session_token[:8]}...")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication system error"
+        )
 
     return None

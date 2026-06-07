@@ -52,7 +52,7 @@ async def test_register_valid(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Valid registration returns 200 + session_token + cookie."""
+    """Valid registration returns access+refresh token pair and cookies."""
     group = _make_user_group()
     project = _make_project()
     result = _make_register_result()
@@ -76,9 +76,14 @@ async def test_register_valid(
     data = response.json()
     assert data["success"] is True
     assert data["user"]["username"] == "newuser"
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
+    assert data["expires_in"]
+    assert data["refresh_expires_in"]
 
-    # Cookie should be set (session_token is in cookie, not response body for register)
     assert "session_token" in response.cookies
+    assert "refresh_token" in response.cookies
 
 
 @pytest.mark.asyncio
@@ -243,6 +248,9 @@ async def test_register_without_email(
     data = response.json()
     assert data["user"]["username"] == "bob"
     assert data["user"]["email"] is None
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["session_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio
