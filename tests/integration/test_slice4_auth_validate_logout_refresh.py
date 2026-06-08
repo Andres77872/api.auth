@@ -205,6 +205,39 @@ async def test_validate_missing_token(
 
 
 @pytest.mark.asyncio
+async def test_validate_remains_session_only_with_x_api_key(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """GET /auth/validate must not accept X-API-Key as a session credential."""
+    response = await client.get(
+        "/auth/validate",
+        headers={"X-API-Key": "sk_public.secret", "User-Agent": "test"},
+    )
+
+    assert response.status_code == 401
+    assert "sk_public.secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_sk_api_key_sent_as_bearer(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """GET /auth/validate rejects sk_* values in Bearer and stays session-only."""
+    raw_secret = "sk_public.secret"
+    response = await client.get(
+        "/auth/validate",
+        headers={"Authorization": f"Bearer {raw_secret}", "User-Agent": "test"},
+    )
+
+    assert response.status_code == 401
+    assert raw_secret not in response.text
+
+
+@pytest.mark.asyncio
 async def test_validate_root_project_bound_session(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,

@@ -273,14 +273,123 @@ class TestAuditAuthMethodAttribution:
             assert call_args.args[-1] == "session", \
                 f"Expected auth_method='session', got: {call_args.args[-1]}"
 
-        # Response should succeed
+
+# ─── implement-completions-dual-auth: /auth/validate-api-key adapter ─────────
+
+class TestValidateApiKeyAdapterContract:
+    """Contract tests for the service-to-service API-key validation adapter."""
+
+    async def test_validate_api_key_adapter_success_shape_is_secret_safe(
+        self, client, fake_redis, valid_token,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        from tests.integration.conftest import _make_mock_user_group
+
+        with patch("src.middleware.authentication.validate_api_key_lookup") as mock_lookup, \
+             patch("src.middleware.authentication.verify_api_key_token", return_value=True), \
+             patch("src.middleware.authentication.get_project_by_id", return_value=_make_mock_project(
+                 project_id="proj-1", project_hash="prj-test-hash-001", project_name="Test Project"
+             )), \
+             patch("src.Util.db.db_users.get_user_by_id", return_value=_make_mock_user(
+                 user_id="usr-1", user_hash="usr-owner", user_type="consumer", username="apiowner",
+             )), \
+             patch("src.middleware.authentication.get_user_groups_in_project_by_hash", return_value=[
+                 _make_mock_user_group(group_name="completion-users")
+             ]), \
+             patch("src.Util.db.db_global_roles.get_user_permissions", return_value=["completion:run"]):
+            mock_lookup.return_value = {
+                "id": "key-safe-1",
+                "public_id": valid_token["public_id"],
+                "owner_user_id": "usr-1",
+                "project_id": "proj-1",
+                "validation_status": "valid",
+                "secret_hash": valid_token["secret_hash"],
+            }
+
+            response = await client.post(
+                "/auth/validate-api-key",
+                headers={"X-API-Key": valid_token["token"], "User-Agent": "test"},
+            )
+
         assert response.status_code == 200
-        # Verify audit logger was called with auth_method='session'
-        patched_audit_logger.log_request.assert_called()
-        call_args = patched_audit_logger.log_request.call_args
-        if call_args.kwargs:
-            assert call_args.kwargs.get("auth_method") == "session", \
-                f"Expected auth_method='session', got: {call_args.kwargs.get('auth_method')}"
-        elif call_args.args:
-            assert call_args.args[-1] == "session", \
-                f"Expected auth_method='session', got: {call_args.args[-1]}"
+        body = response.json()
+        assert body["success"] is True
+        assert body["valid"] is True
+        assert body["auth_method"] == "api_key"
+        assert body["user"]["user_hash"] == "usr-owner"
+        assert body["user"]["username"] == "apiowner"
+        assert body["project"]["project_hash"] == "prj-test-hash-001"
+        assert body["api_key"] == {"key_id": "key-safe-1", "public_id": valid_token["public_id"]}
+        assert body["user_groups"] == ["completion-users"]
+        assert body["permissions"] == ["completion:run"]
+        assert valid_token["token"] not in response.text
+        assert valid_token["token"].split(".", 1)[1] not in response.text
+        assert "secret" not in body["api_key"]
+
+    async def test_validate_api_key_adapter_rejects_both_auth_headers(
+        self, client, valid_token,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        response = await client.post(
+            "/auth/validate-api-key",
+            headers={
+                "Authorization": "Bearer session.jwt.value",
+                "X-API-Key": valid_token["token"],
+                "User-Agent": "test",
+            },
+        )
+
+        assert response.status_code == 400
+        assert "ambiguous" in response.text.lower()
+        assert valid_token["token"] not in response.text
+
+    @pytest.mark.parametrize(
+        ("lookup_payload", "expected_status"),
+        [
+            (None, 401),
+            ({"validation_status": "revoked"}, 401),
+            ({"validation_status": "expired"}, 401),
+            ({"validation_status": "owner_inactive"}, 401),
+            ({"validation_status": "no_project_access"}, 403),
+        ],
+    )
+    async def test_validate_api_key_adapter_failure_semantics(
+        self, client, fake_redis, valid_token, lookup_payload, expected_status,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        if lookup_payload is not None:
+            lookup_payload = {
+                "id": "key-safe-1",
+                "public_id": valid_token["public_id"],
+                "owner_user_id": "usr-1",
+                "project_id": "proj-1",
+                "secret_hash": valid_token["secret_hash"],
+                **lookup_payload,
+            }
+
+        with patch("src.middleware.authentication.validate_api_key_lookup", return_value=lookup_payload):
+            response = await client.post(
+                "/auth/validate-api-key",
+                headers={"X-API-Key": valid_token["token"], "User-Agent": "test"},
+            )
+
+        assert response.status_code == expected_status
+        assert valid_token["token"] not in response.text
+
+    async def test_validate_api_key_adapter_malformed_token_rejected_without_secret_leak(
+        self, client,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        raw_secret = "sk_public.secret"
+        with patch("src.middleware.authentication.validate_api_key_lookup", return_value=None):
+            response = await client.post(
+                "/auth/validate-api-key",
+                headers={"X-API-Key": raw_secret, "User-Agent": "test"},
+            )
+
+        assert response.status_code == 401
+        assert raw_secret not in response.text

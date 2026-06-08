@@ -309,10 +309,28 @@ class RegisterResponse(BaseResponse, TokenPairFields):
 class ValidateSessionResponse(BaseResponse):
     """Session validation response"""
     valid: bool
+    auth_method: str = "session"
     user: Optional[UserInfo] = None
     project: Optional[ProjectInfo] = None
     session: Optional[Dict[str, Any]] = None
     user_groups: List[str] = Field(default_factory=list, description="User group names from session")
+
+
+class ApiKeyInfo(BaseModelConfig):
+    """Secret-safe API-key metadata returned by validation adapters."""
+    key_id: Optional[str] = None
+    public_id: Optional[str] = None
+
+
+class ValidateApiKeyResponse(BaseResponse):
+    """API-key validation adapter response for service-to-service callers."""
+    valid: bool
+    auth_method: str = "api_key"
+    user: Optional[UserInfo] = None
+    project: Optional[ProjectInfo] = None
+    api_key: Optional[ApiKeyInfo] = None
+    user_groups: List[str] = Field(default_factory=list, description="User group names for the API-key owner")
+    permissions: List[str] = Field(default_factory=list, description="Safe permission names for the API-key owner")
 
 
 class LogoutResponse(BaseResponse):

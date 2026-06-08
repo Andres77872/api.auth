@@ -39,7 +39,7 @@ Practical onboarding guide for new users, integrators, and platform administrato
 
 ## Environment & Configuration
 
-The API reads configuration from environment variables. These are the ones you **must** or **should** set:
+The API reads configuration from environment variables. See [.env.example](../../.env.example) for the full documented template, including test-only and deprecated variables. These are the core runtime variables you **must** or **should** set:
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
@@ -53,6 +53,8 @@ The API reads configuration from environment variables. These are the ones you *
 | `REDIS_DB` | No | `0` | Redis DB number |
 | `DB_REDIS_PASSWORD` | No | -- | Redis password |
 | `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes; refresh family remains 72h sliding |
+| `API_KEY_PEPPER` | Yes | -- | HMAC pepper for API key hashing; required before API key utilities import |
 | `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177` | Explicit CORS origins (comma-separated) |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 

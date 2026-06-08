@@ -62,7 +62,7 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         # --- Path 1: API Key Authentication (X-API-Key header) ---
         api_key_header = request.headers.get("x-api-key")
 
-        if api_key_header:
+        if api_key_header and request.url.path not in {"/auth/validate", "/auth/validate-api-key"}:
             try:
                 auth_context = self._extract_api_key_context(api_key_header)
                 if auth_context:

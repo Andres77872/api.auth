@@ -392,6 +392,9 @@ services:
 
 ## 🔧 Configuration
 
+See [.env.example](.env.example) for the full documented environment template,
+including test-only, Docker-only, and deprecated variables.
+
 ```bash
 # Database (MySQL)
 DB_HOST=192.168.1.90
@@ -402,7 +405,6 @@ DB_NAME=magic-auth              # required
 
 # JWT
 JWT_SECRET_KEY=your_secure_jwt_secret_key   # required outside explicit tests; missing value fails startup/auth initialization
-JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=15          # access token TTL; refresh family remains 72h sliding
 
 # Redis

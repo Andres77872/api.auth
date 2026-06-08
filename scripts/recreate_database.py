@@ -17,7 +17,8 @@ Environment Variables (optional):
     DB_HOST - Database host (default: localhost)
     DB_PORT - Database port (default: 3306)
     DB_USER - Database user (default: root)
-    DB_PASSWORD - Database password (default: prompt)
+    DB_MYSQL_PASSWORD - Database password (default: prompt)
+    DB_PASSWORD - Deprecated fallback for legacy shells
 """
 
 import os
@@ -33,7 +34,7 @@ DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', None),
+    'password': os.getenv('DB_MYSQL_PASSWORD') or os.getenv('DB_PASSWORD', None),
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor,
     'autocommit': False

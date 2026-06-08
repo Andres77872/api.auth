@@ -87,9 +87,33 @@ async def verify_session(credentials: HTTPAuthorizationCredentials = Depends(sec
         )
 
 
-async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Dict[str, Any]:
+def _parse_api_key_public_id(api_key: Optional[str]) -> str:
+    """Extract the public identifier from an sk_* token without logging secrets."""
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    try:
+        if not api_key.startswith("sk_"):
+            raise ValueError("missing sk prefix")
+        token_body = api_key[3:]
+        public_id, secret = token_body.rsplit(".", 1)
+        if not public_id or not secret:
+            raise ValueError("missing token component")
+        return public_id
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Malformed API key: {ErrorCode.API_KEY_INVALID.value}",
+        )
+
+
+async def validate_api_key_context(api_key: Optional[str]) -> Dict[str, Any]:
     """
-    Validate an API key from the X-API-Key header and return user context.
+    Validate an API key and return normalized user/project/key context.
 
     Flow:
     1. Parse token: sk_{public_id}.{secret}
@@ -100,37 +124,17 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Di
     6. Return dict compatible with verify_session shape
 
     Args:
-        api_key: The full API key token from X-API-Key header
+        api_key: The full API key token from X-API-Key header.
 
     Returns:
         User context dict with keys: user_id, user_hash, user_type, username,
-        project_id, project_hash, permissions, groups, auth_method="api_key"
+        project_id, project_hash, permissions, groups, auth_method="api_key",
+        key_id, and key_public_id. It never includes the raw presented token.
 
     Raises:
         HTTPException: 401 on any validation failure
     """
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing API key",
-            headers={"WWW-Authenticate": "ApiKey"},
-        )
-
-    # Parse token format: sk_{public_id}.{secret}
-    try:
-        if not api_key.startswith("sk_"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid API key format: {ErrorCode.API_KEY_INVALID.value}",
-            )
-        # Extract public_id (between "sk_" and the last ".")
-        token_body = api_key[3:]  # Remove "sk_" prefix
-        public_id = token_body.rsplit(".", 1)[0]
-    except (ValueError, IndexError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Malformed API key: {ErrorCode.API_KEY_INVALID.value}",
-        )
+    public_id = _parse_api_key_public_id(api_key)
 
     # Check Redis cache first
     cached = cache_manager.get_api_key(public_id)
@@ -145,10 +149,13 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Di
             "user_hash": cached["user_hash"],
             "user_type": cached["user_type"],
             "username": cached.get("username"),
+            "email": cached.get("email"),
             "project_id": cached["project_id"],
             "project_hash": cached["project_hash"],
             "permissions": cached.get("permissions", []),
             "groups": cached.get("groups", []),
+            "key_id": cached.get("key_id"),
+            "key_public_id": cached.get("public_id") or public_id,
             "auth_method": "api_key",
         }
 
@@ -202,6 +209,7 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Di
 
     user_type = owner.user_type
     username = owner.username
+    email = getattr(owner, "email", None)
     user_hash = owner.user_hash
 
     # Resolve permissions based on user type
@@ -244,11 +252,13 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Di
         "user_hash": user_hash,
         "user_type": user_type,
         "username": username,
+        "email": email,
         "project_id": project_id,
         "project_hash": project.project_hash,
         "permissions": permissions,
         "groups": groups,
         "key_id": key_data["id"],
+        "public_id": public_id,
         "cached_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -260,26 +270,43 @@ async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Di
         "user_hash": user_hash,
         "user_type": user_type,
         "username": username,
+        "email": email,
         "project_id": project_id,
         "project_hash": project.project_hash,
         "permissions": permissions,
         "groups": groups,
+        "key_id": key_data["id"],
+        "key_public_id": public_id,
         "auth_method": "api_key",
     }
 
 
+async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> Dict[str, Any]:
+    """
+    Validate an API key from the X-API-Key header and return user context.
+
+    This dependency delegates to validate_api_key_context so route adapters and
+    dependency-guarded routes share the same parser, cache, DB, HMAC, project,
+    group, and permission semantics.
+    """
+    return await validate_api_key_context(api_key)
+
+
 def _raise_api_key_error(validation_status: Optional[str]) -> None:
-    """Raise an appropriate HTTP 401 based on the validation status."""
+    """Raise an appropriate secret-safe HTTP error based on validation status."""
     error_map = {
-        "not_found": (ErrorCode.API_KEY_NOT_FOUND.value, "API key not found"),
-        "revoked": (ErrorCode.API_KEY_REVOKED.value, "API key has been revoked"),
-        "expired": (ErrorCode.API_KEY_EXPIRED.value, "API key has expired"),
-        "owner_inactive": (ErrorCode.API_KEY_INVALID.value, "API key owner is inactive"),
-        "no_project_access": (ErrorCode.API_KEY_NO_ACCESS.value, "API key owner lost project access"),
+        "not_found": (status.HTTP_401_UNAUTHORIZED, ErrorCode.API_KEY_NOT_FOUND.value, "API key not found"),
+        "revoked": (status.HTTP_401_UNAUTHORIZED, ErrorCode.API_KEY_REVOKED.value, "API key has been revoked"),
+        "expired": (status.HTTP_401_UNAUTHORIZED, ErrorCode.API_KEY_EXPIRED.value, "API key has expired"),
+        "owner_inactive": (status.HTTP_401_UNAUTHORIZED, ErrorCode.API_KEY_INVALID.value, "API key owner is inactive"),
+        "no_project_access": (status.HTTP_403_FORBIDDEN, ErrorCode.API_KEY_NO_ACCESS.value, "API key owner lost project access"),
     }
-    code, detail = error_map.get(validation_status, (ErrorCode.API_KEY_INVALID.value, "Invalid API key"))
+    status_code, code, detail = error_map.get(
+        validation_status,
+        (status.HTTP_401_UNAUTHORIZED, ErrorCode.API_KEY_INVALID.value, "Invalid API key"),
+    )
     raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
+        status_code=status_code,
         detail=f"{detail}: {code}",
     )
 

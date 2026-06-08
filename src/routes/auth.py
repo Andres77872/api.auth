@@ -17,8 +17,9 @@ from starlette.background import BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
-    LoginResponse, RegisterResponse, ValidateSessionResponse, LogoutResponse,
-    SwitchProjectResponse, CheckAvailabilityResponse, UserInfo, ProjectInfo, UserGroupInfo
+    LoginResponse, RegisterResponse, ValidateSessionResponse, ValidateApiKeyResponse,
+    ApiKeyInfo, LogoutResponse, SwitchProjectResponse, CheckAvailabilityResponse,
+    UserInfo, ProjectInfo, UserGroupInfo,
 )
 from src.Util.Seccurity import HTTPBearerOrCookie, extract_refresh_token_from_request
 from src.Util.decorators import log_and_handle_errors, log_unauthenticated_operation
@@ -61,6 +62,7 @@ from src.Util.db.db_projects import get_project_by_hash
 from src.Util.auth_flow import resolve_target_project
 from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, validate_access_session
 from src.Util.db.db_enhanced import validate_session as validate_enhanced_session
+from src.middleware.authentication import validate_api_key_context
 
 # ---------------------------------------------------------------------------
 # Session helpers (group-based, no user_projects table required)
@@ -812,6 +814,82 @@ async def validate_user_session(
         if response is not None:
             response.headers["X-Auth-Process-Time"] = f"{duration_ms:.3f}"
         raise
+
+
+@router.post("/validate-api-key", response_model=ValidateApiKeyResponse)
+async def validate_user_api_key(
+        request: Request,
+        response: Response = None,
+) -> ValidateApiKeyResponse:
+    """Validate user-created API keys through an enforcing X-API-Key adapter.
+
+    This route is intentionally separate from GET /auth/validate so the
+    session/JWT contract stays session-only. It never returns the raw API key or
+    its secret component.
+    """
+    _t_start = time.monotonic()
+    api_key = request.headers.get("X-API-Key")
+    authorization = request.headers.get("Authorization")
+
+    if authorization and api_key:
+        logger.warning(
+            "api_key_validate_rejected",
+            extra={"event": "api_key_validate_rejected", "reason": "ambiguous_credentials"},
+        )
+        raise HTTPException(status_code=400, detail="ambiguous_credentials")
+
+    try:
+        context = await validate_api_key_context(api_key)
+    finally:
+        duration_ms = (time.monotonic() - _t_start) * 1000
+        if response is not None:
+            response.headers["X-Auth-Process-Time"] = f"{duration_ms:.3f}"
+
+    if context.get("auth_method") != "api_key":
+        raise HTTPException(status_code=500, detail="Invalid API-key validation context")
+
+    user_hash = context.get("user_hash")
+    if not user_hash:
+        raise HTTPException(status_code=500, detail="API-key validation context missing user_hash")
+
+    project_hash = context.get("project_hash")
+    user_groups = list(context.get("groups") or [])
+    permissions = list(context.get("permissions") or [])
+    key_public_id = context.get("key_public_id")
+    key_id = context.get("key_id")
+
+    logger.info(
+        "api_key_validate_resolved",
+        extra={
+            "event": "api_key_validate_resolved",
+            "auth_method": "api_key",
+            "user_prefix": str(user_hash)[:12],
+            "project_prefix": str(project_hash)[:12] if project_hash else None,
+            "key_public_id_prefix": str(key_public_id)[:8] if key_public_id else None,
+        },
+    )
+
+    return ValidateApiKeyResponse(
+        success=True,
+        valid=True,
+        auth_method="api_key",
+        user=UserInfo(
+            user_hash=user_hash,
+            username=context.get("username") or user_hash,
+            email=context.get("email"),
+            user_type=context.get("user_type") or "consumer",
+        ),
+        project=ProjectInfo(
+            project_hash=project_hash or "",
+            project_name=context.get("project_name") or "",
+        ) if project_hash else None,
+        api_key=ApiKeyInfo(
+            key_id=str(key_id) if key_id is not None else None,
+            public_id=str(key_public_id) if key_public_id is not None else None,
+        ),
+        user_groups=user_groups,
+        permissions=permissions,
+    )
 
 
 @router.post("/logout", response_model=LogoutResponse)
