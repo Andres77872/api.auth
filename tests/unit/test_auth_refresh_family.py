@@ -11,11 +11,37 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 
 def _decode(raw):
     if isinstance(raw, bytes):
         raw = raw.decode()
     return json.loads(raw)
+
+
+def _project_refresh_hooks(user_hash="usr-hash-1", project_hash="prj-hash-1"):
+    user = SimpleNamespace(
+        id="usr-db-1",
+        user_hash=user_hash,
+        username="consumer",
+        user_type="consumer",
+        is_active=True,
+    )
+    project = SimpleNamespace(
+        id="prj-db-1",
+        project_hash=project_hash,
+        project_name="Project One",
+    )
+    group = SimpleNamespace(group_name="Consumers")
+    return {
+        "get_user_by_hash_fn": Mock(return_value=user),
+        "get_project_by_hash_fn": Mock(return_value=project),
+        "check_admin_project_access_fn": Mock(return_value=False),
+        "get_user_groups_in_project_by_hash_fn": Mock(return_value=[group]),
+        "get_user_permissions_fn": Mock(return_value=["read"]),
+        "get_user_accessible_projects_fn": Mock(return_value=[project]),
+    }
 
 
 def test_refresh_token_hash_uses_sha256_and_never_stores_raw_token():
@@ -33,6 +59,7 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     from src.Util.auth_constants import (
         ACCESS_COOKIE_NAME,
         REFRESH_COOKIE_NAME,
+        REFRESH_ANCHOR_PREFIX,
         REFRESH_FAMILY_TTL_SECONDS,
     )
 
@@ -79,6 +106,49 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     assert pair.refresh_token not in json.dumps(record)
     assert fake.ttl(f"refresh_family:{family_id}") == REFRESH_FAMILY_TTL_SECONDS
 
+    anchor_raw = fake.get(f"{REFRESH_ANCHOR_PREFIX}{family_id}")
+    assert anchor_raw is not None
+    anchor = _decode(anchor_raw)
+    assert set(anchor) == {
+        "anchor_version",
+        "family_id",
+        "session_id",
+        "status",
+        "user_id",
+        "user_hash",
+        "username",
+        "user_type",
+        "scope",
+        "collection",
+        "project_id",
+        "project_hash",
+        "project_name",
+        "current_access_jti",
+        "current_refresh_jti",
+        "created_at",
+        "updated_at",
+        "expires_at",
+    }
+    assert anchor["anchor_version"] == 1
+    assert anchor["family_id"] == family_id
+    assert anchor["session_id"] == pair.refresh_claims["session_id"]
+    assert anchor["status"] == "active"
+    assert anchor["current_access_jti"] == access_jti
+    assert anchor["current_refresh_jti"] == refresh_jti
+    assert anchor["user_hash"] == "usr-hash-1"
+    assert anchor["scope"] == "project"
+    assert anchor["collection"] == "prj-hash-1"
+    assert anchor["project_hash"] == "prj-hash-1"
+    assert anchor["expires_at"] == family["expires_at"]
+    assert fake.ttl(f"{REFRESH_ANCHOR_PREFIX}{family_id}") == REFRESH_FAMILY_TTL_SECONDS
+    serialized_anchor = json.dumps(anchor)
+    assert pair.access_token not in serialized_anchor
+    assert pair.refresh_token not in serialized_anchor
+    assert "token_hash" not in anchor
+    assert "permissions" not in anchor
+    assert "groups" not in anchor
+    assert "session_full" not in anchor
+
 
 def test_revoke_refresh_family_marks_family_and_deletes_active_access(monkeypatch):
     from fakeredis import FakeStrictRedis
@@ -91,6 +161,7 @@ def test_revoke_refresh_family_marks_family_and_deletes_active_access(monkeypatc
     access_jti = "acc-revoke-1"
     fake.set(f"session:{access_jti}", json.dumps({"family_id": family_id, "user_id": "u1"}))
     fake.set(f"session_full:{access_jti}", json.dumps({"family_id": family_id, "user_id": "u1"}))
+    fake.set(f"refresh_anchor:{family_id}", json.dumps({"family_id": family_id, "status": "active"}))
     fake.set(f"refresh_family:{family_id}", json.dumps({
         "family_id": family_id,
         "status": "active",
@@ -109,6 +180,7 @@ def test_revoke_refresh_family_marks_family_and_deletes_active_access(monkeypatc
     assert revoked["reason"] == "test_reuse"
     assert fake.get(f"session:{access_jti}") is None
     assert fake.get(f"session_full:{access_jti}") is None
+    assert fake.get(f"refresh_anchor:{family_id}") is None
 
 
 def test_classify_reused_refresh_token_revokes_family(monkeypatch):
@@ -126,6 +198,7 @@ def test_classify_reused_refresh_token_revokes_family(monkeypatch):
         "current_refresh_jti": "ref-current",
         "current_access_jti": "acc-current",
     }))
+    fake.set(f"refresh_anchor:{family_id}", json.dumps({"family_id": family_id, "status": "active"}))
     fake.sadd(f"refresh_used:{family_id}", "ref-parent")
     fake.set(f"refresh_token:ref-parent", json.dumps({
         "refresh_jti": "ref-parent",
@@ -138,6 +211,225 @@ def test_classify_reused_refresh_token_revokes_family(monkeypatch):
     assert classification == "reused"
     family = _decode(fake.get(f"refresh_family:{family_id}"))
     assert family["status"] in {"revoked", "reused"}
+    assert fake.get(f"refresh_anchor:{family_id}") is None
+
+
+def test_rotate_refresh_succeeds_from_anchor_when_old_access_session_missing(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+    from src.Util.auth_constants import REFRESH_FAMILY_TTL_SECONDS
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    old_access_jti = pair.access_claims["jti"]
+    old_refresh_jti = pair.refresh_claims["jti"]
+
+    assert fake.get(f"refresh_anchor:{family_id}") is not None
+    fake.delete(f"session:{old_access_jti}", f"session_full:{old_access_jti}")
+
+    rotation = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    assert rotation.token_pair.access_token != pair.access_token
+    assert rotation.token_pair.refresh_token != pair.refresh_token
+    assert rotation.old_access_jti == old_access_jti
+    assert fake.get(f"session:{old_access_jti}") is None
+    assert fake.get(f"session:{rotation.token_pair.access_claims['jti']}") is not None
+
+    old_record = _decode(fake.get(f"refresh_token:{old_refresh_jti}"))
+    new_record = _decode(fake.get(f"refresh_token:{rotation.token_pair.refresh_claims['jti']}"))
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
+
+    assert old_record["status"] == "used"
+    assert old_record["child_jti"] == rotation.token_pair.refresh_claims["jti"]
+    assert new_record["status"] == "current"
+    assert family["current_access_jti"] == rotation.token_pair.access_claims["jti"]
+    assert family["current_refresh_jti"] == rotation.token_pair.refresh_claims["jti"]
+    assert anchor["current_access_jti"] == rotation.token_pair.access_claims["jti"]
+    assert anchor["current_refresh_jti"] == rotation.token_pair.refresh_claims["jti"]
+    assert 0 < fake.ttl(f"session:{rotation.token_pair.access_claims['jti']}") <= rotation.token_pair.expires_in
+    assert fake.ttl(f"refresh_anchor:{family_id}") == REFRESH_FAMILY_TTL_SECONDS
+
+
+def test_legacy_family_without_anchor_or_old_session_backfills_anchor(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    fake.delete(f"session:{pair.access_claims['jti']}", f"session_full:{pair.access_claims['jti']}")
+    fake.delete(f"refresh_anchor:{family_id}")
+
+    rotation = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
+    assert rotation.token_pair.refresh_token != pair.refresh_token
+    assert anchor["family_id"] == family_id
+    assert anchor["current_access_jti"] == rotation.token_pair.access_claims["jti"]
+    assert anchor["current_refresh_jti"] == rotation.token_pair.refresh_claims["jti"]
+
+
+def test_legacy_family_without_reconstructable_context_fails_closed(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    fake.delete(f"session:{pair.access_claims['jti']}", f"session_full:{pair.access_claims['jti']}")
+    fake.delete(f"refresh_anchor:{family_id}")
+
+    with pytest.raises(Exception) as exc_info:
+        lifecycle.rotate_refresh_family(
+            pair.refresh_token,
+            get_user_by_hash_fn=Mock(return_value=None),
+            get_project_by_hash_fn=Mock(return_value=None),
+            get_user_groups_in_project_by_hash_fn=Mock(return_value=[]),
+            get_user_permissions_fn=Mock(return_value=[]),
+            get_user_accessible_projects_fn=Mock(return_value=[]),
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 401
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    assert family["status"] == "revoked"
+    assert family["revocation_reason"] == "missing_user"
+    assert fake.get(f"refresh_anchor:{family_id}") is None
+
+
+def test_revoked_family_fails_even_with_stale_anchor(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    stale_anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
+    lifecycle.revoke_refresh_family(family_id, reason="logout")
+    fake.set(f"refresh_anchor:{family_id}", json.dumps(stale_anchor))
+
+    with pytest.raises(Exception) as exc_info:
+        lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    assert getattr(exc_info.value, "status_code", None) == 401
+    assert "revoked" in str(exc_info.value.detail).lower()
+    assert fake.get(f"refresh_token:{pair.refresh_claims['jti']}") is not None
+
+
+def test_concurrent_refresh_presentations_allow_at_most_one_success(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+
+    def attempt_refresh():
+        try:
+            return lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+        except Exception as exc:  # noqa: BLE001 - test captures lifecycle denial object
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: attempt_refresh(), range(2)))
+
+    successes = [result for result in results if hasattr(result, "token_pair")]
+    failures = [result for result in results if not hasattr(result, "token_pair")]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert getattr(failures[0], "status_code", None) == 401
+
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    assert family["status"] in {"active", "reused", "revoked"}
+    if family["status"] == "active":
+        anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
+        assert anchor["current_refresh_jti"] == successes[0].token_pair.refresh_claims["jti"]
+    else:
+        assert fake.get(f"refresh_anchor:{family_id}") is None
 
 
 def test_refresh_family_expiry_uses_72h_sliding_window():

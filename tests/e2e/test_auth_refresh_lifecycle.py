@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.Util.JWT_Security import JWTTokenHandler
+
 
 def _make_user():
     user = MagicMock()
@@ -52,7 +54,11 @@ async def test_login_refresh_retry_old_access_and_reuse_revocation_lifecycle(
          patch("src.routes.auth.resolve_target_project", return_value=project), \
          patch("src.routes.auth.get_user_groups_for_user", return_value=[group]), \
          patch("src.routes.auth.get_user_by_hash", return_value=user), \
-         patch("src.routes.auth.get_project_by_hash", return_value=project):
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.Util.db.db_enhanced.get_user_by_hash", return_value=user), \
+         patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
+         patch("src.Util.db.db_enhanced.get_user_groups_in_project_by_hash", return_value=[group]), \
+         patch("src.Util.db.db_enhanced.get_user_accessible_projects", return_value=[project]):
         login_response = await client.post(
             "/auth/login",
             data={"username": "e2euser", "password": "secret", "project_hash": "prj-e2e-001"},
@@ -62,6 +68,24 @@ async def test_login_refresh_retry_old_access_and_reuse_revocation_lifecycle(
         login_data = login_response.json()
         access_token = login_data["access_token"]
         refresh_token = login_data["refresh_token"]
+        access_claims = JWTTokenHandler.decode_access_token(access_token)
+
+        initial_access_validate = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": "test"},
+        )
+        assert initial_access_validate.status_code == 200
+
+        fake_redis.delete(
+            f"session:{access_claims['jti']}",
+            f"session_full:{access_claims['jti']}",
+        )
+
+        old_access_validate = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": "test"},
+        )
+        assert old_access_validate.status_code == 401
 
         first_refresh = await client.post(
             "/auth/refresh",
@@ -74,11 +98,11 @@ async def test_login_refresh_retry_old_access_and_reuse_revocation_lifecycle(
         assert refreshed_data["access_token"] != access_token
         assert refreshed_data["refresh_token"] != refresh_token
 
-        old_access_validate = await client.get(
+        new_access_validate = await client.get(
             "/auth/validate",
-            headers={"Authorization": f"Bearer {access_token}", "User-Agent": "test"},
+            headers={"Authorization": f"Bearer {refreshed_data['access_token']}", "User-Agent": "test"},
         )
-        assert old_access_validate.status_code == 401
+        assert new_access_validate.status_code == 200
 
         reuse_response = await client.post(
             "/auth/refresh",

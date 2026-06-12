@@ -250,16 +250,19 @@ API keys can be created, listed, updated, and revoked through the API-key lifecy
 
 ### Session Lifecycle
 
-Three different TTLs operate independently — don't confuse them:
+Four different TTLs operate independently — don't confuse them:
 
 | TTL | Value | What it controls |
 |-----|-------|-----------------|
 | **Access JWT/cookie TTL** | Short-lived | How long the access token itself is valid for protected requests. |
 | **Refresh JWT/family TTL** | 72 hours (259200s), sliding | How long refresh continuity lives. Renewed on successful `POST /auth/refresh`. |
+| **Refresh anchor TTL** | 72 hours (259200s), sliding | How long `refresh_anchor:{family_id}` keeps non-secret refresh continuity context. This outlives `session:{access_jti}` but never stores raw tokens or permissions. |
 | **Redis access session TTL** | Access-token TTL | How long `session:{access_jti}` lives in Redis. |
 | **Cache layer TTL** | 1 hour (session) / 30 min (permission checks) | How long cached permission/access-check results live in Redis. **Separate from auth sessions.** A user's session can be valid while their cached permissions are stale. |
 
 - **Refresh**: `POST /auth/refresh` requires a valid `refresh_token` cookie/body value, issues a new access+refresh pair, marks the old refresh token used, and deletes the old access session. Access/session tokens are rejected as refresh credentials.
+- **Access expiry is recoverable**: an expired access JWT or evicted `session:{access_jti}` is expected after the short access TTL. Refresh still succeeds while the refresh token, refresh family, and `refresh_anchor:{family_id}` or safe legacy fallback remain valid/current.
+- **Logout/revocation is different from access expiry**: deleting only `session:{access_jti}` invalidates that access token, but it is not a full logout contract. Logout, reuse detection, deactivation, and admin revocation revoke/tombstone the refresh family and delete the refresh anchor.
 - After admin permission changes, the user may need to wait for cache expiry (30 min) or manually invalidate their cache (`POST /system/cache/invalidate/user/{hash}`) to see updated permissions.
 
 ---

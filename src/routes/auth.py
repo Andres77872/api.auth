@@ -277,6 +277,30 @@ def _login_response_from_rotation(rotation) -> LoginResponse:
     )
 
 
+def _refresh_error_code_from_http_exception(exc: HTTPException) -> ErrorCode:
+    """Map refresh lifecycle denials to refresh-specific public codes."""
+    detail = str(exc.detail or "").lower()
+    if "missing refresh token" in detail:
+        return ErrorCode.REFRESH_TOKEN_MISSING
+    if "mismatched refresh token" in detail or "does not match" in detail:
+        return ErrorCode.REFRESH_TOKEN_MISMATCH
+    if "invalid token type" in detail:
+        return ErrorCode.TOKEN_TYPE_INVALID
+    if "token expired" in detail:
+        return ErrorCode.TOKEN_EXPIRED
+    if "reused" in detail:
+        return ErrorCode.REFRESH_TOKEN_REUSED
+    if "family revoked" in detail or "refresh family revoked" in detail:
+        return ErrorCode.REFRESH_FAMILY_REVOKED
+    if "mismatch" in detail:
+        return ErrorCode.REFRESH_TOKEN_MISMATCH
+    if "context inactive" in detail or "context unavailable" in detail or "session revoked" in detail:
+        return ErrorCode.SESSION_REVOKED
+    if "invalid refresh token" in detail or "invalid token" in detail or "missing required claim" in detail:
+        return ErrorCode.REFRESH_TOKEN_INVALID
+    return ErrorCode.REFRESH_TOKEN_INVALID
+
+
 def _string_attr(value: Any, attr: str) -> Optional[str]:
     candidate = getattr(value, attr, None)
     return candidate if isinstance(candidate, str) and candidate else None
@@ -914,7 +938,6 @@ async def logout(
 
     try:
         claims = JWTTokenHandler.decode_access_token(session_token)
-        validate_enhanced_session(session_token)
         revoke_refresh_family(str(claims["family_id"]), reason="logout")
     except HTTPException as exc:
         raise AuthenticationError(
@@ -959,7 +982,7 @@ async def refresh_token(
     except HTTPException as exc:
         raise AuthenticationError(
             message=str(exc.detail),
-            error_code=ErrorCode.SESSION_EXPIRED,
+            error_code=_refresh_error_code_from_http_exception(exc),
         )
     _set_token_pair_cookies(response, rotation.token_pair)
     return _login_response_from_rotation(rotation)
@@ -1038,7 +1061,7 @@ async def switch_project(
     except HTTPException as exc:
         raise AuthenticationError(
             message=str(exc.detail),
-            error_code=ErrorCode.SESSION_INVALID,
+            error_code=_refresh_error_code_from_http_exception(exc),
         )
 
     _set_token_pair_cookies(response, rotation.token_pair)

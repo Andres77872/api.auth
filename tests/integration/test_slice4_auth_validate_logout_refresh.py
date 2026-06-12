@@ -124,6 +124,50 @@ def _store_session_in_redis(fake_redis, token, payload):
     fake_redis.set(f"session:{token}", json.dumps(payload), ex=259200)
 
 
+def _decode_redis_json(fake_redis, key):
+    raw = fake_redis.get(key)
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return json.loads(raw) if raw else None
+
+
+def _error_code(response):
+    return response.json()["error"]["code"]
+
+
+def _write_refresh_anchor_from_existing_state(fake_redis, pair):
+    family_id = pair.refresh_claims["family_id"]
+    access_jti = pair.access_claims["jti"]
+    refresh_jti = pair.refresh_claims["jti"]
+    session = _decode_redis_json(fake_redis, f"session:{access_jti}")
+    family = _decode_redis_json(fake_redis, f"refresh_family:{family_id}")
+    assert session is not None
+    assert family is not None
+
+    anchor = {
+        "anchor_version": 1,
+        "family_id": family_id,
+        "session_id": session["session_id"],
+        "status": "active",
+        "user_id": session.get("user_id"),
+        "user_hash": session.get("user_hash"),
+        "username": session.get("username"),
+        "user_type": session.get("user_type"),
+        "scope": session.get("scope"),
+        "collection": session.get("collection"),
+        "project_id": session.get("project_id"),
+        "project_hash": session.get("project_hash"),
+        "project_name": session.get("project_name"),
+        "current_access_jti": access_jti,
+        "current_refresh_jti": refresh_jti,
+        "created_at": family.get("created_at"),
+        "updated_at": family.get("updated_at"),
+        "expires_at": family.get("expires_at"),
+    }
+    fake_redis.set(f"refresh_anchor:{family_id}", json.dumps(anchor), ex=259200)
+    return anchor
+
+
 def _make_redis_session_payload(user_hash="usr-test-001", user_id="1",
                                  user_type="consumer", project_hash="prj-test-001",
                                  project_name="Test Project", project_id="1", scope=None,
@@ -481,6 +525,68 @@ async def test_refresh_response_rotates_refresh_token_and_old_access_session(
 
 
 @pytest.mark.asyncio
+async def test_refresh_succeeds_after_old_access_session_eviction(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Valid refresh survives natural eviction of the old access-session key."""
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    with patch("src.Util.auth_lifecycle.redis_client", fake_redis):
+        pair = issue_project_token_pair(
+            user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+            project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+            groups=[group.group_name],
+            permissions=["read"],
+        )
+    old_access_jti = pair.access_claims["jti"]
+    old_refresh_jti = pair.refresh_claims["jti"]
+    family_id = pair.refresh_claims["family_id"]
+    _write_refresh_anchor_from_existing_state(fake_redis, pair)
+
+    assert fake_redis.get(f"refresh_family:{family_id}") is not None
+    assert fake_redis.get(f"refresh_token:{old_refresh_jti}") is not None
+    assert fake_redis.get(f"refresh_anchor:{family_id}") is not None
+    fake_redis.delete(f"session:{old_access_jti}", f"session_full:{old_access_jti}")
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        old_access_response = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {pair.access_token}", "User-Agent": "test"},
+        )
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert old_access_response.status_code == 401
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["refresh_token"] != pair.refresh_token
+    assert data["session_token"] == data["access_token"]
+    assert fake_redis.get(f"session:{old_access_jti}") is None
+
+    old_record = _decode_redis_json(fake_redis, f"refresh_token:{old_refresh_jti}")
+    family = _decode_redis_json(fake_redis, f"refresh_family:{family_id}")
+    anchor = _decode_redis_json(fake_redis, f"refresh_anchor:{family_id}")
+    assert old_record["status"] == "used"
+    assert family["current_refresh_jti"] != old_refresh_jti
+    assert anchor["current_access_jti"] == family["current_access_jti"]
+    assert anchor["current_refresh_jti"] == family["current_refresh_jti"]
+
+
+@pytest.mark.asyncio
 async def test_refresh_mismatched_cookie_and_body_rejected(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,
@@ -501,15 +607,174 @@ async def test_refresh_mismatched_cookie_and_body_rejected(
 
 
 @pytest.mark.asyncio
-async def test_refresh_expired_session(
+async def test_refresh_rejects_bearer_access_token_transport(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Refresh with expired session returns 401 through REAL middleware stack."""
+    """/auth/refresh ignores Bearer access tokens; use refresh cookie/body transport instead."""
+    pair = _issue_project_access_token()
+
     response = await client.post(
         "/auth/refresh",
-        headers={"Authorization": "Bearer expired-token", "User-Agent": "test"},
+        headers={"Authorization": f"Bearer {pair.access_token}", "User-Agent": "test"},
     )
 
     assert response.status_code == 401
+    assert _error_code(response) == "AUTH_1014"
+    assert pair.access_token not in response.text
+
+
+@pytest.mark.asyncio
+async def test_refresh_missing_family_uses_refresh_invalid_classification(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+    fake_redis.delete(f"session:{pair.access_claims['jti']}")
+    fake_redis.delete(f"refresh_family:{pair.refresh_claims['family_id']}")
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 401
+    assert _error_code(response) == "AUTH_1013"
+    assert _error_code(response) != "AUTH_1002"
+    assert pair.refresh_token not in response.text
+
+
+@pytest.mark.asyncio
+async def test_refresh_reuse_uses_refresh_reused_classification(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        first = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+        reused = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert first.status_code == 200
+    assert reused.status_code == 401
+    assert _error_code(reused) == "AUTH_1015"
+    assert _error_code(reused) != "AUTH_1002"
+    assert fake_redis.get(f"refresh_anchor:{pair.refresh_claims['family_id']}") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_revoked_family_uses_family_revoked_classification(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    from src.Util.auth_lifecycle import issue_project_token_pair, revoke_refresh_family
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    revoke_refresh_family(family_id, reason="logout")
+    fake_redis.delete(f"session:{pair.access_claims['jti']}")
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 401
+    assert _error_code(response) == "AUTH_1017"
+    assert _error_code(response) != "AUTH_1002"
+    assert fake_redis.get(f"refresh_anchor:{family_id}") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_hash_mismatch_uses_refresh_invalid_classification(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+    token_key = f"refresh_token:{pair.refresh_claims['jti']}"
+    token_record = _decode_redis_json(fake_redis, token_key)
+    token_record["token_hash"] = "tampered"
+    fake_redis.set(token_key, json.dumps(token_record), ex=259200)
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 401
+    assert _error_code(response) == "AUTH_1013"
+    assert _error_code(response) != "AUTH_1002"

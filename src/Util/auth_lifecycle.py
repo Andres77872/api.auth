@@ -31,6 +31,7 @@ from src.Util.auth_constants import (
     PLATFORM_COLLECTION_SENTINEL,
     REFRESH_COOKIE_NAME,
     REFRESH_COOKIE_PATH,
+    REFRESH_ANCHOR_PREFIX,
     REFRESH_FAMILY_PREFIX,
     REFRESH_FAMILY_TTL_SECONDS,
     REFRESH_TOKEN_PREFIX,
@@ -128,6 +129,10 @@ def _loads_json(raw: Any) -> Optional[Dict[str, Any]]:
     return json.loads(raw)
 
 
+def _refresh_anchor_key(family_id: str) -> str:
+    return f"{REFRESH_ANCHOR_PREFIX}{family_id}"
+
+
 def _decode_set_members(members: Iterable[Any]) -> List[str]:
     decoded = []
     for member in members:
@@ -135,6 +140,166 @@ def _decode_set_members(members: Iterable[Any]) -> List[str]:
             member = member.decode()
         decoded.append(str(member))
     return decoded
+
+
+def _build_refresh_anchor_payload(
+    *,
+    session_payload: Dict[str, Any],
+    family_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the long-lived, non-secret refresh continuity seed.
+
+    The anchor deliberately excludes raw tokens, token hashes, permissions,
+    groups, and full-session cache payloads. Rotation still reconstructs the
+    authoritative user/project/permission context through DB hooks before a new
+    pair is issued.
+    """
+    scope = str(session_payload.get("scope") or family_payload.get("scope") or AUTH_SCOPE_PROJECT)
+    project_hash = session_payload.get("project_hash") if scope == AUTH_SCOPE_PROJECT else None
+    collection = session_payload.get("collection")
+    if scope == AUTH_SCOPE_PLATFORM:
+        collection = PLATFORM_COLLECTION_SENTINEL
+    else:
+        collection = collection or project_hash or family_payload.get("project_hash")
+
+    created_at = family_payload.get("created_at") or session_payload.get("issued_at")
+    updated_at = family_payload.get("updated_at") or created_at
+
+    return {
+        "anchor_version": 1,
+        "family_id": family_payload.get("family_id") or session_payload.get("family_id"),
+        "session_id": session_payload.get("session_id"),
+        "status": "active",
+        "user_id": session_payload.get("user_id") or family_payload.get("user_id"),
+        "user_hash": session_payload.get("user_hash") or family_payload.get("user_hash"),
+        "username": session_payload.get("username"),
+        "user_type": session_payload.get("user_type"),
+        "scope": scope,
+        "collection": collection,
+        "project_id": session_payload.get("project_id") if scope == AUTH_SCOPE_PROJECT else None,
+        "project_hash": project_hash,
+        "project_name": session_payload.get("project_name") if scope == AUTH_SCOPE_PROJECT else None,
+        "current_access_jti": family_payload.get("current_access_jti") or session_payload.get("access_jti"),
+        "current_refresh_jti": family_payload.get("current_refresh_jti") or session_payload.get("refresh_jti"),
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "expires_at": family_payload.get("expires_at"),
+    }
+
+
+def _anchor_matches_claims_and_family(
+    anchor: Optional[Dict[str, Any]],
+    claims: Dict[str, Any],
+    family: Dict[str, Any],
+) -> bool:
+    if not anchor or anchor.get("status") != "active":
+        return False
+
+    family_id = str(family.get("family_id") or "")
+    refresh_jti = str(claims.get("jti") or "")
+    scope = str(family.get("scope") or claims.get("scope") or AUTH_SCOPE_PROJECT)
+    expected_collection = (
+        PLATFORM_COLLECTION_SENTINEL
+        if scope == AUTH_SCOPE_PLATFORM
+        else (family.get("project_hash") or anchor.get("project_hash"))
+    )
+
+    required_comparisons = {
+        "family_id": family_id,
+        "session_id": claims.get("session_id"),
+        "user_hash": family.get("user_hash") or claims.get("user_hash"),
+        "scope": scope,
+        "current_refresh_jti": refresh_jti,
+    }
+    for anchor_field, expected in required_comparisons.items():
+        if expected is None or str(anchor.get(anchor_field)) != str(expected):
+            return False
+
+    if family.get("current_access_jti") and str(anchor.get("current_access_jti")) != str(family.get("current_access_jti")):
+        return False
+    if expected_collection is None or str(anchor.get("collection")) != str(expected_collection):
+        return False
+    if str(claims.get("collection")) != str(expected_collection):
+        return False
+    return True
+
+
+def _anchor_to_session_seed(
+    anchor: Dict[str, Any],
+    claims: Dict[str, Any],
+    family: Dict[str, Any],
+) -> Dict[str, Any]:
+    scope = str(anchor.get("scope") or family.get("scope") or claims.get("scope") or AUTH_SCOPE_PROJECT)
+    collection = PLATFORM_COLLECTION_SENTINEL if scope == AUTH_SCOPE_PLATFORM else anchor.get("collection")
+    project_hash = anchor.get("project_hash") if scope == AUTH_SCOPE_PROJECT else None
+    if scope == AUTH_SCOPE_PROJECT and not collection:
+        collection = project_hash
+
+    return {
+        "access_jti": anchor.get("current_access_jti") or family.get("current_access_jti"),
+        "session_id": anchor.get("session_id") or claims.get("session_id"),
+        "family_id": anchor.get("family_id") or family.get("family_id"),
+        "refresh_jti": anchor.get("current_refresh_jti") or claims.get("jti"),
+        "user_id": anchor.get("user_id") or family.get("user_id"),
+        "user_hash": anchor.get("user_hash") or family.get("user_hash") or claims.get("user_hash"),
+        "username": anchor.get("username"),
+        "user_type": anchor.get("user_type"),
+        "scope": scope,
+        "collection": collection,
+        "project_id": anchor.get("project_id") if scope == AUTH_SCOPE_PROJECT else None,
+        "project_hash": project_hash,
+        "project_name": anchor.get("project_name") if scope == AUTH_SCOPE_PROJECT else None,
+        "issued_at": anchor.get("updated_at") or anchor.get("created_at"),
+        "expires_at": None,
+    }
+
+
+def _legacy_family_claims_seed(family: Dict[str, Any], claims: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a safe seed for pre-anchor families after token/family validation.
+
+    This fallback is intentionally narrow. If required identifiers cannot be
+    proven from the active family plus signed refresh claims, refresh fails
+    closed and the user must re-login.
+    """
+    family_id = str(family.get("family_id") or "")
+    refresh_jti = str(claims.get("jti") or "")
+    session_id = claims.get("session_id")
+    user_hash = family.get("user_hash") or claims.get("user_hash")
+    scope = str(family.get("scope") or claims.get("scope") or AUTH_SCOPE_PROJECT)
+
+    if not family_id or family_id != str(claims.get("family_id")):
+        raise _auth_unauthorized("Refresh context unavailable; re-login required")
+    if not refresh_jti or not session_id or not user_hash:
+        raise _auth_unauthorized("Refresh context unavailable; re-login required")
+
+    if scope == AUTH_SCOPE_PLATFORM:
+        collection = PLATFORM_COLLECTION_SENTINEL
+        project_hash = None
+        project_id = None
+    else:
+        collection = claims.get("collection") or family.get("project_hash")
+        project_hash = family.get("project_hash") or (collection if collection != PLATFORM_COLLECTION_SENTINEL else None)
+        project_id = family.get("project_id")
+        if not collection or not project_hash:
+            raise _auth_unauthorized("Refresh context unavailable; re-login required")
+
+    return {
+        "access_jti": str(family.get("current_access_jti") or ""),
+        "session_id": str(session_id),
+        "family_id": family_id,
+        "refresh_jti": refresh_jti,
+        "user_id": family.get("user_id"),
+        "user_hash": user_hash,
+        "username": None,
+        "user_type": None,
+        "scope": scope,
+        "collection": collection,
+        "project_id": project_id,
+        "project_hash": project_hash,
+        "project_name": None,
+        "issued_at": family.get("updated_at") or family.get("created_at"),
+        "expires_at": None,
+    }
 
 
 def _as_mapping(value: Any) -> Dict[str, Any]:
@@ -482,10 +647,15 @@ def _issue_token_pair(
         "used_at": None,
         "expires_at": refresh_expires_at.isoformat(),
     }
+    anchor_payload = _build_refresh_anchor_payload(
+        session_payload=session_payload,
+        family_payload=family_payload,
+    )
 
     _set_json(f"{SESSION_PREFIX}{access_jti}", session_payload, access_ttl)
     _set_json(f"{REFRESH_FAMILY_PREFIX}{family_id}", family_payload, REFRESH_FAMILY_TTL_SECONDS)
     _set_json(f"{REFRESH_TOKEN_PREFIX}{refresh_jti}", refresh_payload, REFRESH_FAMILY_TTL_SECONDS)
+    _set_json(_refresh_anchor_key(family_id), anchor_payload, REFRESH_FAMILY_TTL_SECONDS)
     redis_client.sadd(f"{USER_SESSIONS_PREFIX}{user_data.get('id')}", access_jti)
     redis_client.expire(f"{USER_SESSIONS_PREFIX}{user_data.get('id')}", REFRESH_FAMILY_TTL_SECONDS)
     redis_client.sadd(f"{USER_REFRESH_FAMILIES_PREFIX}{user_data.get('id')}", family_id)
@@ -698,10 +868,16 @@ def _require_refresh_claim_session_match(claims: Dict[str, Any], family: Dict[st
         if str(claims.get(claim_name)) != str(expected):
             raise _auth_unauthorized(f"Refresh token/session mismatch: {claim_name}")
 
+    if session.get("refresh_jti") and str(claims.get("jti")) != str(session.get("refresh_jti")):
+        raise _auth_unauthorized("Refresh token/session mismatch: refresh_jti")
+
+    if family.get("current_refresh_jti") and str(claims.get("jti")) != str(family.get("current_refresh_jti")):
+        raise _auth_unauthorized("Refresh token/family mismatch: current_refresh_jti")
+
     expected_collection = (
         PLATFORM_COLLECTION_SENTINEL
         if session.get("scope") == AUTH_SCOPE_PLATFORM
-        else session.get("project_hash")
+        else (session.get("collection") or session.get("project_hash"))
     )
     if str(claims.get("collection")) != str(expected_collection):
         raise _auth_unauthorized("Refresh token/session mismatch: collection")
@@ -721,7 +897,11 @@ def _build_rotated_pair(
     family_id = str(refresh_claims["family_id"])
     session_id = str(refresh_claims["session_id"])
     scope = str(refresh_claims.get("scope") or old_session.get("scope") or AUTH_SCOPE_PROJECT)
-    collection = PLATFORM_COLLECTION_SENTINEL if scope == AUTH_SCOPE_PLATFORM else old_session.get("project_hash")
+    collection = (
+        PLATFORM_COLLECTION_SENTINEL
+        if scope == AUTH_SCOPE_PLATFORM
+        else (old_session.get("project_hash") or old_session.get("collection"))
+    )
     access_jti = str(uuid4())
     refresh_jti = str(uuid4())
 
@@ -836,6 +1016,8 @@ def rotate_refresh_family(
     family_key = f"{REFRESH_FAMILY_PREFIX}{family_id}"
     token_key = f"{REFRESH_TOKEN_PREFIX}{refresh_jti}"
     used_key = f"{REFRESH_USED_PREFIX}{family_id}"
+    anchor_key = _refresh_anchor_key(family_id)
+    revoked_key = f"{REVOKED_FAMILY_PREFIX}{family_id}"
 
     family = _get_json(family_key)
     token_record = _get_json(token_key)
@@ -854,11 +1036,18 @@ def rotate_refresh_family(
 
     old_access_jti = str(family.get("current_access_jti") or "")
     old_session = _get_json(f"{SESSION_PREFIX}{old_access_jti}") if old_access_jti else None
-    if not old_session:
-        raise _auth_unauthorized("Access session missing or revoked")
+    anchor = _get_json(anchor_key)
 
-    _require_refresh_claim_session_match(claims, family, old_session)
-    context_session = dict(old_session)
+    if old_session:
+        context_session = dict(old_session)
+    elif anchor is not None:
+        if not _anchor_matches_claims_and_family(anchor, claims, family):
+            raise _auth_unauthorized("Refresh token/session mismatch: anchor")
+        context_session = _anchor_to_session_seed(anchor, claims, family)
+    else:
+        context_session = _legacy_family_claims_seed(family, claims)
+
+    _require_refresh_claim_session_match(claims, family, context_session)
     if target_project is not None:
         context_session.update({
             "scope": AUTH_SCOPE_PROJECT,
@@ -895,6 +1084,10 @@ def rotate_refresh_family(
     })
     new_family = dict(family)
     new_family.update(family_updates)
+    new_anchor = _build_refresh_anchor_payload(
+        session_payload=new_session,
+        family_payload=new_family,
+    )
 
     new_access_jti = token_pair.access_claims["jti"]
     new_refresh_jti = token_pair.refresh_claims["jti"]
@@ -902,12 +1095,15 @@ def rotate_refresh_family(
 
     try:
         with redis_client.pipeline(transaction=True) as pipe:
-            pipe.watch(family_key, token_key, f"{SESSION_PREFIX}{old_access_jti}")
+            pipe.watch(family_key, token_key, anchor_key, revoked_key)
             watched_family = _loads_json(pipe.get(family_key))
             watched_token = _loads_json(pipe.get(token_key))
+            watched_revoked = pipe.get(revoked_key)
             if (
                 not watched_family
                 or not watched_token
+                or watched_revoked is not None
+                or watched_family.get("status") != "active"
                 or watched_family.get("current_refresh_jti") != refresh_jti
                 or watched_token.get("status") != "current"
                 or watched_token.get("token_hash") != hash_refresh_token(refresh_token)
@@ -923,6 +1119,7 @@ def rotate_refresh_family(
             pipe.set(f"{REFRESH_TOKEN_PREFIX}{new_refresh_jti}", json.dumps(new_refresh_record, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
             pipe.set(family_key, json.dumps(new_family, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
             pipe.set(f"{SESSION_PREFIX}{new_access_jti}", json.dumps(new_session, default=_json_default), ex=token_pair.expires_in)
+            pipe.set(anchor_key, json.dumps(new_anchor, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
             pipe.delete(f"{SESSION_PREFIX}{old_access_jti}", f"{SESSION_FULL_PREFIX}{old_access_jti}")
             if user_id:
                 pipe.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", new_access_jti)
@@ -945,6 +1142,9 @@ def rotate_refresh_family(
 
 
 def revoke_access_session(access_jti: str) -> None:
+    # Access-session revocation is intentionally access-only. True logout or
+    # user/session termination must revoke the refresh family so its anchor and
+    # tombstone are updated consistently.
     redis_client.delete(f"{SESSION_PREFIX}{access_jti}", f"{SESSION_FULL_PREFIX}{access_jti}")
 
 
@@ -964,6 +1164,7 @@ def revoke_refresh_family(family_id: str, reason: str = "revoked") -> None:
     family["revocation_reason"] = reason
     _set_json(family_key, family, REFRESH_FAMILY_TTL_SECONDS)
     _set_json(f"{REVOKED_FAMILY_PREFIX}{family_id}", {"family_id": family_id, "reason": reason, "revoked_at": now}, REFRESH_FAMILY_TTL_SECONDS)
+    redis_client.delete(_refresh_anchor_key(family_id))
 
     access_jtis = set()
     if family.get("current_access_jti"):

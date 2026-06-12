@@ -111,18 +111,18 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | Code | Enum Value | Message | Cause | Resolution |
 |------|-----------|---------|-------|------------|
 | `AUTH_1001` | `INVALID_CREDENTIALS` | Invalid username or password | Wrong credentials on login | Verify username and password |
-| `AUTH_1002` | `SESSION_EXPIRED` | Invalid or expired session | Token expired, deleted, or malformed | Re-authenticate via login |
+| `AUTH_1002` | `SESSION_EXPIRED` | Invalid or expired access session | Access token expired, access session deleted, or access credential malformed | Call `/auth/refresh` with the current refresh token if available; otherwise re-authenticate |
 | `AUTH_1003` | `SESSION_INVALID` | Session is invalid | Token malformed or not found | Re-authenticate via login |
 | `AUTH_1004` | `TOKEN_INVALID` | Token invalid | JWT malformed or failed validation | Use a valid access/refresh token for the endpoint |
 | `AUTH_1005` | `ACCOUNT_INACTIVE` | Account is inactive | User status is `inactive` | Contact admin to reactivate |
-| `AUTH_1013` | `REFRESH_TOKEN_INVALID` | Invalid refresh token | Refresh token invalid, expired, revoked, missing Redis family/token record, or hash mismatch | Re-authenticate via login |
+| `AUTH_1013` | `REFRESH_TOKEN_INVALID` | Invalid refresh token | Refresh token malformed, missing Redis family/token record, hash mismatch, or otherwise not valid/current | Re-authenticate via login |
 | `AUTH_1014` | `REFRESH_TOKEN_MISSING` | Refresh token required | `/auth/refresh` called without `refresh_token` cookie/body | Send a valid refresh token or log in again |
 | `AUTH_1015` | `REFRESH_TOKEN_REUSED` | Refresh token reused | Old/used refresh token presented again; family revoked | Clear credentials and force re-login |
 | `AUTH_1016` | `REFRESH_TOKEN_MISMATCH` | Refresh token mismatch | Cookie and explicit body refresh tokens differ | Send one matching refresh token source |
 | `AUTH_1017` | `REFRESH_FAMILY_REVOKED` | Refresh family revoked | Logout, reuse detection, deactivation, or admin revocation invalidated the family | Re-authenticate via login |
 | `AUTH_1018` | `TOKEN_TYPE_INVALID` | Wrong token type | Refresh token used as access token, or access/session token used for refresh | Use the correct token type for the endpoint |
-| `AUTH_1019` | `TOKEN_EXPIRED` | Token expired | JWT `exp` claim elapsed | Refresh access token or re-authenticate |
-| `AUTH_1020` | `SESSION_REVOKED` | Session revoked | Access session or refresh family revoked server-side | Re-authenticate via login |
+| `AUTH_1019` | `TOKEN_EXPIRED` | Token expired | JWT `exp` claim elapsed. Access-token expiry is recoverable through `/auth/refresh`; refresh-token expiry is terminal. | Refresh access token if the refresh token is still valid; otherwise re-authenticate |
+| `AUTH_1020` | `SESSION_REVOKED` | Session revoked | Server-side session/family context cannot be trusted, including unreconstructable legacy refresh context | Re-authenticate via login |
 | `AUTH_1021` | `JWT_CONFIGURATION_FAILURE` | JWT configuration failure | `JWT_SECRET_KEY` missing/invalid outside tests | Set `JWT_SECRET_KEY`; this is an operator issue |
 
 ### Authorization Errors (403)
@@ -284,9 +284,9 @@ Instead of:
 **Symptoms**: `401 SESSION_EXPIRED`, `TOKEN_EXPIRED`, `SESSION_INVALID`, `SESSION_REVOKED`, or `REFRESH_FAMILY_REVOKED` on authenticated endpoints
 
 **Checklist**:
-1. Access token expired — call `/auth/refresh` with a valid refresh token
-2. Refresh token expired/revoked/reused — clear credentials and re-authenticate
-3. Redis restarted or flushed — access sessions/refresh families lost, re-authenticate
+1. Access token expired or `session:{access_jti}` was evicted by the short access TTL — call `/auth/refresh` with a valid current refresh token.
+2. Refresh token expired/revoked/reused — clear credentials and re-authenticate.
+3. Redis restarted or flushed — if refresh family/token/anchor state is gone, re-authenticate.
 4. `JWT_SECRET_KEY` changed — all existing JWTs invalid; re-authenticate after operator fixes config
 5. Admin deactivated/deleted/bulk-deactivated the user — sessions and refresh families are centrally revoked
 
@@ -317,6 +317,8 @@ Canonical error envelope example:
 ```
 
 Do **not** send `Authorization: Bearer <access_token>` to `/auth/refresh`; access/session tokens are rejected immediately and are not upgrade credentials.
+
+Access-token expiry by itself should not surface here as `AUTH_1002` from `/auth/refresh`. The provider keeps `session:{access_jti}` short-lived and uses `refresh_anchor:{family_id}` plus DB reconstruction to rotate a valid current refresh token after the old access session has expired. If `/auth/refresh` returns one of the refresh-specific codes above, treat it as a refresh credential/state problem, not as a recoverable access-token expiry.
 
 ### Refresh Token Reuse or Family Revoked
 
