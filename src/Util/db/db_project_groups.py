@@ -18,7 +18,7 @@ from typing import List, Optional
 import pymysql
 
 from src.Util.Models import (
-    Project, ProjectGroup, ProjectGroupMember
+    Project, ProjectGroup, ProjectGroupMember, User
 )
 from src.Util.db_config import get_connection
 from src.Util.db_error_wrapper import handle_db_operation
@@ -570,6 +570,38 @@ def get_projects_in_group(project_group_id: str) -> List[Project]:
     return handle_db_operation(
         _get,
         error_context=f"get_projects_in_group(project_group_id={project_group_id})"
+    )
+
+
+def get_users_with_access_to_project_group(project_group_id: str) -> List[User]:
+    """Get active users with direct active access to a project group."""
+    def _get():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_get_users_with_access_to_project_group', [project_group_id])
+
+            users = []
+            for row in cur.fetchall():
+                users.append(User(
+                    id=row[0],
+                    user_hash=row[1],
+                    username=row[2],
+                    email=row[3],
+                    password_hash="",
+                    user_type=row[4],
+                    assigned_project_id=None,
+                    created_at=datetime.now(),
+                    is_active=True,
+                ))
+
+            while cur.nextset():
+                pass
+
+            return users
+
+    return handle_db_operation(
+        _get,
+        error_context=f"get_users_with_access_to_project_group(project_group_id={project_group_id})"
     )
 
 

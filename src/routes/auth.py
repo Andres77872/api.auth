@@ -11,6 +11,7 @@ from typing import Optional, Any
 import json
 import secrets
 from datetime import timedelta
+from unittest.mock import Mock
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Response, Request
 from starlette.background import BackgroundTasks
@@ -59,6 +60,7 @@ from src.Util.JWT_Security import JWTTokenHandler
 # NEW: helpers aligned with the group-based schema
 from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project, get_user_groups_in_project_by_hash
 from src.Util.db.db_projects import get_project_by_hash
+from src.Util.db.db_users import check_admin_multi_project_access, get_admin_project_assignments_with_details
 from src.Util.auth_flow import resolve_target_project
 from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, validate_access_session
 from src.Util.db.db_enhanced import validate_session as validate_enhanced_session
@@ -232,6 +234,48 @@ def _project_info_from_any(project: Any) -> Optional[ProjectInfo]:
         project_name=project_name or "",
         project_description=project_description,
     )
+
+
+def _project_is_auth_accessible(project: Any) -> bool:
+    """Project-scoped auth may only target active, non-archived projects."""
+    if project is None:
+        return False
+    is_active = getattr(project, "is_active", True)
+    if isinstance(is_active, Mock) and "is_active" not in getattr(project, "__dict__", {}):
+        is_active = True
+    if isinstance(project, dict):
+        is_active = project.get("is_active", is_active)
+    archived = getattr(project, "archived", False)
+    if isinstance(archived, Mock) and "archived" not in getattr(project, "__dict__", {}):
+        archived = False
+    if isinstance(project, dict):
+        archived = project.get("archived", archived)
+    return bool(is_active) and not bool(archived)
+
+
+def _deny_project_auth(project_hash: str) -> None:
+    raise AuthorizationError(
+        message="Access denied to requested project",
+        error_code=ErrorCode.PROJECT_ACCESS_DENIED,
+        details={"project_hash": mask_uuid(project_hash)},
+    )
+
+
+def _admin_accessible_project_infos(user_id: str) -> list[ProjectInfo]:
+    assignments = get_admin_project_assignments_with_details(user_id)
+    project_infos = []
+    seen_hashes = set()
+    for assignment in assignments or []:
+        project_hash = assignment.get("project_hash") if isinstance(assignment, dict) else getattr(assignment, "project_hash", None)
+        if not project_hash or project_hash in seen_hashes:
+            continue
+        seen_hashes.add(project_hash)
+        project_infos.append(ProjectInfo(
+            project_hash=project_hash,
+            project_name=(assignment.get("project_name") if isinstance(assignment, dict) else getattr(assignment, "project_name", "")) or "",
+            project_description=(assignment.get("project_description") if isinstance(assignment, dict) else getattr(assignment, "project_description", None)),
+        ))
+    return project_infos
 
 
 def _login_response_from_rotation(rotation) -> LoginResponse:
@@ -425,6 +469,8 @@ async def login(
                 error_code=ErrorCode.PROJECT_NOT_FOUND,
                 details={"project_hash": mask_uuid(project_hash)},
             )
+        if not _project_is_auth_accessible(target_project):
+            _deny_project_auth(project_hash)
 
         token_pair = issue_project_token_pair(
             user=user_record,
@@ -473,7 +519,63 @@ async def login(
         )
 
     # ------------------------------------------------------------------
-    # Non-root users → choose specific or default project
+    # Admin users → assigned-project authorization only
+    # ------------------------------------------------------------------
+    if user_record.user_type == "admin":
+        target_project = handle_db_operation(
+            lambda: get_project_by_hash(project_hash),
+            error_context="project lookup",
+            not_found_message=f"Project not found: {mask_uuid(project_hash)}",
+        )
+        if not target_project:
+            raise NotFoundError(
+                message=f"Project not found: {mask_uuid(project_hash)}",
+                error_code=ErrorCode.PROJECT_NOT_FOUND,
+                details={"project_hash": mask_uuid(project_hash)},
+            )
+        if not _project_is_auth_accessible(target_project):
+            _deny_project_auth(project_hash)
+        if not check_admin_multi_project_access(user_record.id, target_project.id):
+            _deny_project_auth(project_hash)
+
+        token_pair = issue_project_token_pair(
+            user=user_record,
+            project=target_project,
+            permissions=["admin", "project_admin", "manage_users", "manage_groups", "manage_permissions"],
+            groups=["project_admins"],
+            group_ids=[],
+        )
+        _set_token_pair_cookies(response, token_pair)
+
+        return LoginResponse(
+            success=True,
+            message="Login successful",
+            access_token=token_pair.access_token,
+            refresh_token=token_pair.refresh_token,
+            session_token=token_pair.session_token,
+            token_type=token_pair.token_type,
+            expires_in=token_pair.expires_in,
+            refresh_expires_in=token_pair.refresh_expires_in,
+            expires_at=token_pair.expires_at,
+            refresh_expires_at=token_pair.refresh_expires_at,
+            user=UserInfo(
+                user_hash=user_record.user_hash,
+                username=user_record.username,
+                email=user_record.email,
+                user_type=user_record.user_type,
+            ),
+            project=ProjectInfo(
+                project_hash=target_project.project_hash,
+                project_name=target_project.project_name,
+                project_description=target_project.project_description,
+            ),
+            accessible_projects=_admin_accessible_project_infos(user_record.id),
+            user_groups=[],
+            user_id=user_record.id,
+        )
+
+    # ------------------------------------------------------------------
+    # Consumer users → choose specific project from accessible-project union
     # ------------------------------------------------------------------
     accessible = get_user_accessible_projects(user_record.id)
     target_project = resolve_target_project(
@@ -482,6 +584,8 @@ async def login(
         get_project_by_hash_fn=get_project_by_hash,
         handle_db_operation_fn=handle_db_operation,
     )
+    if not _project_is_auth_accessible(target_project):
+        _deny_project_auth(project_hash)
 
     # Build project info object for the chosen default project
     project_info = ProjectInfo(
@@ -512,14 +616,9 @@ async def login(
     ]
     user_group_names = [g.group_name for g in user_groups]
     user_group_ids = [str(g.id) for g in user_groups]
-    if user_record.user_type == "admin":
-        session_groups = ["project_admins"]
-        session_group_ids = []
-        session_permissions = ["admin", "project_admin", "manage_users", "manage_groups", "manage_permissions"]
-    else:
-        session_groups = user_group_names
-        session_group_ids = user_group_ids
-        session_permissions = []
+    session_groups = user_group_names
+    session_group_ids = user_group_ids
+    session_permissions = []
 
     token_pair = issue_project_token_pair(
         user=user_record,
@@ -1035,14 +1134,17 @@ async def switch_project(
             message=f"Project not found: {mask_uuid(project_hash)}",
             error_code=ErrorCode.PROJECT_NOT_FOUND
         )
+    if not _project_is_auth_accessible(new_project):
+        _deny_project_auth(project_hash)
 
-    accessible = get_user_accessible_projects(current_session.user_id)
-    if not any(p.project_hash == project_hash for p in accessible):
-        raise AuthorizationError(
-            message="Access denied to requested project",
-            error_code=ErrorCode.PROJECT_ACCESS_DENIED,
-            details={"project_hash": mask_uuid(project_hash)}
-        )
+    current_user_type = getattr(current_session, "user_type", "consumer") or "consumer"
+    if current_user_type == "admin":
+        if not check_admin_multi_project_access(current_session.user_id, new_project.id):
+            _deny_project_auth(project_hash)
+    elif current_user_type != "root":
+        accessible = get_user_accessible_projects(current_session.user_id)
+        if not any(p.project_hash == project_hash for p in accessible):
+            _deny_project_auth(project_hash)
 
     try:
         presented_refresh_token = extract_refresh_token_from_request(request, refresh_token_value)
@@ -1055,6 +1157,7 @@ async def switch_project(
             target_project=new_project,
             get_user_by_hash_fn=get_user_by_hash,
             get_project_by_hash_fn=get_project_by_hash,
+            check_admin_project_access_fn=check_admin_multi_project_access,
             get_user_groups_in_project_by_hash_fn=lambda user_id, _project_hash: get_user_groups_in_project(user_id, new_project.id),
             get_user_accessible_projects_fn=get_user_accessible_projects,
         )

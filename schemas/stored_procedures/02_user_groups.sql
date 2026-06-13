@@ -307,23 +307,21 @@ BEGIN
                'root_access' as access_type
         FROM projects p
         WHERE p.is_active = 1
+          AND (p.archived = FALSE OR p.archived IS NULL)
         ORDER BY p.project_name;
     ELSE
-        -- Use subquery to ensure each project appears only once even when
-        -- linked through multiple user_group → project_group paths
-        SELECT p.id, p.project_hash, p.project_name, p.project_description,
+        SELECT DISTINCT p.id, p.project_hash, p.project_name, p.project_description,
                'group_access' as access_type
-        FROM projects p
-        WHERE p.is_active = 1
-          AND p.id IN (
-              SELECT DISTINCT pgm.project_id
-              FROM user_group_members ugm
-              JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id AND ugpg.is_active = 1
-              JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
-              WHERE ugm.user_id = p_user_id AND ugm.is_active = 1
-                AND EXISTS (SELECT 1 FROM user_groups ug WHERE ug.id = ugm.user_group_id AND ug.is_active = 1)
-                AND EXISTS (SELECT 1 FROM project_groups pg WHERE pg.id = ugpg.project_group_id AND pg.is_active = 1)
-          )
+        FROM user_group_members ugm
+        JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
+        JOIN user_group_project_groups ugpg ON ugpg.user_group_id = ug.id AND ugpg.is_active = 1
+        JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
+        JOIN project_group_members pgm ON pgm.project_group_id = pg.id AND pgm.is_active = 1
+        JOIN projects p ON p.id = pgm.project_id
+            AND p.is_active = 1
+            AND (p.archived = FALSE OR p.archived IS NULL)
+        WHERE ugm.user_id = p_user_id
+          AND ugm.is_active = 1
         ORDER BY p.project_name;
     END IF;
 END$$
@@ -340,17 +338,24 @@ BEGIN
     SELECT user_type INTO v_user_type FROM users WHERE id = p_user_id AND is_active = 1;
     
     IF v_user_type = 'root' THEN
-        SET v_has_access = TRUE;
+        SELECT COUNT(*) > 0 INTO v_has_access
+        FROM projects p
+        WHERE p.id = p_project_id
+          AND p.is_active = 1
+          AND (p.archived = FALSE OR p.archived IS NULL);
     ELSE
         SELECT COUNT(*) > 0 INTO v_has_access
         FROM user_group_members ugm
-        JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id
-        JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id
+        JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
+        JOIN user_group_project_groups ugpg ON ugpg.user_group_id = ug.id AND ugpg.is_active = 1
+        JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
+        JOIN project_group_members pgm ON pgm.project_group_id = pg.id AND pgm.is_active = 1
+        JOIN projects p ON p.id = pgm.project_id
+            AND p.is_active = 1
+            AND (p.archived = FALSE OR p.archived IS NULL)
         WHERE ugm.user_id = p_user_id 
           AND pgm.project_id = p_project_id
-          AND ugm.is_active = 1 
-          AND ugpg.is_active = 1
-          AND pgm.is_active = 1;
+          AND ugm.is_active = 1;
     END IF;
     
     SELECT v_has_access as has_access;
@@ -384,13 +389,18 @@ BEGIN
     FROM user_groups ug
     INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
     INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id
-    INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id
+    INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id
+    INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
+    INNER JOIN projects p ON pgm.project_id = p.id
     WHERE ugm.user_id = p_user_id 
       AND pgm.project_id = p_project_id
       AND ug.is_active = 1 
       AND ugm.is_active = 1 
       AND ugpg.is_active = 1
+      AND pg.is_active = 1
       AND pgm.is_active = 1
+      AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
     ORDER BY ug.group_name ASC;
 END$$
 
@@ -402,15 +412,18 @@ BEGIN
     FROM user_groups ug
     INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id
     INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id
-    INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id
+    INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id
+    INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id
     INNER JOIN projects p ON pgm.project_id = p.id
     WHERE ugm.user_id = p_user_id
       AND p.project_hash = p_project_hash
       AND ug.is_active = 1
       AND ugm.is_active = 1
       AND ugpg.is_active = 1
+      AND pg.is_active = 1
       AND pgm.is_active = 1
       AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
     ORDER BY ug.group_name ASC;
 END$$
 
@@ -441,8 +454,13 @@ BEGIN
     FROM projects p
     INNER JOIN project_group_members pgm ON p.id = pgm.project_id
     INNER JOIN user_group_project_groups ugpg ON pgm.project_group_id = ugpg.project_group_id
+    INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id
+    INNER JOIN user_groups ug ON ug.id = ugpg.user_group_id
     WHERE ugpg.user_group_id = p_user_group_id
       AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
+      AND pg.is_active = 1
+      AND ug.is_active = 1
       AND pgm.is_active = 1
       AND ugpg.is_active = 1
     ORDER BY p.project_name ASC;

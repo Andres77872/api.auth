@@ -77,6 +77,27 @@ During login, `src/Util/auth_lifecycle.py:_issue_token_pair()` builds the sessio
 
 This matters because group changes may not be reflected in an already-issued session until the user logs in again, refreshes, or switches project context depending on the workflow.
 
+### Direct cross-group login contract
+
+The public `/auth/login` route already authorizes consumers through the direct groups-of-groups chain and this behavior is now codified/hardened:
+
+```
+consumer user
+  → active membership in user_group_b
+  → active direct user_group_b → project_group_b authorization row
+  → active project_group_b → project_a membership
+  → active, non-archived project_a
+```
+
+So a consumer in `user_group_b` can log in with `project_a.project_hash` when `project_a` is a member of `project_group_b`. No direct `project_a → user_group_b` shortcut is required or supported.
+
+Important constraints:
+
+- `user_groups.parent_group_id` is **not** traversed for login authorization.
+- `project_groups.parent_group_id` is **not** traversed for login authorization.
+- Login/switch responses do **not** disclose which user-group/project-group chain granted access.
+- Archived projects are denied for consumer login, root login, switching, accessible-project results, and session validation.
+
 ---
 
 ## Project Creation Side Effect: Default Groups

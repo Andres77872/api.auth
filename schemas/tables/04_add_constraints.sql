@@ -490,9 +490,15 @@ BEGIN
     END IF;
     
     -- Validate project exists and is active
-    IF NOT EXISTS (SELECT 1 FROM projects WHERE id = NEW.project_id AND is_active = TRUE) THEN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM projects
+        WHERE id = NEW.project_id
+          AND is_active = TRUE
+          AND (archived = FALSE OR archived IS NULL)
+    ) THEN
         SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Project does not exist or is inactive';
+        SET MESSAGE_TEXT = 'Project does not exist, is inactive, or is archived';
     END IF;
     
     -- Root users have access to all projects
@@ -502,8 +508,13 @@ BEGIN
         -- Check access via groups of groups: User → User Group → Project Group → Project
         SELECT COUNT(*) INTO v_has_access
         FROM user_group_members ugm
-        JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id AND ugpg.is_active = TRUE
-        JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = TRUE
+        JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = TRUE
+        JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = TRUE
+        JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = TRUE
+        JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = TRUE
+        JOIN projects p ON p.id = pgm.project_id
+            AND p.is_active = TRUE
+            AND (p.archived = FALSE OR p.archived IS NULL)
         WHERE ugm.user_id = NEW.user_id
           AND ugm.is_active = TRUE
           AND pgm.project_id = NEW.project_id

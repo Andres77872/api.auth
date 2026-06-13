@@ -5,6 +5,7 @@ and cache invalidation behavior through the real FastAPI app.
 """
 
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -20,6 +21,17 @@ MINIMAL_API_KEY_PATCHES = [
     "validate_api_key_lookup", "get_project_by_id", "get_user_by_id",
     "get_user_groups_in_project_by_hash", "get_user_effective_permissions",
 ]
+
+
+def test_api_key_sql_predicate_rejects_archived_and_inactive_direct_chains():
+    """API-key SQL must mirror the tightened direct-chain project access policy."""
+    sql = Path("schemas/stored_procedures/13_api_keys.sql").read_text()
+
+    assert "Project is not active or is archived" in sql
+    assert sql.count("p.archived = FALSE OR p.archived IS NULL") >= 2
+    assert "JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1" in sql
+    assert "JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1" in sql
+    assert "'no_project_access' as validation_status" in sql
 
 
 @pytest.fixture

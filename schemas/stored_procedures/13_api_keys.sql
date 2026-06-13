@@ -65,9 +65,13 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Project does not exist';
     END IF;
 
-    SELECT COUNT(*) INTO v_project_active FROM projects WHERE id = p_project_id AND is_active = 1;
+    SELECT COUNT(*) INTO v_project_active
+    FROM projects
+    WHERE id = p_project_id
+      AND is_active = 1
+      AND (archived = FALSE OR archived IS NULL);
     IF v_project_active = 0 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Project is not active';
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Project is not active or is archived';
     END IF;
 
     -- Check if CREATOR is root - root can create keys for any user on any project
@@ -96,17 +100,24 @@ BEGIN
                 SELECT user_type INTO v_owner_type FROM users WHERE id = p_owner_user_id AND is_active = 1;
 
                 IF v_owner_type = 'root' THEN
-                    SET v_has_access = TRUE;
+                    SELECT COUNT(*) > 0 INTO v_has_access
+                    FROM projects p
+                    WHERE p.id = p_project_id
+                      AND p.is_active = 1
+                      AND (p.archived = FALSE OR p.archived IS NULL);
                 ELSE
                     SELECT COUNT(*) > 0 INTO v_has_access
                     FROM user_group_members ugm
-                    JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id
-                    JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id
+                    JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
+                    JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+                    JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
+                    JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = 1
+                    JOIN projects p ON p.id = pgm.project_id
+                        AND p.is_active = 1
+                        AND (p.archived = FALSE OR p.archived IS NULL)
                     WHERE ugm.user_id = p_owner_user_id
                       AND pgm.project_id = p_project_id
-                      AND ugm.is_active = 1
-                      AND ugpg.is_active = 1
-                      AND pgm.is_active = 1;
+                      AND ugm.is_active = 1;
                 END IF;
             END;
 
@@ -206,17 +217,24 @@ BEGIN
                 SELECT user_type INTO v_user_type FROM users WHERE id = v_owner_user_id AND is_active = 1;
 
                 IF v_user_type = 'root' THEN
-                    SET v_has_access = TRUE;
+                    SELECT COUNT(*) > 0 INTO v_has_access
+                    FROM projects p
+                    WHERE p.id = v_project_id
+                      AND p.is_active = 1
+                      AND (p.archived = FALSE OR p.archived IS NULL);
                 ELSE
                     SELECT COUNT(*) > 0 INTO v_has_access
                     FROM user_group_members ugm
-                    JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id
-                    JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id
+                    JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
+                    JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+                    JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
+                    JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = 1
+                    JOIN projects p ON p.id = pgm.project_id
+                        AND p.is_active = 1
+                        AND (p.archived = FALSE OR p.archived IS NULL)
                     WHERE ugm.user_id = v_owner_user_id
                       AND pgm.project_id = v_project_id
-                      AND ugm.is_active = 1
-                      AND ugpg.is_active = 1
-                      AND pgm.is_active = 1;
+                      AND ugm.is_active = 1;
                 END IF;
             END;
 

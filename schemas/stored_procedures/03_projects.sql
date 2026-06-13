@@ -282,10 +282,15 @@ BEGIN
     SELECT DISTINCT ug.id
     FROM user_groups ug
     INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+    INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
     INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
+    INNER JOIN projects p ON p.id = pgm.project_id
     WHERE pgm.project_id = p_project_id
       AND ug.group_name = CONCAT('admin_', p_project_id)
       AND ug.is_active = 1
+      AND pg.is_active = 1
+      AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
     LIMIT 1;
 END$$
 
@@ -295,9 +300,15 @@ BEGIN
     SELECT DISTINCT p.id, p.project_hash, p.project_name, p.project_description
     FROM projects p
     INNER JOIN project_group_members pgm ON p.id = pgm.project_id AND pgm.is_active = 1
-    INNER JOIN user_group_project_groups ugpg ON pgm.project_group_id = ugpg.project_group_id AND ugpg.is_active = 1
+    INNER JOIN project_groups pg ON pg.id = pgm.project_group_id AND pg.is_active = 1
+    INNER JOIN user_group_project_groups ugpg ON pg.id = ugpg.project_group_id AND ugpg.is_active = 1
+    INNER JOIN user_groups ug ON ug.id = ugpg.user_group_id AND ug.is_active = 1
     INNER JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id AND ugm.is_active = 1
-    WHERE ugm.user_id = p_user_id AND p.is_active = 1
+    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    WHERE ugm.user_id = p_user_id
+      AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
+      AND ug.group_name = CONCAT('admin_', p.id)
     ORDER BY p.project_name;
 END$$
 
@@ -306,9 +317,18 @@ CREATE PROCEDURE sp_check_admin_multi_project_access(IN p_user_id VARCHAR(64), I
 BEGIN
     SELECT COUNT(*) > 0 AS has_access
     FROM user_group_members ugm
-    INNER JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id AND ugpg.is_active = 1
-    INNER JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
-    WHERE ugm.user_id = p_user_id AND pgm.project_id = p_project_id AND ugm.is_active = 1;
+    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    INNER JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
+    INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+    INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
+    INNER JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = 1
+    INNER JOIN projects p ON p.id = pgm.project_id
+        AND p.is_active = 1
+        AND (p.archived = FALSE OR p.archived IS NULL)
+    WHERE ugm.user_id = p_user_id
+      AND pgm.project_id = p_project_id
+      AND ugm.is_active = 1
+      AND ug.group_name = CONCAT('admin_', p.id);
 END$$
 
 DROP PROCEDURE IF EXISTS sp_get_admin_project_assignments_with_details$$
@@ -329,7 +349,11 @@ BEGIN
     INNER JOIN user_group_project_groups ugpg ON pg.id = ugpg.project_group_id AND ugpg.is_active = 1
     INNER JOIN user_groups ug ON ugpg.user_group_id = ug.id AND ug.is_active = 1
     INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id AND ugm.is_active = 1
-    WHERE ugm.user_id = p_user_id AND p.is_active = 1
+    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    WHERE ugm.user_id = p_user_id
+      AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
+      AND ug.group_name = CONCAT('admin_', p.id)
     ORDER BY p.project_name;
 END$$
 

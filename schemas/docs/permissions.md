@@ -717,6 +717,29 @@ CALL sp_assign_user_to_group('m2', 'user-id', 'ug1', 'admin');
 CALL sp_check_user_project_access('user-id', 'project-id');
 ```
 
+### Project login access contract
+
+Project-scoped consumer login uses a direct four-hop chain:
+
+```
+users
+  → user_group_members (active direct membership)
+  → user_groups (active)
+  → user_group_project_groups (active direct authorization)
+  → project_groups (active)
+  → project_group_members (active direct project membership)
+  → projects (active and non-archived)
+```
+
+The accessible-project result has set semantics: a project appears at most once even if multiple direct chains reach it. The login and switch-project responses may expose the selected project, accessible projects, and user groups, but they must not expose the granting `user_group → project_group` chain or access-path diagnostics.
+
+Non-goals and denials:
+
+- No direct `projects → user_groups` authorization shortcut participates in login.
+- `user_groups.parent_group_id` and `project_groups.parent_group_id` are not traversed for login authorization.
+- Archived projects are denied for consumer login, root login, project switching, accessible-project lookup, session validation, and API-key project-access validation.
+- Admin users use assigned-project checks; consumer group-chain access is not an admin assignment substitute.
+
 ### Check Complete Access
 
 ```sql
@@ -744,7 +767,7 @@ CALL sp_get_user_permission_sources('user-id');
 |------|-------------|
 | `v_user_group_hierarchy` | User group tree with depth |
 | `v_project_group_hierarchy` | Project group tree with depth |
-| `v_user_project_access` | Complete user → project access paths |
+| `v_user_project_access` | Direct active, non-archived user → project access set |
 | `v_user_project_access_summary` | User access counts |
 | `v_user_all_groups` | User groups including inherited |
 | `v_user_scoped_permissions` | Scoped permissions with grant/deny |

@@ -5,6 +5,7 @@ Unit tests for async activity logging via BackgroundTasks.
 from unittest.mock import MagicMock, patch
 import pytest
 from src.Util.activity_logger import ActivityLogger
+from src.Util.error_handler import AuthorizationError, ErrorCode
 
 
 # ==============================================================================
@@ -278,3 +279,40 @@ async def test_sync_when_async_disabled():
                 assert result == {"success": True}
                 mock_logger.log_activity.assert_called_once()
                 mock_background_tasks.add_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_denied_login_activity_details_include_attempted_project_hash():
+    """Denied unauthenticated login audit details include raw submitted project_hash."""
+    from src.Util.activity_logger import ActivityType
+    import src.Util.decorators as decorators_mod
+    from src.Util.decorators import log_unauthenticated_operation
+
+    mock_request = MagicMock()
+    mock_request.client.host = "10.0.0.50"
+    mock_request.headers.get.return_value = "audit-agent"
+    mock_request.method = "POST"
+
+    with patch.object(decorators_mod, "ActivityLogger") as mock_logger:
+        @log_unauthenticated_operation(
+            operation_name="user_login",
+            activity_type=ActivityType.USER_LOGIN,
+            extract_username=lambda *args, **kwargs: kwargs.get("username"),
+        )
+        async def denied_login(username=None, project_hash=None, request=None, log_context=None):
+            raise AuthorizationError(
+                message="Access denied to requested project",
+                error_code=ErrorCode.PROJECT_ACCESS_DENIED,
+            )
+
+        with pytest.raises(AuthorizationError):
+            await denied_login(
+                username="consumer@example.com",
+                project_hash="prj-secret-attempted-hash",
+                request=mock_request,
+            )
+
+    details = mock_logger.log_activity.call_args.kwargs["details"]
+    assert details["success"] is False
+    assert details["operation"] == "user_login"
+    assert details["project_hash"] == "prj-secret-attempted-hash"

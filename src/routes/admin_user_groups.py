@@ -43,6 +43,8 @@ from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, ConflictError, InternalError, ErrorCode
 )
+from src.Util.auth_lifecycle import revoke_project_sessions_losing_access
+from src.Util.db.db_project_groups import get_projects_in_group
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -349,8 +351,16 @@ async def delete_user_group_endpoint(
     # Get current user for audit trail
     user_data = get_user_by_hash(session_data.user_hash)
 
+    affected_user_ids = [user.id for user in get_users_in_group(user_group.id)]
+    affected_project_ids = [project[0] for project in get_projects_for_user_group(user_group.id)]
+
     # Delete group
     if delete_user_group(user_group.id, deleted_by=user_data.id):
+        revoke_project_sessions_losing_access(
+            user_ids=affected_user_ids,
+            project_ids=affected_project_ids,
+            reason="user_group_deleted",
+        )
         return DeleteUserGroupResponse(
             success=True,
             message=f"User group \"{user_group.group_name}\" deleted successfully",
@@ -599,8 +609,16 @@ async def revoke_user_group_project_group_access_endpoint(
     # Get current user for audit trail
     current_user = get_user_by_hash(session_data.user_hash)
 
+    affected_user_ids = [user.id for user in get_users_in_group(user_group.id)]
+    affected_project_ids = [project.id for project in get_projects_in_group(project_group.id)]
+
     # Revoke access
     if revoke_user_group_project_group_access(user_group.id, project_group.id, revoked_by=current_user.id):
+        revoke_project_sessions_losing_access(
+            user_ids=affected_user_ids,
+            project_ids=affected_project_ids,
+            reason="user_group_project_group_access_revoked",
+        )
         return RevokeUserGroupProjectGroupAccessResponse(
             success=True,
             message=f"User group \"{user_group.group_name}\" access to project group \"{project_group.group_name}\" revoked"

@@ -196,3 +196,62 @@ def test_soft_delete_user_group_member_preserves_other_member_access(real_db_con
     p2 = _get_accessible(user2["id"])
     assert not any(p.id == proj["id"] for p in p1), "User1 should lose access"
     assert any(p.id == proj["id"] for p in p2), "User2 should still have access"
+
+
+@pytest.mark.real_db
+def test_direct_user_group_project_group_revoke_removes_access(real_db_conn, real_factory):
+    """Revoking the direct bridge must remove access when no alternate chain remains."""
+    chain = real_factory.create_full_chain(
+        username="direct_revoke_user",
+        group_name="direct_revoke_ug",
+        pg_name="direct_revoke_pg",
+        project_name="direct_revoke_project",
+    )
+
+    assert any(p.id == chain["project"]["id"] for p in _get_accessible(chain["user"]["id"]))
+
+    with real_db_conn.cursor() as cur:
+        cur.execute(
+            """UPDATE user_group_project_groups
+               SET is_active = 0
+               WHERE user_group_id = %s AND project_group_id = %s""",
+            (chain["user_group"]["id"], chain["project_group"]["id"]),
+        )
+    real_db_conn.commit()
+
+    projects = _get_accessible(chain["user"]["id"])
+    assert chain["project"]["id"] not in [p.id for p in projects]
+
+
+@pytest.mark.real_db
+def test_project_removal_from_group_preserves_alternate_chain(real_db_conn, real_factory):
+    """Removing one project_group membership must preserve access through another chain."""
+    user = real_factory.create_user(username="remove_project_alt_user")
+    ug1 = real_factory.create_user_group(group_name="remove_project_alt_ug1")
+    ug2 = real_factory.create_user_group(group_name="remove_project_alt_ug2")
+    pg1 = real_factory.create_project_group(group_name="remove_project_alt_pg1")
+    pg2 = real_factory.create_project_group(group_name="remove_project_alt_pg2")
+    project = real_factory.create_project(project_name="remove_project_alt_project")
+
+    real_factory.link_user_to_group(user["id"], ug1["id"])
+    real_factory.link_user_to_group(user["id"], ug2["id"])
+    real_factory.link_project_to_group(project["id"], pg1["id"])
+    real_factory.link_project_to_group(project["id"], pg2["id"])
+    real_factory.link_user_group_to_project_group(ug1["id"], pg1["id"])
+    real_factory.link_user_group_to_project_group(ug2["id"], pg2["id"])
+
+    assert any(p.id == project["id"] for p in _get_accessible(user["id"]))
+
+    with real_db_conn.cursor() as cur:
+        cur.execute(
+            """UPDATE project_group_members
+               SET is_active = 0
+               WHERE project_id = %s AND project_group_id = %s""",
+            (project["id"], pg1["id"]),
+        )
+    real_db_conn.commit()
+
+    projects = _get_accessible(user["id"])
+    project_ids = [p.id for p in projects]
+    assert project["id"] in project_ids
+    assert project_ids.count(project["id"]) == 1

@@ -843,8 +843,12 @@ def revoke_user_group_project_group_access(user_group_id: str, project_group_id:
         with get_connection() as con:
             cur = con.cursor()
             cur.callproc('sp_revoke_user_group_project_group_access', [user_group_id, project_group_id, revoked_by])
+            result = cur.fetchone()
+            while cur.nextset():
+                pass
+            rows_affected = result[0] if result else 0
             con.commit()
-            return True
+            return rows_affected > 0
     
     return handle_db_operation(
         _revoke,

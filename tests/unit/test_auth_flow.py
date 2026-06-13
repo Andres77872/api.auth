@@ -187,3 +187,43 @@ class TestResolveTargetProjectMultiGroup:
                 accessible_projects=accessible,
                 requested_project_hash="prj-B",
             )
+
+    def test_hash_in_accessible_union_does_not_require_grant_chain_metadata(self):
+        """Only hash membership in the accessible union matters.
+
+        Granting user_group → project_group diagnostics are internal and must
+        not be required or returned by the public project-selection helper.
+        """
+        class ProjectSummaryStub:
+            def __init__(self, project_hash):
+                self.project_hash = project_hash
+                self.project_name = project_hash
+
+        accessible = [
+            ProjectSummaryStub("prj-from-group-a"),
+            ProjectSummaryStub("prj-from-group-b"),
+        ]
+
+        result = resolve_target_project(
+            accessible_projects=accessible,
+            requested_project_hash="prj-from-group-b",
+        )
+
+        assert result.project_hash == "prj-from-group-b"
+        assert not hasattr(result, "granting_user_group")
+        assert not hasattr(result, "granting_project_group")
+        assert not hasattr(result, "access_path")
+
+    def test_duplicate_paths_are_treated_as_set_membership(self):
+        """Duplicate accessible rows still authorize by hash without diagnostics."""
+        accessible = [
+            _make_project_summary("prj-duplicate"),
+            _make_project_summary("prj-duplicate"),
+        ]
+
+        result = resolve_target_project(
+            accessible_projects=accessible,
+            requested_project_hash="prj-duplicate",
+        )
+
+        assert result.project_hash == "prj-duplicate"

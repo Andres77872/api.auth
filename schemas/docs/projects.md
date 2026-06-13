@@ -227,6 +227,8 @@ CALL sp_remove_project_from_group('project-id', 'pg-uuid', 'admin-id');
 User → User Group → Project Group → Project
 ```
 
+The login contract uses direct active rows only: active user membership, active `user_group_project_groups` authorization, active project-group membership, and an active non-archived project. Parent group hierarchy is schema infrastructure; it is not traversed for project login authorization.
+
 ### Root User Access
 
 Root users automatically have access to ALL active, non-archived projects. This is enforced by:
@@ -257,7 +259,7 @@ CALL sp_get_user_access_path_to_project('user-id', 'project-id');
 -- Get all projects user can access
 CALL sp_get_user_accessible_projects('user-id');
 -- For root: all active non-archived projects with access_type = 'root_access'
--- For others: projects via groups with access_type = 'group_access'
+-- For others: distinct active non-archived projects via direct groups-of-groups links
 
 -- Get user's groups that give access to this project
 CALL sp_get_user_groups_in_project('user-id', 'project-id');
@@ -330,7 +332,7 @@ CALL sp_get_project_group_stats('project-group-id');
 
 ## Archiving
 
-Archived projects are excluded from root user automatic access.
+Archived projects are excluded from authentication access for root, admin, and consumer users.
 
 ### Archive Procedures
 
@@ -352,10 +354,14 @@ CALL sp_unarchive_project('project-id');
 
 ### Archive Behavior
 
-1. Archived projects are NOT accessible by root users (unlike active projects)
-2. Group-based access still works for archived projects
-3. List procedures have `include_archived` parameter
-4. Archiving does NOT deactivate sessions or memberships
+1. Archived projects are NOT accessible by root users (unlike active non-archived projects)
+2. Group-based consumer login and accessible-project lookups exclude archived projects
+3. Project switching and session validation deny archived project contexts
+4. API-key project-access validation treats archived projects as no project access
+5. List/management procedures can still expose archived projects where they accept `include_archived` or perform direct project lookup for administration
+6. Archiving does not hard-delete memberships, but auth surfaces fail closed until the project is unarchived
+
+Rollback caveat: sessions or refresh families eagerly revoked while an archive/access hardening rollout is active are not restored automatically by rollback. Affected users must re-authenticate if policy later permits access again.
 
 ---
 

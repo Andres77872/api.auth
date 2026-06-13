@@ -34,6 +34,25 @@ REQUEST_STATE_PASSTHROUGH = os.environ.get("REQUEST_STATE_PASSTHROUGH", "true").
 ASYNC_ACTIVITY_LOGGING = os.environ.get("ASYNC_ACTIVITY_LOGGING", "true").lower() in ("true", "1", "yes")
 
 
+async def _extract_project_hash_from_call(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Extract submitted project_hash for protected server-side audit details."""
+    candidate = kwargs.get("project_hash")
+    if isinstance(candidate, str) and candidate:
+        return candidate
+
+    request = kwargs.get("request")
+    if request is None:
+        return None
+
+    try:
+        form = await request.form()
+    except Exception:
+        return None
+
+    candidate = form.get("project_hash") if form is not None else None
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
 def log_and_handle_errors(
     operation_name: str,
     activity_type: Optional[ActivityType] = None,
@@ -465,18 +484,23 @@ def log_unauthenticated_operation(
                 
                 # Log failed attempt to activity logger
                 if activity_type:
+                    details = {
+                        "operation": operation_name,
+                        "success": False,
+                        "error_code": e.error_code.value,
+                        "error_message": e.message,
+                        "duration_seconds": duration,
+                        "request_id": request_id,
+                        "username": username
+                    }
+                    attempted_project_hash = await _extract_project_hash_from_call(kwargs)
+                    if attempted_project_hash:
+                        details["project_hash"] = attempted_project_hash
+
                     ActivityLogger.log_activity(
                         user_id=None,
                         activity_type=activity_type.value,
-                        details={
-                            "operation": operation_name,
-                            "success": False,
-                            "error_code": e.error_code.value,
-                            "error_message": e.message,
-                            "duration_seconds": duration,
-                            "request_id": request_id,
-                            "username": username
-                        },
+                        details=details,
                         ip_address=kwargs.get('request').client.host if kwargs.get('request') and hasattr(kwargs.get('request'), 'client') else None,
                         user_agent=kwargs.get('request').headers.get('user-agent') if kwargs.get('request') else None
                     )

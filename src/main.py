@@ -57,7 +57,7 @@ app.include_router(api_keys.router, tags=["API Keys - Admin"])
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177,,http://localhost:5183",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 

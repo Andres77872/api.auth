@@ -18,14 +18,14 @@ SELECT
     u.username,
     u.user_hash,
     u.user_type,
-    ug.id as user_group_id,
-    ug.group_name as user_group_name,
-    pg.id as project_group_id,
-    pg.group_name as project_group_name,
+    MIN(ug.id) as user_group_id,
+    MIN(ug.group_name) as user_group_name,
+    MIN(pg.id) as project_group_id,
+    MIN(pg.group_name) as project_group_name,
     p.id as project_id,
     p.project_name,
     p.project_hash,
-    ugpg.granted_at as access_granted_at,
+    MIN(ugpg.granted_at) as access_granted_at,
     'group_access' as access_type
 FROM users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
@@ -33,8 +33,11 @@ JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
 JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
 JOIN project_groups pg ON ugpg.project_group_id = pg.id AND pg.is_active = 1
 JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = 1
-JOIN projects p ON pgm.project_id = p.id AND p.is_active = 1
+JOIN projects p ON pgm.project_id = p.id
+    AND p.is_active = 1
+    AND (p.archived = FALSE OR p.archived IS NULL)
 WHERE u.is_active = 1
+GROUP BY u.id, u.username, u.user_hash, u.user_type, p.id, p.project_name, p.project_hash
 
 UNION
 
@@ -100,6 +103,7 @@ WHERE u.is_active = 1
   AND us.is_active = 1 
   AND us.expires_at > NOW()
   AND p.is_active = 1
+  AND (p.archived = FALSE OR p.archived IS NULL)
 GROUP BY u.id, u.username, u.user_type, us.session_token, us.expires_at, us.project_id, p.project_name;
 
 -- ===================================================================================

@@ -83,14 +83,18 @@ def _patch_all_infra():
     """Context manager that patches all DB connections and Redis clients."""
     # Create a single live Redis instance for all patches
     live_r = _get_live_redis()
+    from src.Util.cache_manager import cache_manager
+    original_cache_redis = cache_manager.redis
     
     patches = [patch(loc, fn) for loc, fn in _DB_PATCHES.items()]
     patches += [patch(loc, live_r) for loc in _REDIS_PATCH_LOCATIONS]
     for p in patches:
         p.start()
+    cache_manager.redis = live_r
     try:
         yield
     finally:
+        cache_manager.redis = original_cache_redis
         for p in patches:
             p.stop()
 
@@ -157,6 +161,32 @@ def _link_ug_to_pg(conn, ug_id, pg_id):
             """INSERT INTO user_group_project_groups (id, user_group_id, project_group_id, granted_at, is_active)
                VALUES (%s, %s, %s, NOW(), 1)""",
             (ugpg_id, ug_id, pg_id),
+        )
+    conn.commit()
+    return ugpg_id
+
+
+def _link_user_to_group(conn, user_id, ug_id):
+    """Link a user to a user group."""
+    ugm_id = f"ugm-{uuid.uuid4()}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO user_group_members (id, user_id, user_group_id, assigned_at, is_active)
+               VALUES (%s, %s, %s, NOW(), 1)""",
+            (ugm_id, user_id, ug_id),
+        )
+    conn.commit()
+    return ugm_id
+
+
+def _revoke_ug_to_pg(conn, ug_id, pg_id):
+    """Soft-revoke a direct user-group → project-group bridge."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE user_group_project_groups
+               SET is_active = 0, revoked_at = NOW()
+               WHERE user_group_id = %s AND project_group_id = %s AND is_active = 1""",
+            (ug_id, pg_id),
         )
     conn.commit()
 
@@ -317,3 +347,133 @@ async def test_register_login_session_persistence_live_redis(
     assert validate_data["valid"] is True
     assert validate_data["user"]["user_type"] == "consumer"
     assert validate_data["project"]["project_hash"] == proj["project_hash"]
+
+
+@pytest.mark.real_db
+async def test_direct_link_revoke_deletes_lost_session_and_preserves_alternate_chain_live_redis(
+    client, real_db_conn, live_redis,
+    patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Direct bridge revoke removes lost sessions while preserving alternate-chain sessions."""
+    unique_suffix = uuid.uuid4().hex[:8]
+
+    # Primary chain grants both projects; alternate chain grants only the
+    # preserved project. Revoking the primary bridge should kill the lost-project
+    # session but keep the preserved-project session authorized by the alternate
+    # direct chain.
+    with _patch_all_infra():
+        primary_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_revoke_primary_ug_{unique_suffix}")
+        alternate_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_revoke_alt_ug_{unique_suffix}")
+        primary_pg = _create_project_group_in_test_db(real_db_conn, f"e2e_revoke_primary_pg_{unique_suffix}")
+        alternate_pg = _create_project_group_in_test_db(real_db_conn, f"e2e_revoke_alt_pg_{unique_suffix}")
+        lost_project = _create_project_in_test_db(real_db_conn, f"E2E Revoke Lost {unique_suffix}")
+        preserved_project = _create_project_in_test_db(real_db_conn, f"E2E Revoke Preserved {unique_suffix}")
+
+        _link_proj_to_pg(real_db_conn, lost_project["id"], primary_pg["id"])
+        _link_proj_to_pg(real_db_conn, preserved_project["id"], primary_pg["id"])
+        _link_proj_to_pg(real_db_conn, preserved_project["id"], alternate_pg["id"])
+        _link_ug_to_pg(real_db_conn, primary_ug["id"], primary_pg["id"])
+        _link_ug_to_pg(real_db_conn, alternate_ug["id"], alternate_pg["id"])
+
+    username = f"e2e_revoke_user_{unique_suffix}"
+    password = "E2ERevokeP@ss123!"
+
+    with _patch_all_infra():
+        register_response = await client.post(
+            "/auth/register",
+            data={
+                "username": username,
+                "password": password,
+                "email": f"e2e_revoke_{unique_suffix}@test.com",
+                "user_group_hash": primary_ug["group_hash"],
+            },
+            headers={"User-Agent": "e2e-revoke-test"},
+        )
+
+    assert register_response.status_code == 200, register_response.text
+    user_id = register_response.json()["user_id"]
+
+    with _patch_all_infra():
+        _link_user_to_group(real_db_conn, user_id, alternate_ug["id"])
+
+        lost_login = await client.post(
+            "/auth/login",
+            data={
+                "username": username,
+                "password": password,
+                "project_hash": lost_project["project_hash"],
+            },
+            headers={"User-Agent": "e2e-revoke-test"},
+        )
+        preserved_login = await client.post(
+            "/auth/login",
+            data={
+                "username": username,
+                "password": password,
+                "project_hash": preserved_project["project_hash"],
+            },
+            headers={"User-Agent": "e2e-revoke-test"},
+        )
+
+    assert lost_login.status_code == 200, lost_login.text
+    assert preserved_login.status_code == 200, preserved_login.text
+
+    lost_token = lost_login.json()["session_token"]
+    preserved_token = preserved_login.json()["session_token"]
+    lost_jti = JWTTokenHandler.decode_access_token(lost_token)["jti"]
+    preserved_jti = JWTTokenHandler.decode_access_token(preserved_token)["jti"]
+
+    with _patch_all_infra():
+        # Populate session_full:* for both sessions so the revoke proof covers
+        # raw session and derived full-session cache deletion.
+        lost_validate = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {lost_token}"},
+        )
+        preserved_validate = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {preserved_token}"},
+        )
+
+    assert lost_validate.status_code == 200, lost_validate.text
+    assert preserved_validate.status_code == 200, preserved_validate.text
+    assert live_redis.exists(f"session:{lost_jti}")
+    assert live_redis.exists(f"session_full:{lost_jti}")
+    assert live_redis.exists(f"session:{preserved_jti}")
+    assert live_redis.exists(f"session_full:{preserved_jti}")
+
+    with _patch_all_infra():
+        _revoke_ug_to_pg(real_db_conn, primary_ug["id"], primary_pg["id"])
+
+        from src.Util.auth_lifecycle import revoke_project_sessions_losing_access
+
+        summary = revoke_project_sessions_losing_access(
+            user_ids=[user_id],
+            project_ids=[lost_project["id"], preserved_project["id"]],
+            reason="e2e_direct_bridge_revoked",
+        )
+
+    # Registration may have issued an additional project-bound session on the
+    # same revoked chain. The contract is about targeted effects: the lost
+    # project session must be revoked and the alternate-chain session preserved.
+    assert summary.sessions_revoked >= 1
+    assert summary.sessions_preserved >= 1
+    assert not live_redis.exists(f"session:{lost_jti}")
+    assert not live_redis.exists(f"session_full:{lost_jti}")
+    assert live_redis.exists(f"session:{preserved_jti}")
+    assert live_redis.exists(f"session_full:{preserved_jti}")
+
+    with _patch_all_infra():
+        lost_after_revoke = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {lost_token}"},
+        )
+        preserved_after_revoke = await client.get(
+            "/auth/validate",
+            headers={"Authorization": f"Bearer {preserved_token}"},
+        )
+
+    assert lost_after_revoke.status_code == 401
+    assert preserved_after_revoke.status_code == 200, preserved_after_revoke.text

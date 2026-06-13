@@ -302,6 +302,137 @@ def test_validate_access_session_rejects_claim_session_mismatch(monkeypatch):
         lifecycle.validate_access_session(pair.access_token)
 
 
+def test_validate_access_session_rejects_archived_project_before_full_cache(monkeypatch):
+    """An archived project context must fail before session_full cache is read."""
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+    from src.Util.cache_manager import cache_manager
+    from src.Util.Models import EnhancedUserLogin
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+    monkeypatch.setattr(cache_manager, "redis", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={"id": "usr-archived", "user_hash": "usr-hash-archived", "username": "consumer", "user_type": "consumer"},
+        project={"id": "prj-archived", "project_hash": "prj-hash-archived", "project_name": "Archived Project"},
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    cache_manager.set_session_full(pair.access_claims["jti"], EnhancedUserLogin(
+        user_hash="usr-hash-archived",
+        scope="project",
+        project_hash="prj-hash-archived",
+        project_name="Archived Project",
+        user_project_hash="",
+        session_token=pair.access_token,
+        session_length=900,
+        user_id="usr-archived",
+        project_id="prj-archived",
+        groups=["Consumers"],
+        permissions=["read"],
+    ))
+
+    user = MagicMock(id="usr-archived", user_hash="usr-hash-archived", username="consumer", user_type="consumer", is_active=True)
+    project = MagicMock(id="prj-archived", project_hash="prj-hash-archived", project_name="Archived Project", is_active=True, archived=True)
+
+    with patch.object(cache_manager, "get_session_full", wraps=cache_manager.get_session_full) as get_full_spy:
+        with pytest.raises(HTTPException):
+            lifecycle.validate_access_session(
+                pair.access_token,
+                get_user_by_hash_fn=MagicMock(return_value=user),
+                get_project_by_hash_fn=MagicMock(return_value=project),
+                get_user_groups_in_project_by_hash_fn=MagicMock(return_value=[MagicMock(group_name="Consumers")]),
+                get_user_permissions_fn=MagicMock(return_value=["read"]),
+                get_user_accessible_projects_fn=MagicMock(return_value=[]),
+            )
+
+    get_full_spy.assert_not_called()
+
+
+def test_revoke_project_sessions_losing_access_revokes_only_lost_project_sessions(monkeypatch):
+    """Targeted revocation deletes only sessions whose current project lost access."""
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    fake.sadd("user_sessions:usr-1", "acc-lost", "acc-kept", "acc-other")
+    fake.set("session:acc-lost", json.dumps({
+        "access_jti": "acc-lost",
+        "family_id": "fam-lost",
+        "user_id": "usr-1",
+        "project_id": "prj-lost",
+        "project_hash": "hash-lost",
+    }))
+    fake.set("session_full:acc-lost", "cached-lost")
+    fake.set("session:acc-kept", json.dumps({
+        "access_jti": "acc-kept",
+        "family_id": "fam-kept",
+        "user_id": "usr-1",
+        "project_id": "prj-kept",
+        "project_hash": "hash-kept",
+    }))
+    fake.set("session_full:acc-kept", "cached-kept")
+    fake.set("session:acc-other", json.dumps({
+        "access_jti": "acc-other",
+        "family_id": "fam-other",
+        "user_id": "usr-1",
+        "project_id": "prj-other",
+        "project_hash": "hash-other",
+    }))
+    fake.set("session_full:acc-other", "cached-other")
+
+    summary = lifecycle.revoke_project_sessions_losing_access(
+        user_ids=["usr-1"],
+        project_ids=["prj-lost"],
+        reason="test_revoke",
+        has_project_access_fn=MagicMock(return_value=False),
+    )
+
+    assert summary.sessions_seen == 3
+    assert summary.sessions_revoked == 1
+    assert summary.sessions_preserved == 0
+    assert fake.get("session:acc-lost") is None
+    assert fake.get("session_full:acc-lost") is None
+    assert fake.get("session:acc-kept") is not None
+    assert fake.get("session_full:acc-kept") is not None
+    assert fake.get("session:acc-other") is not None
+    assert fake.get("session_full:acc-other") is not None
+
+
+def test_revoke_project_sessions_losing_access_preserves_alternate_chain(monkeypatch):
+    """A session remains valid when post-mutation DB access still allows it."""
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    fake.sadd("user_sessions:usr-2", "acc-alt")
+    fake.set("session:acc-alt", json.dumps({
+        "access_jti": "acc-alt",
+        "family_id": "fam-alt",
+        "user_id": "usr-2",
+        "project_id": "prj-shared",
+    }))
+    fake.set("session_full:acc-alt", "cached-alt")
+
+    summary = lifecycle.revoke_project_sessions_losing_access(
+        user_ids=["usr-2"],
+        project_ids=["prj-shared"],
+        reason="test_revoke",
+        has_project_access_fn=MagicMock(return_value=True),
+    )
+
+    assert summary.sessions_seen == 1
+    assert summary.sessions_revoked == 0
+    assert summary.sessions_preserved == 1
+    assert fake.get("session:acc-alt") is not None
+    assert fake.get("session_full:acc-alt") is not None
+
+
 def test_validate_session_jti_cache_miss_does_not_rewrite_access_session_ttl(monkeypatch):
     """JWT/jti-keyed cache miss must not rewrite authoritative raw session TTL.
 

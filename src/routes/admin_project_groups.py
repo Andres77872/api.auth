@@ -39,6 +39,8 @@ from src.Util.error_handler import (
     NotFoundError, ConflictError, InternalError, ErrorCode, mask_uuid
 )
 from src.Util.db_error_wrapper import handle_db_operation
+from src.Util.auth_lifecycle import revoke_project_sessions_losing_access
+from src.Util.db.db_project_groups import get_users_with_access_to_project_group
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -352,6 +354,19 @@ async def delete_project_group_endpoint(
         not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
     )
 
+    affected_users = handle_db_operation(
+        lambda: get_users_with_access_to_project_group(project_group.id),
+        error_context="get users with access to project group",
+        default_return=[]
+    )
+    affected_projects = handle_db_operation(
+        lambda: get_projects_in_permission_group(project_group.id),
+        error_context="get projects in permission group before delete",
+        default_return=[]
+    )
+    affected_user_ids = [user.id for user in affected_users]
+    affected_project_ids = [project.id for project in affected_projects]
+
     # Delete group
     success = handle_db_operation(
         lambda: delete_project_permission_group(project_group.id, deleted_by=user_data.id),
@@ -359,6 +374,11 @@ async def delete_project_group_endpoint(
     )
     
     if success:
+        revoke_project_sessions_losing_access(
+            user_ids=affected_user_ids,
+            project_ids=affected_project_ids,
+            reason="project_group_deleted",
+        )
         return DeleteProjectGroupResponse(
             success=True,
             message=f"Project group \"{project_group.group_name}\" deleted successfully",
@@ -484,6 +504,13 @@ async def remove_project_from_group_endpoint(
         not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
     )
 
+    affected_users = handle_db_operation(
+        lambda: get_users_with_access_to_project_group(project_group.id),
+        error_context="get users with access to project group before project removal",
+        default_return=[]
+    )
+    affected_user_ids = [user.id for user in affected_users]
+
     # Remove project from group
     success = handle_db_operation(
         lambda: remove_project_from_permission_group(project.id, project_group.id, removed_by=current_user.id),
@@ -491,6 +518,11 @@ async def remove_project_from_group_endpoint(
     )
     
     if success:
+        revoke_project_sessions_losing_access(
+            user_ids=affected_user_ids,
+            project_ids=[project.id],
+            reason="project_removed_from_group",
+        )
         return RemoveProjectFromGroupResponse(
             success=True,
             message=f"Project \"{project.project_name}\" removed from group \"{project_group.group_name}\""

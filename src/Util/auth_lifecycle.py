@@ -89,6 +89,16 @@ class AuthContext:
     available_projects: List[Any] = field(default_factory=list)
 
 
+@dataclass
+class RevocationSummary:
+    sessions_seen: int = 0
+    sessions_revoked: int = 0
+    families_revoked: int = 0
+    sessions_preserved: int = 0
+    sessions_skipped: int = 0
+    sessions_missing: int = 0
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -326,6 +336,13 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return attr
 
 
+def _project_is_active_for_auth(project: Any) -> bool:
+    """Auth contexts may only target active, non-archived projects."""
+    if not bool(_field(project, "is_active", True)):
+        return False
+    return not bool(_field(project, "archived", False))
+
+
 def _call_user_by_hash(get_user_by_hash_fn: Callable[..., Any], user_hash: str) -> Any:
     try:
         return get_user_by_hash_fn(user_hash, include_inactive=True)
@@ -487,6 +504,9 @@ def reconstruct_auth_context(
     project = project_getter(str(project_hash))
     if project is None:
         _revoke_context_state(session_payload, reason="missing_project")
+        return None
+    if not _project_is_active_for_auth(project):
+        _revoke_context_state(session_payload, reason="project_inactive_or_archived")
         return None
 
     accessible_projects_getter = get_user_accessible_projects_fn or _default_get_user_accessible_projects
@@ -1146,6 +1166,64 @@ def revoke_access_session(access_jti: str) -> None:
     # user/session termination must revoke the refresh family so its anchor and
     # tombstone are updated consistently.
     redis_client.delete(f"{SESSION_PREFIX}{access_jti}", f"{SESSION_FULL_PREFIX}{access_jti}")
+
+
+def _default_has_project_access(user_id: str, project_id: str) -> bool:
+    from src.Util.db.db_users import get_user_project_access
+
+    return bool(get_user_project_access(user_id, project_id))
+
+
+def revoke_project_sessions_losing_access(
+    *,
+    user_ids: Iterable[str],
+    project_ids: Iterable[str],
+    reason: str,
+    has_project_access_fn: Callable[[str, str], bool] = _default_has_project_access,
+) -> RevocationSummary:
+    """Revoke active project sessions that no longer have a valid direct chain.
+
+    Candidate sessions are limited by user index and current project. Each
+    affected session is checked after the DB mutation so alternate direct chains
+    preserve valid sessions. Revocation always deletes both `session:*` and
+    `session_full:*`; refresh families are also revoked when a family id exists.
+    """
+    summary = RevocationSummary()
+    candidate_user_ids = {str(user_id) for user_id in user_ids or [] if user_id is not None}
+    candidate_project_ids = {str(project_id) for project_id in project_ids or [] if project_id is not None}
+    if not candidate_user_ids or not candidate_project_ids:
+        return summary
+
+    for user_id in candidate_user_ids:
+        session_index_key = f"{USER_SESSIONS_PREFIX}{user_id}"
+        for access_jti in _decode_set_members(redis_client.smembers(session_index_key)):
+            summary.sessions_seen += 1
+            session_key = f"{SESSION_PREFIX}{access_jti}"
+            session_payload = _get_json(session_key)
+            if not session_payload:
+                summary.sessions_missing += 1
+                redis_client.srem(session_index_key, access_jti)
+                continue
+
+            current_project_id = session_payload.get("project_id")
+            if current_project_id is None or str(current_project_id) not in candidate_project_ids:
+                summary.sessions_skipped += 1
+                continue
+
+            if has_project_access_fn(str(session_payload.get("user_id") or user_id), str(current_project_id)):
+                summary.sessions_preserved += 1
+                continue
+
+            family_id = session_payload.get("family_id")
+            if family_id:
+                revoke_refresh_family(str(family_id), reason=reason)
+                summary.families_revoked += 1
+
+            revoke_access_session(str(access_jti))
+            redis_client.srem(session_index_key, access_jti)
+            summary.sessions_revoked += 1
+
+    return summary
 
 
 def is_refresh_family_revoked(family_id: str) -> bool:

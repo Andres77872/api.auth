@@ -42,12 +42,14 @@ def _make_user_group(group_id="1", group_hash="grp-e2e-001", group_name="E2E Gro
 
 
 def _make_project(project_id="1", project_hash="prj-e2e-001",
-                  project_name="E2E Project"):
+                  project_name="E2E Project", archived=False, is_active=True):
     p = MagicMock()
     p.id = project_id
     p.project_hash = project_hash
     p.project_name = project_name
     p.project_description = "An E2E test project"
+    p.archived = archived
+    p.is_active = is_active
     return p
 
 
@@ -179,6 +181,9 @@ class TestLoginProjectScopedMultiGroup:
         assert data["project"]["project_hash"] == "prj-e2e-linked"
         # Both groups should appear in the response
         assert len(data["user_groups"]) == 2
+        assert "granting_user_group" not in data
+        assert "granting_project_group" not in data
+        assert "access_path" not in data
 
     @pytest.mark.asyncio
     async def test_login_denied_when_project_not_reachable_via_any_group(
@@ -209,6 +214,9 @@ class TestLoginProjectScopedMultiGroup:
         assert response.status_code == 403
         data = response.json()
         assert data["status"] == "error"
+        assert "prj-e2e-unreachable" not in str(data)
+        assert "granting_user_group" not in str(data)
+        assert "access_path" not in str(data)
 
     @pytest.mark.asyncio
     async def test_login_without_project_hash_rejected_for_non_root(
@@ -238,3 +246,154 @@ class TestLoginProjectScopedMultiGroup:
         assert response.status_code in (400, 422)
         data = response.json()
         assert data["status"] == "error"
+
+
+class TestLoginProjectGroupCrossLoginHardening:
+    """Regression tests for the project-group cross-login hardening contract."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_user_group_b_project_group_b_project_a_login_succeeds(
+        self, client, fake_redis, patched_cache_manager, patched_activity_logger,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        """Consumer in user_group_b may login to project_a through project_group_b."""
+        user = _make_user(user_type="consumer", user_id="usr-b", username="consumer_b")
+        project_a = _make_project(project_id="prj-a-id", project_hash="project-a-hash", project_name="Project A")
+        user_group_b = _make_user_group(group_id="ug-b", group_hash="user-group-b", group_name="User Group B")
+
+        with patch("src.routes.auth.get_user_by_credentials", return_value=user), \
+             patch("src.routes.auth.get_user_accessible_projects", return_value=[project_a]), \
+             patch("src.routes.auth.get_project_by_hash", return_value=project_a), \
+             patch("src.routes.auth.get_user_groups_for_user", return_value=[user_group_b]):
+            response = await client.post(
+                "/auth/login",
+                data={
+                    "username": "consumer_b",
+                    "password": "correctpass",
+                    "project_hash": "project-a-hash",
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["project"]["project_hash"] == "project-a-hash"
+        assert len([p for p in data["accessible_projects"] if p["project_hash"] == "project-a-hash"]) == 1
+        assert "project_group_b" not in str(data)
+        assert "access_path" not in str(data)
+
+    @pytest.mark.asyncio
+    async def test_consumer_login_to_archived_project_is_denied(
+        self, client, fake_redis, patched_cache_manager, patched_activity_logger,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        user = _make_user(user_type="consumer")
+        archived_project = _make_project(project_hash="archived-project-hash", archived=True)
+        group = _make_user_group()
+
+        with patch("src.routes.auth.get_user_by_credentials", return_value=user), \
+             patch("src.routes.auth.get_user_accessible_projects", return_value=[archived_project]), \
+             patch("src.routes.auth.get_project_by_hash", return_value=archived_project), \
+             patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+            response = await client.post(
+                "/auth/login",
+                data={
+                    "username": "archiveduser",
+                    "password": "correctpass",
+                    "project_hash": "archived-project-hash",
+                },
+            )
+
+        assert response.status_code == 403
+        data = response.json()
+        assert data["status"] == "error"
+        assert "archived-project-hash" not in str(data)
+
+    @pytest.mark.asyncio
+    async def test_root_login_to_archived_project_is_denied(
+        self, client, fake_redis, patched_cache_manager, patched_activity_logger,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        root_user = _make_user(user_type="root", user_id="root-1", username="root")
+        archived_project = _make_project(project_hash="root-archived-project", archived=True)
+
+        with patch("src.routes.auth.get_user_by_credentials", return_value=root_user), \
+             patch("src.routes.auth.get_project_by_hash", return_value=archived_project), \
+             patch("src.routes.auth.get_user_accessible_projects", return_value=[]):
+            response = await client.post(
+                "/auth/login",
+                data={
+                    "username": "root",
+                    "password": "correctpass",
+                    "project_hash": "root-archived-project",
+                },
+            )
+
+        assert response.status_code == 403
+        assert "root-archived-project" not in str(response.json())
+
+    @pytest.mark.asyncio
+    async def test_admin_group_chain_without_assignment_is_denied(
+        self, client, fake_redis, patched_cache_manager, patched_activity_logger,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        admin_user = _make_user(user_type="admin", user_id="admin-1", username="admin")
+        project = _make_project(project_id="project-only-via-group", project_hash="admin-chain-project")
+        admin_group = _make_user_group(group_name="Some Consumer-Like Group")
+
+        with patch("src.routes.auth.get_user_by_credentials", return_value=admin_user), \
+             patch("src.routes.auth.get_project_by_hash", return_value=project), \
+             patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+             patch("src.routes.auth.get_user_groups_for_user", return_value=[admin_group]), \
+             patch("src.routes.auth.check_admin_multi_project_access", return_value=False, create=True), \
+             patch("src.routes.auth.get_admin_project_assignments_with_details", return_value=[], create=True):
+            response = await client.post(
+                "/auth/login",
+                data={
+                    "username": "admin",
+                    "password": "correctpass",
+                    "project_hash": "admin-chain-project",
+                },
+            )
+
+        assert response.status_code == 403
+        assert "access_path" not in str(response.json())
+
+    @pytest.mark.asyncio
+    async def test_switch_project_to_archived_project_is_denied(
+        self, client, fake_redis, patched_cache_manager, patched_activity_logger,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        from src.Util.Models import EnhancedUserLogin
+
+        archived_project = _make_project(project_hash="switch-archived-project", archived=True)
+        current_session = EnhancedUserLogin(
+            user_hash="usr-switch",
+            project_hash="current-project",
+            project_name="Current Project",
+            user_project_hash="",
+            session_token="current.access.token",
+            session_length=900,
+            user_id="usr-switch-id",
+            project_id="current-project-id",
+            groups=["Consumers"],
+            permissions=[],
+            user_type="consumer",
+        )
+
+        with patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"family_id": "fam-switch"}), \
+             patch("src.routes.auth.validate_access_session", return_value=current_session), \
+             patch("src.routes.auth.get_project_by_hash", return_value=archived_project), \
+             patch("src.routes.auth.get_user_accessible_projects", return_value=[archived_project]):
+            response = await client.post(
+                "/auth/switch-project",
+                data={"project_hash": "switch-archived-project", "refresh_token": "refresh.token"},
+                headers={"Authorization": "Bearer current.access.token"},
+            )
+
+        assert response.status_code == 403
+        assert "switch-archived-project" not in str(response.json())

@@ -34,6 +34,20 @@ def _call_accessible_projects_sp(conn, user_id: str):
         return results
 
 
+def _call_check_user_project_access_sp(conn, user_id: str, project_id: str) -> bool:
+    """Call sp_check_user_project_access directly and normalize bool result."""
+    with conn.cursor() as cur:
+        cur.callproc("sp_check_user_project_access", [user_id, project_id])
+        row = cur.fetchone()
+        while cur.nextset():
+            pass
+    if not row:
+        return False
+    if isinstance(row, dict):
+        return bool(row.get("has_access"))
+    return bool(row[0])
+
+
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.real_db
@@ -161,6 +175,127 @@ def test_accessible_projects_soft_deleted_project_not_visible(real_db_conn, real
     assert chain["project"]["id"] not in project_ids, (
         f"Soft-deleted project should NOT appear. Got: {project_ids}"
     )
+
+
+@pytest.mark.real_db
+def test_accessible_projects_archived_project_not_visible(real_db_conn, real_factory):
+    """Archived but active projects must be excluded from accessible projects."""
+    chain = real_factory.create_full_chain(
+        username="archived_access_user",
+        group_name="archived_access_ug",
+        pg_name="archived_access_pg",
+        project_name="archived_access_project",
+    )
+
+    with real_db_conn.cursor() as cur:
+        cur.execute("UPDATE projects SET archived = TRUE WHERE id = %s", (chain["project"]["id"],))
+    real_db_conn.commit()
+
+    results = _call_accessible_projects_sp(real_db_conn, chain["user"]["id"])
+    project_ids = [r["id"] for r in results]
+    assert chain["project"]["id"] not in project_ids, (
+        f"Archived project should NOT appear. Got: {project_ids}"
+    )
+
+
+@pytest.mark.real_db
+def test_accessible_projects_inactive_project_group_rejected(real_db_conn, real_factory):
+    """Inactive project_group in the direct chain must deny access."""
+    chain = real_factory.create_full_chain(
+        username="inactive_pg_user",
+        group_name="inactive_pg_ug",
+        pg_name="inactive_pg",
+        project_name="inactive_pg_project",
+    )
+
+    with real_db_conn.cursor() as cur:
+        cur.execute("UPDATE project_groups SET is_active = 0 WHERE id = %s", (chain["project_group"]["id"],))
+    real_db_conn.commit()
+
+    results = _call_accessible_projects_sp(real_db_conn, chain["user"]["id"])
+    project_ids = [r["id"] for r in results]
+    assert chain["project"]["id"] not in project_ids
+
+
+@pytest.mark.real_db
+def test_accessible_projects_user_group_parent_not_traversed(real_db_conn, real_factory):
+    """Child user_group membership must not inherit parent user_group access."""
+    user = real_factory.create_user(username="parent_ug_user")
+    parent_ug = real_factory.create_user_group(group_name="parent_ug")
+    child_ug = real_factory.create_user_group(group_name="child_ug")
+    pg = real_factory.create_project_group(group_name="parent_ug_pg")
+    project = real_factory.create_project(project_name="parent_ug_project")
+
+    with real_db_conn.cursor() as cur:
+        cur.execute("UPDATE user_groups SET parent_group_id = %s WHERE id = %s", (parent_ug["id"], child_ug["id"]))
+    real_db_conn.commit()
+
+    real_factory.link_user_to_group(user["id"], child_ug["id"])
+    real_factory.link_project_to_group(project["id"], pg["id"])
+    real_factory.link_user_group_to_project_group(parent_ug["id"], pg["id"])
+
+    results = _call_accessible_projects_sp(real_db_conn, user["id"])
+    assert project["id"] not in [r["id"] for r in results]
+
+
+@pytest.mark.real_db
+def test_accessible_projects_project_group_parent_not_traversed(real_db_conn, real_factory):
+    """Child project_group authorization must not inherit parent project_group projects."""
+    user = real_factory.create_user(username="parent_pg_user")
+    ug = real_factory.create_user_group(group_name="parent_pg_ug")
+    parent_pg = real_factory.create_project_group(group_name="parent_pg")
+    child_pg = real_factory.create_project_group(group_name="child_pg")
+    project = real_factory.create_project(project_name="parent_pg_project")
+
+    with real_db_conn.cursor() as cur:
+        cur.execute("UPDATE project_groups SET parent_group_id = %s WHERE id = %s", (parent_pg["id"], child_pg["id"]))
+    real_db_conn.commit()
+
+    real_factory.link_user_to_group(user["id"], ug["id"])
+    real_factory.link_project_to_group(project["id"], parent_pg["id"])
+    real_factory.link_user_group_to_project_group(ug["id"], child_pg["id"])
+
+    results = _call_accessible_projects_sp(real_db_conn, user["id"])
+    assert project["id"] not in [r["id"] for r in results]
+
+
+@pytest.mark.real_db
+def test_duplicate_user_groups_to_same_project_collapse_to_one(real_db_conn, real_factory):
+    """Two direct user groups reaching one project should return one project row."""
+    user = real_factory.create_user(username="distinct_paths_user")
+    ug1 = real_factory.create_user_group(group_name="distinct_paths_ug1")
+    ug2 = real_factory.create_user_group(group_name="distinct_paths_ug2")
+    pg = real_factory.create_project_group(group_name="distinct_paths_pg")
+    project = real_factory.create_project(project_name="distinct_paths_project")
+
+    real_factory.link_user_to_group(user["id"], ug1["id"])
+    real_factory.link_user_to_group(user["id"], ug2["id"])
+    real_factory.link_project_to_group(project["id"], pg["id"])
+    real_factory.link_user_group_to_project_group(ug1["id"], pg["id"])
+    real_factory.link_user_group_to_project_group(ug2["id"], pg["id"])
+
+    results = _call_accessible_projects_sp(real_db_conn, user["id"])
+    project_ids = [r["id"] for r in results]
+    assert project_ids.count(project["id"]) == 1
+
+
+@pytest.mark.real_db
+def test_check_user_project_access_matches_accessible_project_filters(real_db_conn, real_factory):
+    """Shared access check must reject archived projects and accept direct active chains."""
+    chain = real_factory.create_full_chain(
+        username="check_access_user",
+        group_name="check_access_ug",
+        pg_name="check_access_pg",
+        project_name="check_access_project",
+    )
+
+    assert _call_check_user_project_access_sp(real_db_conn, chain["user"]["id"], chain["project"]["id"]) is True
+
+    with real_db_conn.cursor() as cur:
+        cur.execute("UPDATE projects SET archived = TRUE WHERE id = %s", (chain["project"]["id"],))
+    real_db_conn.commit()
+
+    assert _call_check_user_project_access_sp(real_db_conn, chain["user"]["id"], chain["project"]["id"]) is False
 
 
 @pytest.mark.real_db

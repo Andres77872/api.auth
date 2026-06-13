@@ -21,6 +21,40 @@ from src.Util.error_handler import mask_uuid
 
 # =================== PROJECT MANAGEMENT ===================
 
+def _project_from_row(row) -> Project:
+    """Map project stored-procedure rows using the canonical SQL column order.
+
+    Canonical project lookup/list procedures return:
+    id, project_hash, project_name, project_description, project_created,
+    updated_at, owner_id, archived, is_active.
+
+    Older search procedures may return only:
+    id, project_hash, project_name, project_description, project_created,
+    is_active.
+    """
+    if len(row) >= 9:
+        return Project(
+            id=row[0],
+            project_hash=row[1],
+            project_name=row[2],
+            project_description=row[3],
+            project_created=row[4],
+            updated_at=row[5],
+            archived=bool(row[7]) if row[7] is not None else False,
+            is_active=bool(row[8]),
+        )
+
+    return Project(
+        id=row[0],
+        project_hash=row[1],
+        project_name=row[2],
+        project_description=row[3],
+        project_created=row[4],
+        is_active=bool(row[5]) if len(row) > 5 else True,
+        archived=False,
+    )
+
+
 def create_project(project_name: str, project_description: str = None, created_by: str = None, owner_id: str = None) -> Project:
     """
     Create a new project/application with RBAC initialization.
@@ -84,14 +118,7 @@ def get_project_by_hash(project_hash: str) -> Optional[Project]:
             cur.callproc('sp_get_project_by_hash', [project_hash])
             result = cur.fetchone()
             if result:
-                return Project(
-                    id=result[0],
-                    project_hash=result[1],
-                    project_name=result[2],
-                    project_description=result[3],
-                    project_created=result[4],
-                    is_active=bool(result[5])
-                )
+                return _project_from_row(result)
             return None
     
     return handle_db_operation(
@@ -119,14 +146,7 @@ def get_project_by_id(project_id: str) -> Optional[Project]:
             cur.callproc('sp_get_project_by_id', [project_id])
             result = cur.fetchone()
             if result:
-                return Project(
-                    id=result[0],
-                    project_hash=result[1],
-                    project_name=result[2],
-                    project_description=result[3],
-                    project_created=result[4],
-                    is_active=bool(result[5])
-                )
+                return _project_from_row(result)
             return None
     
     return handle_db_operation(
@@ -173,14 +193,7 @@ def list_all_projects(
             ])
             results = []
             for row in cur.fetchall():
-                results.append(Project(
-                    id=row[0],
-                    project_hash=row[1],
-                    project_name=row[2],
-                    project_description=row[3],
-                    project_created=row[4],
-                    is_active=bool(row[8]) if len(row) > 8 else True
-                ))
+                results.append(_project_from_row(row))
             return results
     
     return handle_db_operation(
@@ -325,14 +338,7 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
             cur.callproc('sp_search_projects', [search_term, limit])
             results = []
             for row in cur.fetchall():
-                results.append(Project(
-                    id=row[0],
-                    project_hash=row[1],
-                    project_name=row[2],
-                    project_description=row[3],
-                    project_created=row[4],
-                    is_active=bool(row[5])
-                ))
+                results.append(_project_from_row(row))
 
             return results
     

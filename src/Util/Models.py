@@ -51,6 +51,7 @@ class Project(BaseModelConfig):
     project_created: datetime
     updated_at: Optional[datetime] = None
     is_active: bool = True
+    archived: bool = False
 
 
 class UserGroup(BaseModelConfig):

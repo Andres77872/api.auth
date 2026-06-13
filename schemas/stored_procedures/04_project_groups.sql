@@ -175,7 +175,10 @@ BEGIN
            pgm.assigned_at, pgm.assigned_by
     FROM projects p
     INNER JOIN project_group_members pgm ON p.id = pgm.project_id
-    WHERE pgm.project_group_id = p_project_group_id AND p.is_active = 1 AND pgm.is_active = 1
+    WHERE pgm.project_group_id = p_project_group_id
+      AND p.is_active = 1
+      AND (p.archived = FALSE OR p.archived IS NULL)
+      AND pgm.is_active = 1
     ORDER BY p.project_name ASC;
 END$$
 
@@ -218,6 +221,7 @@ BEGIN
     JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
     JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
     JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
+    JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
     WHERE ugpg.project_group_id = p_project_group_id AND u.is_active = 1
     ORDER BY u.username;
 END$$
