@@ -37,7 +37,6 @@ BEGIN
     SET v_activity_type = CASE
         WHEN NEW.user_type != OLD.user_type THEN 'user_type_changed'
         WHEN NEW.is_active != OLD.is_active THEN 'user_status_change'
-        WHEN NEW.password_hash != OLD.password_hash THEN 'user_password_reset'
         ELSE 'user_update'
     END;
     

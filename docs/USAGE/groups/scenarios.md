@@ -84,6 +84,7 @@ Why this pattern works:
 - cleanup happens in one place
 - naming communicates expiration intent
 - contractors never need to share a permanent internal group
+- the revoke in step 4 also terminates the contractors' live sessions for those projects (`reason="user_group_project_group_access_revoked"`), so they are logged out immediately rather than retaining access until their tokens expire
 
 ---
 
@@ -162,7 +163,7 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Remember: delete is a soft-delete, but it still deactivates memberships and user-group-to-project-group links.
+Remember: delete is a soft-delete, but it still deactivates memberships and user-group-to-project-group links — and it actively revokes affected members' live project sessions (`reason="user_group_deleted"`), so they will be logged out and must re-authenticate.
 
 ---
 
@@ -177,5 +178,5 @@ Remember: delete is a soft-delete, but it still deactivates memberships and user
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 3.0
+**Last Updated**: June 2026  
+**Document Version**: 3.1

@@ -6,6 +6,7 @@ and health status tracking for the authentication system.
 """
 
 import time
+import json
 from datetime import datetime, timezone
 from typing import Dict, Any
 
@@ -13,6 +14,8 @@ import psutil
 
 from src.Util.db import count_users, count_projects, count_active_sessions
 from src.Util.db_config import get_connection, redis_client
+from src.Util.auth_constants import EMAIL_WORKER_WAKE_PREFIX
+from src.Util.email.config import load_email_config, validate_email_readiness
 
 
 class SystemMetrics:
@@ -191,6 +194,159 @@ class SystemMetrics:
                 "status": "error",
                 "error": str(e)
             }
+
+    @staticmethod
+    def get_email_provider_health() -> Dict[str, Any]:
+        """Return email provider readiness without contacting external networks."""
+
+        try:
+            config = load_email_config(validate_real_send_guard=False)
+            readiness = validate_email_readiness(config)
+            return {
+                "status": readiness.status,
+                "provider": readiness.provider or config.provider,
+                "delivery_enabled": config.delivery_enabled,
+                "ready": readiness.ready,
+                "missing": readiness.missing,
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        except Exception as e:
+            return {
+                "status": "not_ready",
+                "ready": False,
+                "error": str(e),
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+    @staticmethod
+    def get_email_outbox_metrics() -> Dict[str, Any]:
+        """Return durable email outbox depth/DLQ/success metrics."""
+
+        try:
+            from src.Util.db import db_email
+
+            health = db_email.get_email_outbox_health()
+            pending = int(health.get("pending_count") or 0)
+            processing = int(health.get("processing_count") or 0)
+            retry = int(health.get("retry_count") or 0)
+            dead = int(health.get("dead_count") or 0)
+            sent = int(health.get("sent_count") or 0)
+            terminal = int(health.get("terminal_count") or 0)
+            denominator = sent + dead
+            success_ratio = round(sent / denominator, 4) if denominator else None
+            return {
+                "status": "healthy",
+                "queue_depth": pending + retry,
+                "pending_count": pending,
+                "processing_count": processing,
+                "retry_count": retry,
+                "dlq_depth": dead,
+                "sent_count": sent,
+                "terminal_count": terminal,
+                "success_ratio": success_ratio,
+                "oldest_pending_age_seconds": health.get("oldest_pending_age_seconds"),
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        except Exception as e:
+            return {
+                "status": "unknown",
+                "queue_depth": 0,
+                "dlq_depth": 0,
+                "success_ratio": None,
+                "error": str(e),
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+    @staticmethod
+    def email_worker_heartbeat_key(worker_id: str) -> str:
+        safe_worker = str(worker_id or "unknown").replace(" ", "_")[:128]
+        return f"{EMAIL_WORKER_WAKE_PREFIX}heartbeat:{safe_worker}"
+
+    @staticmethod
+    def record_email_worker_heartbeat(
+        worker_id: str,
+        *,
+        counters: Dict[str, Any] | None = None,
+        ttl_seconds: int = 120,
+    ) -> bool:
+        """Record worker heartbeat/counters in Redis without touching provider APIs."""
+
+        try:
+            payload = {
+                "worker_id": worker_id,
+                "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "counters": dict(counters or {}),
+            }
+            return bool(
+                redis_client.set(
+                    SystemMetrics.email_worker_heartbeat_key(worker_id),
+                    json.dumps(payload, sort_keys=True, default=str),
+                    ex=max(1, int(ttl_seconds)),
+                )
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_email_worker_metrics() -> Dict[str, Any]:
+        """Return worker heartbeat/counter visibility from Redis."""
+
+        try:
+            config = load_email_config(validate_real_send_guard=False)
+            heartbeats = []
+            for key in redis_client.scan_iter(match=f"{EMAIL_WORKER_WAKE_PREFIX}heartbeat:*", count=100):
+                raw = redis_client.get(key)
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="ignore")
+                if not raw:
+                    continue
+                try:
+                    decoded = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(decoded, dict):
+                    heartbeats.append(decoded)
+
+            latest = max((item.get("recorded_at", "") for item in heartbeats), default=None)
+            status = "healthy" if heartbeats else ("disabled" if not config.delivery_enabled else "unknown")
+            return {
+                "status": status,
+                "delivery_enabled": config.delivery_enabled,
+                "heartbeat_count": len(heartbeats),
+                "latest_heartbeat": latest,
+                "workers": heartbeats[:10],
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        except Exception as e:
+            return {
+                "status": "unknown",
+                "heartbeat_count": 0,
+                "latest_heartbeat": None,
+                "workers": [],
+                "error": str(e),
+                "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+    @staticmethod
+    def get_email_metrics() -> Dict[str, Any]:
+        """Return email delivery metrics grouped for health/ops surfaces."""
+
+        provider = SystemMetrics.get_email_provider_health()
+        outbox = SystemMetrics.get_email_outbox_metrics()
+        worker = SystemMetrics.get_email_worker_metrics()
+        return {
+            "provider": provider,
+            "outbox": outbox,
+            "worker": worker,
+            "metrics": {
+                "email_queue_depth": outbox.get("queue_depth", 0),
+                "email_oldest_pending_age_seconds": outbox.get("oldest_pending_age_seconds"),
+                "email_dlq_depth": outbox.get("dlq_depth", 0),
+                "email_send_success_ratio": outbox.get("success_ratio"),
+                "email_provider_send_p95_ms": None,
+                "email_webhook_invalid_signature_count": None,
+            },
+        }
 
     @staticmethod
     def get_user_statistics(date_range: int = 30) -> Dict[str, Any]:
@@ -391,3 +547,8 @@ def get_database_health() -> Dict[str, Any]:
 def get_redis_health() -> Dict[str, Any]:
     """Get Redis health"""
     return system_metrics.get_redis_health()
+
+
+def get_email_metrics() -> Dict[str, Any]:
+    """Get transactional auth email delivery metrics"""
+    return system_metrics.get_email_metrics()

@@ -30,10 +30,12 @@ Two separate concerns exist at the same time:
 | Table | Purpose |
 |------|---------|
 | `users` | Core user record, `user_type`, `role_id`, activation state |
+| `user_emails` | Activated-email authority for email login and recovery eligibility |
+| `user_email_link_tokens` | Hash-only purpose-scoped link-token store for activation and password recovery |
+| `email_outbox` | Durable transactional auth-email delivery queue |
 | `user_group_members` | Membership bridge from user to user group |
 | `user_group_project_groups` | Bridge from user groups to project groups |
 | `project_group_members` | Bridge from project groups to projects |
-| `user_password_resets` | Password reset tracking data |
 | `bulk_operations_log` | Audit-style tracking for bulk user operations |
 
 The crucial architectural point is still:
@@ -46,12 +48,75 @@ There is no active direct user-to-project table in the intended model.
 
 ---
 
+## Email Identity Lifecycle
+
+Email is a **separate identity from the user record**. `user_emails` is the
+authoritative store; `users.email` is a deprecated compatibility shadow that the
+lifecycle stored procedures keep loosely in sync (primary email only) and that
+**never grants login by itself**. Email is optional for registration and account
+use.
+
+Each `user_emails` row carries a `status`:
+
+| Status | Meaning | Login / reset eligible? |
+|--------|---------|--------------------------|
+| `pending` | Added but not yet activated via a link token | No |
+| `activated` | Activated through a hash-only token; usable identity | Yes |
+| `removed` | Soft-removed by the owner; `removed_at` set | No |
+| `suppressed` | Hard-bounced/complained per provider webhook | No |
+
+Key invariants and flows:
+
+- **Uniqueness** is DB-enforced via two **VIRTUAL** generated columns —
+  `active_activated_email` (at most one activated, non-removed row per normalized
+  address, globally) and `primary_user_id` (at most one active primary per user).
+  They must stay `VIRTUAL` because `user_id` carries an `ON DELETE CASCADE` FK and
+  MySQL forbids cascade actions on the base column of a `STORED` generated column.
+- **Login** (`sp_user_login`) resolves username first, then an `activated`,
+  non-removed `user_emails` row by normalized address — so an email-shaped
+  username cannot be shadowed and the deprecated `users.email` cannot grant login.
+- **Activation** (`sp_consume_email_activation_token`) flips `pending → activated`,
+  auto-selects the first activated email as primary, and rejects a global
+  conflict (another account already activated the address) without activating.
+- **Password recovery** (`sp_password_reset_link_enqueue`) is activated-email-only;
+  `pending`/`removed`/`suppressed`/unknown identifiers keep the generic `202`
+  posture and enqueue nothing.
+- **Suppression**: a provider hard-bounce/complaint webhook flips the matching
+  `activated` row to `suppressed` (and clears `is_primary`), removing it from
+  login and recovery while username login still works.
+
+### HTTP surface for the email lifecycle
+
+The `user_emails` lifecycle is operated at the HTTP layer by six endpoints in
+`src/routes/users.py`:
+
+| Lifecycle action | Endpoint | Caller |
+|------------------|----------|--------|
+| List own emails | `GET /users/me/emails` | Any authenticated user (owner view) |
+| Add + enqueue activation | `POST /users/me/emails` | Any authenticated user |
+| Resend activation | `POST /users/me/emails/{email_id}/resend` | Any authenticated user |
+| Soft-remove | `DELETE /users/me/emails/{email_id}` | Any authenticated user |
+| Select primary | `POST /users/me/emails/{email_id}/primary` | Any authenticated user |
+| Inspect a target user's emails | `GET /users/{user_hash}/emails` | Root or admin (masked/hash view) |
+| Re-trigger a target user's activation | `POST /users/{user_hash}/emails/{email_id}/resend` | Root or admin |
+
+The send-side routes use the generic `202` / `429 + Retry-After` posture, a
+resend cooldown (`EMAIL_RESEND_COOLDOWN_SECONDS`, default 60s), and optional
+`Idempotency-Key` replay. Removing or re-pointing the primary email revokes the
+caller's other sessions while keeping the current one. Full request/response
+detail is in [email-management.md](email-management.md).
+
+Tokens, the durable outbox, the worker, webhooks, suppression, retention, and
+rollback are documented in `docs/RUNBOOKS/email-activation.md`.
+
+---
+
 ## Route and Layer Split
 
 ### User entity routes
 
-- Route file: `src/routes/users.py`
-- Covers profile, access summary, list/search, details, update, status, password reset, delete, and one type-change route
+- Route file: `src/routes/users.py` (18 endpoints)
+- Covers profile, access summary, list/search, details, update, status, password reset, delete, one type-change route, and the per-user email-management group (`/users/me/emails*` and the root/admin `/users/{user_hash}/emails*` routes — see [email-management.md](email-management.md))
 
 ### User type routes
 
@@ -169,6 +234,13 @@ Operational implication:
 - status changes are handled in `src/routes/users.py` and explicitly clear sessions/cache on deactivation
 - deletion uses `sp_delete_user`, which also deactivates active user-group memberships
 
+### Password change and recovery
+
+- self-service password rotation is owned by `POST /auth/password/change`, not profile update
+- `PUT /users/profile` rejects password-equivalent fields before the DB update helper runs
+- password recovery is link-only and uses activated `user_emails` plus hash-only `user_email_link_tokens`
+- reset-link consumption creates no session; authenticated change preserves the current session and revokes other sessions/families
+
 ### Type changes
 
 - `PATCH /users/{hash}/type` = enum-focused legacy path
@@ -195,6 +267,7 @@ If you try to use `/users/*` to model all access, you will create a quilombo bec
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Request & Data Flow](request-flow.md)**
@@ -204,5 +277,5 @@ If you try to use `/users/*` to model all access, you will create a quilombo bec
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

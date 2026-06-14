@@ -374,13 +374,21 @@ def make_e2e_user(user_type="consumer", user_id="1", user_hash="usr-e2e-001",
 
 
 def create_e2e_session(fake_redis, token: str, user_type="consumer",
-                       permissions=None, project_hash="prj-e2e-001"):
+                       permissions=None, project_hash="prj-e2e-001",
+                       user_id="1", user_hash=None, family_id=None):
     """Create a session in fakeredis for E2E tests."""
+    user_hash = user_hash or f"usr-e2e-{user_type}"
+    family_id = family_id or f"family-{token}"
     payload = {
         "session_id": 99999,
-        "user_hash": f"usr-e2e-{user_type}",
-        "user_id": "1",
+        "access_jti": token,
+        "jti": token,
+        "family_id": family_id,
+        "user_hash": user_hash,
+        "user_id": user_id,
         "user_type": user_type,
+        "scope": "project",
+        "collection": project_hash,
         "project_hash": project_hash,
         "project_name": "E2E Test Project",
         "project_id": "1",
@@ -390,4 +398,20 @@ def create_e2e_session(fake_redis, token: str, user_type="consumer",
         "session_length": 259200,
     }
     fake_redis.set(f"session:{token}", json.dumps(payload), ex=259200)
+    fake_redis.sadd(f"user_sessions:{user_id}", token)
+    fake_redis.expire(f"user_sessions:{user_id}", 259200)
+    fake_redis.sadd(f"user_refresh_families:{user_id}", family_id)
+    fake_redis.expire(f"user_refresh_families:{user_id}", 259200)
+    fake_redis.set(
+        f"refresh_family:{family_id}",
+        json.dumps({
+            "family_id": family_id,
+            "user_id": user_id,
+            "user_hash": user_hash,
+            "status": "active",
+            "current_access_jti": token,
+            "refresh_ttl_seconds": 259200,
+        }),
+        ex=259200,
+    )
     return token

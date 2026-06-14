@@ -73,7 +73,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         user_type = None
         session_id = None
         project_id = None
-        auth_method = "session"  # Default for backward compatibility
+        auth_method = "session"  # Default for authenticated session traffic
         
         if hasattr(request.state, 'user'):
             user = request.state.user
@@ -89,8 +89,12 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         if hasattr(request.state, 'project_id'):
             project_id = request.state.project_id
         
-        if hasattr(request.state, 'auth_method'):
+        if APIAuditLogger.is_google_oauth_path(request.url.path):
+            auth_method = "oauth"
+        elif hasattr(request.state, 'auth_method'):
             auth_method = request.state.auth_method
+        else:
+            auth_method = self._infer_auth_method(request.url.path, user_id=user_id, session_id=session_id)
         
         # Get client IP address
         client_ip = self._get_client_ip(request)
@@ -111,21 +115,25 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         
         if request.method in ["POST", "PUT", "PATCH", "DELETE"]:
             try:
-                # Read body
-                body_bytes = await request.body()
-                request_size_bytes = len(body_bytes)
-                
-                if body_bytes:
-                    try:
-                        request_body = json.loads(body_bytes.decode('utf-8'))
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        # Body is not JSON, skip logging it
-                        request_body = {"_note": "Non-JSON body"}
-                    
-                    # Re-populate request body for downstream handlers
-                    async def receive():
-                        return {"type": "http.request", "body": body_bytes}
-                    request._receive = receive
+                if self._is_raw_body_audit_excluded(request.url.path):
+                    request_size_bytes = int(request.headers.get("content-length") or 0)
+                    request_body = {"_note": "Request body excluded from audit"}
+                else:
+                    # Read body
+                    body_bytes = await request.body()
+                    request_size_bytes = len(body_bytes)
+
+                    if body_bytes:
+                        try:
+                            request_body = json.loads(body_bytes.decode('utf-8'))
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # Body is not JSON, skip logging it
+                            request_body = {"_note": "Non-JSON body"}
+
+                        # Re-populate request body for downstream handlers
+                        async def receive():
+                            return {"type": "http.request", "body": body_bytes}
+                        request._receive = receive
                     
             except Exception as e:
                 logger.warning(f"Failed to read request body: {e}")
@@ -269,7 +277,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             
             # Extract error info
             error_code = type(e).__name__
-            error_message = str(e)
+            error_message = APIAuditLogger.sanitize_sensitive_text(str(e))
             
             # Get resource info
             resource_type, resource_id = APIAuditLogger.extract_resource_info(
@@ -278,9 +286,16 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             )
             
             # Flag as security event if it's an auth error
-            is_security = ('auth' in error_code.lower() or 
-                          'permission' in error_code.lower() or
-                          'unauthorized' in error_code.lower())
+            is_security = APIAuditLogger.is_security_event(
+                str(request.url.path),
+                request.method,
+                500,
+                user_type,
+            ) or (
+                'auth' in error_code.lower() or
+                'permission' in error_code.lower() or
+                'unauthorized' in error_code.lower()
+            )
             
             # Generate tags for failed request
             tags = APIAuditLogger.generate_tags(
@@ -337,3 +352,21 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             return request.client.host
         
         return None
+
+    def _is_raw_body_audit_excluded(self, path: str) -> bool:
+        """Return True for provider webhook/token paths where raw body is sensitive."""
+        return path.startswith("/webhooks/email")
+
+    def _infer_auth_method(self, path: str, user_id: Optional[str], session_id: Optional[str]) -> str:
+        """Classify unauthenticated email-link/webhook flows for audit taxonomy."""
+        if APIAuditLogger.is_google_oauth_path(path):
+            return "oauth"
+        if path.startswith("/webhooks/email"):
+            return "webhook"
+        if APIAuditLogger.is_session_auth_security_path(path):
+            return "session" if user_id or session_id else "anonymous"
+        if path.startswith("/auth/email/") or path.startswith("/auth/password/reset"):
+            return "email_link"
+        if user_id or session_id:
+            return "session"
+        return "anonymous"

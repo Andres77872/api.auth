@@ -8,7 +8,7 @@ Things that commonly confuse operators working with the audit and activity loggi
 
 ### Consumer User Gets 403 on Audit Endpoints
 
-All audit endpoints (`/admin/audit/*`, `/admin/activity*`, `/admin/users/{id}/activity`) require **root or admin** user type. Consumer users are always denied.
+All audit endpoints (`/admin/email/logs`, `/admin/audit/*`, `/admin/activity*`, `/admin/users/{id}/activity`) require **root or admin** user type. Consumer users are always denied.
 
 **Error:** 403 `ACCESS_DENIED` — "Admin access required"
 
@@ -163,6 +163,31 @@ curl -X GET "http://localhost:8000/admin/audit/logs?user_id={user_id}&days=30&li
 
 ---
 
+### Empty or Confusing Results from `GET /admin/email/logs`
+
+**Issue:** The email delivery log returns no rows, or `has_more` behaves unexpectedly.
+
+**Possible causes and fixes:**
+
+1. **Filter value typo** — `status` and `purpose` are matched exactly. Valid `status` values: `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`. Valid `purpose` values: `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`. An unknown value is accepted but matches nothing (returns an empty `logs` array, not an error).
+
+2. **`provider` mismatch** — `provider` is exact-match free text (default `resend`). Querying `?provider=Resend` (wrong case) or a provider you don't use returns nothing.
+
+3. **No email subsystem activity** — if the email outbox worker has not run (or no transactional emails were sent), `email_messages` is empty. Confirm with a broad query: `GET /admin/email/logs?limit=10` (no filters).
+
+4. **`has_more` page-fill heuristic** — this endpoint does **not** run a count query. `has_more` is `true` whenever `returned == limit`. On an exactly-full final page, `has_more` reports `true` even though the next page (`offset += limit`) is empty. Page until a request returns fewer than `limit` rows; do not rely on `has_more` as an authoritative "more data exists" signal.
+
+**Diagnostic:**
+
+```bash
+# Broad query, no filters
+curl -X GET "http://localhost:8000/admin/email/logs?limit=10" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+---
+
 ### Cannot See Audit Logs for a Specific Project
 
 **Issue:** An admin assigned to only one project expects to see only that project's logs.
@@ -177,7 +202,7 @@ curl -X GET "http://localhost:8000/admin/audit/logs?user_id={user_id}&days=30&li
 
 **Issue:** Sending `multipart/form-data` to `POST /admin/audit/export` fails.
 
-**Cause:** The export endpoint is one of only two endpoints in the entire API that accepts `application/json` bodies. The other is `POST /admin/user-groups/{hash}/members/bulk`.
+**Cause:** The export endpoint accepts an `application/json` body, which is unusual — most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the Google sign-in endpoints in `auth_google.py` (e.g. `POST /auth/google/start`, `/link/finish`, `/reauth/start`).
 
 **Fix:** always use `Content-Type: application/json` for export requests:
 
@@ -255,6 +280,7 @@ curl -X GET "http://localhost:8000/admin/audit/logs" \
 | "What security-relevant events occurred?" | `/admin/audit/security-events` |
 | "What's the overall API health?" | `/admin/audit/statistics` |
 | "What did this user do?" | `/admin/users/{id}/activity` |
+| "Did this email get delivered?" | `/admin/email/logs` |
 | "I need a compliance report" | `POST /admin/audit/export` |
 
 ### 3. Export in chunks for large datasets
@@ -318,5 +344,5 @@ curl -X GET "http://localhost:8000/admin/audit/logs?days=30&limit=1&offset=0" \
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

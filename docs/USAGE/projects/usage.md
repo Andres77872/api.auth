@@ -26,7 +26,7 @@ Projects are operated across three route families:
 | Project-group CRUD and project assignment | `/admin/project-groups` | Requires `admin` or `manage_roles` |
 | User-group to project-group access bridge | `/admin/user-groups/{hash}/project-groups` | Requires `admin` or `manage_users` |
 
-**Important:** current project write endpoints use `application/x-www-form-urlencoded`.
+**Important:** current project write endpoints use form data (`multipart/form-data`); none of the `/projects` routes accept a JSON body. Every request also requires a `User-Agent` header (a missing one yields `422`).
 
 ---
 
@@ -192,16 +192,27 @@ The API warns that user-group access to the project has been revoked. That's acc
 
 Two project endpoints exist but currently return `501 Feature Not Implemented`:
 
-- `PATCH /projects/{project_hash}/owner`
-- `PATCH /projects/{project_hash}/archive`
+- `PATCH /projects/{project_hash}/owner` — required form field `new_owner_hash`
+- `PATCH /projects/{project_hash}/archive` — required form field `archived` (bool)
+
+Both validate the session and `admin` permission, resolve the target project (and the new owner for `owner`), then raise `FeatureNotImplementedError`. Verified against `src/routes/projects.py` (the `owner` stub at line 837, the `archive` stub at line 897). The recent archived-exclusion work (commit `4e6e5de`) did **not** touch `src/routes/projects.py`, so these handlers remain stubs.
 
 Relevant caveat:
 
-- the SQL stored procedures `sp_archive_project` and `sp_unarchive_project` exist
-- the Python route implementation still raises `FeatureNotImplementedError`
+- the SQL stored procedures `sp_archive_project` and `sp_unarchive_project` exist (`schemas/stored_procedures/03_projects.sql`, lines 80 and 89)
+- the `PATCH /archive` route does **not** call them — it still raises `FeatureNotImplementedError`
 - ownership transfer does not even have a stored procedure yet
 
 So no, those routes are not production-ready just because they show up in the router.
+
+### Archive enforcement is live even though the toggle endpoint is not
+
+Do not conflate "the archive endpoint is a stub" with "archive does nothing." As of commit `4e6e5de`, archived projects are **excluded** from authorization workflows in the DB/auth layer:
+
+- logins, project tokens, API-key validation, and session validation all skip archived projects
+- `v_user_project_access` and the access stored procedures enforce `archived` / `is_active` consistently
+
+In other words, **archive enforcement exists** (a project flagged `archived` in the database is denied at auth time), but the **archive toggle endpoint** (`PATCH /projects/{hash}/archive`) is still a `501` stub. There is currently no API route that flips the `archived` flag.
 
 ---
 
@@ -216,5 +227,5 @@ So no, those routes are not production-ready just because they show up in the ro
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

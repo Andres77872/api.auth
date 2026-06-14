@@ -17,6 +17,11 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
+GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = {
+    "/auth/google/start",
+    "/auth/google/callback",
+}
+
 
 class AuthContextMiddleware(BaseHTTPMiddleware):
     """
@@ -59,6 +64,11 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         Returns:
             Response from endpoint
         """
+        if request.url.path in GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS:
+            request.state.auth_method = "oauth"
+            request.state.oauth_auth_context_skipped = True
+            return await call_next(request)
+
         # --- Path 1: API Key Authentication (X-API-Key header) ---
         api_key_header = request.headers.get("x-api-key")
 

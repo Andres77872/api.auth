@@ -9,16 +9,29 @@ Reference for the user-management API surface used in this repository.
 | Endpoint | Method | Auth / Permission | Content Type | Purpose |
 |----------|--------|-------------------|--------------|---------|
 | `/users/profile` | GET | Any authenticated user | - | Get current user profile with groups and projects |
-| `/users/profile` | PUT | Any authenticated user | Form | Update own username, email, or password |
+| `/users/profile` | PUT | Any authenticated user | Form | Update own username/email; password fields are rejected |
 | `/users/access-summary` | GET | Any authenticated user | - | Get hierarchical access summary |
 | `/users/list` | GET | Root or admin | Query params | List users with filters and optional group/project data |
+| `/users/me/emails` | GET | Any authenticated user | - | List the caller's own email rows (owner view) |
+| `/users/me/emails` | POST | Any authenticated user | Form or JSON | Add/reuse a pending email and enqueue an activation link; generic `202` |
+| `/users/me/emails/{email_id}/resend` | POST | Any authenticated user | - | Resend activation for an owned pending email; generic `202` |
+| `/users/me/emails/{email_id}` | DELETE | Any authenticated user | - | Soft-remove an owned email; revokes other sessions |
+| `/users/me/emails/{email_id}/primary` | POST | Any authenticated user | - | Set an owned activated email as primary; revokes other sessions |
+| `/users/{user_hash}/emails` | GET | Root or admin | - | List a target user's emails (masked/hash-only view) |
+| `/users/{user_hash}/emails/{email_id}/resend` | POST | Root or admin | - | Re-trigger activation for a target user's email; generic `202` |
 | `/users/search/query` | GET | Root or admin | Query params | Quick user search by username/email |
 | `/users/{user_hash}` | GET | Self, root, or scoped admin | Query params | Get detailed user information |
 | `/users/{user_hash}` | PUT | Root or scoped admin | Form | Update username/email; root may also send `user_type` |
 | `/users/{user_hash}/status` | PUT | Root or scoped admin | Query param `is_active` | Activate or deactivate a user |
-| `/users/{user_hash}/reset-password` | POST | Root or admin | - | Reset a non-root user's password |
+| `/users/{user_hash}/reset-password` | POST | Root or admin | - | Queue a hash-only admin password-reset link email (no temp password/token/URL returned); body-less POST |
 | `/users/{user_hash}` | DELETE | Root or scoped admin | - | Soft-delete a user and invalidate sessions/cache |
 | `/users/{user_hash}/type` | PATCH | Root only | Form | Change user type through the legacy/simple path |
+
+> The `/users/*` route file (`src/routes/users.py`) exposes **18 endpoints**,
+> including the per-user email-management group above. Full lifecycle behavior
+> for those email routes (generic `202`, `429 + Retry-After`, resend cooldown,
+> idempotency, session revocation, owner vs admin field views) is in
+> [email-management.md](email-management.md).
 
 ---
 
@@ -83,6 +96,40 @@ Reference for the user-management API surface used in this repository.
 
 ---
 
+## Email Management Request Fields
+
+### `POST /users/me/emails`
+
+| Field / Header | Type | Notes |
+|----------------|------|-------|
+| `email` | string (Form or JSON body) | Required; address to add and send an activation link to. Invalid shape is rejected before enqueue |
+| `Idempotency-Key` | header | Optional; replays a prior generic `202` instead of enqueuing twice |
+
+### `POST /users/me/emails/{email_id}/resend`
+
+| Field / Header | Type | Notes |
+|----------------|------|-------|
+| `email_id` | path | The owned, pending email row to resend |
+| `Idempotency-Key` | header | Optional; replays the prior generic `202` |
+
+Send-side email contracts (apply to `POST /users/me/emails`, both resend
+routes):
+
+- **Generic `202 Accepted`** is returned for any processable request regardless
+  of whether a row actually changed; enqueue failures are swallowed and still
+  return `202`, so the body never confirms existence or delivery.
+- **`429 + Retry-After`** is the only detailed public response, returned by the
+  rate limiter (and by the resend cooldown). The body carries
+  `details.retry_after_seconds`.
+- **Resend cooldown** uses `EMAIL_RESEND_COOLDOWN_SECONDS` (default **60s**).
+- The admin resend (`POST /users/{user_hash}/emails/{email_id}/resend`) does
+  **not** read an `Idempotency-Key`.
+
+See [email-management.md](email-management.md) for full request/response
+examples and the owner vs admin field views.
+
+---
+
 ## Bulk Request Fields
 
 ### `POST /admin/users/bulk-update`
@@ -92,7 +139,7 @@ Reference for the user-management API surface used in this repository.
 | `user_hashes` | repeated string | Required; max 100 |
 | `is_active` | bool | Optional |
 | `user_type` | string | Optional; must be `root`, `admin`, or `consumer` |
-| `force_password_reset` | bool | Optional route field; verify runtime behavior in staging |
+| `force_password_reset` | bool | Not supported; route rejects it with reset-link or `/auth/password/change` guidance |
 
 ### `POST /admin/users/bulk-delete`
 
@@ -106,9 +153,10 @@ Reference for the user-management API surface used in this repository.
 ## Operational Notes
 
 - `PUT /users/{hash}/status` and `DELETE /users/{hash}` are the documented user-lifecycle paths that explicitly invalidate sessions and cache
+- `DELETE /users/me/emails/{email_id}` and `POST /users/me/emails/{email_id}/primary` also revoke the caller's other sessions (reasons `email_removed` / `email_primary_changed`) while preserving the current session when possible
 - `/users/search/query` is not a full substitute for `/users/list` because the scoping logic is simpler
 - `/users/{hash}/type` and `/user-types/{hash}/type` are not interchangeable in admin-promotion workflows
-- password reset response omits the generated temporary password by design
+- `POST /users/{hash}/reset-password` is a body-less POST that queues a hash-only reset link when possible and does not expose password/token/link/full-email/provider payload by design
 
 ---
 
@@ -116,6 +164,7 @@ Reference for the user-management API surface used in this repository.
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
@@ -125,5 +174,5 @@ Reference for the user-management API surface used in this repository.
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

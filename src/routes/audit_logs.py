@@ -23,7 +23,7 @@ from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
 from src.Util.error_handler import AuthorizationError, ErrorCode, NotFoundError, ValidationError
-from src.Util.db import is_root_user, get_user_type, get_user_by_id
+from src.Util.db import db_email, is_root_user, get_user_type, get_user_by_id
 from src.Util.db.db_audit_analytics import (
     get_audit_logs,
     count_audit_logs,
@@ -115,6 +115,52 @@ def _derive_event_type_from_audit_log(audit_entry: Dict[str, Any]) -> str:
             return str(tags[0])
 
     return "api_event"
+
+
+# =================== GET /admin/email/logs ===================
+
+@router.get("/email/logs")
+@log_and_handle_errors(
+    operation_name="get_admin_email_logs",
+    activity_type=None,
+    log_success=False,
+)
+async def list_admin_email_logs(
+    limit: int = Query(50, ge=1, le=500, description="Number of email delivery logs to return"),
+    offset: int = Query(0, ge=0, description="Number of logs to skip"),
+    status: Optional[str] = Query(None, description="Filter by outbox status"),
+    purpose: Optional[str] = Query(None, description="Filter by transactional purpose"),
+    provider: Optional[str] = Query(None, description="Filter by provider"),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    log_context: LogContext = None,
+) -> Dict[str, Any]:
+    """Return email delivery logs with recipient hash + masked email only."""
+
+    _check_admin_access(log_context)
+    logs = db_email.list_email_delivery_logs(
+        limit=limit,
+        offset=offset,
+        status=status,
+        purpose=purpose,
+        provider=provider,
+    )
+    return {
+        "success": True,
+        "logs": logs,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "returned": len(logs),
+            "has_more": len(logs) == limit,
+            "next_offset": offset + limit if len(logs) == limit else None,
+        },
+        "filters": {
+            "status": status,
+            "purpose": purpose,
+            "provider": provider,
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 # =================== GET /admin/audit/logs ===================

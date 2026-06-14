@@ -23,7 +23,8 @@ from src.Util.bulk_operations import (
 from src.Util.db import validate_session, get_user_by_hash
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
-    NotFoundError, InternalError, ErrorCode, mask_uuid
+    NotFoundError, InternalError, ErrorCode, mask_uuid,
+    create_unsupported_password_control_error,
 )
 from src.Util.db_error_wrapper import handle_db_operation
 
@@ -67,7 +68,7 @@ async def bulk_update_users_endpoint(
         user_hashes: List of user hashes to update
         is_active: Set active status for all users
         user_type: Set user type for all users
-        force_password_reset: Force password reset on next login
+        force_password_reset: Unsupported compatibility field; rejected when present
         
     Returns:
         Success/error count with details
@@ -122,20 +123,21 @@ async def bulk_update_users_endpoint(
             details={"field": "user_type", "allowed_values": ["root", "admin", "consumer"]}
         )
 
+    if force_password_reset is not None:
+        raise create_unsupported_password_control_error("force_password_reset")
+
     # Build updates dictionary
     updates = {}
     if is_active is not None:
         updates['is_active'] = is_active
     if user_type:
         updates['user_type'] = user_type
-    if force_password_reset is not None:
-        updates['force_password_reset'] = force_password_reset
 
     if not updates:
         raise ValidationError(
             message="At least one update field is required",
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
-            details={"required_fields": ["is_active", "user_type", "force_password_reset"]}
+            details={"required_fields": ["is_active", "user_type"]}
         )
 
     user_updates = [

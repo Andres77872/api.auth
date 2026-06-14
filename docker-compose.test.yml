@@ -24,6 +24,8 @@ services:
       - ./schemas/tables/06_create_views.sql:/docker-entrypoint-initdb.d/06_create_views.sql
       - ./schemas/tables/07_error_logs.sql:/docker-entrypoint-initdb.d/07_error_logs.sql
       - ./schemas/tables/08_activity_logging_tables.sql:/docker-entrypoint-initdb.d/08_activity_logging_tables.sql
+      - ./schemas/tables/09_email_activation_tables.sql:/docker-entrypoint-initdb.d/09_email_activation_tables.sql
+      - ./schemas/tables/10_external_accounts.sql:/docker-entrypoint-initdb.d/10_external_accounts.sql
       - ./schemas/stored_procedures/01_user_management.sql:/docker-entrypoint-initdb.d/10_sp_01_user_management.sql
       - ./schemas/stored_procedures/02_user_groups.sql:/docker-entrypoint-initdb.d/11_sp_02_user_groups.sql
       - ./schemas/stored_procedures/03_projects.sql:/docker-entrypoint-initdb.d/12_sp_03_projects.sql
@@ -37,9 +39,13 @@ services:
       - ./schemas/stored_procedures/11_activity_logging.sql:/docker-entrypoint-initdb.d/20_sp_11_activity_logging.sql
       - ./schemas/stored_procedures/12_activity_context.sql:/docker-entrypoint-initdb.d/21_sp_12_activity_context.sql
       - ./schemas/stored_procedures/13_api_keys.sql:/docker-entrypoint-initdb.d/22_sp_13_api_keys.sql
+      - ./schemas/stored_procedures/14_email_activation.sql:/docker-entrypoint-initdb.d/23_sp_14_email_activation.sql
+      - ./schemas/stored_procedures/15_external_accounts.sql:/docker-entrypoint-initdb.d/24_sp_15_external_accounts.sql
       - ./schemas/triggers/01_activity_logging_triggers.sql:/docker-entrypoint-initdb.d/30_tr_01_activity_logging.sql
       - ./schemas/triggers/02_permission_activity_triggers.sql:/docker-entrypoint-initdb.d/31_tr_02_permission_activity.sql
       - ./schemas/triggers/03_api_key_activity_triggers.sql:/docker-entrypoint-initdb.d/32_tr_03_api_key_activity.sql
+      - ./schemas/triggers/04_email_activation_triggers.sql:/docker-entrypoint-initdb.d/33_tr_04_email_activation.sql
+      - ./schemas/triggers/05_external_accounts_triggers.sql:/docker-entrypoint-initdb.d/34_tr_05_external_accounts.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -60,6 +66,16 @@ services:
       retries: 10
       start_period: 5s
 
+  mailpit-test:
+    image: axllent/mailpit:latest
+    container_name: api-auth-mailpit-test
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    environment:
+      MP_SMTP_BIND_ADDR: "0.0.0.0:1025"
+      MP_UI_BIND_ADDR: "0.0.0.0:8025"
+
   e2e-runner:
     build:
       context: .
@@ -70,6 +86,8 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
+      mailpit-test:
+        condition: service_started
     env_file:
       - .env.test
     environment:
@@ -85,6 +103,13 @@ services:
       REAL_REDIS_HOST: redis-test
       REAL_REDIS_PORT: "6379"
       E2E_SERVICE_WAIT_SECONDS: "120"
+      EMAIL_DELIVERY_ENABLED: "true"
+      EMAIL_PROVIDER: mailpit
+      EMAIL_REAL_SEND_TEST_OPT_IN: "false"
+      RESEND_API_KEY: ""
+      MAILPIT_SMTP_HOST: mailpit-test
+      MAILPIT_SMTP_PORT: "1025"
+      MAILPIT_HTTP_BASE_URL: http://mailpit-test:8025
     working_dir: /workspace
     volumes:
       - .:/workspace

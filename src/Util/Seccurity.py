@@ -51,7 +51,7 @@ class HTTPBearerOrCookie(HTTPBearer):
         if self.auto_error:
             raise HTTPException(
                 status_code=401,
-                detail="Not authenticated: provide JWT token via Authorization Bearer header or session_token cookie",
+                detail="Not authenticated",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         else:
@@ -225,8 +225,7 @@ def middleware_user_token_validation(request: Request) -> UserLogin:
             raise HTTPException(status_code=401, detail='User token invalid')
 
     # No authentication found
-    raise HTTPException(status_code=401,
-                        detail='Authentication required: provide JWT token via Authorization Bearer header or session_token cookie')
+    raise HTTPException(status_code=401, detail='Authentication required')
 
 
 def make_session(user_model: UserLogin, session_id: int) -> bool:

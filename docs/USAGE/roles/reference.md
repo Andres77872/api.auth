@@ -128,8 +128,11 @@ See the canonical explanation in **[Permissions Reference → Guard differences]
 | 404 | `USER_NOT_FOUND` | User hash not found |
 | 404 | `PROJECT_NOT_FOUND` | Project hash not found (catalog endpoints) |
 | 409 | `DUPLICATE_ENTRY` | Duplicate role name through DB conflict handling |
-| 500 | `INTERNAL_ERROR` | Current code defect: duplicate project-catalog entry references missing `ErrorCode.ALREADY_EXISTS` |
+| 500 | `INTERNAL_ERROR` | Current code defect: duplicate project-catalog entry (`global_roles.py:959`) references missing `ErrorCode.ALREADY_EXISTS` instead of returning the intended 409 |
+| 500 | `INTERNAL_ERROR` | Current code defect: the three link/catalog **removal** "not assigned / not in catalog" paths reference missing `ErrorCode.NOT_FOUND` instead of the intended 404 — remove permission-group-from-role (`global_roles.py:341`), remove permission-from-group (`global_roles.py:600`), remove role-from-project-catalog (`global_roles.py:1051`) |
 | 500 | `INTERNAL_ERROR` | DB operation failed |
+
+**Missing-enum defects (summary):** four `ErrorCode` members referenced in `global_roles.py` are absent from the `ErrorCode` enum in `src/Util/error_handler.py`, so each reference raises `AttributeError` and the request surfaces as a generic **500** instead of the intended status: `OPERATION_NOT_ALLOWED` (system-role delete → 403), `PERMISSION_GROUP_NOT_FOUND` (permission-group not-found lookups → 404), `ALREADY_EXISTS` (duplicate catalog add → 409), and `NOT_FOUND` (the three unlink/catalog-removal "not assigned" branches → 404).
 
 ---
 
@@ -145,5 +148,5 @@ See the canonical explanation in **[Permissions Reference → Guard differences]
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

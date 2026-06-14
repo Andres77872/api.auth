@@ -35,6 +35,7 @@ class ErrorCategory(str, Enum):
     DATABASE = "database"
     INTERNAL = "internal"
     EXTERNAL = "external"
+    EMAIL = "email"
 
 
 class ErrorCode(str, Enum):
@@ -50,6 +51,7 @@ class ErrorCode(str, Enum):
     - DB_6xxx: Database errors
     - INT_7xxx: Internal errors
     - EXT_8xxx: External service errors
+    - EMAIL_9xxx: Transactional auth email safety/delivery errors
     """
     
     # Authentication errors (1xxx)
@@ -139,6 +141,39 @@ class ErrorCode(str, Enum):
     EXTERNAL_SERVICE_ERROR = "EXT_8001"
     EXTERNAL_API_ERROR = "EXT_8002"
     EXTERNAL_TIMEOUT = "EXT_8003"
+    OAUTH_PROVIDER_NOT_CONFIGURED = "EXT_8010"
+    OAUTH_PROVIDER_DISABLED = "EXT_8011"
+    OAUTH_PROVIDER_INIT_INVALID = "EXT_8012"
+    OAUTH_REDIRECT_URI_NOT_ALLOWED = "EXT_8013"
+    OAUTH_STATE_INVALID = "EXT_8014"
+    OAUTH_STATE_EXPIRED = "EXT_8015"
+    OAUTH_STATE_REUSED = "EXT_8016"
+    OAUTH_NONCE_MISMATCH = "EXT_8017"
+    OAUTH_CODE_EXCHANGE_FAILED = "EXT_8018"
+    OAUTH_ID_TOKEN_INVALID = "EXT_8019"
+    OAUTH_ISSUER_MISMATCH = "EXT_8020"
+    OAUTH_AUDIENCE_MISMATCH = "EXT_8021"
+    OAUTH_TOKEN_EXPIRED = "EXT_8022"
+    OAUTH_WORKSPACE_DENIED = "EXT_8023"
+    OAUTH_PROVISIONING_DENIED = "EXT_8024"
+    OAUTH_PROJECT_ACCESS_DENIED = "EXT_8025"
+    EXTERNAL_IDENTITY_ALREADY_LINKED = "EXT_8026"
+    EXTERNAL_IDENTITY_SUB_CONFLICT = "EXT_8027"
+    EXTERNAL_IDENTITY_NOT_LINKED = "EXT_8028"
+    OAUTH_PASSWORD_REQUIRED_FOR_UNLINK = "EXT_8029"
+    OAUTH_RATE_LIMITED = "EXT_8030"
+
+    # Transactional auth email errors (9xxx)
+    EMAIL_DELIVERY_DISABLED = "EMAIL_9001"
+    EMAIL_PROVIDER_NOT_READY = "EMAIL_9002"
+    EMAIL_REAL_SEND_BLOCKED_IN_TEST = "EMAIL_9003"
+    EMAIL_TOKEN_INVALID = "EMAIL_9004"
+    EMAIL_IDEMPOTENCY_CONFLICT = "EMAIL_9005"
+    EMAIL_SUPPRESSED = "EMAIL_9006"
+    EMAIL_WEBHOOK_INVALID = "EMAIL_9007"
+    EMAIL_OUTBOX_FAILURE = "EMAIL_9008"
+    EMAIL_PROVIDER_SEND_FAILED = "EMAIL_9009"
+    EMAIL_TEMPLATE_INVALID = "EMAIL_9010"
 
 
 def mask_uuid(uuid_str: str, prefix: Optional[str] = None) -> str:
@@ -224,6 +259,58 @@ def mask_multiple_uuids(text: str) -> str:
     return text
 
 
+OAUTH_SENSITIVE_FIELD_NAMES = (
+    "provider_init_token",
+    "authorization_code",
+    "oauth_code",
+    "code",
+    "state",
+    "oauth_state",
+    "nonce",
+    "code_verifier",
+    "pkce_verifier",
+    "id_token",
+    "google_id_token",
+    "google_id_token_claims",
+    "access_token",
+    "refresh_token",
+    "google_access_token",
+    "google_refresh_token",
+    "google_sub",
+    "provider_sub",
+    "provider_subject",
+    "google_email",
+    "google_hd",
+    "oauth_link_token",
+    "project_hash",
+    "user_group_hash",
+)
+
+_OAUTH_FIELD_ASSIGNMENT_RE = re.compile(
+    r"\b(" + "|".join(re.escape(field) for field in OAUTH_SENSITIVE_FIELD_NAMES) + r")\b\s*[=:]\s*([^\s,;&]+)",
+    flags=re.IGNORECASE,
+)
+_STRICT_HASH_VALUE_RE = re.compile(
+    r"\b(?:project|user[_-]?group)[_-]?hash\b\s*[=:]\s*([^\s,;&]+)",
+    flags=re.IGNORECASE,
+)
+
+
+def sanitize_oauth_sensitive_text(message: str) -> str:
+    """Redact OAuth/provider-init fields from free-form text."""
+    if not message:
+        return message
+    sanitized = _OAUTH_FIELD_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        str(message),
+    )
+    sanitized = _STRICT_HASH_VALUE_RE.sub(
+        lambda match: match.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]",
+        sanitized,
+    )
+    return sanitized
+
+
 def sanitize_error_message(message: str) -> str:
     """
     Sanitize error message by masking UUIDs and sensitive data.
@@ -243,8 +330,80 @@ def sanitize_error_message(message: str) -> str:
     # Mask potential IDs in various formats
     sanitized = re.sub(r'\bid[=:]\s*\d+', 'id=[REDACTED]', sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r'\buser_id[=:]\s*\d+', 'user_id=[REDACTED]', sanitized, flags=re.IGNORECASE)
+    sanitized = sanitize_oauth_sensitive_text(sanitized)
+
+    # Email activation flows must never leak email PII, full links, token
+    # material, provider credentials, or raw idempotency keys through error text.
+    sanitized = re.sub(
+        r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',
+        '[EMAIL_REDACTED]',
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r'https?://\S+', '[LINK_REDACTED]', sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r'\b(api[_-]?key|token|secret|idempotency[_-]?key)\s*[=:]\s*\S+',
+        lambda m: f"{m.group(1)}=[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = sanitize_oauth_sensitive_text(sanitized)
     
     return sanitized
+
+
+OAUTH_NEUTRAL_PUBLIC_MESSAGE = "OAuth authentication could not be completed."
+OAUTH_PROVIDER_UNAVAILABLE_MESSAGE = "OAuth provider is not available."
+OAUTH_LINKING_DENIED_MESSAGE = "External identity action could not be completed."
+OAUTH_RATE_LIMITED_MESSAGE = "Too many OAuth attempts. Please try again later."
+
+OAUTH_ERROR_PUBLIC_MESSAGES: Dict[ErrorCode, str] = {
+    ErrorCode.OAUTH_PROVIDER_NOT_CONFIGURED: OAUTH_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.OAUTH_PROVIDER_DISABLED: OAUTH_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.OAUTH_PROVIDER_INIT_INVALID: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_STATE_INVALID: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_STATE_EXPIRED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_STATE_REUSED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_NONCE_MISMATCH: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_CODE_EXCHANGE_FAILED: OAUTH_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.OAUTH_ID_TOKEN_INVALID: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_ISSUER_MISMATCH: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_AUDIENCE_MISMATCH: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_TOKEN_EXPIRED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_WORKSPACE_DENIED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_PROVISIONING_DENIED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.OAUTH_PROJECT_ACCESS_DENIED: OAUTH_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.EXTERNAL_IDENTITY_ALREADY_LINKED: OAUTH_LINKING_DENIED_MESSAGE,
+    ErrorCode.EXTERNAL_IDENTITY_SUB_CONFLICT: OAUTH_LINKING_DENIED_MESSAGE,
+    ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED: OAUTH_LINKING_DENIED_MESSAGE,
+    ErrorCode.OAUTH_PASSWORD_REQUIRED_FOR_UNLINK: OAUTH_LINKING_DENIED_MESSAGE,
+    ErrorCode.OAUTH_RATE_LIMITED: OAUTH_RATE_LIMITED_MESSAGE,
+}
+
+OAUTH_ERROR_HTTP_STATUS: Dict[ErrorCode, int] = {
+    ErrorCode.OAUTH_PROVIDER_NOT_CONFIGURED: 503,
+    ErrorCode.OAUTH_PROVIDER_DISABLED: 404,
+    ErrorCode.OAUTH_PROVIDER_INIT_INVALID: 401,
+    ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED: 400,
+    ErrorCode.OAUTH_STATE_INVALID: 401,
+    ErrorCode.OAUTH_STATE_EXPIRED: 401,
+    ErrorCode.OAUTH_STATE_REUSED: 401,
+    ErrorCode.OAUTH_NONCE_MISMATCH: 401,
+    ErrorCode.OAUTH_CODE_EXCHANGE_FAILED: 502,
+    ErrorCode.OAUTH_ID_TOKEN_INVALID: 401,
+    ErrorCode.OAUTH_ISSUER_MISMATCH: 401,
+    ErrorCode.OAUTH_AUDIENCE_MISMATCH: 401,
+    ErrorCode.OAUTH_TOKEN_EXPIRED: 401,
+    ErrorCode.OAUTH_WORKSPACE_DENIED: 401,
+    ErrorCode.OAUTH_PROVISIONING_DENIED: 401,
+    ErrorCode.OAUTH_PROJECT_ACCESS_DENIED: 403,
+    ErrorCode.EXTERNAL_IDENTITY_ALREADY_LINKED: 409,
+    ErrorCode.EXTERNAL_IDENTITY_SUB_CONFLICT: 409,
+    ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED: 404,
+    ErrorCode.OAUTH_PASSWORD_REQUIRED_FOR_UNLINK: 409,
+    ErrorCode.OAUTH_RATE_LIMITED: 429,
+}
 
 
 class AppException(Exception):
@@ -294,7 +453,7 @@ class AppException(Exception):
         sanitized = {}
         for key, value in details.items():
             if isinstance(value, str):
-                sanitized[key] = mask_multiple_uuids(value)
+                sanitized[key] = sanitize_error_message(value)
             elif isinstance(value, dict):
                 sanitized[key] = self._sanitize_details(value)
             elif isinstance(value, list):
@@ -631,6 +790,81 @@ class InternalError(AppException):
         )
 
 
+class RateLimitError(AppException):
+    """Standardized 429 rate-limit error with Retry-After support."""
+
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        retry_after_seconds: int = 1,
+        details: Optional[Dict[str, Any]] = None,
+        original_error: Optional[Exception] = None,
+        error_context: Optional[str] = None,
+    ):
+        retry_after = max(1, int(retry_after_seconds or 1))
+        merged_details = {"retry_after_seconds": retry_after}
+        if details:
+            merged_details.update(details)
+
+        super().__init__(
+            message=message,
+            error_code=ErrorCode.RATE_LIMIT_EXCEEDED,
+            category=ErrorCategory.INTERNAL,
+            status_code=429,
+            details=merged_details,
+            original_error=original_error,
+            error_context=error_context,
+        )
+
+
+class EmailFlowError(AppException):
+    """Internal email-flow error that keeps public message posture generic."""
+
+    GENERIC_PUBLIC_MESSAGE = "If the request can be processed, it has been accepted."
+
+    def __init__(
+        self,
+        message: str = GENERIC_PUBLIC_MESSAGE,
+        error_code: ErrorCode = ErrorCode.EMAIL_PROVIDER_NOT_READY,
+        status_code: int = 202,
+        details: Optional[Dict[str, Any]] = None,
+        original_error: Optional[Exception] = None,
+        error_context: Optional[str] = None,
+    ):
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            category=ErrorCategory.EMAIL,
+            status_code=status_code,
+            details=details,
+            original_error=original_error,
+            error_context=error_context,
+        )
+
+
+class OAuthFlowError(AppException):
+    """Neutral Google OAuth/external-identity error."""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        error_code: ErrorCode = ErrorCode.OAUTH_ID_TOKEN_INVALID,
+        status_code: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
+        original_error: Optional[Exception] = None,
+        error_context: Optional[str] = None,
+    ):
+        super().__init__(
+            message=message or OAUTH_ERROR_PUBLIC_MESSAGES.get(error_code, OAUTH_NEUTRAL_PUBLIC_MESSAGE),
+            error_code=error_code,
+            category=ErrorCategory.EXTERNAL,
+            status_code=status_code or OAUTH_ERROR_HTTP_STATUS.get(error_code, 401),
+            details=details,
+            original_error=original_error,
+            error_context=error_context,
+        )
+
+
 class FeatureNotImplementedError(AppException):
     """Feature not yet implemented (501 Not Implemented)"""
     
@@ -810,6 +1044,138 @@ def create_access_denied_error(resource_type: str, action: str, identifier: Opti
         error_code=error_code,
         details=details
     )
+
+
+def create_weak_password_error(
+    *,
+    reason_codes: List[str] | tuple[str, ...],
+    min_length: int,
+) -> ValidationError:
+    """Create a sanitized VAL_3007 error without password material.
+
+    The detail shape is intentionally limited to non-secret reason codes and the
+    configured minimum length. Never pass the submitted candidate here.
+    """
+
+    safe_reasons = [str(reason) for reason in reason_codes if reason]
+    return ValidationError(
+        message="Weak password (VAL_3007)",
+        error_code=ErrorCode.WEAK_PASSWORD,
+        details={
+            "reason_codes": safe_reasons,
+            "min_length": int(min_length),
+        },
+    )
+
+
+def create_profile_password_rejection_error(field: str = "password") -> ValidationError:
+    """Reject profile password mutation with sanitized endpoint guidance."""
+
+    requested_field = str(field or "").strip().lower()
+    allowed_fields = {"password", "current_password", "new_password", "password_confirmation"}
+    safe_field = requested_field if requested_field in allowed_fields else "password"
+    return ValidationError(
+        message="Password changes must use /auth/password/change",
+        error_code=ErrorCode.INVALID_INPUT,
+        details={
+            "field": safe_field,
+            "use_endpoint": "/auth/password/change",
+        },
+    )
+
+
+def create_unsupported_password_control_error(field: str) -> ValidationError:
+    """Reject dead password-control fields with stable, non-secret guidance."""
+
+    requested_field = str(field or "").strip().lower()
+    allowed_fields = {"force_password_reset", "must_change_on_login"}
+    safe_field = requested_field if requested_field in allowed_fields else "password_control"
+    return ValidationError(
+        message=(
+            "Unsupported password-control field; use reset-link password recovery "
+            "or /auth/password/change"
+        ),
+        error_code=ErrorCode.INVALID_INPUT,
+        details={
+            "field": safe_field,
+            "supported_paths": [
+                "POST /users/{user_hash}/reset-password",
+                "POST /auth/password/change",
+            ],
+        },
+    )
+
+
+def create_invalid_current_password_error() -> AuthenticationError:
+    """Return the generic AUTH_1001 posture for current-password failures."""
+
+    return AuthenticationError(
+        message="Invalid credentials",
+        error_code=ErrorCode.INVALID_CREDENTIALS,
+        details={"credential_check": "generic"},
+    )
+
+
+def create_rate_limit_error(
+    retry_after_seconds: int,
+    message: str = "Rate limit exceeded",
+    details: Optional[Dict[str, Any]] = None,
+) -> RateLimitError:
+    """Create the canonical INT_7005 429 error with Retry-After support."""
+    return RateLimitError(
+        message=message,
+        retry_after_seconds=retry_after_seconds,
+        details=details,
+    )
+
+
+def create_change_password_rate_limit_error(
+    retry_after_seconds: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> RateLimitError:
+    """Create the sanitized change-password INT_7005 error."""
+
+    safe_details = {"operation": "password_change"}
+    if details:
+        safe_details.update(details)
+    return create_rate_limit_error(
+        retry_after_seconds=retry_after_seconds,
+        message="Rate limit exceeded",
+        details=safe_details,
+    )
+
+
+def create_oauth_error(
+    error_code: ErrorCode,
+    *,
+    message: Optional[str] = None,
+    status_code: Optional[int] = None,
+    details: Optional[Dict[str, Any]] = None,
+    original_error: Optional[Exception] = None,
+    error_context: Optional[str] = None,
+) -> OAuthFlowError:
+    """Create a neutral OAuth/provider error using the EXT_8xxx contract."""
+    return OAuthFlowError(
+        message=message,
+        error_code=error_code,
+        status_code=status_code,
+        details=details,
+        original_error=original_error,
+        error_context=error_context,
+    )
+
+
+def rate_limit_headers(retry_after_seconds: int) -> Dict[str, str]:
+    """Return the required Retry-After header for 429 responses."""
+    return {"Retry-After": str(max(1, int(retry_after_seconds or 1)))}
+
+
+def public_email_accepted_body() -> Dict[str, Any]:
+    """Enumeration-safe public body for activation/forgot/reset accepts."""
+    return {
+        "success": True,
+        "message": EmailFlowError.GENERIC_PUBLIC_MESSAGE,
+    }
 
 
 def log_error(error: Exception, context: Optional[Dict[str, Any]] = None):

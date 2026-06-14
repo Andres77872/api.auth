@@ -150,5 +150,5 @@ Do the verification before deleting old groups, otherwise you create your own ou
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

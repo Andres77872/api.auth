@@ -120,7 +120,7 @@ curl -X DELETE "http://localhost:8000/roles/roles/ROLE_HASH" \
 
 **After deletion:**
 - The role disappears from list queries (filtered by `is_active = TRUE`)
-- `GET /roles/roles/{hash}` may still return it depending on the stored procedure
+- `GET /roles/roles/{hash}` returns whatever `get_role_by_hash` yields — the route handler does not filter on `is_active`, so a direct fetch by hash can still return a soft-deleted role
 - Users with this role assigned will see `null` when querying their role via `GET /roles/users/me/role` (the SP checks `is_active`)
 
 ---
@@ -155,6 +155,7 @@ curl -X DELETE "http://localhost:8000/roles/roles/ROLE_HASH/permission-groups/PG
 ```
 
 - **SOFT DELETE** — sets `is_active = FALSE, removed_at = NOW()` on the junction row
+- **Defect:** if the group is **not currently assigned** to the role, the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
 
 ### List permission groups
 
@@ -206,6 +207,8 @@ curl -X DELETE "http://localhost:8000/roles/permission-groups/PG_HASH/permission
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
+- **Defect:** if the permission is **not currently assigned** to the group, the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+
 ### List / get / update / delete permissions
 
 Standard CRUD on `/roles/permissions` and `/roles/permissions/{hash}`. All follow the same patterns as role CRUD.
@@ -227,7 +230,7 @@ curl -X GET "http://localhost:8000/roles/users/me/role" \
 ### Assign a role to a user
 
 ```bash
-curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "role_hash=ROLE_HASH"
@@ -241,7 +244,7 @@ curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
 ### Get another user's role
 
 ```bash
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -250,7 +253,7 @@ curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
 ### Remove a user's role
 
 ```bash
-curl -X DELETE "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
@@ -295,6 +298,8 @@ curl -X DELETE "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROL
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
+- **Defect:** if the role is **not in the project catalog** (never added, or already removed), the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+
 ---
 
 ## Related Documentation
@@ -310,5 +315,5 @@ curl -X DELETE "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROL
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

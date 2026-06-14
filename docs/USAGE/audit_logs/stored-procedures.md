@@ -12,6 +12,7 @@ SQL stored procedures for querying the `api_audit_log` and `activity_logs` table
 - [API Audit Security Procedures](#api-audit-security-procedures)
 - [Statistics Procedures](#statistics-procedures)
 - [User Activity Procedures](#user-activity-procedures)
+- [Email Delivery Logs (No Stored Procedure)](#email-delivery-logs-no-stored-procedure)
 
 ---
 
@@ -208,6 +209,42 @@ CALL sp_get_user_activity_summary('user-id-123', 30);
 
 ---
 
+## Email Delivery Logs (No Stored Procedure)
+
+`GET /admin/email/logs` does **not** use a stored procedure. It runs an inline `SELECT` against the `email_messages` table via `db_email.list_email_delivery_logs()`. Do not look for an `sp_` procedure for email delivery logs — there is none.
+
+The equivalent direct query (redacted columns only):
+
+```sql
+SELECT em.id,
+       em.user_id,
+       em.user_email_id,
+       em.purpose,
+       em.template_code,
+       HEX(em.recipient_hash) AS recipient_hash,
+       em.recipient_masked,
+       em.provider,
+       em.provider_message_id,
+       em.status,
+       em.priority,
+       em.attempt_count,
+       em.max_attempts,
+       em.next_attempt_at,
+       em.sent_at,
+       em.terminal_at,
+       em.last_error_code,
+       em.created_at,
+       em.updated_at
+FROM email_messages em
+-- optional, AND-combined: WHERE em.status = ? AND em.purpose = ? AND em.provider = ?
+ORDER BY em.created_at DESC
+LIMIT ? OFFSET ?;
+```
+
+The plaintext columns on `email_messages` (`recipient_email`, `last_error_message`, `render_payload_ciphertext`, `provider_idempotency_key`, `token_id`, …) are intentionally **not** selected, so they never reach the API surface.
+
+---
+
 ## Related Documentation
 
 - **[Audit Logs Overview](README.md)** — Dual logging system overview
@@ -217,5 +254,5 @@ CALL sp_get_user_activity_summary('user-id-123', 30);
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

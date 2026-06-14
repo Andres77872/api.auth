@@ -47,17 +47,17 @@ Fix:
 
 ---
 
-### Password reset did not return the temporary password
+### Password reset did not return a temporary password
 
-This is current documented behavior, not necessarily an outage.
+This is expected behavior, not an outage.
 
 The route:
 
-- generates a temporary password internally
-- updates the password hash
-- returns only expiry metadata and the instruction that delivery was out-of-band
+- queues a secure reset link when the target has a primary activated email
+- returns accepted metadata only
+- never returns a plaintext password, reset token, reset link, full email, subject/body, or provider payload
 
-If your support workflow needs the temporary secret visible in the API response, that is a product/code change request, not an operator mistake.
+If delivery is suspected to be stuck, check `/system/health` email components and `/admin/email/logs`. Do not ask the API for a temporary secret — that path is gone by design.
 
 ---
 
@@ -157,6 +157,7 @@ Especially `bulk-update`. Large user changes deserve proof, not vibes.
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
@@ -166,5 +167,5 @@ Especially `bulk-update`. Large user changes deserve proof, not vibes.
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026
 **Document Version**: 1.0

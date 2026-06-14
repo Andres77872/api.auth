@@ -89,6 +89,7 @@ When `DEBUG_MODE=true`, the error object includes two additional fields:
 |-------------|----------|------|
 | `200` | Success | Normal successful responses |
 | `201` | Created | Resource created (`POST /roles/roles`, `POST /roles/permission-groups`, `POST /roles/permissions`) |
+| `202` | Accepted | Generic public email activation/forgot/reset/add/resend acceptance |
 | `204` | No Content | `GET /ping` health check |
 | `400` | Validation | Missing fields, invalid input, validation failures |
 | `401` | Authentication | Invalid credentials, expired/invalid session, inactive account |
@@ -96,9 +97,12 @@ When `DEBUG_MODE=true`, the error object includes two additional fields:
 | `404` | Not Found | User, project, group, role, or permission not found |
 | `409` | Conflict | Username/email already exists, duplicate entry |
 | `413` | Payload Too Large | POST body exceeds 8MB limit |
+| `429` | Rate Limited | Email send/resend/consume/login/change-password buckets exceeded; honor `Retry-After` |
 | `422` | Unprocessable Entity | Missing `User-Agent` header, malformed form data |
-| `500` | Internal Server Error | Server errors, database failures |
+| `500` | Internal Server Error | Server errors, database failures, generic external-service failures |
 | `501` | Not Implemented | `PATCH /projects/{hash}/owner`, `PATCH /projects/{hash}/archive` |
+| `502` | Bad Gateway | Google OAuth authorization-code exchange failed (`OAUTH_CODE_EXCHANGE_FAILED`) |
+| `503` | Service Unavailable | Google OAuth provider not configured/unhealthy (`OAUTH_PROVIDER_NOT_CONFIGURED`) |
 
 ---
 
@@ -110,11 +114,14 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 
 | Code | Enum Value | Message | Cause | Resolution |
 |------|-----------|---------|-------|------------|
-| `AUTH_1001` | `INVALID_CREDENTIALS` | Invalid username or password | Wrong credentials on login | Verify username and password |
+| `AUTH_1001` | `INVALID_CREDENTIALS` | Invalid credentials | Wrong credentials on login or generic current-password denial on `/auth/password/change` | Verify credentials without branching on user/account state |
 | `AUTH_1002` | `SESSION_EXPIRED` | Invalid or expired access session | Access token expired, access session deleted, or access credential malformed | Call `/auth/refresh` with the current refresh token if available; otherwise re-authenticate |
 | `AUTH_1003` | `SESSION_INVALID` | Session is invalid | Token malformed or not found | Re-authenticate via login |
 | `AUTH_1004` | `TOKEN_INVALID` | Token invalid | JWT malformed or failed validation | Use a valid access/refresh token for the endpoint |
 | `AUTH_1005` | `ACCOUNT_INACTIVE` | Account is inactive | User status is `inactive` | Contact admin to reactivate |
+| `AUTH_1010` | `API_KEY_INVALID` | Invalid API key | `X-API-Key` malformed, fails HMAC verification, or owner is inactive (raised via the API-key validation adapter/middleware) | Use a valid, active API key |
+| `AUTH_1011` | `API_KEY_EXPIRED` | API key has expired | Key's `expires_at` has elapsed | Rotate or recreate the API key |
+| `AUTH_1012` | `API_KEY_REVOKED` | API key has been revoked | Key was revoked by owner/admin | Create a new key |
 | `AUTH_1013` | `REFRESH_TOKEN_INVALID` | Invalid refresh token | Refresh token malformed, missing Redis family/token record, hash mismatch, or otherwise not valid/current | Re-authenticate via login |
 | `AUTH_1014` | `REFRESH_TOKEN_MISSING` | Refresh token required | `/auth/refresh` called without `refresh_token` cookie/body | Send a valid refresh token or log in again |
 | `AUTH_1015` | `REFRESH_TOKEN_REUSED` | Refresh token reused | Old/used refresh token presented again; family revoked | Clear credentials and force re-login |
@@ -148,7 +155,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `VAL_3004` | `INVALID_UUID` | Invalid UUID | UUID format is invalid | Verify UUID format |
 | `VAL_3005` | `INVALID_EMAIL` | Invalid email | Email format is invalid | Use a valid email address |
 | `VAL_3006` | `INVALID_USERNAME` | Invalid username | Username format is invalid | Check username constraints |
-| `VAL_3007` | `WEAK_PASSWORD` | Weak password | Password does not meet complexity rules | **Note**: This code is defined in the enum but never raised by the API. Client-side validation only. |
+| `VAL_3007` | `WEAK_PASSWORD` | Weak password | Shared server-side password policy rejected a password-setting request | Show safe `reason_codes` / `min_length`; never echo the submitted password |
 | `VAL_3008` | `INVALID_DATE` | Invalid date | Date format is invalid | Use valid date format |
 | `VAL_3009` | `INVALID_RANGE` | Invalid range | Value is out of allowed range | Check range constraints (e.g., limit 1-1000, days 1-365) |
 | `VAL_3010` | `INVALID_LENGTH` | Invalid length | Value length is invalid | Check length constraints |
@@ -168,6 +175,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `NF_4007` | `ROLE_NOT_FOUND` | Role not found | Role hash does not exist | Verify role hash |
 | `NF_4008` | `ENDPOINT_NOT_FOUND` | Endpoint not found | Route does not exist | Check API documentation |
 | `NF_4009` | `USER_TYPE_NOT_FOUND` | User type not found | User type does not exist | Use valid user type (root, admin, consumer) |
+| `NF_4010` | `API_KEY_NOT_FOUND` | API key not found | API key id/public id does not exist or is not owned by the caller | Verify the key id; list your keys via `GET /users/api-keys` |
 
 ### Conflict Errors (409)
 
@@ -199,16 +207,86 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `INT_7002` | `CONFIGURATION_ERROR` | Configuration error | Invalid or missing configuration | Check environment variables |
 | `INT_7003` | `SERVICE_UNAVAILABLE` | Service unavailable | Dependent service is down | Check service health |
 | `INT_7004` | `TIMEOUT` | Request timeout | Operation timed out | Check network and service performance |
-| `INT_7005` | `RATE_LIMIT_EXCEEDED` | Rate limit exceeded | Too many requests | Wait and retry (not currently enforced by API) |
+| `INT_7005` | `RATE_LIMIT_EXCEEDED` | Rate limit exceeded | Email send/resend/consume/login/change-password buckets exceeded | Wait and retry after the `Retry-After` header |
 | `INT_7006` | `FEATURE_NOT_IMPLEMENTED` | Feature not implemented | Endpoint is a reserved stub | Do not call; reserved for future use (`PATCH /projects/{hash}/owner`, `PATCH /projects/{hash}/archive`) |
 
-### External Service Errors (500)
+### External Service Errors (`EXT_8xxx`, category `external`)
 
-| Code | Enum Value | Message | Cause | Resolution |
-|------|-----------|---------|-------|------------|
-| `EXT_8001` | `EXTERNAL_SERVICE_ERROR` | External service error | Third-party service failure | Check external service status |
-| `EXT_8002` | `EXTERNAL_API_ERROR` | External API error | Third-party API returned error | Check external API documentation |
-| `EXT_8003` | `EXTERNAL_TIMEOUT` | External service timeout | Third-party service timed out | Check external service performance |
+Generic third-party failures default to `500`; the Google OAuth / external-identity flows in this family carry their own HTTP status (see the status column).
+
+| Code | Enum Value | HTTP | Notes |
+|------|-----------|------|-------|
+| `EXT_8001` | `EXTERNAL_SERVICE_ERROR` | 500 | Generic third-party service failure |
+| `EXT_8002` | `EXTERNAL_API_ERROR` | 500 | Third-party API returned an error |
+| `EXT_8003` | `EXTERNAL_TIMEOUT` | 500 | Third-party service timed out |
+
+#### Google OAuth / External Identity (`EXT_80xx`)
+
+These power the `/auth/google/*` flows. Public messages are intentionally neutral (e.g. "OAuth authentication could not be completed.") and never reveal which check failed; the codes below are for operators/clients reading the `error.code`. Full per-endpoint behavior lives in the [Google OAuth Suite](google-oauth/README.md).
+
+| Code | Enum Value | HTTP | Meaning |
+|------|-----------|------|---------|
+| `EXT_8010` | `OAUTH_PROVIDER_NOT_CONFIGURED` | 503 | Provider prerequisites missing/unhealthy |
+| `EXT_8011` | `OAUTH_PROVIDER_DISABLED` | 403 (start) / 404 (map default) | OAuth disabled by config |
+| `EXT_8012` | `OAUTH_PROVIDER_INIT_INVALID` | 401 | Opaque provider-init token invalid |
+| `EXT_8013` | `OAUTH_REDIRECT_URI_NOT_ALLOWED` | 400 | Return/redirect URI not allow-listed |
+| `EXT_8014` | `OAUTH_STATE_INVALID` | 401 | Missing/invalid state token |
+| `EXT_8015` | `OAUTH_STATE_EXPIRED` | 401 | State token expired |
+| `EXT_8016` | `OAUTH_STATE_REUSED` | 401 | State token already consumed |
+| `EXT_8017` | `OAUTH_NONCE_MISMATCH` | 401 | ID-token nonce mismatch |
+| `EXT_8018` | `OAUTH_CODE_EXCHANGE_FAILED` | 502 | Authorization-code exchange with Google failed |
+| `EXT_8019` | `OAUTH_ID_TOKEN_INVALID` | 401 | ID token missing/invalid/unverifiable claims |
+| `EXT_8020` | `OAUTH_ISSUER_MISMATCH` | 401 | ID-token issuer not allowed |
+| `EXT_8021` | `OAUTH_AUDIENCE_MISMATCH` | 401 | ID-token audience mismatch |
+| `EXT_8022` | `OAUTH_TOKEN_EXPIRED` | 401 | ID/access token expired |
+| `EXT_8023` | `OAUTH_WORKSPACE_DENIED` | 401 | Workspace/`hd` domain not permitted |
+| `EXT_8024` | `OAUTH_PROVISIONING_DENIED` | 401 | Provisioning mode forbids this action |
+| `EXT_8025` | `OAUTH_PROJECT_ACCESS_DENIED` | 403 | Resolved identity has no access to the project |
+| `EXT_8026` | `EXTERNAL_IDENTITY_ALREADY_LINKED` | 409 | Reserved/latent — defined but not currently emitted |
+| `EXT_8027` | `EXTERNAL_IDENTITY_SUB_CONFLICT` | 409 | Google `sub` already maps to a different account (broad link/finish failure) |
+| `EXT_8028` | `EXTERNAL_IDENTITY_NOT_LINKED` | 404 | Unlink/reauth on an account with no linked identity |
+| `EXT_8029` | `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` | 409 | Cannot unlink the only credential without setting a password first |
+| `EXT_8030` | `OAUTH_RATE_LIMITED` | 429 | OAuth rate limit hit; honor `Retry-After` |
+
+### Email / Transactional Auth Email Errors
+
+Email-specific codes are reserved in the `EMAIL_9xxx` range. Public email flows intentionally avoid detailed user-visible outcomes to prevent enumeration.
+
+| Code | Enum Value | Public posture | Notes |
+|------|-----------|----------------|-------|
+| `EMAIL_9001` | `EMAIL_DELIVERY_DISABLED` | Operator-facing/sanitized | Delivery is disabled by config; accepted API requests may still keep durable rows for later inspection. |
+| `EMAIL_9002` | `EMAIL_PROVIDER_NOT_READY` | Operator-facing/sanitized | Provider prerequisites are missing or unhealthy. |
+| `EMAIL_9003` | `EMAIL_REAL_SEND_BLOCKED_IN_TEST` | Test/operator-facing | No-real-send guard blocked real provider use in tests. |
+| `EMAIL_9004` | `EMAIL_TOKEN_INVALID` | Generic `202` on public consume flows | Token malformed/unknown/invalid; public flows must not reveal which. |
+| `EMAIL_9005` | `EMAIL_IDEMPOTENCY_CONFLICT` | Sanitized/generic | Same `Idempotency-Key` was reused with different request semantics. |
+| `EMAIL_9006` | `EMAIL_SUPPRESSED` | Sanitized/operator-facing | Recipient hash is suppressed because of bounce/complaint/compliance state. |
+| `EMAIL_9007` | `EMAIL_WEBHOOK_INVALID` | `400` for webhook caller | Missing/invalid Svix signature or rejected webhook payload; no mutation should happen. |
+| `EMAIL_9008` | `EMAIL_OUTBOX_FAILURE` | Sanitized/operator-facing | Durable outbox/claim/finalize failure. |
+| `EMAIL_9009` | `EMAIL_PROVIDER_SEND_FAILED` | Sanitized/operator-facing | Provider send failed; no raw provider payload should be exposed. |
+| `EMAIL_9010` | `EMAIL_TEMPLATE_INVALID` | Sanitized/operator-facing | Transactional template/render failure. |
+
+Public email endpoints return generic `202` when syntactically processable:
+
+- `POST /auth/email/verify`
+- `POST /auth/password/forgot`
+- `POST /auth/password/reset`
+- authenticated add/resend email routes
+
+`429 RATE_LIMIT_EXCEEDED` with `Retry-After` is the intended public exception.
+
+### Password and Recovery Error Details
+
+Password-setting and recovery surfaces use sanitized, non-enumerating errors:
+
+| Surface | Public code/status | Safe client behavior |
+|---------|--------------------|----------------------|
+| Weak registration/reset/change password | `VAL_3007` / 400 | Read `details.reason_codes` and `details.min_length`; do not expect the submitted password, denylist contents, hashes, token secrets, full links, or provider payloads. |
+| Wrong current password on `/auth/password/change` | `AUTH_1001` / 401 | Show generic invalid-credentials copy; do not distinguish wrong password from account/session state. |
+| Profile password mutation | `VAL_3001` / 400 | Use `POST /auth/password/change`; profile updates are for non-password fields only. |
+| Change-password rate limit | `INT_7005` / 429 | Honor `Retry-After`; no credential or session success side effect occurred. |
+| Unsupported bulk/admin password-control field | `VAL_3001` / 400 | Do not send `force_password_reset`; use reset-link recovery or `/auth/password/change`. |
+
+Safe weak-password `reason_codes` currently include `too_short`, `common_password`, `obvious_identifier_derivation`, and `repeated_or_sequential`. These are categories, not leaked password material.
 
 ### Other Codes Defined but Not Currently Raised
 
@@ -216,11 +294,12 @@ The following codes exist in the `ErrorCode` enum but are **not currently raised
 
 | Code | Enum Value | Notes |
 |------|-----------|-------|
+| `AUTH_1006` | `ACCOUNT_LOCKED` | Defined but not used (no account-lockout flow) |
 | `AUTH_1007` | `PASSWORD_RESET_REQUIRED` | Defined but not used |
 | `AUTH_1008` | `MFA_REQUIRED` | Defined but not used (MFA not implemented) |
 | `AUTH_1009` | `MFA_INVALID` | Defined but not used (MFA not implemented) |
-| `VAL_3007` | `WEAK_PASSWORD` | Defined but not used — API has no server-side password validation |
 | `INT_7003` | `SERVICE_UNAVAILABLE` | Defined but not used |
+| `EXT_8026` | `EXTERNAL_IDENTITY_ALREADY_LINKED` | Reserved/latent — defined and mapped (409) but not currently emitted by any route |
 
 ### Known Route References to Missing Enum Members
 
@@ -375,6 +454,35 @@ Once an account is inactive, deleted, or bulk-deactivated, old access and refres
 
 This is an operator/configuration issue. Set `JWT_SECRET_KEY` outside explicit tests; the service no longer uses a silent random runtime fallback.
 
+### Email Flow Returns 202 But Nothing Happens
+
+This is expected public posture. `202` means the request was accepted for processing, not that an email/account/token exists.
+
+Checklist:
+
+1. For forgot/reset/verify, do not reveal state to the user.
+2. Check `/system/health` email components as an operator.
+3. Inspect `/admin/email/logs` as admin/root for masked/hash delivery state.
+4. If `429`, wait for `Retry-After` before retrying.
+5. Never log or paste activation/reset full links or token secrets.
+
+### Google OAuth Flow Fails
+
+**Symptoms**: an `EXT_80xx` code in `error.code` with a neutral message such as "OAuth authentication could not be completed."
+
+The public message is deliberately generic and does **not** reveal which check failed. Read `error.code` to triage:
+
+| If you see | Likely cause | Action |
+|------------|--------------|--------|
+| `OAUTH_PROVIDER_DISABLED` / `OAUTH_PROVIDER_NOT_CONFIGURED` | OAuth disabled or misconfigured | Operator: set/enable the `GOOGLE_OAUTH_*` config |
+| `OAUTH_STATE_INVALID` / `_EXPIRED` / `_REUSED` | Stale/replayed callback or back-button reuse | Restart the flow from `POST /auth/google/start` |
+| `OAUTH_ID_TOKEN_INVALID` / `_ISSUER_MISMATCH` / `_AUDIENCE_MISMATCH` | Token verification failed | Check client id/issuer config; retry a fresh sign-in |
+| `OAUTH_PROVISIONING_DENIED` / `OAUTH_PROJECT_ACCESS_DENIED` | Identity resolved but provisioning/project access not allowed | Verify provisioning mode and the user's group→project chain |
+| `EXTERNAL_IDENTITY_SUB_CONFLICT` (409) | Google account already maps to a different user | Sign in with the original account or unlink first |
+| `OAUTH_RATE_LIMITED` (429) | Too many OAuth attempts | Honor `Retry-After` |
+
+Full per-endpoint behavior is in the [Google OAuth Suite](google-oauth/README.md).
+
 ### Access Denied to Project
 
 **Symptoms**: `403 PROJECT_ACCESS_DENIED`
@@ -410,7 +518,9 @@ Look at the `category` field in the error response:
 | `not_found` | Resource does not exist |
 | `conflict` | Duplicate resource |
 | `database` | DB connectivity or query issues |
-| `internal` | Server-side bug |
+| `internal` | Server-side bug, rate limits, unimplemented stubs |
+| `external` | Google OAuth / external-identity flow failure (`EXT_8xxx`) |
+| `email` | Transactional email delivery/safety state (`EMAIL_9xxx`) |
 
 ### Step 2: Check DEBUG_MODE (development only)
 
@@ -471,8 +581,11 @@ curl -X POST "{BASE_URL}/system/cache/invalidate/user/$USER_HASH" \
 - [Authentication Usage Cases](authentication-usage-cases.md) — Auth flows and troubleshooting
 - [Client Authentication Guide](client-authentication-guide.md) — Error handling in client code
 - [Permission Resolution](permissions/resolution.md) — Permission resolution mechanics and the auth-vs-inspection gap
+- [Google OAuth Suite](google-oauth/README.md) — `EXT_8xxx` OAuth/external-identity error behavior
+- [API Keys Suite](api-keys/README.md) — API-key validation and `API_KEY_*` errors
+- [Email Suite](email/README.md) — `EMAIL_9xxx` codes and the generic-`202` public posture
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

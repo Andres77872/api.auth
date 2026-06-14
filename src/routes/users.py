@@ -19,10 +19,11 @@ Endpoints:
 
 import logging
 import json
+import secrets
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
@@ -36,10 +37,11 @@ from src.Util.log_context_models import LogContext, OperationMetadata
 from src.Util.activity_logger import ActivityType
 from src.Util.error_handler import (
     AuthorizationError, ValidationError, NotFoundError, InternalError,
-    ErrorCode, mask_uuid
+    ErrorCode, mask_uuid, create_profile_password_rejection_error
 )
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.db import (
+    db_email,
     get_user_by_hash, update_user,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users_with_access, count_users,
@@ -48,8 +50,25 @@ from src.Util.db import (
     get_user_type, get_project_by_hash, get_projects_for_user_group,
     update_user_type, get_project_by_id
 )
-from src.Util.password_generator import create_password_reset_data
-from src.Util.auth_lifecycle import revoke_user_auth_state
+from src.Util.auth_constants import EMAIL_RESEND_COOLDOWN_SECONDS
+from src.Util.auth_lifecycle import revoke_user_auth_state, revoke_user_auth_state_except_current
+from src.Util.email.rate_limit import EmailRateLimiter, RateLimitExceeded
+from src.Util.email.route_support import (
+    EmailIdempotencyPlan,
+    client_ip,
+    complete_idempotency,
+    forced_rate_limit_response_for_test,
+    generic_accepted_response,
+    hash_route_value,
+    idempotency_kwargs,
+    load_route_email_config,
+    make_link_token_and_payload,
+    prepare_idempotency,
+    rate_limited_response,
+    read_request_payload,
+    user_agent,
+)
+from src.Util.email.security import hash_email, mask_email, normalize_email
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -57,6 +76,184 @@ logger = logging.getLogger(__name__)
 # Initialize router and security
 router = APIRouter(prefix="/users", tags=["User Management"])
 security = HTTPBearerOrCookie()
+
+_PROFILE_PASSWORD_MUTATION_FIELDS = {
+    "password",
+    "current_password",
+    "new_password",
+    "password_confirmation",
+    "password_hash",
+}
+
+
+def _submitted_profile_password_field(payload: Dict[str, Any], password: Optional[str]) -> Optional[str]:
+    if password is not None:
+        return "password"
+    for field in _PROFILE_PASSWORD_MUTATION_FIELDS:
+        if field in payload:
+            return field
+    return None
+
+
+def _valid_email_address(value: str) -> bool:
+    normalized = normalize_email(value)
+    if not normalized or "@" not in normalized:
+        return False
+    local, domain = normalized.rsplit("@", 1)
+    return bool(local and domain and "." in domain)
+
+
+def _safe_prepare_email_idempotency(
+    *,
+    raw_key: str | None,
+    scope: str,
+    user_id: str | None,
+    recipient_hash: bytes | None,
+    body: dict[str, Any],
+    config,
+) -> EmailIdempotencyPlan:
+    try:
+        return prepare_idempotency(
+            raw_key=raw_key,
+            scope=scope,
+            user_id=user_id,
+            recipient_hash=recipient_hash,
+            body=body,
+            config=config,
+        )
+    except Exception:
+        logger.warning("Email idempotency begin failed; continuing with generic route posture", exc_info=True)
+        return EmailIdempotencyPlan(raw_key=None, scope=scope)
+
+
+def _safe_complete_email_idempotency(plan: EmailIdempotencyPlan, *, email_message_id: str | None = None) -> None:
+    try:
+        complete_idempotency(plan, email_message_id=email_message_id)
+    except Exception:
+        logger.warning("Email idempotency complete failed", exc_info=True)
+
+
+def _new_email_token_id() -> str:
+    return f"elt-{secrets.token_hex(16)}"
+
+
+def _new_email_message_id() -> str:
+    return f"em-{secrets.token_hex(16)}"
+
+
+def _check_email_send_rate_limit(*, request: Request, purpose: str, recipient_hash_hex_value: str, user_id: str | None = None):
+    forced = forced_rate_limit_response_for_test(request)
+    if forced is not None:
+        return forced
+    try:
+        EmailRateLimiter().check_send_request(
+            purpose=purpose,
+            recipient_hash=recipient_hash_hex_value,
+            user_id=user_id,
+            ip_address=client_ip(request),
+        )
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+    return None
+
+
+def _check_resend_cooldown(*, recipient_hash_hex_value: str, purpose: str):
+    try:
+        EmailRateLimiter().check_resend_cooldown(recipient_hash_hex_value, purpose)
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+    return None
+
+
+def _mark_resend_sent(*, recipient_hash_hex_value: str, purpose: str) -> None:
+    try:
+        EmailRateLimiter().mark_resend_sent(recipient_hash_hex_value, purpose)
+    except Exception:
+        logger.debug("Unable to mark email resend cooldown", exc_info=True)
+
+
+def _safe_log_email_activity(
+    *,
+    user_id: str | None,
+    activity_type: ActivityType,
+    details: dict[str, Any],
+    request: Request | None,
+    target_user_id: str | None = None,
+) -> None:
+    try:
+        from src.Util.activity_logger import ActivityLogger
+
+        ActivityLogger.log_activity(
+            user_id=user_id,
+            activity_type=activity_type.value,
+            details=details,
+            target_user_id=target_user_id,
+            ip_address=client_ip(request),
+            user_agent=user_agent(request),
+        )
+    except Exception:
+        logger.debug("Email activity log failed", exc_info=True)
+
+
+def _current_user_from_context(log_context: LogContext):
+    return handle_db_operation(
+        lambda: get_user_by_hash(log_context.user_hash),
+        error_context="current user lookup",
+        not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}",
+    )
+
+
+def _require_admin_or_root(current_user) -> bool:
+    is_root = is_root_user(current_user.id)
+    user_type = get_user_type(current_user.id)
+    if not is_root and user_type != "admin":
+        raise AuthorizationError(
+            message="Admin or root access required",
+            error_code=ErrorCode.ACCESS_DENIED,
+        )
+    return is_root
+
+
+def _owner_email_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "email": row.get("email_normalized"),
+        "email_masked": row.get("email_masked") or mask_email(row.get("email_normalized") or ""),
+        "status": row.get("status"),
+        "is_primary": bool(row.get("is_primary")),
+        "added_at": row.get("added_at"),
+        "activated_at": row.get("activated_at"),
+        "removed_at": row.get("removed_at"),
+        "last_activation_sent_at": row.get("last_activation_sent_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _admin_email_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "user_id": row.get("user_id"),
+        "email_hash": row.get("email_hash"),
+        "email_masked": row.get("email_masked"),
+        "status": row.get("status"),
+        "is_primary": bool(row.get("is_primary")),
+        "added_at": row.get("added_at"),
+        "activated_at": row.get("activated_at"),
+        "removed_at": row.get("removed_at"),
+        "last_activation_sent_at": row.get("last_activation_sent_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _revoke_other_sessions_for_email_change(user_id: str, credentials: HTTPAuthorizationCredentials, reason: str) -> None:
+    try:
+        revoke_user_auth_state_except_current(
+            user_id,
+            current_access_token=credentials.credentials if credentials else None,
+            reason=reason,
+        )
+    except Exception:
+        logger.warning("Email identity session revocation failed", exc_info=True)
 
 
 @router.get("/profile", response_model=UserProfileResponse)
@@ -141,6 +338,7 @@ async def get_user_profile(
     log_success=True
 )
 async def update_user_profile(
+        request: Request,
         username: Optional[str] = Form(None),
         email: Optional[str] = Form(None),
         password: Optional[str] = Form(None),
@@ -158,6 +356,11 @@ async def update_user_profile(
     Returns:
         Updated user profile
     """
+    payload = await read_request_payload(request)
+    password_field = _submitted_profile_password_field(payload, password)
+    if password_field is not None:
+        raise create_profile_password_rejection_error(password_field)
+
     # Get current user
     current_user = handle_db_operation(
         lambda: get_user_by_hash(log_context.user_hash),
@@ -169,7 +372,6 @@ async def update_user_profile(
     changes = {}
     if username: changes['username'] = username
     if email: changes['email'] = email
-    if password: changes['password'] = '***'
 
     # Update user
     updated_user = handle_db_operation(
@@ -177,7 +379,7 @@ async def update_user_profile(
             current_user.id,
             username=username,
             email=email,
-            password=password
+            password=None
         ),
         error_context="user profile update"
     )
@@ -483,6 +685,338 @@ async def list_all_users(
     )
 
 
+@router.get("/me/emails")
+@log_and_handle_errors(
+    operation_name="list_current_user_emails",
+    activity_type=None,
+    log_success=False,
+)
+async def list_current_user_emails(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+) -> Dict[str, Any]:
+    """List the authenticated user's authoritative email states."""
+
+    rows = db_email.list_user_emails(log_context.user_id)
+    return {
+        "success": True,
+        "emails": [_owner_email_row(row) for row in rows],
+    }
+
+
+@router.post("/me/emails")
+@log_and_handle_errors(
+    operation_name="add_current_user_email",
+    activity_type=ActivityType.USER_EMAIL_ACTIVATION_REQUESTED,
+    log_success=True,
+)
+async def add_current_user_email(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+):
+    """Add/reuse a pending email row and enqueue an activation link."""
+
+    payload = await read_request_payload(request)
+    raw_email = str(payload.get("email") or "").strip()
+    if not _valid_email_address(raw_email):
+        raise ValidationError(
+            message="A valid email is required",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={"field": "email"},
+        )
+
+    config = load_route_email_config()
+    normalized = normalize_email(raw_email)
+    recipient_hash = hash_email(normalized, pepper=config.hash_pepper_bytes)
+    recipient_hash_hex_value = recipient_hash.hex()
+
+    limited = _check_email_send_rate_limit(
+        request=request,
+        purpose="email_activation",
+        recipient_hash_hex_value=recipient_hash_hex_value,
+        user_id=log_context.user_id,
+    )
+    if limited is not None:
+        return limited
+
+    plan = _safe_prepare_email_idempotency(
+        raw_key=request.headers.get("idempotency-key"),
+        scope="users.me.emails.add",
+        user_id=log_context.user_id,
+        recipient_hash=recipient_hash,
+        body={"email": normalized, "purpose": "email_activation"},
+        config=config,
+    )
+    if plan.replay_response is not None:
+        return plan.replay_response
+
+    generated, render_payload = make_link_token_and_payload(
+        purpose="email_activation",
+        config=config,
+        request=request,
+        recipient_email=normalized,
+        recipient_masked=mask_email(normalized),
+    )
+    email_message_id = _new_email_message_id()
+    row = None
+    try:
+        row = db_email.add_user_email_and_enqueue(
+            user_email_id=f"uem-{secrets.token_hex(16)}",
+            user_id=log_context.user_id,
+            email_normalized=normalized,
+            email_hash=recipient_hash,
+            email_masked=mask_email(normalized),
+            token_id=_new_email_token_id(),
+            lookup_id=generated.lookup_id,
+            token_hash=generated.token_hash,
+            token_fingerprint=generated.token_fingerprint,
+            token_expires_at=generated.expires_at,
+            email_message_id=email_message_id,
+            provider=config.provider,
+            provider_idempotency_key=f"email-activation-{generated.lookup_id}",
+            render_payload_ciphertext=render_payload,
+            created_by=log_context.user_id,
+            created_ip_hash=hash_route_value(client_ip(request), config),
+            **idempotency_kwargs(plan),
+        )
+    except Exception:
+        logger.warning("Add user email enqueue failed; returning generic accepted response", exc_info=True)
+
+    _safe_complete_email_idempotency(
+        plan,
+        email_message_id=(row or {}).get("email_message_id") or email_message_id,
+    )
+    return generic_accepted_response()
+
+
+@router.post("/me/emails/{email_id}/resend")
+@log_and_handle_errors(
+    operation_name="resend_current_user_email_activation",
+    activity_type=ActivityType.USER_EMAIL_ACTIVATION_RESENT,
+    log_success=True,
+)
+async def resend_current_user_email_activation(
+        email_id: str,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+):
+    """Resend activation for an owned pending email row with generic `202`."""
+
+    config = load_route_email_config()
+    recipient_hash = hash_route_value(f"{log_context.user_id}:{email_id}", config)
+    recipient_hash_hex_value = recipient_hash.hex() if recipient_hash else "unknown"
+    limited = _check_email_send_rate_limit(
+        request=request,
+        purpose="email_activation",
+        recipient_hash_hex_value=recipient_hash_hex_value,
+        user_id=log_context.user_id,
+    )
+    if limited is not None:
+        return limited
+    cooldown = _check_resend_cooldown(
+        recipient_hash_hex_value=recipient_hash_hex_value,
+        purpose="email_activation",
+    )
+    if cooldown is not None:
+        return cooldown
+
+    plan = _safe_prepare_email_idempotency(
+        raw_key=request.headers.get("idempotency-key"),
+        scope="users.me.emails.resend",
+        user_id=log_context.user_id,
+        recipient_hash=recipient_hash,
+        body={"email_id": email_id, "purpose": "email_activation"},
+        config=config,
+    )
+    if plan.replay_response is not None:
+        return plan.replay_response
+
+    generated, render_payload = make_link_token_and_payload(
+        purpose="email_activation",
+        config=config,
+        request=request,
+    )
+    email_message_id = _new_email_message_id()
+    row = None
+    try:
+        row = db_email.resend_user_email_activation(
+            user_id=log_context.user_id,
+            user_email_id=email_id,
+            token_id=_new_email_token_id(),
+            lookup_id=generated.lookup_id,
+            token_hash=generated.token_hash,
+            token_fingerprint=generated.token_fingerprint,
+            token_expires_at=generated.expires_at,
+            email_message_id=email_message_id,
+            provider=config.provider,
+            provider_idempotency_key=f"email-activation-resend-{generated.lookup_id}",
+            render_payload_ciphertext=render_payload,
+            created_ip_hash=hash_route_value(client_ip(request), config),
+            cooldown_seconds=EMAIL_RESEND_COOLDOWN_SECONDS,
+            **idempotency_kwargs(plan),
+        )
+    except Exception:
+        logger.warning("Resend activation enqueue failed; returning generic accepted response", exc_info=True)
+
+    if row and row.get("email_message_id"):
+        _mark_resend_sent(recipient_hash_hex_value=recipient_hash_hex_value, purpose="email_activation")
+    _safe_complete_email_idempotency(
+        plan,
+        email_message_id=(row or {}).get("email_message_id") or email_message_id,
+    )
+    return generic_accepted_response()
+
+
+@router.delete("/me/emails/{email_id}")
+@log_and_handle_errors(
+    operation_name="remove_current_user_email",
+    activity_type=ActivityType.USER_EMAIL_REMOVED,
+    log_success=True,
+)
+async def remove_current_user_email(
+        email_id: str,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+) -> Dict[str, Any]:
+    row = db_email.remove_user_email(
+        user_id=log_context.user_id,
+        user_email_id=email_id,
+        removed_by=log_context.user_id,
+    )
+    _revoke_other_sessions_for_email_change(log_context.user_id, credentials, "email_removed")
+    return {
+        "success": True,
+        "message": "Email removed successfully",
+        "email_id": email_id,
+        "new_primary_email_id": (row or {}).get("new_primary_email_id"),
+    }
+
+
+@router.post("/me/emails/{email_id}/primary")
+@log_and_handle_errors(
+    operation_name="set_current_user_primary_email",
+    activity_type=ActivityType.USER_EMAIL_PRIMARY_CHANGED,
+    log_success=True,
+)
+async def set_current_user_primary_email(
+        email_id: str,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+) -> Dict[str, Any]:
+    row = db_email.set_primary_user_email(
+        user_id=log_context.user_id,
+        user_email_id=email_id,
+    )
+    _revoke_other_sessions_for_email_change(log_context.user_id, credentials, "email_primary_changed")
+    return {
+        "success": True,
+        "message": "Primary email updated successfully",
+        "email_id": email_id,
+        "status": (row or {}).get("lifecycle_status", "primary_changed"),
+    }
+
+
+@router.get("/{user_hash}/emails")
+@log_and_handle_errors(
+    operation_name="admin_list_user_emails",
+    activity_type=None,
+    log_success=False,
+)
+async def admin_list_user_emails(
+        user_hash: str,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+) -> Dict[str, Any]:
+    current_user = _current_user_from_context(log_context)
+    _require_admin_or_root(current_user)
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash),
+        error_context="target user email lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}",
+    )
+    rows = db_email.list_admin_user_emails(target_user.id)
+    return {
+        "success": True,
+        "user_hash": target_user.user_hash,
+        "emails": [_admin_email_row(row) for row in rows],
+    }
+
+
+@router.post("/{user_hash}/emails/{email_id}/resend")
+@log_and_handle_errors(
+    operation_name="admin_resend_user_email_activation",
+    activity_type=ActivityType.USER_EMAIL_ACTIVATION_RESENT,
+    log_success=True,
+)
+async def admin_resend_user_email_activation(
+        user_hash: str,
+        email_id: str,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context = None,
+):
+    current_user = _current_user_from_context(log_context)
+    _require_admin_or_root(current_user)
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash),
+        error_context="target user email resend lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}",
+    )
+
+    config = load_route_email_config()
+    recipient_hash = hash_route_value(f"{target_user.id}:{email_id}", config)
+    recipient_hash_hex_value = recipient_hash.hex() if recipient_hash else "unknown"
+    limited = _check_email_send_rate_limit(
+        request=request,
+        purpose="email_activation",
+        recipient_hash_hex_value=recipient_hash_hex_value,
+        user_id=current_user.id,
+    )
+    if limited is not None:
+        return limited
+    cooldown = _check_resend_cooldown(
+        recipient_hash_hex_value=recipient_hash_hex_value,
+        purpose="email_activation",
+    )
+    if cooldown is not None:
+        return cooldown
+
+    generated, render_payload = make_link_token_and_payload(
+        purpose="email_activation",
+        config=config,
+        request=request,
+    )
+    row = None
+    try:
+        row = db_email.resend_user_email_activation(
+            user_id=target_user.id,
+            user_email_id=email_id,
+            token_id=_new_email_token_id(),
+            lookup_id=generated.lookup_id,
+            token_hash=generated.token_hash,
+            token_fingerprint=generated.token_fingerprint,
+            token_expires_at=generated.expires_at,
+            email_message_id=_new_email_message_id(),
+            provider=config.provider,
+            provider_idempotency_key=f"admin-email-resend-{generated.lookup_id}",
+            render_payload_ciphertext=render_payload,
+            created_ip_hash=hash_route_value(client_ip(request), config),
+            cooldown_seconds=EMAIL_RESEND_COOLDOWN_SECONDS,
+        )
+    except Exception:
+        logger.warning("Admin email activation resend failed; returning generic accepted response", exc_info=True)
+
+    if row and row.get("email_message_id"):
+        _mark_resend_sent(recipient_hash_hex_value=recipient_hash_hex_value, purpose="email_activation")
+    return generic_accepted_response()
+
+
 @router.get("/{user_hash}", response_model=GetUserDetailsResponse)
 @log_and_handle_errors(
     operation_name="get_user_details",
@@ -774,11 +1308,12 @@ async def update_user_status(
 )
 async def reset_user_password(
         user_hash: str,
+        request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Reset user's password and generate temporary password.
+    Accept an admin-triggered secure password reset link request.
     
     **Admin access required**: Only admin users can reset passwords.
     **Phase 2 Implementation**: Admin password reset functionality
@@ -787,7 +1322,8 @@ async def reset_user_password(
         user_hash: Hash of the user whose password to reset
         
     Returns:
-        Temporary password and reset instructions
+        Reset-link acceptance metadata without plaintext password, full email,
+        reset URL, token, or provider payload.
     """
     # Get current user
     current_user = handle_db_operation(
@@ -820,22 +1356,54 @@ async def reset_user_password(
             error_code=ErrorCode.INVALID_INPUT
         )
 
-    # Generate password reset data (includes temporary password)
-    reset_data = create_password_reset_data(target_user.id)
-    temp_password = reset_data["temporary_password"]
+    # The shared assert_password_policy(...) gate is enforced when this
+    # admin_password_reset link is consumed by /auth/password/reset; this
+    # request only queues a hash-only reset link and never sets a password.
 
-    # Update user's password in database
-    success = handle_db_operation(
-        lambda: update_user(target_user.id, password=temp_password),
-        error_context="password reset"
+    config = load_route_email_config()
+    recipient_hash = hash_route_value(target_user.id, config)
+    limited = _check_email_send_rate_limit(
+        request=request,
+        purpose="admin_password_reset",
+        recipient_hash_hex_value=recipient_hash.hex() if recipient_hash else "unknown",
+        user_id=current_user.id,
+    )
+    if limited is not None:
+        return limited
+
+    generated, render_payload = make_link_token_and_payload(
+        purpose="admin_password_reset",
+        config=config,
+        request=request,
+    )
+    email_message_id = _new_email_message_id()
+    row = db_email.enqueue_admin_password_reset_link(
+        target_user_id=target_user.id,
+        created_by=current_user.id,
+        token_id=_new_email_token_id(),
+        lookup_id=generated.lookup_id,
+        token_hash=generated.token_hash,
+        token_fingerprint=generated.token_fingerprint,
+        token_expires_at=generated.expires_at,
+        email_message_id=email_message_id,
+        provider=config.provider,
+        provider_idempotency_key=f"admin-password-reset-{generated.lookup_id}",
+        render_payload_ciphertext=render_payload,
+        created_ip_hash=hash_route_value(client_ip(request), config),
     )
 
-    if not success:
-        from src.Util.error_handler import InternalError
-        raise InternalError(
-            message="Failed to reset password",
-            error_code=ErrorCode.INTERNAL_ERROR
-        )
+    _safe_log_email_activity(
+        user_id=current_user.id,
+        activity_type=ActivityType.ADMIN_PASSWORD_RESET_REQUESTED,
+        details={
+            "action": "admin_password_reset_requested",
+            "target_user_hash": target_user.user_hash,
+            "email_message_id": (row or {}).get("email_message_id"),
+            "has_delivery_target": bool((row or {}).get("user_email_id")),
+        },
+        request=request,
+        target_user_id=target_user.id,
+    )
 
     # Log the activity
     log_operation_details(
@@ -854,17 +1422,17 @@ async def reset_user_password(
 
     return {
         "success": True,
-        "message": "Password reset successfully",
+        "message": "Password reset link request accepted",
         "user": {
             "user_hash": target_user.user_hash,
             "username": target_user.username,
-            "email": target_user.email
         },
         "reset_data": {
-            "expires_at": reset_data["expires_at"],
-            "must_change_on_login": True
+            "expires_at": generated.expires_at.isoformat(),
+            "delivery_status": "accepted",
+            "has_delivery_target": bool((row or {}).get("user_email_id")),
         },
-        "instructions": "User must change password on next login. Temporary password was delivered out-of-band."
+        "instructions": "If the target user has an activated email, a secure reset link was queued for delivery."
     }
 
 

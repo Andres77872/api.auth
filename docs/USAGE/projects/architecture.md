@@ -148,7 +148,7 @@ Project deletion is implemented as soft delete:
 - linked `project_group_members` rows are deactivated
 - active `user_sessions` for that project are invalidated
 
-Archive is a separate concept in the schema (`archived`, `archived_at`, `archived_by`), but the public archive endpoint is still a stub.
+Archive is a separate concept in the schema (`archived`, `archived_at`, `archived_by`). The archive **enforcement** is live — archived projects are excluded from authorization workflows in the DB/auth layer (see the caveat below) — but the public `PATCH /projects/{hash}/archive` **toggle endpoint** is still a `501` stub.
 
 ---
 
@@ -156,8 +156,10 @@ Archive is a separate concept in the schema (`archived`, `archived_at`, `archive
 
 ### Two public project endpoints are stubs
 
-- `PATCH /projects/{hash}/owner` → 501
-- `PATCH /projects/{hash}/archive` → 501
+- `PATCH /projects/{hash}/owner` → 501 (validates session/`admin`/project/`new_owner_hash`, then raises `FeatureNotImplementedError`)
+- `PATCH /projects/{hash}/archive` → 501 (validates session/`admin`/project, then raises `FeatureNotImplementedError`)
+
+Important nuance for the archive stub: commit `4e6e5de` added `sp_archive_project` / `sp_unarchive_project` (`schemas/stored_procedures/03_projects.sql`) and wired archived-project **exclusion** into the auth/DB layer (logins, API keys, project tokens, session validation, and `v_user_project_access` all skip archived projects). However that commit did **not** modify `src/routes/projects.py` — the `PATCH /archive` route still does **not** call those procedures and remains a `501` stub. So the database knows how to archive and enforces archive at auth time, but there is no live API route that flips the `archived` flag.
 
 ### `access_level` uses honest path-based labels (fixed)
 
@@ -196,5 +198,5 @@ The SQL layer returns fields like `owner_id` and `archived`, but the Python `Pro
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

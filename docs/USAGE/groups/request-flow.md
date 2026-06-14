@@ -98,13 +98,15 @@ This means project onboarding already assumes the group bridge architecture.
 Flow for `DELETE /admin/user-groups/{hash}`:
 
 1. The route resolves the group
-2. `db_user_groups.py:delete_user_group()` executes
-3. Stored procedure `sp_delete_user_group` deactivates:
+2. It snapshots the impacted users (`get_users_in_group`) and projects (`get_projects_for_user_group`) **before** deletion
+3. `db_user_groups.py:delete_user_group()` executes
+4. Stored procedure `sp_delete_user_group` deactivates:
    - the user group
    - its memberships
    - its project-group access links
+5. On success, `auth_lifecycle.py:revoke_project_sessions_losing_access(..., reason="user_group_deleted")` revokes the snapshotted users' live sessions for the impacted projects
 
-So deleting a user group is effectively a membership and access teardown, not just a name cleanup.
+So deleting a user group is effectively a membership, access, **and live-session** teardown, not just a name cleanup. The revoke / project-group delete / project-removal routes follow the same snapshot-then-revoke pattern with reasons `user_group_project_group_access_revoked`, `project_group_deleted`, and `project_removed_from_group` respectively.
 
 ---
 
@@ -136,5 +138,5 @@ That is the real runtime data flow behind “user can access this project”.
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 3.0
+**Last Updated**: June 2026  
+**Document Version**: 3.1

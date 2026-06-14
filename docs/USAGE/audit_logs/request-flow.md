@@ -192,6 +192,33 @@ GET /admin/audit/statistics
 
 ---
 
+## Flow 7: Email Delivery Log Query
+
+```
+GET /admin/email/logs
+  └─► _check_admin_access() — root or admin only
+  │
+  ├─► db_email.list_email_delivery_logs(limit, offset, status, purpose, provider)
+  │     └─► Inline SELECT (no stored procedure):
+  │           SELECT id, user_id, user_email_id, purpose, template_code,
+  │                  HEX(recipient_hash) AS recipient_hash, recipient_masked,
+  │                  provider, provider_message_id, status, priority,
+  │                  attempt_count, max_attempts, next_attempt_at, sent_at,
+  │                  terminal_at, last_error_code, created_at, updated_at
+  │           FROM email_messages
+  │           [WHERE status=? AND purpose=? AND provider=?]   -- only present filters
+  │           ORDER BY created_at DESC
+  │           LIMIT ? OFFSET ?
+  │
+  └─► Return: { success, logs[], pagination, filters, generated_at }
+        └─► pagination.has_more = (len(logs) == limit)   -- page-fill heuristic, NO count query
+        └─► pagination.next_offset = offset + limit if has_more else null
+```
+
+**Key detail:** this flow has **no count query**. `has_more` is derived purely from whether the returned page is full (`len(logs) == limit`), so an exactly-full final page reports `has_more: true` even though the next page is empty. The query selects only redacted columns — the plaintext recipient, body, template variables, and provider payloads in `email_messages` are never read.
+
+---
+
 ## Related Documentation
 
 - **[Audit Logs Overview](README.md)**
@@ -203,5 +230,5 @@ GET /admin/audit/statistics
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

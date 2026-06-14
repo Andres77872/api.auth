@@ -17,11 +17,13 @@ from dbutils.persistent_db import PersistentDB
 logger = logging.getLogger(__name__)
 
 
-def _require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if value is None or not str(value).strip():
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+def _require_env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return value
+    joined_names = " or ".join(names)
+    raise RuntimeError(f"Missing required environment variable: {joined_names}")
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -39,7 +41,7 @@ CONNECTION_CONFIG = {
     "host": _require_env("DB_HOST"),
     "port": _get_int_env("DB_PORT", 3306),
     "user": _require_env("DB_USER"),
-    "password": _require_env("DB_MYSQL_PASSWORD"),
+    "password": _require_env("DB_MYSQL_PASSWORD", "DB_PASSWORD"),
     "database": _require_env("DB_NAME"),
     "charset": "utf8mb4",
     "autocommit": False,

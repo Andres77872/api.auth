@@ -26,10 +26,39 @@ DELIMITER $$
 DROP PROCEDURE IF EXISTS sp_user_login$$
 CREATE PROCEDURE sp_user_login(IN p_username_email VARCHAR(255))
 BEGIN
+    DECLARE v_resolved_user_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_identifier_normalized VARCHAR(255);
+
+    SET v_identifier_normalized = LOWER(TRIM(p_username_email));
+
+    -- Username resolution remains first so an email-shaped username cannot be
+    -- shadowed by another account's activated email identity.
+    SELECT id
+      INTO v_resolved_user_id
+    FROM users
+    WHERE is_active = 1
+      AND username = p_username_email
+    LIMIT 1;
+
+    -- Email login uses user_emails only. Legacy users.email is a compatibility
+    -- shadow and must not grant login by itself.
+    IF v_resolved_user_id IS NULL THEN
+        SELECT u.id
+          INTO v_resolved_user_id
+        FROM user_emails ue
+        JOIN users u ON u.id = ue.user_id
+        WHERE u.is_active = 1
+          AND ue.status = 'activated'
+          AND ue.removed_at IS NULL
+          AND ue.email_normalized = v_identifier_normalized
+        ORDER BY ue.is_primary DESC, ue.activated_at ASC, ue.added_at ASC
+        LIMIT 1;
+    END IF;
+
     SELECT id, user_hash, username, email, password_hash, user_type, role_id, created_at, last_login, is_active
     FROM users
-    WHERE is_active = 1 AND (username = p_username_email OR email = p_username_email)
-    LIMIT 1;
+    WHERE id = v_resolved_user_id
+      AND is_active = 1;
 END$$
 
 DROP PROCEDURE IF EXISTS sp_update_last_login$$
@@ -70,6 +99,8 @@ END$$
 DROP PROCEDURE IF EXISTS sp_check_username_email_available$$
 CREATE PROCEDURE sp_check_username_email_available(IN p_username_or_email VARCHAR(255))
 BEGIN
+    -- Compatibility inventory only. Email activation/reset flows must use
+    -- user_emails lifecycle procedures instead of this availability oracle.
     SELECT COUNT(*) as count FROM users
     WHERE (username = p_username_or_email OR email = p_username_or_email) AND is_active = 1;
 END$$
@@ -156,6 +187,23 @@ CREATE PROCEDURE sp_update_password_hash(IN p_user_id VARCHAR(64), IN p_new_pass
 BEGIN
     UPDATE users SET password_hash = p_new_password_hash, updated_at = NOW() WHERE id = p_user_id;
     SELECT ROW_COUNT() as rows_affected;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_change_user_password_if_hash_matches$$
+CREATE PROCEDURE sp_change_user_password_if_hash_matches(
+    IN p_user_id VARCHAR(64),
+    IN p_expected_password_hash VARCHAR(255),
+    IN p_new_password_hash VARCHAR(255)
+)
+BEGIN
+    UPDATE users
+    SET password_hash = p_new_password_hash,
+        updated_at = NOW()
+    WHERE id = p_user_id
+      AND is_active = TRUE
+      AND password_hash = p_expected_password_hash;
+
+    SELECT ROW_COUNT() AS rows_affected;
 END$$
 
 -- ===================================================================================

@@ -36,6 +36,7 @@ from src.Util.auth_constants import (
     REFRESH_FAMILY_TTL_SECONDS,
     REFRESH_TOKEN_PREFIX,
     REFRESH_USED_PREFIX,
+    REMEMBER_ME_REFRESH_TTL_SECONDS,
     REVOKED_FAMILY_PREFIX,
     SESSION_FULL_PREFIX,
     SESSION_PREFIX,
@@ -103,9 +104,46 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def compute_refresh_expires_at(now: Optional[datetime] = None) -> datetime:
+def compute_refresh_expires_at(
+    now: Optional[datetime] = None,
+    ttl_seconds: int = REFRESH_FAMILY_TTL_SECONDS,
+) -> datetime:
     base = now or _utc_now()
-    return base + timedelta(seconds=REFRESH_FAMILY_TTL_SECONDS)
+    return base + timedelta(seconds=ttl_seconds)
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _seconds_until(value: Any, now: Optional[datetime] = None) -> int:
+    expires_at = _parse_datetime(value)
+    if expires_at is None:
+        return 0
+    current = now or _utc_now()
+    return max(0, int((expires_at - current).total_seconds()))
+
+
+def _cache_ttl_for_family(family: Optional[Dict[str, Any]]) -> int:
+    if not family:
+        return REFRESH_FAMILY_TTL_SECONDS
+    if family.get("remember_me"):
+        return max(1, _seconds_until(family.get("absolute_expires_at") or family.get("expires_at")))
+    return int(family.get("refresh_ttl_seconds") or REFRESH_FAMILY_TTL_SECONDS)
 
 
 def hash_refresh_token(refresh_token: str) -> str:
@@ -194,6 +232,9 @@ def _build_refresh_anchor_payload(
         "created_at": created_at,
         "updated_at": updated_at,
         "expires_at": family_payload.get("expires_at"),
+        "remember_me": bool(family_payload.get("remember_me") or session_payload.get("remember_me", False)),
+        "refresh_ttl_seconds": family_payload.get("refresh_ttl_seconds") or session_payload.get("refresh_ttl_seconds"),
+        "absolute_expires_at": family_payload.get("absolute_expires_at") or session_payload.get("absolute_expires_at"),
     }
 
 
@@ -261,6 +302,9 @@ def _anchor_to_session_seed(
         "project_name": anchor.get("project_name") if scope == AUTH_SCOPE_PROJECT else None,
         "issued_at": anchor.get("updated_at") or anchor.get("created_at"),
         "expires_at": None,
+        "remember_me": bool(anchor.get("remember_me", False)),
+        "refresh_ttl_seconds": anchor.get("refresh_ttl_seconds"),
+        "absolute_expires_at": anchor.get("absolute_expires_at"),
     }
 
 
@@ -309,6 +353,9 @@ def _legacy_family_claims_seed(family: Dict[str, Any], claims: Dict[str, Any]) -
         "project_name": None,
         "issued_at": family.get("updated_at") or family.get("created_at"),
         "expires_at": None,
+        "remember_me": bool(family.get("remember_me", False)),
+        "refresh_ttl_seconds": family.get("refresh_ttl_seconds"),
+        "absolute_expires_at": family.get("absolute_expires_at"),
     }
 
 
@@ -555,7 +602,7 @@ def reconstruct_auth_context(
     )
 
 
-def _build_cookie_metadata() -> Dict[str, Dict[str, Any]]:
+def _build_cookie_metadata(refresh_max_age: int = REFRESH_FAMILY_TTL_SECONDS) -> Dict[str, Dict[str, Any]]:
     access_ttl = int(JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     return {
         "access": {
@@ -569,7 +616,7 @@ def _build_cookie_metadata() -> Dict[str, Dict[str, Any]]:
         "refresh": {
             "name": REFRESH_COOKIE_NAME,
             "path": REFRESH_COOKIE_PATH,
-            "max_age": REFRESH_FAMILY_TTL_SECONDS,
+            "max_age": refresh_max_age,
             "httponly": COOKIE_HTTPONLY,
             "secure": COOKIE_SECURE,
             "samesite": COOKIE_SAMESITE,
@@ -586,13 +633,20 @@ def _issue_token_pair(
     permissions: Optional[List[str]] = None,
     groups: Optional[List[str]] = None,
     group_ids: Optional[List[str]] = None,
+    remember_me: bool = False,
+    refresh_ttl_seconds: Optional[int] = None,
 ) -> TokenPair:
     user_data = _as_mapping(user)
     project_data = _as_mapping(project)
     now = _utc_now()
     access_ttl = int(JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     access_expires_at = now + timedelta(seconds=access_ttl)
-    refresh_expires_at = compute_refresh_expires_at(now)
+    effective_refresh_ttl = int(
+        refresh_ttl_seconds
+        or (REMEMBER_ME_REFRESH_TTL_SECONDS if remember_me else REFRESH_FAMILY_TTL_SECONDS)
+    )
+    refresh_expires_at = compute_refresh_expires_at(now, effective_refresh_ttl)
+    absolute_expires_at = refresh_expires_at.isoformat() if remember_me else None
 
     family_id = str(uuid4())
     session_id = str(uuid4())
@@ -614,6 +668,7 @@ def _issue_token_pair(
         scope=scope,
         jti=refresh_jti,
         family_id=family_id,
+        expires_delta=timedelta(seconds=effective_refresh_ttl),
     )
     access_claims = JWTTokenHandler.decode_access_token(access_token)
     refresh_claims = JWTTokenHandler.decode_refresh_token(refresh_token)
@@ -638,6 +693,9 @@ def _issue_token_pair(
         "user_group_names": groups or [],
         "issued_at": now.isoformat(),
         "expires_at": access_expires_at.isoformat(),
+        "remember_me": bool(remember_me),
+        "refresh_ttl_seconds": effective_refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
     }
     family_payload = {
         "family_id": family_id,
@@ -652,6 +710,9 @@ def _issue_token_pair(
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
         "expires_at": refresh_expires_at.isoformat(),
+        "remember_me": bool(remember_me),
+        "refresh_ttl_seconds": effective_refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
         "revoked_at": None,
         "revocation_reason": None,
     }
@@ -666,6 +727,9 @@ def _issue_token_pair(
         "issued_at": now.isoformat(),
         "used_at": None,
         "expires_at": refresh_expires_at.isoformat(),
+        "remember_me": bool(remember_me),
+        "refresh_ttl_seconds": effective_refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
     }
     anchor_payload = _build_refresh_anchor_payload(
         session_payload=session_payload,
@@ -673,14 +737,14 @@ def _issue_token_pair(
     )
 
     _set_json(f"{SESSION_PREFIX}{access_jti}", session_payload, access_ttl)
-    _set_json(f"{REFRESH_FAMILY_PREFIX}{family_id}", family_payload, REFRESH_FAMILY_TTL_SECONDS)
-    _set_json(f"{REFRESH_TOKEN_PREFIX}{refresh_jti}", refresh_payload, REFRESH_FAMILY_TTL_SECONDS)
-    _set_json(_refresh_anchor_key(family_id), anchor_payload, REFRESH_FAMILY_TTL_SECONDS)
+    _set_json(f"{REFRESH_FAMILY_PREFIX}{family_id}", family_payload, effective_refresh_ttl)
+    _set_json(f"{REFRESH_TOKEN_PREFIX}{refresh_jti}", refresh_payload, effective_refresh_ttl)
+    _set_json(_refresh_anchor_key(family_id), anchor_payload, effective_refresh_ttl)
     redis_client.sadd(f"{USER_SESSIONS_PREFIX}{user_data.get('id')}", access_jti)
-    redis_client.expire(f"{USER_SESSIONS_PREFIX}{user_data.get('id')}", REFRESH_FAMILY_TTL_SECONDS)
+    redis_client.expire(f"{USER_SESSIONS_PREFIX}{user_data.get('id')}", effective_refresh_ttl)
     redis_client.sadd(f"{USER_REFRESH_FAMILIES_PREFIX}{user_data.get('id')}", family_id)
-    redis_client.expire(f"{USER_REFRESH_FAMILIES_PREFIX}{user_data.get('id')}", REFRESH_FAMILY_TTL_SECONDS)
-    redis_client.expire(f"{REFRESH_USED_PREFIX}{family_id}", REFRESH_FAMILY_TTL_SECONDS)
+    redis_client.expire(f"{USER_REFRESH_FAMILIES_PREFIX}{user_data.get('id')}", effective_refresh_ttl)
+    redis_client.expire(f"{REFRESH_USED_PREFIX}{family_id}", effective_refresh_ttl)
 
     return TokenPair(
         access_token=access_token,
@@ -688,12 +752,12 @@ def _issue_token_pair(
         session_token=access_token,
         token_type=TOKEN_TYPE_BEARER,
         expires_in=access_ttl,
-        refresh_expires_in=REFRESH_FAMILY_TTL_SECONDS,
+        refresh_expires_in=effective_refresh_ttl,
         expires_at=access_expires_at,
         refresh_expires_at=refresh_expires_at,
         access_claims=access_claims,
         refresh_claims=refresh_claims,
-        cookie_metadata=_build_cookie_metadata(),
+        cookie_metadata=_build_cookie_metadata(effective_refresh_ttl),
     )
 
 
@@ -704,6 +768,7 @@ def issue_project_token_pair(
     permissions: Optional[List[str]] = None,
     groups: Optional[List[str]] = None,
     group_ids: Optional[List[str]] = None,
+    remember_me: bool = False,
 ) -> TokenPair:
     project_data = _as_mapping(project)
     return _issue_token_pair(
@@ -714,6 +779,7 @@ def issue_project_token_pair(
         permissions=permissions,
         groups=groups,
         group_ids=group_ids,
+        remember_me=remember_me,
     )
 
 
@@ -722,6 +788,7 @@ def issue_platform_token_pair(
     user: Any,
     permissions: Optional[List[str]] = None,
     groups: Optional[List[str]] = None,
+    remember_me: bool = False,
 ) -> TokenPair:
     return _issue_token_pair(
         user=user,
@@ -730,6 +797,7 @@ def issue_platform_token_pair(
         collection=PLATFORM_COLLECTION_SENTINEL,
         permissions=permissions or [],
         groups=groups or [],
+        remember_me=remember_me,
     )
 
 
@@ -907,12 +975,25 @@ def _build_rotated_pair(
     *,
     refresh_claims: Dict[str, Any],
     old_session: Dict[str, Any],
+    family: Dict[str, Any],
     context: AuthContext,
 ) -> tuple[TokenPair, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     now = _utc_now()
     access_ttl = int(JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     access_expires_at = now + timedelta(seconds=access_ttl)
-    refresh_expires_at = compute_refresh_expires_at(now)
+    remember_me = bool(family.get("remember_me") or old_session.get("remember_me", False))
+    if remember_me:
+        refresh_expires_at = _parse_datetime(family.get("absolute_expires_at") or family.get("expires_at"))
+        if refresh_expires_at is None:
+            raise _auth_unauthorized("Refresh family expiry unavailable")
+        refresh_ttl = _seconds_until(refresh_expires_at, now)
+        if refresh_ttl <= 0:
+            raise _auth_unauthorized("Refresh family expired")
+        absolute_expires_at = refresh_expires_at.isoformat()
+    else:
+        refresh_ttl = int(family.get("refresh_ttl_seconds") or REFRESH_FAMILY_TTL_SECONDS)
+        refresh_expires_at = compute_refresh_expires_at(now, refresh_ttl)
+        absolute_expires_at = None
 
     family_id = str(refresh_claims["family_id"])
     session_id = str(refresh_claims["session_id"])
@@ -940,6 +1021,7 @@ def _build_rotated_pair(
         scope=scope,
         jti=refresh_jti,
         family_id=family_id,
+        expires_delta=timedelta(seconds=refresh_ttl),
     )
     access_claims = JWTTokenHandler.decode_access_token(access_token)
     new_refresh_claims = JWTTokenHandler.decode_refresh_token(refresh_token)
@@ -958,6 +1040,9 @@ def _build_rotated_pair(
         "user_group_names": list(context.groups),
         "issued_at": now.isoformat(),
         "expires_at": access_expires_at.isoformat(),
+        "remember_me": remember_me,
+        "refresh_ttl_seconds": refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
     })
     if scope == AUTH_SCOPE_PLATFORM:
         session_payload.update({
@@ -977,6 +1062,9 @@ def _build_rotated_pair(
         "current_access_jti": access_jti,
         "updated_at": now.isoformat(),
         "expires_at": refresh_expires_at.isoformat(),
+        "remember_me": remember_me,
+        "refresh_ttl_seconds": refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
         "scope": scope,
         "project_id": session_payload.get("project_id") if scope == AUTH_SCOPE_PROJECT else None,
         "project_hash": session_payload.get("project_hash") if scope == AUTH_SCOPE_PROJECT else None,
@@ -992,6 +1080,9 @@ def _build_rotated_pair(
         "issued_at": now.isoformat(),
         "used_at": None,
         "expires_at": refresh_expires_at.isoformat(),
+        "remember_me": remember_me,
+        "refresh_ttl_seconds": refresh_ttl,
+        "absolute_expires_at": absolute_expires_at,
     }
 
     return (
@@ -1001,12 +1092,12 @@ def _build_rotated_pair(
             session_token=access_token,
             token_type=TOKEN_TYPE_BEARER,
             expires_in=access_ttl,
-            refresh_expires_in=REFRESH_FAMILY_TTL_SECONDS,
+            refresh_expires_in=refresh_ttl,
             expires_at=access_expires_at,
             refresh_expires_at=refresh_expires_at,
             access_claims=access_claims,
             refresh_claims=new_refresh_claims,
-            cookie_metadata=_build_cookie_metadata(),
+            cookie_metadata=_build_cookie_metadata(refresh_ttl),
         ),
         session_payload,
         family_payload_updates,
@@ -1092,6 +1183,7 @@ def rotate_refresh_family(
     token_pair, new_session, family_updates, new_refresh_record = _build_rotated_pair(
         refresh_claims=claims,
         old_session=context_session,
+        family=family,
         context=context,
     )
     login_data = _login_from_context(token_pair.access_token, new_session, context)
@@ -1111,6 +1203,7 @@ def rotate_refresh_family(
 
     new_access_jti = token_pair.access_claims["jti"]
     new_refresh_jti = token_pair.refresh_claims["jti"]
+    refresh_cache_ttl = token_pair.refresh_expires_in
     user_id = new_session.get("user_id")
 
     try:
@@ -1133,19 +1226,19 @@ def rotate_refresh_family(
                 raise _auth_unauthorized("Refresh token reused or revoked")
 
             pipe.multi()
-            pipe.set(token_key, json.dumps(old_token_record, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
+            pipe.set(token_key, json.dumps(old_token_record, default=_json_default), ex=refresh_cache_ttl)
             pipe.sadd(used_key, refresh_jti)
-            pipe.expire(used_key, REFRESH_FAMILY_TTL_SECONDS)
-            pipe.set(f"{REFRESH_TOKEN_PREFIX}{new_refresh_jti}", json.dumps(new_refresh_record, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
-            pipe.set(family_key, json.dumps(new_family, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
+            pipe.expire(used_key, refresh_cache_ttl)
+            pipe.set(f"{REFRESH_TOKEN_PREFIX}{new_refresh_jti}", json.dumps(new_refresh_record, default=_json_default), ex=refresh_cache_ttl)
+            pipe.set(family_key, json.dumps(new_family, default=_json_default), ex=refresh_cache_ttl)
             pipe.set(f"{SESSION_PREFIX}{new_access_jti}", json.dumps(new_session, default=_json_default), ex=token_pair.expires_in)
-            pipe.set(anchor_key, json.dumps(new_anchor, default=_json_default), ex=REFRESH_FAMILY_TTL_SECONDS)
+            pipe.set(anchor_key, json.dumps(new_anchor, default=_json_default), ex=refresh_cache_ttl)
             pipe.delete(f"{SESSION_PREFIX}{old_access_jti}", f"{SESSION_FULL_PREFIX}{old_access_jti}")
             if user_id:
                 pipe.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", new_access_jti)
-                pipe.expire(f"{USER_SESSIONS_PREFIX}{user_id}", REFRESH_FAMILY_TTL_SECONDS)
+                pipe.expire(f"{USER_SESSIONS_PREFIX}{user_id}", refresh_cache_ttl)
                 pipe.sadd(f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}", family_id)
-                pipe.expire(f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}", REFRESH_FAMILY_TTL_SECONDS)
+                pipe.expire(f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}", refresh_cache_ttl)
             pipe.execute()
     except WatchError:
         classify_refresh_token_state(family_id, refresh_jti)
@@ -1237,11 +1330,12 @@ def revoke_refresh_family(family_id: str, reason: str = "revoked") -> None:
     now = _utc_now().isoformat()
     family_key = f"{REFRESH_FAMILY_PREFIX}{family_id}"
     family = _get_json(family_key) or {"family_id": family_id}
+    cache_ttl = _cache_ttl_for_family(family)
     family["status"] = "reused" if reason == "refresh_reuse" else "revoked"
     family["revoked_at"] = now
     family["revocation_reason"] = reason
-    _set_json(family_key, family, REFRESH_FAMILY_TTL_SECONDS)
-    _set_json(f"{REVOKED_FAMILY_PREFIX}{family_id}", {"family_id": family_id, "reason": reason, "revoked_at": now}, REFRESH_FAMILY_TTL_SECONDS)
+    _set_json(family_key, family, cache_ttl)
+    _set_json(f"{REVOKED_FAMILY_PREFIX}{family_id}", {"family_id": family_id, "reason": reason, "revoked_at": now}, cache_ttl)
     redis_client.delete(_refresh_anchor_key(family_id))
 
     access_jtis = set()
@@ -1282,3 +1376,95 @@ def revoke_user_auth_state(user_id: str, reason: str = "user_revoked") -> None:
     for family_id in _decode_set_members(redis_client.smembers(family_index_key)):
         revoke_refresh_family(family_id, reason=reason)
     redis_client.delete(session_key, family_index_key)
+
+
+def revoke_user_auth_state_except_current(
+    user_id: str,
+    *,
+    current_access_token: str | None = None,
+    current_access_jti: str | None = None,
+    current_family_id: str | None = None,
+    reason: str = "user_identity_changed",
+) -> RevocationSummary:
+    """Revoke a user's auth state while preserving the current session family.
+
+    Email activation/removal/primary-change requirements need two behaviors:
+    public token consumption revokes everything, while authenticated email
+    management revokes all *other* sessions and keeps the caller's current
+    session usable.  This helper is deliberately narrow and lives beside the
+    full `revoke_user_auth_state(...)` primitive instead of changing it.
+    """
+
+    summary = RevocationSummary()
+    if current_access_token and (not current_access_jti or not current_family_id):
+        try:
+            claims = JWTTokenHandler.decode_access_token(current_access_token)
+            current_access_jti = current_access_jti or str(claims.get("jti") or "") or None
+            current_family_id = current_family_id or str(claims.get("family_id") or "") or None
+        except Exception:
+            current_access_jti = current_access_jti or None
+            current_family_id = current_family_id or None
+
+    # If no current session can be proven, fall back to the existing full
+    # revocation behavior required by public activation/reset flows.
+    if not current_access_jti and not current_family_id:
+        revoke_user_auth_state(user_id, reason=reason)
+        return summary
+
+    session_index_key = f"{USER_SESSIONS_PREFIX}{user_id}"
+    family_index_key = f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}"
+    revoked_families: set[str] = set()
+
+    for access_jti in _decode_set_members(redis_client.smembers(session_index_key)):
+        summary.sessions_seen += 1
+        if current_access_jti and str(access_jti) == str(current_access_jti):
+            summary.sessions_preserved += 1
+            continue
+
+        session_payload = _get_json(f"{SESSION_PREFIX}{access_jti}")
+        if not session_payload:
+            summary.sessions_missing += 1
+            redis_client.srem(session_index_key, access_jti)
+            continue
+
+        family_id = session_payload.get("family_id")
+        if family_id and current_family_id and str(family_id) == str(current_family_id):
+            # Same refresh family as the current session. Keep the family so the
+            # caller can continue/refresh, but drop any stale sibling access JTI.
+            revoke_access_session(str(access_jti))
+            redis_client.srem(session_index_key, access_jti)
+            summary.sessions_revoked += 1
+            continue
+
+        if family_id:
+            family_key = str(family_id)
+            if family_key not in revoked_families:
+                revoke_refresh_family(family_key, reason=reason)
+                revoked_families.add(family_key)
+                redis_client.srem(family_index_key, family_key)
+                summary.families_revoked += 1
+            # Be defensive: family revocation should delete its current access
+            # session, but this helper is already iterating a concrete sibling
+            # access JTI. Delete it directly as well so incomplete/stale family
+            # metadata cannot leave an alternate session alive after a password
+            # change or email-identity mutation.
+            revoke_access_session(str(access_jti))
+        else:
+            revoke_access_session(str(access_jti))
+
+        redis_client.srem(session_index_key, access_jti)
+        summary.sessions_revoked += 1
+
+    for family_id in _decode_set_members(redis_client.smembers(family_index_key)):
+        family_key = str(family_id)
+        if current_family_id and family_key == str(current_family_id):
+            summary.sessions_preserved += 1
+            continue
+        if family_key in revoked_families:
+            continue
+        revoke_refresh_family(family_key, reason=reason)
+        revoked_families.add(family_key)
+        redis_client.srem(family_index_key, family_key)
+        summary.families_revoked += 1
+
+    return summary

@@ -15,7 +15,40 @@ The former monolith has been split into focused documents:
 - [reference.md](users/reference.md) — complete endpoint and query parameter reference
 - [troubleshooting.md](users/troubleshooting.md) — common failures, caveats, and best practices
 
+## Email Management Quick Reference
+
+Email is optional. Current-user email lifecycle endpoints are:
+
+- `GET /users/me/emails`
+- `POST /users/me/emails`
+- `POST /users/me/emails/{email_id}/resend`
+- `DELETE /users/me/emails/{email_id}`
+- `POST /users/me/emails/{email_id}/primary`
+
+Add/resend responses are generic `202`; `429 + Retry-After` means the client must back off. Removing or changing primary email revokes other sessions while preserving the current authenticated session when possible.
+
+Admin/root email endpoints are:
+
+- `GET /users/{user_hash}/emails`
+- `POST /users/{user_hash}/emails/{email_id}/resend`
+- `POST /users/{user_hash}/reset-password`
+
+Admin views expose masked/hash email fields only, never full recipient, token, activation/reset URL, body, or provider payload.
+
+Admin password reset no longer returns or generates a visible temporary password. It queues a reset-link email for the target's primary activated email when possible, returns a generic accepted posture, and exposes no reset token/link/full email in the response. If the target has no deliverable activated email, the route remains non-enumerating and records only safe audit metadata.
+
+Password-management compatibility rules:
+
+- Use `POST /auth/password/change` for authenticated self-service password changes; `PUT /users/profile` rejects password-equivalent fields with sanitized guidance.
+- Do not send `force_password_reset`; bulk/admin compatibility paths reject that dead field instead of pretending a forced login-gated workflow exists.
+- No `must_change_on_login` workflow exists in this change; admin reset remains reset-link based.
+
+Session side effects:
+
+- Authenticated current-user email removal/primary changes revoke other sessions while preserving the current session when possible.
+- Public activation/reset consumes create no session and revoke the target user's existing sessions only after an actual state change.
+
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026
 **Document Version**: 2.0

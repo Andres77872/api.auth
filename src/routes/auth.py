@@ -10,17 +10,18 @@ import time
 from typing import Optional, Any
 import json
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Response, Request
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
     LoginResponse, RegisterResponse, ValidateSessionResponse, ValidateApiKeyResponse,
     ApiKeyInfo, LogoutResponse, SwitchProjectResponse, CheckAvailabilityResponse,
-    UserInfo, ProjectInfo, UserGroupInfo,
+    UserInfo, ProjectInfo, UserGroupInfo, ChangePasswordRequest, ChangePasswordResponse,
 )
 from src.Util.Seccurity import HTTPBearerOrCookie, extract_refresh_token_from_request
 from src.Util.decorators import log_and_handle_errors, log_unauthenticated_operation
@@ -29,15 +30,18 @@ from src.Util.activity_logger import ActivityType
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError, NotFoundError,
     ConflictError, ErrorCode, create_not_found_error, create_validation_error,
-    mask_uuid
+    mask_uuid, create_invalid_current_password_error,
+    create_change_password_rate_limit_error, rate_limit_headers,
 )
 from src.Util.db_error_wrapper import handle_db_operation, validate_uuid_format
 from src.Util.db import (
+    db_email,
     check_username_email_available,
     get_user_by_hash,
     get_user_by_credentials,
     enhanced_register,
     get_user_group_by_hash,
+    change_user_password,
 )
 from src.Util.db.db_user_groups import get_projects_for_user_group
 
@@ -61,10 +65,31 @@ from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_groups_for_user, get_user_groups_in_project, get_user_groups_in_project_by_hash
 from src.Util.db.db_projects import get_project_by_hash
 from src.Util.db.db_users import check_admin_multi_project_access, get_admin_project_assignments_with_details
-from src.Util.auth_flow import resolve_target_project
-from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, validate_access_session
+from src.Util.auth_flow import require_recent_reauthentication, resolve_target_project
+from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, revoke_user_auth_state, revoke_user_auth_state_except_current, validate_access_session
 from src.Util.db.db_enhanced import validate_session as validate_enhanced_session
 from src.middleware.authentication import validate_api_key_context
+from src.Util.email.rate_limit import EmailRateLimiter, RateLimitExceeded
+from src.Util.email.route_support import (
+    EmailIdempotencyPlan,
+    client_ip,
+    complete_idempotency,
+    db_bool,
+    forced_rate_limit_response_for_test,
+    generic_accepted_response,
+    hash_route_value,
+    idempotency_kwargs,
+    load_route_email_config,
+    make_link_token_and_payload,
+    parse_presented_token,
+    prepare_idempotency,
+    rate_limited_response,
+    read_request_payload,
+    token_from_request_payload,
+    user_agent,
+)
+from src.Util.email.security import hash_link_token, normalize_email
+from src.Util.password_security import assert_password_policy, hash_password
 
 # ---------------------------------------------------------------------------
 # Session helpers (group-based, no user_projects table required)
@@ -93,6 +118,16 @@ def _get_session(token: str) -> Optional[dict]:
     if not raw:
         return None
     # Handle both bytes (default Redis) and str (decode_responses=True)
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return json.loads(raw)
+
+
+def _get_refresh_family(family_id: str) -> Optional[dict]:
+    """Fetch refresh family metadata from Redis."""
+    raw = redis_client.get(f"refresh_family:{family_id}")
+    if not raw:
+        return None
     if isinstance(raw, bytes):
         raw = raw.decode()
     return json.loads(raw)
@@ -395,6 +430,532 @@ def _registration_token_pair(register_result: Any):
         group_ids=group_ids,
     )
 
+
+def _safe_prepare_email_idempotency(
+    *,
+    raw_key: str | None,
+    scope: str,
+    user_id: str | None,
+    recipient_hash: bytes | None,
+    body: dict[str, Any],
+    config,
+) -> EmailIdempotencyPlan:
+    try:
+        return prepare_idempotency(
+            raw_key=raw_key,
+            scope=scope,
+            user_id=user_id,
+            recipient_hash=recipient_hash,
+            body=body,
+            config=config,
+        )
+    except Exception:
+        logger.warning("Email idempotency begin failed; continuing with generic route posture", exc_info=True)
+        return EmailIdempotencyPlan(raw_key=None, scope=scope)
+
+
+def _safe_complete_email_idempotency(plan: EmailIdempotencyPlan, *, email_message_id: str | None = None) -> None:
+    try:
+        complete_idempotency(plan, email_message_id=email_message_id)
+    except Exception:
+        logger.warning("Email idempotency complete failed", exc_info=True)
+
+
+def _safe_log_email_activity(
+    *,
+    user_id: str | None,
+    activity_type: ActivityType,
+    details: dict[str, Any],
+    request: Request | None,
+    target_user_id: str | None = None,
+) -> None:
+    try:
+        from src.Util.activity_logger import ActivityLogger
+
+        ActivityLogger.log_activity(
+            user_id=user_id,
+            activity_type=activity_type.value,
+            details=details,
+            target_user_id=target_user_id,
+            ip_address=client_ip(request),
+            user_agent=user_agent(request),
+        )
+    except Exception:
+        logger.debug("Email activity log failed", exc_info=True)
+
+
+def _check_email_send_rate_limit(*, request: Request, purpose: str, recipient_hash_hex_value: str, user_id: str | None = None):
+    forced = forced_rate_limit_response_for_test(request)
+    if forced is not None:
+        return forced
+    try:
+        EmailRateLimiter().check_send_request(
+            purpose=purpose,
+            recipient_hash=recipient_hash_hex_value,
+            user_id=user_id,
+            ip_address=client_ip(request),
+        )
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+    return None
+
+
+def _check_email_consume_rate_limit(*, request: Request, purpose: str, lookup_id: str):
+    forced = forced_rate_limit_response_for_test(request)
+    if forced is not None:
+        return forced
+    try:
+        EmailRateLimiter().check_consume_request(
+            purpose=purpose,
+            lookup_id=lookup_id,
+            ip_address=client_ip(request),
+        )
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+    return None
+
+
+def _check_login_identifier_rate_limit(request: Request | None, identifier: str):
+    if request is None:
+        return None
+    try:
+        EmailRateLimiter().check_login_identifier_allowed(client_ip(request), identifier)
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+    return None
+
+
+def _record_login_identifier_failure(request: Request | None, identifier: str) -> None:
+    if request is None:
+        return
+    try:
+        EmailRateLimiter().record_login_identifier_failure(client_ip(request), identifier)
+    except Exception:
+        logger.debug("Unable to record login identifier failure", exc_info=True)
+
+
+def _change_password_rate_limited_response(exc: RateLimitExceeded) -> JSONResponse:
+    retry_after = max(1, int(getattr(exc, "retry_after", 1) or 1))
+    error = create_change_password_rate_limit_error(
+        retry_after,
+        details={"bucket": str(getattr(exc, "bucket", "change_password"))},
+    )
+    return JSONResponse(
+        status_code=429,
+        headers=rate_limit_headers(retry_after),
+        content=error.to_dict(),
+    )
+
+
+def _check_change_password_attempt_rate_limit(
+    *,
+    request: Request,
+    user_id: str,
+    session_id: str | None,
+) -> JSONResponse | None:
+    try:
+        EmailRateLimiter().check_change_password_attempt(
+            user_id=user_id,
+            session_id=session_id,
+            ip_address=client_ip(request),
+        )
+    except RateLimitExceeded as exc:
+        return _change_password_rate_limited_response(exc)
+    return None
+
+
+def _record_change_password_failure(*, request: Request, user_id: str) -> None:
+    try:
+        EmailRateLimiter().record_change_password_failure(
+            user_id=user_id,
+            ip_address=client_ip(request),
+        )
+    except Exception:
+        logger.debug("Unable to record change-password failure bucket", exc_info=True)
+
+
+def _decode_current_password_change_claims(
+    credentials: HTTPAuthorizationCredentials,
+) -> tuple[dict[str, Any], str, str]:
+    try:
+        claims = JWTTokenHandler.decode_access_token(credentials.credentials)
+    except HTTPException as exc:
+        raise AuthenticationError(
+            message=str(exc.detail),
+            error_code=ErrorCode.SESSION_INVALID,
+        )
+
+    current_access_jti = str(claims.get("jti") or "")
+    current_family_id = str(claims.get("family_id") or "")
+    if not current_access_jti or not current_family_id:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID,
+        )
+
+    return claims, current_access_jti, current_family_id
+
+
+def _record_auth_email_login_if_applicable(user_record: Any, identifier: str, request: Request | None) -> None:
+    if "@" not in str(identifier or ""):
+        return
+    _safe_log_email_activity(
+        user_id=getattr(user_record, "id", None),
+        activity_type=ActivityType.AUTH_EMAIL_LOGIN,
+        details={"identifier_type": "activated_email", "action": "login"},
+        request=request,
+        target_user_id=getattr(user_record, "id", None),
+    )
+
+
+def _token_hash_for_presented_token(*, purpose: str, lookup_id: str, secret: str, config) -> bytes:
+    return hash_link_token(
+        purpose=purpose,
+        lookup_id=lookup_id,
+        secret=secret,
+        pepper=config.token_pepper_bytes,
+    )
+
+
+@router.post("/email/verify")
+@log_unauthenticated_operation(
+    operation_name="email_activation_verify",
+    activity_type=ActivityType.USER_EMAIL_ACTIVATED,
+    log_success=False,
+)
+async def verify_email_activation(
+    request: Request,
+    log_context = None,
+):
+    """Consume an email activation token with generic public `202` posture."""
+
+    payload = await read_request_payload(request)
+    token = token_from_request_payload(payload)
+    parsed = parse_presented_token(token)
+    if parsed is None:
+        return generic_accepted_response()
+
+    lookup_id, secret = parsed
+    limited = _check_email_consume_rate_limit(request=request, purpose="email_activation", lookup_id=lookup_id)
+    if limited is not None:
+        return limited
+
+    config = load_route_email_config()
+    lookup_hash = hash_route_value(lookup_id, config)
+    plan = _safe_prepare_email_idempotency(
+        raw_key=request.headers.get("idempotency-key"),
+        scope="auth.email.verify",
+        user_id=None,
+        recipient_hash=lookup_hash,
+        body={"lookup_id": lookup_id, "purpose": "email_activation"},
+        config=config,
+    )
+    if plan.replay_response is not None:
+        return plan.replay_response
+
+    row = None
+    try:
+        row = db_email.consume_email_activation_token(
+            lookup_id=lookup_id,
+            token_hash=_token_hash_for_presented_token(
+                purpose="email_activation",
+                lookup_id=lookup_id,
+                secret=secret,
+                config=config,
+            ),
+            consumed_ip_hash=hash_route_value(client_ip(request), config),
+            consumed_user_agent_hash=hash_route_value(user_agent(request), config),
+        )
+    except Exception:
+        logger.warning("Email activation consume failed; returning generic public response", exc_info=True)
+
+    if row and db_bool(row.get("identity_changed")) and row.get("user_id"):
+        revoke_user_auth_state(str(row["user_id"]), reason="email_activation")
+        _safe_log_email_activity(
+            user_id=str(row["user_id"]),
+            activity_type=ActivityType.USER_EMAIL_ACTIVATED,
+            details={"action": "email_activated", "user_email_id": row.get("user_email_id")},
+            request=request,
+            target_user_id=str(row["user_id"]),
+        )
+    elif row and str(row.get("consume_status") or "") in {"activation_conflict", "email_not_pending"}:
+        # Activation did not apply (e.g. the address is already activated to another
+        # account, or the email row is no longer pending). Preserve the generic 202
+        # public posture but record a non-PII forensic warning so conflicts and
+        # anomalies are observable instead of silently swallowed.
+        logger.warning(
+            "Email activation not applied: status=%s user_id=%s user_email_id=%s",
+            row.get("consume_status"),
+            row.get("user_id"),
+            row.get("user_email_id"),
+        )
+
+    _safe_complete_email_idempotency(plan, email_message_id=None)
+    return generic_accepted_response()
+
+
+@router.post("/password/forgot")
+@log_unauthenticated_operation(
+    operation_name="password_reset_request",
+    activity_type=ActivityType.PASSWORD_RESET_REQUESTED,
+    log_success=False,
+)
+async def forgot_password_link(
+    request: Request,
+    log_context = None,
+):
+    """Request a password reset link without disclosing account existence."""
+
+    payload = await read_request_payload(request)
+    identifier = str(
+        payload.get("email_or_username")
+        or payload.get("identifier")
+        or payload.get("email")
+        or payload.get("username")
+        or ""
+    ).strip()
+    if not identifier:
+        raise ValidationError(
+            message="email_or_username is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"missing_fields": ["email_or_username"]},
+        )
+
+    config = load_route_email_config()
+    recipient_hash = hash_route_value(normalize_email(identifier), config)
+    limited = _check_email_send_rate_limit(
+        request=request,
+        purpose="password_reset",
+        recipient_hash_hex_value=recipient_hash.hex() if recipient_hash else "unknown",
+        user_id=None,
+    )
+    if limited is not None:
+        return limited
+
+    plan = _safe_prepare_email_idempotency(
+        raw_key=request.headers.get("idempotency-key"),
+        scope="auth.password.forgot",
+        user_id=None,
+        recipient_hash=recipient_hash,
+        body={"identifier": normalize_email(identifier), "purpose": "password_reset"},
+        config=config,
+    )
+    if plan.replay_response is not None:
+        return plan.replay_response
+
+    generated, render_payload = make_link_token_and_payload(
+        purpose="password_reset",
+        config=config,
+        request=request,
+        recipient_email=identifier if "@" in identifier else None,
+    )
+    email_message_id = None
+    row = None
+    try:
+        row = db_email.enqueue_password_reset_link(
+            identifier=identifier,
+            token_id=f"elt-{secrets.token_hex(16)}",
+            lookup_id=generated.lookup_id,
+            token_hash=generated.token_hash,
+            token_fingerprint=generated.token_fingerprint,
+            token_expires_at=generated.expires_at,
+            email_message_id=f"em-{secrets.token_hex(16)}",
+            provider=config.provider,
+            provider_idempotency_key=f"password-reset-{generated.lookup_id}",
+            render_payload_ciphertext=render_payload,
+            created_ip_hash=hash_route_value(client_ip(request), config),
+            **idempotency_kwargs(plan),
+        )
+        email_message_id = row.get("email_message_id") if row else None
+    except Exception:
+        logger.warning("Password reset enqueue failed; returning generic public response", exc_info=True)
+
+    if row and row.get("user_id"):
+        _safe_log_email_activity(
+            user_id=str(row["user_id"]),
+            activity_type=ActivityType.PASSWORD_RESET_REQUESTED,
+            details={"action": "password_reset_requested", "email_message_id": email_message_id},
+            request=request,
+            target_user_id=str(row["user_id"]),
+        )
+    _safe_complete_email_idempotency(plan, email_message_id=email_message_id)
+    return generic_accepted_response()
+
+
+@router.post("/password/reset")
+@log_unauthenticated_operation(
+    operation_name="password_reset_consume",
+    activity_type=ActivityType.PASSWORD_RESET_CONSUMED,
+    log_success=False,
+)
+async def reset_password_with_link(
+    request: Request,
+    log_context = None,
+):
+    """Consume a password reset token, update password, and create no session."""
+
+    payload = await read_request_payload(request)
+    new_password = str(payload.get("new_password") or payload.get("password") or "")
+    if not new_password:
+        raise ValidationError(
+            message="new_password is required",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"missing_fields": ["new_password"]},
+        )
+    assert_password_policy(new_password)
+
+    token = token_from_request_payload(payload)
+    parsed = parse_presented_token(token)
+    if parsed is None:
+        return generic_accepted_response()
+
+    lookup_id, secret = parsed
+    limited = _check_email_consume_rate_limit(request=request, purpose="password_reset", lookup_id=lookup_id)
+    if limited is not None:
+        return limited
+
+    config = load_route_email_config()
+    lookup_hash = hash_route_value(lookup_id, config)
+    password_binding_hash = hash_route_value(new_password, config)
+    plan = _safe_prepare_email_idempotency(
+        raw_key=request.headers.get("idempotency-key"),
+        scope="auth.password.reset",
+        user_id=None,
+        recipient_hash=lookup_hash,
+        body={
+            "lookup_id": lookup_id,
+            "purpose": "password_reset",
+            "new_password_hash": password_binding_hash.hex() if password_binding_hash else None,
+        },
+        config=config,
+    )
+    if plan.replay_response is not None:
+        return plan.replay_response
+
+    new_password_hash = hash_password(new_password)
+    row = None
+    for purpose in ("password_reset", "admin_password_reset"):
+        try:
+            row = db_email.consume_password_reset_token(
+                lookup_id=lookup_id,
+                token_hash=_token_hash_for_presented_token(
+                    purpose=purpose,
+                    lookup_id=lookup_id,
+                    secret=secret,
+                    config=config,
+                ),
+                new_password_hash=new_password_hash,
+                consumed_ip_hash=hash_route_value(client_ip(request), config),
+                consumed_user_agent_hash=hash_route_value(user_agent(request), config),
+            )
+        except Exception:
+            logger.warning("Password reset consume failed; returning generic public response", exc_info=True)
+            row = None
+            break
+        if row and db_bool(row.get("password_changed")):
+            break
+
+    if row and db_bool(row.get("password_changed")) and row.get("user_id"):
+        revoke_user_auth_state(str(row["user_id"]), reason="password_reset")
+        _safe_log_email_activity(
+            user_id=str(row["user_id"]),
+            activity_type=ActivityType.PASSWORD_RESET_CONSUMED,
+            details={"action": "password_reset_consumed"},
+            request=request,
+            target_user_id=str(row["user_id"]),
+        )
+
+    _safe_complete_email_idempotency(plan, email_message_id=None)
+    return generic_accepted_response()
+
+
+@router.post("/password/change", response_model=ChangePasswordResponse)
+@log_and_handle_errors(
+    operation_name="change_password",
+    activity_type=None,
+    log_success=False,
+)
+async def change_password(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None,
+) -> ChangePasswordResponse:
+    """Change the authenticated user's password without issuing a new session."""
+
+    payload = await read_request_payload(request)
+    missing_fields = []
+    if not payload.get("current_password"):
+        missing_fields.append("current_password")
+    if not payload.get("new_password"):
+        missing_fields.append("new_password")
+    if missing_fields:
+        raise ValidationError(
+            message="Required fields are missing",
+            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
+            details={"missing_fields": missing_fields},
+        )
+
+    change_request = ChangePasswordRequest(
+        current_password=str(payload["current_password"]),
+        new_password=str(payload["new_password"]),
+    )
+    assert_password_policy(
+        change_request.new_password,
+        username=getattr(log_context, "username", None),
+    )
+
+    claims, current_access_jti, current_family_id = _decode_current_password_change_claims(credentials)
+    rate_limited = _check_change_password_attempt_rate_limit(
+        request=request,
+        user_id=str(log_context.user_id),
+        session_id=str(claims.get("session_id") or current_access_jti),
+    )
+    if rate_limited is not None:
+        return rate_limited
+
+    try:
+        result = change_user_password(
+            user_id=str(log_context.user_id),
+            current_password=change_request.current_password,
+            new_password=change_request.new_password,
+            username=getattr(log_context, "username", None),
+        )
+    except AuthenticationError:
+        _record_change_password_failure(request=request, user_id=str(log_context.user_id))
+        raise
+
+    if not result or not result.get("password_changed"):
+        raise create_invalid_current_password_error()
+
+    require_recent_reauthentication(
+        user_id=str(log_context.user_id),
+        session_token=credentials.credentials,
+        session_id=str(claims.get("session_id") or current_access_jti),
+        operation="password_change",
+        credential_proof_present=True,
+    )
+
+    revocation_summary = revoke_user_auth_state_except_current(
+        str(log_context.user_id),
+        current_access_jti=current_access_jti,
+        current_family_id=current_family_id,
+        reason="password_change",
+    )
+    _safe_log_email_activity(
+        user_id=str(log_context.user_id),
+        activity_type=ActivityType.PASSWORD_CHANGED,
+        details={
+            "action": "password_changed",
+            "sessions_revoked": getattr(revocation_summary, "sessions_revoked", 0),
+            "families_revoked": getattr(revocation_summary, "families_revoked", 0),
+            "sessions_preserved": getattr(revocation_summary, "sessions_preserved", 0),
+        },
+        request=request,
+        target_user_id=str(log_context.user_id),
+    )
+
+    return ChangePasswordResponse(success=True, message="Password changed successfully")
+
 # ---------------------------------------------------------------------------
 
 @router.post("/login", response_model=LoginResponse)
@@ -407,6 +968,7 @@ async def login(
         response: Response,
         username: str = Form(...),
         password: str = Form(...),
+        remember_me: bool = Form(False),
         project_hash: Optional[str] = Form(
             None,
             description="Required for all users. Root users bypass group-based access validation and may access any project by role.",
@@ -431,6 +993,10 @@ async def login(
             details={"missing_fields": ["username", "password"]}
         )
 
+    limited = _check_login_identifier_rate_limit(request, username)
+    if limited is not None:
+        return limited
+
     # Step 1: verify credentials (username or email)
     user_record = handle_db_operation(
         lambda: get_user_by_credentials(username, password),
@@ -438,11 +1004,14 @@ async def login(
     )
     
     if not user_record:
+        _record_login_identifier_failure(request, username)
         raise AuthenticationError(
             message="Invalid username or password",
             error_code=ErrorCode.INVALID_CREDENTIALS,
             details={"username": username}
         )
+
+    _record_auth_email_login_if_applicable(user_record, username, request)
 
     # ------------------------------------------------------------------
     # ALL users MUST provide a project_hash
@@ -477,6 +1046,7 @@ async def login(
             project=target_project,
             permissions=["admin", "global_admin", "unrestricted_access"],
             groups=["root_users"],
+            remember_me=remember_me,
         )
         _set_token_pair_cookies(response, token_pair)
 
@@ -544,6 +1114,7 @@ async def login(
             permissions=["admin", "project_admin", "manage_users", "manage_groups", "manage_permissions"],
             groups=["project_admins"],
             group_ids=[],
+            remember_me=remember_me,
         )
         _set_token_pair_cookies(response, token_pair)
 
@@ -626,6 +1197,7 @@ async def login(
         permissions=session_permissions,
         groups=session_groups,
         group_ids=session_group_ids,
+        remember_me=remember_me,
     )
     _set_token_pair_cookies(response, token_pair)
 
@@ -663,6 +1235,7 @@ async def platform_login(
         response: Response,
         username: str = Form(...),
         password: str = Form(...),
+        remember_me: bool = Form(False),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
 ) -> LoginResponse:
@@ -674,17 +1247,24 @@ async def platform_login(
             details={"missing_fields": ["username", "password"]}
         )
 
+    limited = _check_login_identifier_rate_limit(request, username)
+    if limited is not None:
+        return limited
+
     user_record = handle_db_operation(
         lambda: get_user_by_credentials(username, password),
         error_context="platform user authentication"
     )
 
     if not user_record:
+        _record_login_identifier_failure(request, username)
         raise AuthenticationError(
             message="Invalid username or password",
             error_code=ErrorCode.INVALID_CREDENTIALS,
             details={"username": username}
         )
+
+    _record_auth_email_login_if_applicable(user_record, username, request)
 
     if user_record.user_type not in {"root", "admin"}:
         raise AuthorizationError(
@@ -704,6 +1284,7 @@ async def platform_login(
         user=user_record,
         permissions=permissions,
         groups=groups,
+        remember_me=remember_me,
     )
     _set_token_pair_cookies(response, token_pair)
 
@@ -770,6 +1351,8 @@ async def register(
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
             details={"missing_fields": missing_fields}
         )
+
+    assert_password_policy(password, username=username, email=email)
 
     # Check if username/email is available
     username_available = handle_db_operation(
@@ -920,6 +1503,12 @@ async def validate_user_session(
             project_info = None
 
         user_group_names = list(login_data.groups or [])
+        access_claims = JWTTokenHandler.decode_access_token(session_token)
+        refresh_family = _get_refresh_family(str(access_claims["family_id"])) or {}
+        access_expires_at = datetime.fromtimestamp(
+            int(access_claims["exp"]),
+            timezone.utc,
+        ).isoformat()
 
         duration_ms = (time.monotonic() - _t_start) * 1000
         if response is not None:
@@ -929,7 +1518,13 @@ async def validate_user_session(
             valid=True,
             user=user_info,
             project=project_info,
-            session={"created_at": None, "scope": login_data.scope or "project"},
+            session={
+                "created_at": None,
+                "scope": login_data.scope or "project",
+                "expires_at": access_expires_at,
+                "refresh_expires_at": refresh_family.get("absolute_expires_at") or refresh_family.get("expires_at"),
+                "remember_me": bool(refresh_family.get("remember_me", False)),
+            },
             user_groups=user_group_names,
         )
     except Exception:
@@ -1126,6 +1721,13 @@ async def switch_project(
             message=str(exc.detail),
             error_code=ErrorCode.SESSION_INVALID
         )
+
+    require_recent_reauthentication(
+        user_id=str(current_session.user_id),
+        session_token=session_token,
+        session_id=str(access_claims.get("session_id") or access_claims.get("jti") or ""),
+        operation="switch_project",
+    )
 
     # Validate desired project exists & user has access
     new_project = get_project_by_hash(project_hash)

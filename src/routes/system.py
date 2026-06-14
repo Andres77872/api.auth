@@ -22,6 +22,7 @@ from src.Util.activity_logger import ActivityType
 from src.Util.error_handler import AuthorizationError, ErrorCode, mask_uuid
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.cache_manager import cache_manager
+from src.Util.system_metrics import SystemMetrics
 from src.Util.db import (
     count_users, count_projects, count_user_groups,
     count_project_permission_groups, validate_session, is_root_user, get_user_type
@@ -161,6 +162,19 @@ async def system_health() -> HealthCheckResponse:
     else:
         components["group_system"] = {"status": "unhealthy", "message": "Group system check failed"}
         status = "degraded"
+
+    # Email delivery health is additive and safe when disabled. A disabled or
+    # not-ready email provider must not fail unrelated auth health checks.
+    email_provider = SystemMetrics.get_email_provider_health()
+    email_outbox = SystemMetrics.get_email_outbox_metrics()
+    email_worker = SystemMetrics.get_email_worker_metrics()
+    components["email_provider"] = email_provider
+    components["email_outbox"] = email_outbox
+    components["email_worker"] = email_worker
+
+    if email_provider.get("delivery_enabled"):
+        if email_provider.get("status") == "not_ready" or email_outbox.get("status") not in {"healthy", "disabled"}:
+            status = "degraded"
 
     return HealthCheckResponse(
         success=True,

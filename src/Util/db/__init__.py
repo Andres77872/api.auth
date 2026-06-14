@@ -139,6 +139,7 @@ from src.Util.db.db_users import (
     count_users,
     search_users,
     check_username_email_available,
+    change_user_password,
     get_user_type,
     get_admin_assigned_project,
     get_admin_assigned_projects,
@@ -188,6 +189,43 @@ from src.Util.db.db_api_keys import (
     list_project_api_keys,
     update_api_key,
     cleanup_expired_keys,
+)
+# Import Google external account functions
+from src.Util.db import db_external_accounts
+from src.Util.db.db_external_accounts import (
+    create_consumer_user_from_external_account,
+    get_user_by_external_account,
+    link_external_account,
+    touch_external_account_last_seen,
+    unlink_external_account,
+)
+# Import transactional auth email functions
+from src.Util.db import db_email
+from src.Util.db.db_email import (
+    add_user_email_and_enqueue,
+    anonymize_user_email_data,
+    apply_email_provider_event,
+    backfill_legacy_user_emails,
+    begin_email_idempotency,
+    claim_email_messages,
+    complete_email_idempotency,
+    consume_email_activation_token,
+    consume_password_reset_token,
+    enqueue_admin_password_reset_link,
+    enqueue_password_reset_link,
+    finalize_email_message,
+    get_email_delivery_attempts,
+    get_email_idempotency,
+    get_email_outbox_health,
+    is_recipient_suppressed,
+    list_admin_user_emails,
+    list_email_delivery_logs,
+    list_user_emails,
+    record_email_delivery_attempt,
+    remove_user_email,
+    resend_user_email_activation,
+    run_email_retention_purge,
+    set_primary_user_email,
 )
 # Import core database connection
 from src.Util.db_config import redis_client as client, get_connection
@@ -424,6 +462,7 @@ __all__ = [
     'count_users',
     'search_users',
     'check_username_email_available',
+    'change_user_password',
     'get_user_type',
     'get_admin_assigned_project',
     'get_admin_assigned_projects',
@@ -558,4 +597,39 @@ __all__ = [
     'list_project_api_keys',
     'update_api_key',
     'cleanup_expired_keys',
+
+    # Google External Accounts
+    'db_external_accounts',
+    'create_consumer_user_from_external_account',
+    'get_user_by_external_account',
+    'link_external_account',
+    'touch_external_account_last_seen',
+    'unlink_external_account',
+
+    # Transactional Auth Email
+    'db_email',
+    'add_user_email_and_enqueue',
+    'anonymize_user_email_data',
+    'apply_email_provider_event',
+    'backfill_legacy_user_emails',
+    'begin_email_idempotency',
+    'claim_email_messages',
+    'complete_email_idempotency',
+    'consume_email_activation_token',
+    'consume_password_reset_token',
+    'enqueue_admin_password_reset_link',
+    'enqueue_password_reset_link',
+    'finalize_email_message',
+    'get_email_delivery_attempts',
+    'get_email_idempotency',
+    'get_email_outbox_health',
+    'is_recipient_suppressed',
+    'list_admin_user_emails',
+    'list_email_delivery_logs',
+    'list_user_emails',
+    'record_email_delivery_attempt',
+    'remove_user_email',
+    'resend_user_email_activation',
+    'run_email_retention_purge',
+    'set_primary_user_email',
 ]

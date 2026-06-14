@@ -72,7 +72,7 @@ Reference for the permissions-related API surface used in this repository.
 
 | Endpoint | Method | Auth / Permission | Content Type | Purpose |
 |----------|--------|-------------------|--------------|---------|
-| `/permissions/users/{user_hash}/permission-groups` | POST | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | Form | Directly assign permission group to user |
+| `/permissions/users/{user_hash}/permission-groups` | POST | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | Form | Directly assign permission group to user (required `permission_group_hash`; optional `notes` for the assignment reason) |
 | `/permissions/users/{user_hash}/permission-groups/{pg_hash}` | DELETE | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | - | Remove direct assignment |
 | `/permissions/users/{user_hash}/permission-groups` | GET | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | - | List direct permission groups for user |
 
@@ -93,7 +93,7 @@ Reference for the permissions-related API surface used in this repository.
 
 | Endpoint | Method | Auth / Permission | Content Type | Purpose |
 |----------|--------|-------------------|--------------|---------|
-| `/permissions/projects/{hash}/permission-group-catalog/{pg_hash}` | POST | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | Form | Add permission group to project catalog |
+| `/permissions/projects/{hash}/permission-group-catalog/{pg_hash}` | POST | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | Form | Add permission group to project catalog (both Form fields `catalog_purpose` and `notes` are optional; the request body may be empty) |
 | `/permissions/projects/{hash}/permission-group-catalog/{pg_hash}` | DELETE | `root` / `admin`, otherwise consumer with `manage_roles` via extended check | - | Remove permission group from project catalog |
 | `/permissions/projects/{hash}/permission-group-catalog` | GET | Valid session | - | List a project's cataloged permission groups |
 | `/permissions/permissions/groups/{pg_hash}/project-catalog` | GET | Valid session | - | List projects cataloging a permission group |
@@ -164,5 +164,5 @@ Reference for the permissions-related API surface used in this repository.
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026  
 **Document Version**: 1.0

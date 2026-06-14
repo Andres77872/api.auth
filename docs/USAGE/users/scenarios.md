@@ -158,7 +158,7 @@ That second path changes the enum but does not require initial project assignmen
 
 ## Scenario 7: Reset a Password During Support Handling
 
-Goal: reset access for a non-root user and communicate the temporary credential separately.
+Goal: request a secure reset link for a non-root user without exposing password or token material to support staff.
 
 ```bash
 curl -X POST "http://localhost:8000/users/$USER_HASH/reset-password" \
@@ -167,8 +167,9 @@ curl -X POST "http://localhost:8000/users/$USER_HASH/reset-password" \
 
 Remember:
 
-- the API response returns expiry info and instructions only
-- temporary password delivery is documented as out-of-band
+- the API response returns accepted reset-link metadata only
+- no temporary password, reset token, reset URL, full email, or provider payload is returned
+- the user must consume `/auth/password/reset` and then login again; the link does not create a session
 
 ---
 
@@ -176,6 +177,7 @@ Remember:
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
@@ -185,5 +187,5 @@ Remember:
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026
 **Document Version**: 1.0

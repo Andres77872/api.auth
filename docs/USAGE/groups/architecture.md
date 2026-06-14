@@ -128,6 +128,19 @@ Group deletion is implemented as deactivation, not hard deletion.
 
 Operationally, this means historical records may still exist, but they should no longer participate in access resolution.
 
+### Live session revocation on access teardown
+
+Soft-deactivating rows is not the whole story. The destructive routes also reach into the session layer: `src/routes/admin_user_groups.py` and `src/routes/admin_project_groups.py` both import `revoke_project_sessions_losing_access` from `src/Util/auth_lifecycle.py` and call it after a successful teardown, so access removal extends to **live sessions**.
+
+| Route | Reason passed |
+|------|---------------|
+| `DELETE /admin/user-groups/{hash}` | `user_group_deleted` |
+| `DELETE /admin/user-groups/{hash}/project-groups/{project_group_hash}` | `user_group_project_group_access_revoked` |
+| `DELETE /admin/project-groups/{hash}` | `project_group_deleted` |
+| `DELETE /admin/project-groups/{hash}/projects/{project_hash}` | `project_removed_from_group` |
+
+Before deleting/revoking, each route computes the impacted users and projects (user-group routes via `get_users_in_group` / `get_projects_for_user_group` / `get_projects_in_group`; project-group routes via `db_project_groups.get_users_with_access_to_project_group` and `get_projects_in_permission_group`) and passes those ids to the revocation helper. This is why affected users are forced to re-authenticate immediately rather than waiting for their sessions to expire.
+
 ---
 
 ## Important Current Caveats
@@ -161,5 +174,5 @@ Some code paths still expose fields such as `accessible_projects`, but the real 
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 3.0
+**Last Updated**: June 2026  
+**Document Version**: 3.1

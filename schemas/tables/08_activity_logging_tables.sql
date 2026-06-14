@@ -156,6 +156,60 @@ INSERT INTO activity_catalog (id, activity_code, activity_name, activity_descrip
 ('act-cat-044', 'api_key_expired', 'API Key Expired', 'API key was auto-deactivated due to expiration', 'api_keys', 'info', TRUE, TRUE),
 ('act-cat-045', 'api_key_updated', 'API Key Updated', 'API key name or description was updated', 'api_keys', 'info', TRUE, TRUE);
 
+-- Email Activation, Reset, and Delivery Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-046', 'user_email_added', 'User Email Added', 'User email row was added for activation', 'email', 'info', TRUE, TRUE),
+('act-cat-047', 'user_email_activation_requested', 'Email Activation Requested', 'Email activation link was requested', 'email', 'info', TRUE, TRUE),
+('act-cat-048', 'user_email_activation_resent', 'Email Activation Resent', 'Email activation link was resent', 'email', 'info', TRUE, TRUE),
+('act-cat-049', 'user_email_activated', 'User Email Activated', 'User email was activated', 'email', 'warning', TRUE, TRUE),
+('act-cat-050', 'user_email_removed', 'User Email Removed', 'User email was removed', 'email', 'warning', TRUE, TRUE),
+('act-cat-051', 'user_email_primary_changed', 'Primary Email Changed', 'Primary user email was changed', 'email', 'warning', TRUE, TRUE),
+('act-cat-052', 'auth_email_login', 'Email Login', 'User authenticated using an activated email identifier', 'authentication', 'info', TRUE, TRUE),
+('act-cat-053', 'password_reset_requested', 'Password Reset Requested', 'Password reset link was requested', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-054', 'password_reset_consumed', 'Password Reset Consumed', 'Password reset link was consumed', 'authentication', 'critical', TRUE, TRUE),
+('act-cat-055', 'admin_password_reset_requested', 'Admin Password Reset Requested', 'Admin/root requested a password reset link', 'admin', 'critical', TRUE, TRUE),
+('act-cat-056', 'email_message_enqueued', 'Email Message Enqueued', 'Transactional auth email was enqueued', 'email_delivery', 'info', TRUE, TRUE),
+('act-cat-057', 'email_message_sent', 'Email Message Sent', 'Transactional auth email was sent by provider', 'email_delivery', 'info', TRUE, TRUE),
+('act-cat-058', 'email_message_delivered', 'Email Message Delivered', 'Provider reported email delivery', 'email_delivery', 'info', TRUE, TRUE),
+('act-cat-059', 'email_message_bounced', 'Email Message Bounced', 'Provider reported email bounce', 'email_delivery', 'warning', TRUE, TRUE),
+('act-cat-060', 'email_message_complained', 'Email Complaint Received', 'Provider reported recipient complaint', 'email_delivery', 'critical', TRUE, TRUE),
+('act-cat-061', 'email_message_dead_lettered', 'Email Message Dead Lettered', 'Transactional auth email exhausted retry budget', 'email_delivery', 'critical', TRUE, TRUE),
+('act-cat-062', 'email_suppression_updated', 'Email Suppression Updated', 'Email suppression state was updated', 'email_delivery', 'warning', TRUE, TRUE);
+
+-- Password Recovery / Change Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-063', 'password_changed', 'Password Changed', 'Authenticated self-service password change succeeded', 'authentication', 'critical', TRUE, TRUE)
+ON DUPLICATE KEY UPDATE
+    activity_code = VALUES(activity_code),
+    activity_name = VALUES(activity_name),
+    activity_description = VALUES(activity_description),
+    activity_category = VALUES(activity_category),
+    severity_level = VALUES(severity_level),
+    requires_audit = VALUES(requires_audit),
+    is_active = VALUES(is_active);
+
+-- Google OAuth Activities
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-064', 'google_oauth_started', 'Google OAuth Started', 'Google OAuth authorization start created after provider-init redemption', 'authentication', 'info', TRUE, TRUE),
+('act-cat-065', 'google_oauth_provider_init_rejected', 'Google OAuth Provider-Init Rejected', 'Google OAuth provider-init redemption was rejected', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-066', 'google_oauth_callback_received', 'Google OAuth Callback Received', 'Google OAuth callback entered after basic query parsing', 'authentication', 'info', TRUE, TRUE),
+('act-cat-067', 'google_oauth_state_rejected', 'Google OAuth State Rejected', 'Google OAuth state was missing, expired, replayed, or mismatched', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-068', 'google_oauth_nonce_rejected', 'Google OAuth Nonce Rejected', 'Google OAuth ID-token nonce mismatch was rejected', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-069', 'google_oauth_token_exchange_failed', 'Google OAuth Token Exchange Failed', 'Google OAuth token endpoint exchange failed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-070', 'google_oauth_id_token_rejected', 'Google OAuth ID Token Rejected', 'Google OAuth ID-token validation failed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-071', 'google_oauth_login_succeeded', 'Google OAuth Login Succeeded', 'Google OAuth local session issuance succeeded', 'authentication', 'info', TRUE, TRUE),
+('act-cat-072', 'google_oauth_login_denied', 'Google OAuth Login Denied', 'Google OAuth login denied by provisioning, project access, consumer policy, or collision checks', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-073', 'google_oauth_external_account_linked', 'Google OAuth External Account Linked', 'Google external account linked to a local consumer', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-074', 'google_oauth_external_account_unlinked', 'Google OAuth External Account Unlinked', 'Google external account unlinked from a local consumer', 'authentication', 'warning', TRUE, TRUE)
+ON DUPLICATE KEY UPDATE
+    activity_code = VALUES(activity_code),
+    activity_name = VALUES(activity_name),
+    activity_description = VALUES(activity_description),
+    activity_category = VALUES(activity_category),
+    severity_level = VALUES(severity_level),
+    requires_audit = VALUES(requires_audit),
+    is_active = VALUES(is_active);
+
 -- =================== TABLE CREATION COMPLETE ===================
 SELECT 'Activity logging tables created successfully!' as status, 
        '3 tables created: activity_catalog, activity_logs, permission_audit_log' as details;

@@ -68,7 +68,9 @@ Deleting a user group soft-deactivates:
 - member rows in `user_group_members`
 - access links in `user_group_project_groups`
 
-So if you only wanted to remove one project's reach, revoke the project-group link first instead of deleting the entire user group.
+It also **revokes the affected members' live project sessions** (`reason="user_group_deleted"`), so those users are kicked out and must re-authenticate. The same active session revocation fires when you revoke a user-group → project-group link (`user_group_project_group_access_revoked`), delete a project group (`project_group_deleted`), or remove a project from a project group (`project_removed_from_group`).
+
+So if you only wanted to remove one project's reach, revoke the project-group link first instead of deleting the entire user group — and expect affected users to be logged out of the impacted projects either way.
 
 ---
 
@@ -80,9 +82,9 @@ So if you only wanted to remove one project's reach, revoke the project-group li
 
 So: do not operate hierarchy through the public group CRUD API. If you rely on SQL-layer hierarchy behavior, verify it directly at the database/procedure level.
 
-### Dedicated test coverage is weak
+### Dedicated test coverage now exists
 
-Most group behavior is currently covered indirectly rather than by strong focused CRUD/membership test suites. For operational docs that means: trust the documented runtime flow, but verify edge cases in your environment when doing high-risk admin changes.
+Group behavior is covered by focused integration suites, including `test_slice11_admin_project_groups.py` (project-group CRUD + non-admin 403), `test_slice19_ug_pg_link_orchestration.py` (UG→PG grant/revoke wiring), `test_groups_of_groups_contract.py` (groups-of-groups endpoint contracts and 404/403 paths), `test_auth_group_project_flows.py`, and the default-group orchestration slices (`test_slice18_project_default_groups_orchestration.py`, `test_slice24_real_default_groups.py`). These run against the real app with middleware active. Still verify environment-specific edge cases before high-risk admin changes, but the "no focused coverage" caveat is no longer accurate.
 
 ---
 
@@ -134,5 +136,5 @@ If group changes affect login context, accessible projects, or cached group name
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 3.0
+**Last Updated**: June 2026  
+**Document Version**: 3.1

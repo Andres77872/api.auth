@@ -95,6 +95,7 @@ The roles system is the **baseline authorization layer** for this API. What matt
 - **Soft delete leaves orphans** — deleting a role does not clear `users.role_id`
 - **`is_system_role` is not settable via API** — system roles must be created via direct DB access
 - **`role_name` is immutable** — cannot be changed after creation
+- **Several error branches return 500 instead of their intended status** — four `ErrorCode` members referenced in `global_roles.py` (`OPERATION_NOT_ALLOWED`, `PERMISSION_GROUP_NOT_FOUND`, `ALREADY_EXISTS`, `NOT_FOUND`) are absent from the enum, so the system-role-delete (403), permission-group not-found (404), duplicate-catalog-add (409), and the three unlink/catalog-removal "not assigned" (404) paths all surface as generic 500s. See [troubleshooting.md](troubleshooting.md) and [reference.md](reference.md#error-responses).
 - Guard behavior differs between `/roles` (role-only check) and `/permissions` (extended check); see [architecture.md](architecture.md)
 
 ---
@@ -113,5 +114,5 @@ The roles system is the **baseline authorization layer** for this API. What matt
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

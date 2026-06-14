@@ -54,17 +54,17 @@ This is the standard 4-step build process: **permission → group → add to gro
 
 ```bash
 # Check the user's current role (may be null)
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Assign the new role
-curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "role_hash=ROLE_CONTENT_EDITOR"
 
 # Verify the assignment
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -76,7 +76,7 @@ curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
 
 ```bash
 # Assign a different role (replaces the existing one)
-curl -X PUT "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "role_hash=ROLE_VIEWER"
@@ -92,11 +92,11 @@ The API takes the public `role_hash` form value, resolves it to the internal num
 
 ```bash
 # Remove the role entirely
-curl -X DELETE "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Verify — should return null role
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -137,7 +137,7 @@ curl -X GET "http://localhost:8000/roles/roles" \
 
 # But users who had this role still reference it (orphaned FK)
 # Their role query returns null because the SP checks is_active
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 # → role: null
 ```
@@ -160,9 +160,12 @@ curl -X GET "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles" \
 # Remove from catalog
 curl -X DELETE "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
+# → if the role was never cataloged (or already removed), this currently returns
+#   500 INTERNAL_ERROR instead of 404, because ErrorCode.NOT_FOUND is missing.
+#   Treat such a 500 on this delete as an idempotent no-op.
 ```
 
-**Reminder:** this is metadata only. It does not restrict which roles can be assigned to users of this project.
+**Reminder:** this is metadata only. It does not restrict which roles can be assigned to users of this project. Re-adding a role that is already cataloged currently returns 500 (intended 409) because `ErrorCode.ALREADY_EXISTS` is missing — see [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
 
 ---
 
@@ -229,5 +232,5 @@ curl -X POST "http://localhost:8000/auth/login" \
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

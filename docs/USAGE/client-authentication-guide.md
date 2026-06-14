@@ -12,6 +12,8 @@ Practical guide for integrating with the `api.auth` authentication system from b
 - [Authentication Flow](#authentication-flow)
 - [Token & Cookie Details](#token--cookie-details)
 - [Supported Protected-Route Credentials](#supported-protected-route-credentials)
+- [Email Activation and Reset Links](#email-activation-and-reset-links)
+- [Password Changes](#password-changes)
 - [API Keys](#api-keys)
 - [Client Integration Patterns](#client-integration-patterns)
 - [Code Examples](#code-examples)
@@ -23,8 +25,9 @@ Practical guide for integrating with the `api.auth` authentication system from b
 ## Overview
 
 The API uses a **true access/refresh token model**:
-- **Access tokens** authorize protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
-- **Refresh tokens** authorize only `/auth/refresh` and rotate the session family.
+- **Access tokens** (default 15-minute expiry) authorize protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
+- **Refresh tokens** authorize only `/auth/refresh` and rotate the session family. They are 72h-sliding by default, or a 30-day absolute window when the user logs in with `remember_me=true`.
+- **API keys** are validated through `POST /auth/validate-api-key` (`X-API-Key` header); see [API Keys](#api-keys).
 - **Cookies** (browsers, SPAs) can carry both tokens automatically.
 - **Bearer header** clients use the access token manually and must store/use the refresh token separately.
 
@@ -32,7 +35,8 @@ The API uses a **true access/refresh token model**:
 
 | Concern | Detail |
 |---------|--------|
-| Content-Type | Almost all POST/PUT/PATCH use `multipart/form-data`. Exceptions: `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export` use JSON. |
+| Content-Type (auth routes) | `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/switch-project` use `application/x-www-form-urlencoded` (form fields). The email/password JSON routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`, `/auth/password/change`) use `application/json`. `/auth/validate-api-key` carries no body (header auth). |
+| Content-Type (other routes) | Most other POST/PUT/PATCH use `multipart/form-data`; JSON exceptions include `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export`. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
 | CORS | Defaults to explicit local origins `http://localhost:3000,http://localhost:5173,http://localhost:4173,http://localhost:5177` plus dashboard origin `https://auth-ui.arz.ai`. Set `ALLOWED_ORIGINS` in production. |
 | Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
@@ -48,7 +52,8 @@ The API uses a **true access/refresh token model**:
 4. Validate access token            → GET  /auth/validate        → access cookie or Bearer access token
 5. Refresh access token             → POST /auth/refresh         → refresh cookie/body only; rotates refresh token
 6. Switch Project (optional)        → POST /auth/switch-project  → access token + current refresh token
-7. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked
+7. Change Password (optional)       → POST /auth/password/change → access token + current password; no new session
+8. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked
 ```
 
 For detailed endpoint parameters and response shapes, see [Authentication Usage Cases](authentication-usage-cases.md).
@@ -59,12 +64,13 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 
 | Property | Value |
 |----------|-------|
-| Access Token | Short-lived JWT returned as `access_token` and deprecated `session_token` alias |
-| Refresh Token | 72-hour sliding JWT returned as `refresh_token` in JSON and `refresh_token` cookie |
+| Access Token | Short-lived JWT (default 15 min, `expires_in: 900`) returned as `access_token` and deprecated `session_token` alias |
+| Refresh Token | JWT returned as `refresh_token` in JSON and `refresh_token` cookie. 72-hour sliding by default (`refresh_expires_in: 259200`); 30-day absolute window when `remember_me=true` (`refresh_expires_in` ≈ `2592000`, non-sliding) |
 | Access Cookie | `session_token`, HTTP-only, Secure, SameSite=Strict, access-token TTL |
-| Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`, 72-hour sliding Max-Age |
+| Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`. Max-Age tracks the refresh family TTL (72h sliding, or ~30 days when `remember_me=true`) |
 | Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
-| Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family |
+| Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family. Default rotation slides the 72h window; a `remember_me=true` family keeps its fixed `absolute_expires_at` and does not slide |
+| Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window |
 
 `POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
 
@@ -83,25 +89,190 @@ Do not send refresh tokens to protected endpoints. Refresh tokens are accepted o
 
 ---
 
+## Email Activation and Reset Links
+
+Email is optional. Clients must not block registration or account use just because a user has no activated email.
+
+Client rules:
+
+- `POST /auth/email/verify`, `/auth/password/forgot`, and `/auth/password/reset` return generic `202` when syntactically processable.
+- Activation/reset consumes do **not** create login sessions.
+- Forgot-password recovery only enqueues for active activated email rows; pending, removed, suppressed, unknown, or legacy-only emails keep the same generic public posture.
+- After successful activation/reset, prompt the user to login with password.
+- If the server returns `429`, honor the `Retry-After` header.
+- Use `Idempotency-Key` for add/resend/forgot/reset submissions that may be retried by the client. Reusing a key with a different route, recipient, purpose, or body is a semantic conflict.
+- Never log full activation/reset URLs, token `secret`, raw `Idempotency-Key`, or full recipient email.
+
+```javascript
+async function submitActivationToken(token) {
+  const response = await fetch('/auth/email/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'my-app/1.0' },
+    body: JSON.stringify({ token }),
+    credentials: 'include'
+  });
+  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
+  if (response.status !== 202) throw new Error('Activation request was not accepted');
+  return { accepted: true }; // not proof of token validity
+}
+```
+
+Forgot/reset handling follows the same generic-response rule:
+
+```javascript
+async function requestPasswordReset(identifier) {
+  const response = await fetch('/auth/password/forgot', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'my-app/1.0',
+      'Idempotency-Key': crypto.randomUUID(),
+    },
+    body: JSON.stringify({ email_or_username: identifier }),
+    credentials: 'include'
+  });
+  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
+  if (response.status !== 202) throw new Error('Reset request was not accepted');
+  return { accepted: true }; // not proof that the account exists
+}
+
+async function submitPasswordReset(token, newPassword) {
+  const response = await fetch('/auth/password/reset', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'my-app/1.0',
+      'Idempotency-Key': crypto.randomUUID(),
+    },
+    body: JSON.stringify({ token, new_password: newPassword }),
+    credentials: 'include'
+  });
+  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
+  if (response.status !== 202) throw new Error('Reset request was not accepted');
+  return { accepted: true }; // prompt for login; no session was created
+}
+```
+
+Activated-email login is still normal password login. Send the activated email in the existing `username` form field with `project_hash`:
+
+```javascript
+async function loginWithActivatedEmail(email, password, projectHash) {
+  const formData = new URLSearchParams({
+    username: email,
+    password,
+    project_hash: projectHash,
+  });
+
+  const response = await fetch('/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'my-app/1.0',
+    },
+    body: formData,
+    credentials: 'include'
+  });
+
+  if (!response.ok) throw new Error('Login failed');
+  return await response.json();
+}
+```
+
+---
+
+## Password Changes
+
+Clients must use `POST /auth/password/change` for authenticated password rotation. Do not send `password`, `current_password`, `new_password`, `password_confirmation`, or password-hash shaped fields to `PUT /users/profile`; profile updates reject password mutation before touching the user update helper.
+
+```javascript
+async function changePassword(currentPassword, newPassword) {
+  const response = await fetch('/auth/password/change', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'my-app/1.0',
+    },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+    credentials: 'include'
+  });
+
+  if (response.status === 429) {
+    throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
+  }
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(authErrorMessage(error, 'Password change failed'));
+  }
+  return await response.json(); // no replacement token/session is returned
+}
+```
+
+Client behavior rules:
+
+- A successful change preserves the authorizing session and revokes other sessions/families; keep using the current access/refresh pair until normal expiry/refresh.
+- The response does not include replacement tokens, passwords, password hashes, token secrets, full links, or provider payloads.
+- Wrong `current_password` uses generic `AUTH_1001` invalid-credentials posture; do not branch UI copy into "wrong password vs account state" variants.
+- Weak `new_password` returns `VAL_3007` with safe `reason_codes` such as `too_short`, `common_password`, `obvious_identifier_derivation`, or `repeated_or_sequential`, plus `min_length`.
+- Rate limits return `429` with `Retry-After` and `INT_7005`; back off instead of retry-looping.
+
+---
+
 ## API Keys
 
-API keys currently have lifecycle support but are **not wired as protected-route authentication**.
+API keys have full lifecycle support **and** a dedicated validation endpoint, `POST /auth/validate-api-key`, which accepts the `X-API-Key` header. They are **not yet** a general substitute for an access/session JWT on the broader set of protected routes.
 
 What clients can do today:
 
 - Create, list, inspect, update, and revoke API keys through `/users/api-keys` and admin `/api-keys` endpoints.
 - Receive the full key value only once at creation time.
 - Rely on server-side hashing, storage, cache validation, expiration, and revocation behavior for the key records.
+- Validate a key and resolve the owner's user/project/permissions through `POST /auth/validate-api-key` (the API-key analog of `GET /auth/validate`).
 
-Current limitation:
+Validating an API key:
 
-- `X-API-Key: sk_<public_id>.<secret>` by itself currently returns `401` on protected endpoints such as `/users/profile`.
-- Middleware may read the key and set request/audit context, but that context does not satisfy route authorization.
-- API-key lifecycle endpoints still require Bearer access JWT or `session_token` cookie authentication.
+```javascript
+async function validateApiKey(apiKey) {
+  const response = await fetch('/auth/validate-api-key', {
+    method: 'POST',
+    headers: {
+      'X-API-Key': apiKey, // format: sk_<public_id>.<secret>
+      'User-Agent': 'my-app/1.0',
+    },
+    // Do NOT also send Authorization; sending both returns 400 "ambiguous_credentials".
+  });
+  if (!response.ok) throw new Error('API key validation failed');
+  return await response.json(); // { valid, auth_method: "api_key", user, project, api_key: { key_id, public_id }, user_groups, permissions }
+}
+```
+
+```python
+# requests: validate an API key (do not also send Authorization)
+response = requests.post(
+    f"{BASE_URL}/auth/validate-api-key",
+    headers={'X-API-Key': api_key, 'User-Agent': 'my-app/1.0'},
+)
+response.raise_for_status()
+context = response.json()  # auth_method == "api_key"; never includes the raw key/secret
+```
+
+Rules for `/auth/validate-api-key`:
+
+- Authenticate with the `X-API-Key` header only. Sending **both** `Authorization` and `X-API-Key` returns `400` with `detail: "ambiguous_credentials"`.
+- The response never contains the raw key or its secret; only a secret-safe `api_key { key_id, public_id }` object.
+- Invalid, missing, revoked, or expired keys return `401`.
+
+Current limitation on other routes:
+
+- `X-API-Key: sk_<public_id>.<secret>` by itself still returns `401` on general protected endpoints such as `/users/profile`; only `/auth/validate-api-key` honors it.
+- Middleware may read the key and set request/audit context, but that context does not yet satisfy route authorization on those routes.
+- API-key lifecycle/management endpoints still require Bearer access JWT or `session_token` cookie authentication.
 
 Expected future behavior:
 
-API tokens generated for a specific user and project should authenticate protected routes as that user. That requires a unified auth dependency and route migration. Until then, client integrations must use Bearer access JWTs or the `session_token` cookie for protected requests.
+API tokens generated for a specific user and project should authenticate **any** protected route as that user. That requires a unified auth dependency and route migration. Until then, use `POST /auth/validate-api-key` to validate keys, and use Bearer access JWTs or the `session_token` cookie for other protected requests.
 
 ---
 
@@ -231,7 +402,9 @@ async function register(username, password, email, groupHash) {
 // Login
 // NOTE: projectHash is REQUIRED for ALL users on /auth/login (root, admin, consumer)
 // Root/admin may use /auth/platform/login if they want login without project_hash
-async function login(username, password, projectHash) {
+// rememberMe is optional (default false); true => 30-day absolute refresh family
+// instead of the default 72-hour sliding window.
+async function login(username, password, projectHash, rememberMe = false) {
   if (!projectHash) {
     throw new Error('projectHash is required for all users on /auth/login');
   }
@@ -239,6 +412,7 @@ async function login(username, password, projectHash) {
   formData.append('username', username);
   formData.append('password', password);
   formData.append('project_hash', projectHash);
+  if (rememberMe) formData.append('remember_me', 'true');
 
   const response = await fetch('https://api.example.com/auth/login', {
     method: 'POST',
@@ -260,10 +434,12 @@ async function login(username, password, projectHash) {
 }
 
 // Platform Login (root/admin only, no project_hash)
-async function platformLogin(username, password) {
+// rememberMe is optional (default false); true => 30-day absolute refresh family.
+async function platformLogin(username, password, rememberMe = false) {
   const formData = new URLSearchParams();
   formData.append('username', username);
   formData.append('password', password);
+  if (rememberMe) formData.append('remember_me', 'true');
 
   const response = await fetch('https://api.example.com/auth/platform/login', {
     method: 'POST',
@@ -369,10 +545,14 @@ class AuthClient:
         return result
 
     def login(self, username: str, password: str,
-              project_hash: str) -> Dict[Any, Any]:
+              project_hash: str, remember_me: bool = False) -> Dict[Any, Any]:
         """Login. project_hash is REQUIRED for ALL users (root, admin, consumer) on /auth/login.
-        Root/admin may use /auth/platform/login if they want login without project_hash."""
+        Root/admin may use /auth/platform/login if they want login without project_hash.
+        remember_me defaults to False; True issues a 30-day absolute refresh family
+        instead of the default 72-hour sliding window."""
         data = {'username': username, 'password': password, 'project_hash': project_hash}
+        if remember_me:
+            data['remember_me'] = 'true'
 
         response = self.session.post(f"{BASE_URL}/auth/login", data=data)
         response.raise_for_status()
@@ -426,15 +606,26 @@ class AuthClient:
         return response.json()
 
     def update_profile(self, username: Optional[str] = None,
-                       email: Optional[str] = None,
-                       password: Optional[str] = None) -> Dict[Any, Any]:
+                       email: Optional[str] = None) -> Dict[Any, Any]:
         headers = self._get_auth_headers()
         data = {}
         if username: data['username'] = username
         if email: data['email'] = email
-        if password: data['password'] = password
 
         response = self.session.put(f"{BASE_URL}/users/profile", headers=headers, data=data)
+        response.raise_for_status()
+        return response.json()
+
+    def change_password(self, current_password: str, new_password: str) -> Dict[Any, Any]:
+        headers = self._get_auth_headers()
+        response = self.session.post(
+            f"{BASE_URL}/auth/password/change",
+            headers=headers,
+            json={
+                'current_password': current_password,
+                'new_password': new_password,
+            },
+        )
         response.raise_for_status()
         return response.json()
 
@@ -499,12 +690,14 @@ export function useAuth() {
     }
   }, []);
 
-  const login = useCallback(async (username: string, password: string, projectHash: string) => {
+  const login = useCallback(async (username: string, password: string, projectHash: string, rememberMe = false) => {
     // projectHash is REQUIRED for ALL users (root, admin, consumer) on /auth/login
+    // rememberMe is optional (default false); true => 30-day absolute refresh family.
     const formData = new URLSearchParams();
     formData.append('username', username);
     formData.append('password', password);
     formData.append('project_hash', projectHash);
+    if (rememberMe) formData.append('remember_me', 'true');
 
     const response = await fetch('/auth/login', {
       method: 'POST',
@@ -604,12 +797,15 @@ For the complete error code catalog, see [Error Reference](errors.md).
 | 401 | `TOKEN_TYPE_INVALID` | Refresh token used as access token, or access token used for refresh | Use the right token type |
 | 401 | `TOKEN_EXPIRED` | JWT `exp` elapsed | Refresh access token or re-authenticate |
 | 401 | `SESSION_REVOKED` | Access session or family revoked | Re-authenticate |
+| 400 | `WEAK_PASSWORD` | Shared password policy rejected a new password | Show safe reason codes and ask for a stronger passphrase |
+| 400 | `INVALID_INPUT` | Profile password mutation or unsupported password-control field | Use `/auth/password/change` or reset-link recovery |
 | 403 | `ACCESS_DENIED` | No project access | Contact admin |
 | 403 | `PROJECT_ACCESS_DENIED` | Cannot access requested project | Use accessible project |
 | 400 | `MISSING_REQUIRED_FIELD` | Required parameter missing | Include all required fields |
 | 409 | `USERNAME_EXISTS` | Username taken | Choose different username |
 | 409 | `EMAIL_EXISTS` | Email registered | Use different email |
 | 422 | — | Missing `User-Agent` header | Add `User-Agent` to every request |
+| 429 | `RATE_LIMIT_EXCEEDED` | Login/email/change-password bucket exceeded | Honor `Retry-After` |
 
 ---
 
@@ -621,7 +817,7 @@ For the complete error code catalog, see [Error Reference](errors.md).
 
 **Mobile/Desktop Applications**: Store token in secure storage (Keychain on iOS, KeyStore on Android). Include token in `Authorization` header. Never store in plain text.
 
-**API Keys**: Store API keys like credentials, but do not use them as protected-route auth until the API-key auth dependency is wired into routes.
+**API Keys**: Store API keys like credentials. They are validated through `POST /auth/validate-api-key` (`X-API-Key` header), but are not yet accepted as auth on other protected routes until the API-key auth dependency is wired into them.
 
 **Avoid**: localStorage/sessionStorage (XSS vulnerable), URL parameters, console logging.
 
@@ -630,9 +826,9 @@ For the complete error code catalog, see [Error Reference](errors.md).
 ```
 Token Created (Login/Register)
     ↓
-Access Token Active (short-lived)
+Access Token Active (short-lived, default 15 min)
     ↓
-Refresh Token Rotation (72h sliding family; old refresh token becomes invalid)
+Refresh Token Rotation (72h sliding family by default, or 30-day absolute when remember_me=true; old refresh token becomes invalid)
     ↓
 Logout or Expiration
     ↓

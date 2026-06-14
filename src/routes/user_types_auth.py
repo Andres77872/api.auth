@@ -26,6 +26,7 @@ Endpoints:
 """
 
 import logging
+import re
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Form
@@ -48,6 +49,7 @@ from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, ConflictError, InternalError, ErrorCode
 )
+from src.Util.password_security import assert_password_policy
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -55,6 +57,21 @@ logger = logging.getLogger(__name__)
 # Initialize router and security
 router = APIRouter(prefix="/user-types", tags=["User Type Management"])
 security = HTTPBearerOrCookie()
+
+_EMAIL_FORMAT_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _normalize_optional_email(value: Optional[str]) -> Optional[str]:
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip()
+    if not _EMAIL_FORMAT_RE.match(normalized):
+        raise ValidationError(
+            message="Invalid email format",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={"field": "email"},
+        )
+    return normalized
 
 
 # Pydantic models for requests that aren't in Models.py
@@ -141,6 +158,8 @@ async def create_root_user_endpoint(
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
             details={"required_fields": ["username", "password"]}
         )
+    email = _normalize_optional_email(email)
+    assert_password_policy(password, username=username, email=email)
 
     # Create root user - db layer converts IntegrityError to ConflictError automatically
     new_root_user = create_root_user(
@@ -171,7 +190,7 @@ async def create_root_user_endpoint(
 async def create_admin_user_endpoint(
         username: str = Form(...),
         password: str = Form(...),
-        email: str = Form(...),
+        email: Optional[str] = Form(None),
         assigned_project_id: Optional[str] = Form(None),
         assigned_project_ids: Optional[List[str]] = Form(None),
         current_user=Depends(require_root_user)
@@ -184,7 +203,7 @@ async def create_admin_user_endpoint(
     Args:
         username: Username
         password: Password
-        email: Email
+        email: Optional email
         assigned_project_id: Single project ID
         assigned_project_ids: Multiple project IDs
         
@@ -193,12 +212,14 @@ async def create_admin_user_endpoint(
     """
     logger.info(f"Admin user creation attempt by user: {current_user.username}")
 
-    if not username or not password or not email:
+    if not username or not password:
         raise ValidationError(
-            message="Username, password, and email are required",
+            message="Username and password are required",
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
-            details={"required_fields": ["username", "password", "email"]}
+            details={"required_fields": ["username", "password"]}
         )
+    email = _normalize_optional_email(email)
+    assert_password_policy(password, username=username, email=email)
 
     # Handle both single and multiple project assignments
     project_ids = []

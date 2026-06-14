@@ -8,12 +8,16 @@ CRITICAL: We patch at the USAGE location (where the name is looked up in the
 importing module's namespace), not the source definition.
 """
 
+import copy
+import hashlib
+import importlib
 import json
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 from unittest.mock import patch, MagicMock
+from urllib.parse import urlsplit, urlunsplit
 
 import fakeredis
 import httpx
@@ -87,6 +91,29 @@ async def client(app):
 
 # ─── Fakeredis ───────────────────────────────────────────────────────────────
 
+_OAUTH_REDIS_PATCH_LOCATIONS = (
+    "src.Util.oauth_state.redis_client",
+    "src.Util.oauth_rate_limit.redis_client",
+    "src.Util.provider_init.redis_client",
+    "src.routes.auth_google.redis_client",
+)
+
+
+@contextmanager
+def _optional_patch_targets(targets: Iterable[str], value: Any):
+    """Patch forward-referenced OAuth modules only once they exist."""
+    with ExitStack() as stack:
+        for target in targets:
+            module_name, _, _ = target.rpartition(".")
+            if not module_name:
+                continue
+            try:
+                importlib.import_module(module_name)
+            except ImportError:
+                continue
+            stack.enter_context(patch(target, value, create=True))
+        yield
+
 @pytest.fixture
 def fake_redis():
     """Provide a fakeredis instance patched at ALL usage locations."""
@@ -120,6 +147,7 @@ def fake_redis():
     with patch("src.Util.db_config.redis_client", fake), \
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.auth_lifecycle.redis_client", fake), \
+         patch("src.Util.email.route_support.redis_client", fake), \
          patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake), \
          patch("src.Util.db.db_session_analytics.redis_client", fake), \
@@ -127,7 +155,8 @@ def fake_redis():
          patch("src.routes.auth.redis_client", fake), \
          patch("src.Util.decorators.validate_session", return_value=session_mock), \
          patch("src.Util.decorators.get_user_by_hash", return_value=user_mock), \
-         patch("src.Util.db.validate_session", return_value=session_mock):
+         patch("src.Util.db.validate_session", return_value=session_mock), \
+         _optional_patch_targets(_OAUTH_REDIS_PATCH_LOCATIONS, fake):
         # Directly set the singleton's redis attribute (cannot be patched after import)
         cache_manager.redis = fake
         yield fake
@@ -140,6 +169,10 @@ def fake_redis():
 def _mock_db_connection():
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
+    mock_cursor.description = None
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.nextset.return_value = None
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
     mock_cursor.__exit__ = MagicMock(return_value=False)
     mock_conn.cursor.return_value = mock_cursor
@@ -162,6 +195,7 @@ _DB_CONN_PATCH_LOCATIONS = [
     "src.Util.db.db_session_analytics.get_connection",
     "src.Util.db.db_audit_analytics.get_connection",
     "src.Util.db.db_api_keys.get_connection",
+    "src.Util.db.db_email.get_connection",
     "src.Util.system_metrics.get_connection",
     "src.Util.bulk_operations.get_connection",
 ]
@@ -405,6 +439,14 @@ def create_test_session(fake_redis, token: str, payload: dict) -> str:
 # ─── DBPatcher ───────────────────────────────────────────────────────────────
 
 class DBPatcher:
+    OAUTH_EXTERNAL_ACCOUNT_PATCHES = [
+        "get_user_by_external_account",
+        "link_external_account",
+        "unlink_external_account",
+        "touch_external_account_last_seen",
+        "create_consumer_user_from_external_account",
+    ]
+
     DEFAULT_PATCHES = [
         "get_user_by_credentials", "get_user_by_hash",
         "get_user_groups_for_user", "get_user_accessible_projects",
@@ -429,7 +471,7 @@ class DBPatcher:
         "get_audit_logs", "count_audit_logs", "get_audit_statistics",
         "get_security_events", "get_failed_requests", "get_user_api_activity_summary",
         "get_user_by_id",
-    ]
+    ] + OAUTH_EXTERNAL_ACCOUNT_PATCHES
 
     def __init__(self, extra_patches: list = None, exclude_patches: list = None):
         self.extra = extra_patches or []
@@ -442,7 +484,12 @@ class DBPatcher:
         all_names = [n for n in set(self.DEFAULT_PATCHES + self.extra) if n not in self.exclude]
         for name in all_names:
             mock = MagicMock()
-            patcher = patch.object(db_module, name, mock)
+            patcher = patch.object(
+                db_module,
+                name,
+                mock,
+                create=name in self.OAUTH_EXTERNAL_ACCOUNT_PATCHES,
+            )
             patcher.start()
             self._patches.append(patcher)
             self.patches[name] = mock
@@ -456,6 +503,295 @@ class DBPatcher:
 @pytest.fixture
 def db_patcher():
     return DBPatcher
+
+
+# ─── Google OAuth RED Harness Helpers ────────────────────────────────────────
+
+_DEFAULT_PROVIDER_INIT_TOKEN = "fake-provider-init-token-not-real"
+_DEFAULT_PROJECT_HASH = "test-project-hash-server-side-only"
+_DEFAULT_USER_GROUP_HASH = "test-user-group-hash-server-side-only"
+
+_OAUTH_REDACTED_KEYS = {
+    "access_token",
+    "authorization_code",
+    "code",
+    "code_verifier",
+    "google_email",
+    "google_hd",
+    "google_sub",
+    "id_token",
+    "nonce",
+    "oauth_link_token",
+    "project_hash",
+    "provider_init_token",
+    "provider_sub",
+    "refresh_token",
+    "state",
+    "user_group_hash",
+}
+
+_DEFAULT_FORBIDDEN_OAUTH_SENTINELS = {
+    "provider_init_token": _DEFAULT_PROVIDER_INIT_TOKEN,
+    "project_hash": _DEFAULT_PROJECT_HASH,
+    "user_group_hash": _DEFAULT_USER_GROUP_HASH,
+    "authorization_code": "fake-google-auth-code-not-real",
+    "google_access_token": "fake-google-access-token-not-real",
+    "google_refresh_token": "fake-google-refresh-token-not-real",
+}
+
+
+class RedactedOAuthMapping(dict):
+    """Dict payload whose repr does not leak strict hashes or OAuth tokens."""
+
+    def __repr__(self):
+        return repr(_redact_oauth_value(dict(self)))
+
+    __str__ = __repr__
+
+
+class FakeProviderInitRedeemError(RuntimeError):
+    pass
+
+
+def _oauth_test_fingerprint(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+
+def _redact_oauth_value(value: Any) -> Any:
+    if hasattr(value, "url") and hasattr(value, "method") and hasattr(value, "scope"):
+        # Starlette/FastAPI Request is Mapping-like and exposes ``scope``,
+        # including raw callback query strings.  Captures are asserting what the
+        # app records, not the inbound Google URL, so keep only safe metadata.
+        return {
+            "method": getattr(value, "method", None),
+            "path": getattr(getattr(value, "url", None), "path", None),
+        }
+    if isinstance(value, Mapping):
+        return {
+            key: "<redacted>" if str(key).lower() in _OAUTH_REDACTED_KEYS else _redact_oauth_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_redact_oauth_value(item) for item in value]
+    return value
+
+
+def make_fake_provider_init_payload(
+    *,
+    provider: str = "google",
+    purpose: str = "login",
+    project_hash: str = _DEFAULT_PROJECT_HASH,
+    user_group_hash: Optional[str] = _DEFAULT_USER_GROUP_HASH,
+    return_origin: str = "http://localhost:3000",
+    expires_in: int = 600,
+) -> RedactedOAuthMapping:
+    payload = RedactedOAuthMapping({
+        "provider": provider,
+        "purpose": purpose,
+        "project_hash": project_hash,
+        "return_origin": return_origin,
+        "issuer": "magic-worlds-api",
+        "audience": "api.auth",
+        "expires_in": expires_in,
+        "scope_fingerprint": "test-scope-fingerprint",
+        "provider_init_fingerprint": "test-provider-init-fingerprint",
+    })
+    if user_group_hash is not None:
+        payload["user_group_hash"] = user_group_hash
+    return payload
+
+
+class FakeProviderInitRedeemer:
+    """Server-side provider-init redemption fake; call records are redacted."""
+
+    def __init__(self, default_payload: Optional[Mapping[str, Any]] = None):
+        self.default_payload = RedactedOAuthMapping(default_payload or make_fake_provider_init_payload())
+        self.tokens = {_DEFAULT_PROVIDER_INIT_TOKEN: self.default_payload}
+        self.failures = {}
+        self.redeemed = set()
+        self.calls = []
+
+    def add_token(self, token: str, payload: Optional[Mapping[str, Any]] = None):
+        self.tokens[token] = RedactedOAuthMapping(payload or self.default_payload)
+        return token
+
+    def reject_token(self, token: str, reason: str = "invalid_provider_init"):
+        self.failures[token] = reason
+        return token
+
+    async def redeem_provider_init_token(self, provider_init_token: str, **kwargs):
+        self.calls.append({
+            "token_fingerprint": _oauth_test_fingerprint(provider_init_token),
+            "kwargs": _redact_oauth_value(kwargs),
+        })
+        if provider_init_token in self.failures:
+            raise FakeProviderInitRedeemError(self.failures[provider_init_token])
+        if provider_init_token in self.redeemed:
+            raise FakeProviderInitRedeemError("provider_init_replay")
+        payload = self.tokens.get(provider_init_token)
+        if payload is None:
+            raise FakeProviderInitRedeemError("provider_init_not_found")
+        self.redeemed.add(provider_init_token)
+        return copy.deepcopy(payload)
+
+    async def __call__(self, provider_init_token: str, **kwargs):
+        return await self.redeem_provider_init_token(provider_init_token, **kwargs)
+
+
+class FakeGoogleTokenExchange:
+    """Authlib/Google token-exchange fake with no network calls."""
+
+    def __init__(self, token_response: Optional[Mapping[str, Any]] = None):
+        self.token_response = RedactedOAuthMapping(token_response or {})
+        self.calls = []
+
+    async def authorize_access_token(self, *args, **kwargs):
+        self.calls.append({"method": "authorize_access_token", "args_count": len(args), "kwargs": _redact_oauth_value(kwargs)})
+        return copy.deepcopy(self.token_response)
+
+    async def exchange_authorization_code(self, *args, **kwargs):
+        self.calls.append({"method": "exchange_authorization_code", "args_count": len(args), "kwargs": _redact_oauth_value(kwargs)})
+        return copy.deepcopy(self.token_response)
+
+
+class FakeGoogleIDTokenVerifier:
+    """Verifier fake that returns sanitized claims and records only fingerprints."""
+
+    def __init__(self, claims: Optional[Mapping[str, Any]] = None):
+        self.claims = RedactedOAuthMapping(claims or {})
+        self.calls = []
+
+    def verify(self, id_token: str, **kwargs):
+        self.calls.append({
+            "id_token_fingerprint": _oauth_test_fingerprint(id_token),
+            "kwargs": _redact_oauth_value(kwargs),
+        })
+        return copy.deepcopy(self.claims)
+
+    async def verify_async(self, id_token: str, **kwargs):
+        return self.verify(id_token, **kwargs)
+
+    def __call__(self, id_token: str, **kwargs):
+        return self.verify(id_token, **kwargs)
+
+
+class OAuthCapture:
+    """Audit/activity capture sink with redacted repr and leak assertions."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.records = []
+
+    def capture(self, *args, **kwargs):
+        self.records.append({"args": _redact_oauth_value(args), "kwargs": _redact_oauth_value(kwargs)})
+        return None
+
+    async def capture_async(self, *args, **kwargs):
+        return self.capture(*args, **kwargs)
+
+    def assert_no_leaks(self, forbidden_values: Optional[Mapping[str, Any]] = None):
+        assert_no_oauth_sensitive_leaks(self.records, forbidden_values=forbidden_values, context=self.name)
+
+    def __len__(self):
+        return len(self.records)
+
+    def __iter__(self):
+        return iter(self.records)
+
+    def __repr__(self):
+        return f"OAuthCapture(name={self.name!r}, records={len(self.records)})"
+
+
+def _iter_text_surfaces(value: Any, path: str = "$"):
+    if hasattr(value, "headers") and hasattr(value, "text"):
+        yield from _iter_text_surfaces(oauth_response_surface(value), path)
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _iter_text_surfaces(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple, set)):
+        for index, item in enumerate(value):
+            yield from _iter_text_surfaces(item, f"{path}[{index}]")
+    elif isinstance(value, bytes):
+        yield path, value.decode("utf-8", errors="replace")
+    elif value is not None:
+        yield path, str(value)
+
+
+def oauth_response_surface(response) -> dict:
+    # ``httpx.Response.url`` is the inbound request URL, not an api.auth
+    # browser-visible response surface.  OAuth callbacks legitimately arrive
+    # with ``code``/``state`` query parameters from Google, so leak assertions
+    # must inspect only the response path plus outbound headers/body/cookies.
+    parsed_url = urlsplit(str(getattr(response, "url", "")))
+    safe_response_url = urlunsplit((parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", parsed_url.fragment))
+    return {
+        "url": safe_response_url,
+        "headers": dict(getattr(response, "headers", {})),
+        "cookies": dict(getattr(response, "cookies", {})),
+        "body": getattr(response, "text", ""),
+    }
+
+
+def assert_no_oauth_sensitive_leaks(
+    surface: Any,
+    *,
+    forbidden_values: Optional[Mapping[str, Any]] = None,
+    context: str = "oauth surface",
+):
+    sentinels = dict(_DEFAULT_FORBIDDEN_OAUTH_SENTINELS)
+    if forbidden_values:
+        sentinels.update(forbidden_values)
+
+    leaks = []
+    for path, text in _iter_text_surfaces(surface):
+        for label, raw_value in sentinels.items():
+            if raw_value and str(raw_value) in text:
+                leaks.append((label, path))
+
+    if leaks:
+        safe_locations = ", ".join(f"{label}@{path}" for label, path in leaks[:10])
+        pytest.fail(f"OAuth sensitive leak detected in {context}: {safe_locations}")
+
+
+@pytest.fixture
+def fake_provider_init_redeemer():
+    return FakeProviderInitRedeemer()
+
+
+@pytest.fixture
+def fake_google_token_exchange(fake_google_token_response):
+    return FakeGoogleTokenExchange(fake_google_token_response)
+
+
+@pytest.fixture
+def fake_google_verifier(fake_google_claims):
+    sanitized_claims = {
+        "provider": "google",
+        "sub": fake_google_claims["sub"],
+        "email": fake_google_claims["email"],
+        "email_verified": fake_google_claims["email_verified"],
+        "iss": fake_google_claims["iss"],
+        "aud": fake_google_claims["aud"],
+        "nonce": fake_google_claims["nonce"],
+    }
+    return FakeGoogleIDTokenVerifier(sanitized_claims)
+
+
+@pytest.fixture
+def oauth_audit_capture():
+    return OAuthCapture("audit")
+
+
+@pytest.fixture
+def oauth_activity_capture():
+    return OAuthCapture("activity")
+
+
+@pytest.fixture
+def oauth_assert_no_leaks():
+    return assert_no_oauth_sensitive_leaks
 """
 Real-DB conftest — registers real_db marker and provides fixtures.
 

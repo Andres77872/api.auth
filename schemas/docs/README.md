@@ -107,6 +107,7 @@ mysql -u root -p < schemas/tables/05_initialize_data.sql
 mysql -u root -p < schemas/tables/06_create_views.sql
 mysql -u root -p < schemas/tables/07_error_logs.sql
 mysql -u root -p < schemas/tables/08_activity_logging_tables.sql
+mysql -u root -p < schemas/tables/09_email_activation_tables.sql
 
 # 2. STORED PROCEDURES - Create all procedures
 mysql -u root -p < schemas/stored_procedures/01_user_management.sql
@@ -121,11 +122,20 @@ mysql -u root -p < schemas/stored_procedures/09_system_maintenance.sql
 mysql -u root -p < schemas/stored_procedures/10_error_logging.sql
 mysql -u root -p < schemas/stored_procedures/11_activity_logging.sql
 mysql -u root -p < schemas/stored_procedures/12_activity_context.sql
+mysql -u root -p < schemas/stored_procedures/13_api_keys.sql
+mysql -u root -p < schemas/stored_procedures/14_email_activation.sql
 
 # 3. TRIGGERS - Create automatic activity logging triggers
 mysql -u root -p < schemas/triggers/01_activity_logging_triggers.sql
 mysql -u root -p < schemas/triggers/02_permission_activity_triggers.sql
+mysql -u root -p < schemas/triggers/03_api_key_activity_triggers.sql
+mysql -u root -p < schemas/triggers/04_email_activation_triggers.sql
 ```
+
+> The Python bootstrap (`scripts/create_database.py` / `recreate_database.py`) is
+> the source of truth for file order and already applies every file above. The
+> legacy plaintext `user_password_resets` table is intentionally **not** created;
+> password reset uses hash-only `user_email_link_tokens`.
 
 ---
 
@@ -146,9 +156,10 @@ schemas/
 │   ├── 05_initialize_data.sql      # Root user creation
 │   ├── 06_create_views.sql         # 12 optimization views
 │   ├── 07_error_logs.sql           # 3 error logging tables + 4 views
-│   └── 08_activity_logging_tables.sql  # 3 activity tables + 40 types
+│   ├── 08_activity_logging_tables.sql  # 3 activity tables + 40 types
+│   └── 09_email_activation_tables.sql  # 7 transactional-auth email tables
 │
-├── stored_procedures/       # 167 stored procedures
+├── stored_procedures/
 │   ├── 01_user_management.sql      # 20 procedures
 │   ├── 02_user_groups.sql          # 25 procedures
 │   ├── 03_projects.sql             # 17 procedures
@@ -160,11 +171,15 @@ schemas/
 │   ├── 09_system_maintenance.sql   # 5 procedures
 │   ├── 10_error_logging.sql        # 12 procedures
 │   ├── 11_activity_logging.sql     # 10 procedures
-│   └── 12_activity_context.sql     # 3 procedures + 1 function
+│   ├── 12_activity_context.sql     # 3 procedures + 1 function
+│   ├── 13_api_keys.sql             # API key procedures
+│   └── 14_email_activation.sql     # 20 transactional-auth email procedures
 │
-└── triggers/                # 46 activity logging triggers (21 + 25)
+└── triggers/
     ├── 01_activity_logging_triggers.sql      # 21 core entity triggers
-    └── 02_permission_activity_triggers.sql   # 25 permission/role triggers
+    ├── 02_permission_activity_triggers.sql   # 25 permission/role triggers
+    ├── 03_api_key_activity_triggers.sql      # API key activity triggers
+    └── 04_email_activation_triggers.sql      # 6 email lifecycle triggers
 ```
 
 ---
@@ -242,6 +257,18 @@ schemas/
 | `query_performance_log` | Query execution metrics |
 | `system_metrics` | System performance metrics |
 | `bulk_operations_log` | Bulk operation tracking |
+
+### Transactional Auth Email Tables (`09_email_activation_tables.sql`)
+
+| Table | Description |
+|-------|-------------|
+| `user_emails` | Authoritative account email identity + lifecycle (`pending`/`activated`/`removed`/`suppressed`); uniqueness enforced via VIRTUAL generated columns |
+| `user_email_link_tokens` | Hash-only split (`lookup_id.secret`) link tokens for activation / password reset / admin reset; only `BINARY(32)` HMAC hashes stored |
+| `email_messages` | Durable transactional-auth outbox (delivery ledger); claimed by the worker with `FOR UPDATE SKIP LOCKED` |
+| `email_delivery_attempts` | Append-only sanitized worker/provider attempt + webhook-event ledger |
+| `email_suppressions` | Hashed suppression ledger for hard bounces / complaints / manual blocks (no plaintext recipient) |
+| `email_idempotency_keys` | Durable replay authority for public/authenticated send + consume flows |
+| `email_templates` | Reserved metadata table for future DB-managed templates; **unseeded** (templates are code-driven in `src/Util/email/templates.py`) |
 
 ---
 
@@ -469,6 +496,32 @@ schemas/
 | `sp_get_activity_context` | Procedure | Get current context (debug) |
 | `fn_get_context_user_id` | Function | Helper function for context resolution |
 
+### Email Activation (`14_email_activation.sql`) - 20 Procedures
+
+Stored procedures own all email lifecycle state transitions; Python `db_email`
+wrappers call them positionally. Procedures never accept or store token secrets —
+callers pass `lookup_id` plus an app-computed `BINARY(32)` HMAC `token_hash`.
+
+| Procedure | Description |
+|-----------|-------------|
+| `sp_user_email_add_and_enqueue` | Add/reuse a pending email, mint an activation token, enqueue activation mail |
+| `sp_user_email_resend_and_enqueue` | Resend activation; enforces a DB-side cooldown (`p_cooldown_seconds`) behind the Redis check |
+| `sp_consume_email_activation_token` | Consume an activation token; activate the email, auto-select first primary, reject global conflicts (locked with `FOR UPDATE`) |
+| `sp_user_email_remove` | Soft-remove an owned email and re-elect primary |
+| `sp_user_email_set_primary` | Switch primary to an owned activated email |
+| `sp_user_email_list_for_user` / `sp_admin_user_email_list` | Owner / admin (masked+hashed) email listings |
+| `sp_password_reset_link_enqueue` | Self-service reset: resolve activated email/username, mint reset token, enqueue mail |
+| `sp_admin_password_reset_link_enqueue` | Admin-triggered reset link (no password mutation) |
+| `sp_consume_password_reset_token` | Atomically consume reset/admin-reset token and update the password hash |
+| `sp_claim_email_messages` | Worker batch claim with `FOR UPDATE SKIP LOCKED` + lease + suppression flag |
+| `sp_finalize_email_message` | Apply sent/retry/dead-letter outcome, backoff, and terminal payload purge |
+| `sp_record_email_delivery_attempt` | Append a sanitized delivery attempt row |
+| `sp_apply_email_provider_event` | Dedupe provider webhooks; update delivery state; upsert suppression and flip `user_emails` to `suppressed` on bounce/complaint |
+| `sp_email_idempotency_begin` / `_complete` / `_get` | Durable idempotency lifecycle |
+| `sp_backfill_legacy_user_emails` | One-time backfill of legacy `users.email` into pending `user_emails` |
+| `sp_email_retention_purge` | Redact payloads + recipient PII, delete expired tokens, strip old attempts, expire idempotency keys (run by the worker on a cadence) |
+| `sp_anonymize_user_email_data` | GDPR erasure of a user's email PII while preserving non-PII evidence |
+
 ---
 
 ## Views Reference
@@ -530,7 +583,6 @@ schemas/
 | `tr_global_permissions_updated_at` | `global_permissions` | Auto-update timestamp |
 | `tr_validate_session_expiry` | `user_sessions` | Validate session and project access |
 | `tr_validate_permission_cache_expiry` | `permission_cache` | Validate cache expiry |
-| `tr_validate_password_reset_expiry` | `user_password_resets` | Validate reset expiry |
 | `tr_validate_bulk_operation_counts` | `bulk_operations_log` | Validate counts |
 | `tr_validate_bulk_operation_completion` | `bulk_operations_log` | Validate completion time |
 
@@ -539,7 +591,7 @@ schemas/
 | Trigger | Table | Event | Activity Type |
 |---------|-------|-------|---------------|
 | `trg_after_user_insert` | `users` | INSERT | `user_registration` |
-| `trg_after_user_update` | `users` | UPDATE | `user_update/type_changed/status_change/password_reset` |
+| `trg_after_user_update` | `users` | UPDATE | `user_update/type_changed/status_change` |
 | `trg_after_user_delete` | `users` | DELETE | `user_deleted` |
 | `trg_after_project_insert` | `projects` | INSERT | `project_creation` |
 | `trg_after_project_update` | `projects` | UPDATE | `project_update/archived/unarchived/ownership_transferred` |
@@ -589,6 +641,13 @@ schemas/
 | `trg_after_ugpgr_insert` | `user_group_project_group_roles` | INSERT | `role_assigned` |
 | `trg_after_ugpgr_update` | `user_group_project_group_roles` | UPDATE | `role_removed` |
 | `trg_after_ugpgr_delete` | `user_group_project_group_roles` | DELETE | `role_removed` |
+
+### Email Activation Triggers (`04_email_activation_triggers.sql`) - 6 Triggers
+
+Guard rails and activity logging for the transactional-auth email lifecycle
+(`user_emails`, `user_email_link_tokens`, `email_messages`). See the schema file
+for the exact trigger set; together with the stored procedures they keep
+payload-purge timing, status transitions, and email activity events consistent.
 
 ---
 

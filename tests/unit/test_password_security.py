@@ -158,3 +158,95 @@ class TestVerifyPasswordLegacy:
     def test_verify_wrong_password_legacy(self):
         legacy = hashlib.sha256(b"correct").hexdigest()
         assert verify_password("wrong", legacy) is False
+
+
+# ─── password policy contract (password-recovery-email-validation 1.1) ───────
+
+def _validate_policy(candidate: str, **context):
+    """Call the future shared password-policy API without breaking collection."""
+
+    import src.Util.password_security as password_security
+
+    assert hasattr(password_security, "validate_password_policy")
+    return password_security.validate_password_policy(candidate, **context)
+
+
+def _assert_policy_safe(result, candidate: str, *context_values: str) -> None:
+    serialized = repr(result).lower()
+    assert candidate.lower() not in serialized
+    for value in context_values:
+        assert value.lower() not in serialized
+
+
+class TestPasswordPolicyContracts:
+    def test_configurable_minimum_length_rejects_too_short_passwords_without_echo(self):
+        candidate = "short7"
+
+        result = _validate_policy(candidate, min_length=12)
+
+        assert result.is_valid is False
+        assert "too_short" in result.reason_codes
+        assert result.min_length == 12
+        _assert_policy_safe(result, candidate)
+
+    def test_common_password_denylist_rejects_configured_values_without_echo(self):
+        candidate = "common-contract-candidate"
+
+        result = _validate_policy(candidate, min_length=8, extra_blocklist={candidate})
+
+        assert result.is_valid is False
+        assert "common_password" in result.reason_codes
+        _assert_policy_safe(result, candidate)
+
+    def test_username_and_email_derived_passwords_are_rejected_without_identifier_echo(self):
+        candidate = "andres-credential-rotation-2026"
+        username = "andres"
+        email = "andres.contract@example.test"
+
+        result = _validate_policy(candidate, username=username, email=email, min_length=8)
+
+        assert result.is_valid is False
+        assert "obvious_identifier_derivation" in result.reason_codes
+        _assert_policy_safe(result, candidate, username, email)
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "aaaaaaaaaaaaaaaa",
+            "abcdefghijklmnop",
+            "1234567890123456",
+        ],
+    )
+    def test_repeated_or_sequential_passwords_are_rejected(self, candidate):
+        result = _validate_policy(candidate, min_length=8)
+
+        assert result.is_valid is False
+        assert "repeated_or_sequential" in result.reason_codes
+        _assert_policy_safe(result, candidate)
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "lowercase words make a long memorable phrase",
+            "nouppercaseordigitbutlongenough",
+            "with spaces but no symbols or digits",
+        ],
+    )
+    def test_long_passphrases_are_accepted_without_character_class_requirements(self, candidate):
+        result = _validate_policy(candidate, min_length=12)
+
+        assert result.is_valid is True
+        assert result.reason_codes == ()
+
+    def test_assert_password_policy_raises_sanitized_weak_password_error(self):
+        import src.Util.password_security as password_security
+
+        candidate = "bbbbbbbbbbbbbbbb"
+
+        assert hasattr(password_security, "assert_password_policy")
+        with pytest.raises(Exception) as exc_info:
+            password_security.assert_password_policy(candidate, min_length=8)
+
+        serialized = repr(exc_info.value).lower()
+        assert "weak_password" in serialized or "val_3007" in serialized
+        assert candidate not in serialized

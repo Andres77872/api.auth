@@ -57,6 +57,156 @@ class ActivityType(Enum):
     BULK_USER_DELETE = "bulk_user_delete"
     ADMIN_ACTION = "admin_action"
     SYSTEM_EVENT = "system_event"
+    USER_EMAIL_ADDED = "user_email_added"
+    USER_EMAIL_ACTIVATION_REQUESTED = "user_email_activation_requested"
+    USER_EMAIL_ACTIVATION_RESENT = "user_email_activation_resent"
+    USER_EMAIL_ACTIVATED = "user_email_activated"
+    USER_EMAIL_REMOVED = "user_email_removed"
+    USER_EMAIL_PRIMARY_CHANGED = "user_email_primary_changed"
+    AUTH_EMAIL_LOGIN = "auth_email_login"
+    PASSWORD_RESET_REQUESTED = "password_reset_requested"
+    PASSWORD_RESET_CONSUMED = "password_reset_consumed"
+    ADMIN_PASSWORD_RESET_REQUESTED = "admin_password_reset_requested"
+    PASSWORD_CHANGED = "password_changed"
+    EMAIL_MESSAGE_ENQUEUED = "email_message_enqueued"
+    EMAIL_MESSAGE_SENT = "email_message_sent"
+    EMAIL_MESSAGE_DELIVERED = "email_message_delivered"
+    EMAIL_MESSAGE_BOUNCED = "email_message_bounced"
+    EMAIL_MESSAGE_COMPLAINED = "email_message_complained"
+    EMAIL_MESSAGE_DEAD_LETTERED = "email_message_dead_lettered"
+    EMAIL_SUPPRESSION_UPDATED = "email_suppression_updated"
+    GOOGLE_OAUTH_STARTED = "google_oauth_started"
+    GOOGLE_OAUTH_PROVIDER_INIT_REJECTED = "google_oauth_provider_init_rejected"
+    GOOGLE_OAUTH_CALLBACK_RECEIVED = "google_oauth_callback_received"
+    GOOGLE_OAUTH_STATE_REJECTED = "google_oauth_state_rejected"
+    GOOGLE_OAUTH_NONCE_REJECTED = "google_oauth_nonce_rejected"
+    GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED = "google_oauth_token_exchange_failed"
+    GOOGLE_OAUTH_ID_TOKEN_REJECTED = "google_oauth_id_token_rejected"
+    GOOGLE_OAUTH_LOGIN_SUCCEEDED = "google_oauth_login_succeeded"
+    GOOGLE_OAUTH_LOGIN_DENIED = "google_oauth_login_denied"
+    GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED = "google_oauth_external_account_linked"
+    GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED = "google_oauth_external_account_unlinked"
+
+
+EMAIL_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-046": ActivityType.USER_EMAIL_ADDED.value,
+    "act-cat-047": ActivityType.USER_EMAIL_ACTIVATION_REQUESTED.value,
+    "act-cat-048": ActivityType.USER_EMAIL_ACTIVATION_RESENT.value,
+    "act-cat-049": ActivityType.USER_EMAIL_ACTIVATED.value,
+    "act-cat-050": ActivityType.USER_EMAIL_REMOVED.value,
+    "act-cat-051": ActivityType.USER_EMAIL_PRIMARY_CHANGED.value,
+    "act-cat-052": ActivityType.AUTH_EMAIL_LOGIN.value,
+    "act-cat-053": ActivityType.PASSWORD_RESET_REQUESTED.value,
+    "act-cat-054": ActivityType.PASSWORD_RESET_CONSUMED.value,
+    "act-cat-055": ActivityType.ADMIN_PASSWORD_RESET_REQUESTED.value,
+    "act-cat-056": ActivityType.EMAIL_MESSAGE_ENQUEUED.value,
+    "act-cat-057": ActivityType.EMAIL_MESSAGE_SENT.value,
+    "act-cat-058": ActivityType.EMAIL_MESSAGE_DELIVERED.value,
+    "act-cat-059": ActivityType.EMAIL_MESSAGE_BOUNCED.value,
+    "act-cat-060": ActivityType.EMAIL_MESSAGE_COMPLAINED.value,
+    "act-cat-061": ActivityType.EMAIL_MESSAGE_DEAD_LETTERED.value,
+    "act-cat-062": ActivityType.EMAIL_SUPPRESSION_UPDATED.value,
+}
+
+PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-063": ActivityType.PASSWORD_CHANGED.value,
+}
+
+GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-064": ActivityType.GOOGLE_OAUTH_STARTED.value,
+    "act-cat-065": ActivityType.GOOGLE_OAUTH_PROVIDER_INIT_REJECTED.value,
+    "act-cat-066": ActivityType.GOOGLE_OAUTH_CALLBACK_RECEIVED.value,
+    "act-cat-067": ActivityType.GOOGLE_OAUTH_STATE_REJECTED.value,
+    "act-cat-068": ActivityType.GOOGLE_OAUTH_NONCE_REJECTED.value,
+    "act-cat-069": ActivityType.GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED.value,
+    "act-cat-070": ActivityType.GOOGLE_OAUTH_ID_TOKEN_REJECTED.value,
+    "act-cat-071": ActivityType.GOOGLE_OAUTH_LOGIN_SUCCEEDED.value,
+    "act-cat-072": ActivityType.GOOGLE_OAUTH_LOGIN_DENIED.value,
+    "act-cat-073": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED.value,
+    "act-cat-074": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED.value,
+}
+
+
+def assert_email_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
+    """Fail loudly if email ActivityType values drift from act-cat-046..062.
+
+    Tests may pass a SQL-derived mapping. Without an argument, this validates the
+    enum side only so route/worker code can guard imports before emitting events.
+    """
+    enum_values = {item.value for item in ActivityType}
+    expected_values = set(EMAIL_ACTIVITY_CATALOG_RANGE.values())
+    missing_enum_values = expected_values - enum_values
+    if missing_enum_values:
+        raise RuntimeError(f"Missing email ActivityType values: {sorted(missing_enum_values)}")
+
+    if catalog_codes is not None:
+        missing_catalog_ids = set(EMAIL_ACTIVITY_CATALOG_RANGE) - set(catalog_codes)
+        mismatched_values = {
+            catalog_id: expected
+            for catalog_id, expected in EMAIL_ACTIVITY_CATALOG_RANGE.items()
+            if catalog_codes.get(catalog_id) != expected
+        }
+        if missing_catalog_ids or mismatched_values:
+            raise RuntimeError(
+                "Email activity catalog drift: "
+                f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
+            )
+
+
+def assert_password_recovery_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
+    """Fail loudly if password-recovery ActivityType values drift from SQL."""
+
+    enum_values = {item.value for item in ActivityType}
+    expected_values = set(PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE.values())
+    missing_enum_values = expected_values - enum_values
+    if missing_enum_values:
+        raise RuntimeError(f"Missing password-recovery ActivityType values: {sorted(missing_enum_values)}")
+
+    if catalog_codes is not None:
+        missing_catalog_ids = set(PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE) - set(catalog_codes)
+        mismatched_values = {
+            catalog_id: expected
+            for catalog_id, expected in PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE.items()
+            if catalog_codes.get(catalog_id) != expected
+        }
+        if missing_catalog_ids or mismatched_values:
+            raise RuntimeError(
+                "Password-recovery activity catalog drift: "
+                f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
+            )
+
+
+def assert_google_oauth_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
+    """Fail loudly if Google OAuth ActivityType values drift from act-cat-064..074."""
+
+    enum_values = {item.value for item in ActivityType}
+    expected_values = set(GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE.values())
+    missing_enum_values = expected_values - enum_values
+    if missing_enum_values:
+        raise RuntimeError(f"Missing Google OAuth ActivityType values: {sorted(missing_enum_values)}")
+
+    reserved_numbers = {
+        int(catalog_id.rsplit("-", 1)[1])
+        for catalog_id in GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE
+    }
+    if reserved_numbers != set(range(64, 75)):
+        raise RuntimeError(
+            "Google OAuth activity catalog drift: "
+            f"reserved_range={sorted(reserved_numbers)} expected={list(range(64, 75))}"
+        )
+
+    if catalog_codes is not None:
+        missing_catalog_ids = set(GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE) - set(catalog_codes)
+        mismatched_values = {
+            catalog_id: expected
+            for catalog_id, expected in GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE.items()
+            if catalog_codes.get(catalog_id) != expected
+        }
+        if missing_catalog_ids or mismatched_values:
+            raise RuntimeError(
+                "Google OAuth activity catalog drift: "
+                f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
+            )
 
 
 class ActivityLogger:

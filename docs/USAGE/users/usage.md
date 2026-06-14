@@ -12,6 +12,7 @@ Practical usage guide for operating user-management endpoints in `api.auth`.
 - [List and Search Users](#list-and-search-users)
 - [Inspect and Update a Specific User](#inspect-and-update-a-specific-user)
 - [Status, Password Reset, and Deletion](#status-password-reset-and-deletion)
+- [Email Management](#email-management)
 - [What `/users/*` Does Not Manage](#what-users-does-not-manage)
 
 ---
@@ -23,7 +24,8 @@ The users surface is split across three route families:
 | Concern | Route Family | Notes |
 |--------|--------------|-------|
 | Self-service profile and access summary | `/users/profile`, `/users/access-summary` | Any authenticated user |
-| Admin/root user operations | `/users/list`, `/users/{hash}`, `/users/{hash}/status`, `/users/{hash}/reset-password`, `/users/{hash}` | Root is global; admin visibility is mostly project-scoped |
+| Self-service email management | `/users/me/emails`, `/users/me/emails/{id}/resend`, `/users/me/emails/{id}`, `/users/me/emails/{id}/primary` | Any authenticated user; full lifecycle in [email-management.md](email-management.md) |
+| Admin/root user operations | `/users/list`, `/users/{hash}`, `/users/{hash}/status`, `/users/{hash}/reset-password`, `/users/{hash}`, `/users/{hash}/emails`, `/users/{hash}/emails/{id}/resend` | Root is global; admin visibility is mostly project-scoped |
 | Type lifecycle and root-only creation | `/user-types/*` | Covered in [user-types.md](user-types.md) |
 
 Request-shape reality:
@@ -62,12 +64,11 @@ curl -X PUT "http://localhost:8000/users/profile" \
   -d "username=new_username&email=new@example.com"
 ```
 
-You may also send `password=...`.
-
 Operational notes:
 
-- at least one of `username`, `email`, or `password` must be present
+- at least one of `username` or `email` must be present
 - the route updates the current user only; it does not let users self-change `user_type`
+- password-equivalent fields are rejected; use `POST /auth/password/change` for authenticated password rotation
 - successful updates invalidate user cache through the DB layer
 
 ---
@@ -195,23 +196,25 @@ Important behavior:
 
 That means this is the main emergency lockout path.
 
-### Reset a user's password
+### Queue an admin password-reset link
 
 ```bash
 curl -X POST "http://localhost:8000/users/$USER_HASH/reset-password" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
+This is a body-less POST (no form/JSON fields are read).
+
 What the code actually does:
 
 - admin/root only
 - refuses to reset `root` user passwords
-- generates a temporary password internally with `create_password_reset_data()`
-- updates the password hash immediately
-- returns expiry metadata and instructions
-- **does not return the temporary password in the API response**; the response explicitly says it was delivered out-of-band
+- creates hash-only `admin_password_reset` link-token metadata
+- enqueues a reset-link email through the durable outbox when the target has a primary activated email
+- returns accepted metadata and safe instructions
+- **does not return or generate a visible temporary password**; no reset token, reset URL, full email, subject/body, or provider payload is exposed
 
-So yeah, if your old doc or client expectation looked for `temporary_password` in the JSON body, that is stale.
+So yeah, do not expect a temporary password in the JSON body. If an old client depends on that, the client is stale; update it instead of reintroducing credential leakage.
 
 ### Soft-delete a user
 
@@ -227,6 +230,89 @@ Delete behavior in the repo:
 - the route invalidates Redis sessions and user cache after deletion
 - users cannot delete themselves
 - non-root users cannot delete root users
+
+---
+
+## Email Management
+
+A user can hold multiple emails. The `/users/me/emails*` group is self-service
+(any authenticated user, acting on their own `user_id`); the
+`/users/{user_hash}/emails*` group is root/admin only. Email is optional — these
+routes only matter when a user wants email login or recovery. Full lifecycle
+detail (status model, owner vs admin field views, response examples) lives in
+[email-management.md](email-management.md).
+
+### List your emails
+
+```bash
+curl -X GET "http://localhost:8000/users/me/emails" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns the caller's `user_emails` rows in the owner view (includes the
+normalized `email`, `email_masked`, `status`, `is_primary`, and lifecycle
+timestamps).
+
+### Add an email (enqueue activation)
+
+```bash
+curl -X POST "http://localhost:8000/users/me/emails" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "email=new@example.com"
+```
+
+The `email` field may be form or JSON. The route adds/reuses a `pending` row,
+enqueues a hash-only activation link, and returns a generic `202`.
+
+### Resend activation
+
+```bash
+curl -X POST "http://localhost:8000/users/me/emails/$EMAIL_ID/resend" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Remove an email / change the primary email
+
+```bash
+curl -X DELETE "http://localhost:8000/users/me/emails/$EMAIL_ID" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -X POST "http://localhost:8000/users/me/emails/$EMAIL_ID/primary" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Key operational behavior from the route code:
+
+- **Generic `202`** is returned by add/resend regardless of whether a row
+  actually changed; enqueue failures are swallowed and still return `202`. You
+  cannot infer existence or delivery from the body.
+- **`429 + Retry-After`** is the only detailed public response (rate limiter and
+  resend cooldown). The resend cooldown is `EMAIL_RESEND_COOLDOWN_SECONDS`
+  (default **60s**).
+- **`Idempotency-Key`** (optional) is honored on `POST /users/me/emails` and the
+  owner resend; the admin resend does not read it.
+- **Session revocation**: removing an email (reason `email_removed`) or setting a
+  new primary (reason `email_primary_changed`) revokes the user's *other*
+  sessions while preserving the current one when possible. Other devices must
+  re-authenticate.
+
+### Admin/root email endpoints
+
+```bash
+# List a target user's emails (masked/hash-only view)
+curl -X GET "http://localhost:8000/users/$USER_HASH/emails" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Re-trigger activation for a target user's email
+curl -X POST "http://localhost:8000/users/$USER_HASH/emails/$EMAIL_ID/resend" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+The admin list view never returns the plaintext address (only `email_masked` and
+`email_hash`). The admin resend returns a generic `202` and is subject to the
+same rate limit and cooldown.
 
 ---
 
@@ -246,6 +332,7 @@ In other words: `/users/*` manages the user entity and its immediate lifecycle. 
 ## Related Documentation
 
 - **[Users Overview](README.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
@@ -256,5 +343,5 @@ In other words: `/users/*` manages the user entity and its immediate lifecycle. 
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

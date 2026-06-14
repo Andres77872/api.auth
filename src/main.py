@@ -12,9 +12,9 @@ from src.middleware.auth_context import AuthContextMiddleware
 from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
-    auth, users, user_types_auth, projects,
+    auth, auth_google, email_webhooks, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
-    audit_logs, api_keys, user_api_keys,
+    audit_logs, api_keys, user_api_keys, email_templates,
 )
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
 
@@ -38,6 +38,8 @@ register_exception_handlers(app)
 
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
+app.include_router(auth_google.router, tags=['Google OAuth'])
+app.include_router(email_webhooks.router, tags=["Email Webhooks"])
 # NOTE: user_api_keys must be registered BEFORE users to avoid /users/{user_hash}
 # catching /users/api-keys as a user_hash parameter
 app.include_router(user_api_keys.router, tags=["API Keys - User"])
@@ -47,6 +49,7 @@ app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
+app.include_router(email_templates.router, tags=['Admin - Email Templates'])
 app.include_router(system.router, tags=['System Information'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
@@ -57,7 +60,7 @@ app.include_router(api_keys.router, tags=["API Keys - Admin"])
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177,,http://localhost:5183",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177,,http://localhost:5183,http://192.168.1.13:5173",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 

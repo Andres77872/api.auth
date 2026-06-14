@@ -60,6 +60,8 @@ Same general input data, but organized for access inspection:
 - accessible projects with access groups and effective permissions
 - current session summary
 
+Profile password mutation is intentionally rejected before `update_user(...)`. Authenticated password rotation lives under `POST /auth/password/change`, where the route verifies `current_password`, applies the shared policy, updates the hash, preserves the current session, and revokes other sessions/families after success.
+
 ---
 
 ## 4. Admin-Scoped Listing and Detail Flow
@@ -125,13 +127,13 @@ Flow for `POST /users/{hash}/reset-password`:
 1. Resolve acting user and ensure admin/root privileges
 2. Resolve target user
 3. Reject resets for `root` targets
-4. Generate reset metadata with `create_password_reset_data()`
-5. Update the target's password hash with the generated temporary password
-6. Return expiry metadata and out-of-band delivery instructions
+4. Create hash-only `admin_password_reset` link-token metadata
+5. If the target has a primary activated email, enqueue a reset-link message through the durable email outbox
+6. Return accepted reset-link metadata without plaintext password, reset token, reset URL, full email, or provider payload
 
 Operational caveat:
 
-- the temporary password exists internally, but the route intentionally does not include it in the public response body
+- the route no longer generates or exposes a temporary password; actual password change happens only when the user consumes the reset link through `/auth/password/reset`
 
 ---
 
@@ -200,6 +202,7 @@ That means the admin-project lifecycle is really a controlled admin-group member
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
@@ -209,5 +212,5 @@ That means the admin-project lifecycle is really a controlled admin-group member
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026
 **Document Version**: 1.0

@@ -53,9 +53,9 @@ The API reads configuration from environment variables. See [.env.example](../..
 | `REDIS_DB` | No | `0` | Redis DB number |
 | `DB_REDIS_PASSWORD` | No | -- | Redis password |
 | `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes; refresh family remains 72h sliding |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes. Refresh continuity is 72h sliding (`remember_me=false`) or a 30-day absolute, non-sliding window (`remember_me=true`). |
 | `API_KEY_PEPPER` | Yes | -- | HMAC pepper for API key hashing; required before API key utilities import |
-| `ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177` | Explicit CORS origins (comma-separated) |
+| `ALLOWED_ORIGINS` | No | local dev origins | Explicit CORS allow-list (comma-separated). The built-in default is a set of localhost dev ports plus the project's auth UI; **always set this explicitly in production**. See `src/main.py` / [.env.example](../../.env.example) for the current default list. |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 
 ### Critical: `JWT_SECRET_KEY`
@@ -202,6 +202,21 @@ curl -X POST "{BASE_URL}/auth/login" \
 
 > **Note**: `project_hash` is REQUIRED for all users. Root users bypass group-based access validation and may access any project by role.
 
+### Other Available Auth Flows
+
+Beyond username/password login, the `/auth` suite exposes several additional flows. These are documented in full elsewhere — see the linked suites rather than duplicating them here:
+
+| Flow | Entry endpoint(s) | Where to read |
+|------|-------------------|---------------|
+| **Email verification** (activation) | `POST /auth/email/verify` (+ per-user `/users/*/emails*` management) | [Authentication Usage Cases](authentication-usage-cases.md), [Email Suite](email/README.md), [Users → Email Management](users/email-management.md) |
+| **Password recovery** | `POST /auth/password/forgot`, `POST /auth/password/reset` | [Authentication Usage Cases](authentication-usage-cases.md), [Email Activation Runbook](../RUNBOOKS/email-activation.md) |
+| **Authenticated password change** | `POST /auth/password/change` | [Authentication Usage Cases](authentication-usage-cases.md) |
+| **Google sign-in (OAuth)** | `POST /auth/google/start`, `GET /auth/google/callback`, link/unlink/reauth | [Google OAuth Suite](google-oauth/README.md) |
+| **Platform login** (project-agnostic) | `POST /auth/platform/login` | [Authentication Usage Cases](authentication-usage-cases.md) |
+| **API-key validation** | `POST /auth/validate-api-key` | [API Keys Suite](api-keys/README.md) |
+
+Public email flows (`verify`/`forgot`/`reset` and the authenticated add/resend routes) return a generic `202 Accepted` regardless of account state to prevent enumeration; honor `429 Retry-After` if rate-limited.
+
 ---
 
 ## Authentication Modes
@@ -225,20 +240,21 @@ On login, the API sets an HTTP-only cookie named `session_token`:
 | Access cookie | `session_token` (deprecated alias for `access_token`) |
 | Refresh cookie | `refresh_token` |
 | Access Max-Age | Short-lived access-token TTL |
-| Refresh Max-Age | 259200 seconds (72 hours), sliding on successful refresh |
+| Refresh Max-Age | 259200s (72h), sliding on refresh — or 2592000s (30d) absolute when `remember_me=true` |
 | HttpOnly | true |
 | Secure | true |
 | SameSite | strict |
 
 Browsers automatically send these cookies on subsequent requests. No `Authorization` header is needed for browser flows when cookies are used.
 
-### Not a Protected-Route Mode: API Keys
+### API Keys: lifecycle + dedicated validation, not general route auth
 
-API keys can be created, listed, updated, and revoked through the API-key lifecycle endpoints, but they are **not currently accepted as protected-route authentication**.
+API keys can be created, listed, updated, and revoked through the API-key lifecycle endpoints (self-service `/users/api-keys`, admin `/api-keys`), and a dedicated endpoint validates them:
 
-- `X-API-Key` alone on protected endpoints currently returns `401`.
-- API-key middleware can populate request/audit context, but route authorization still requires Bearer access JWT or the `session_token` cookie.
-- Future behavior should allow a valid API token generated for a user/project to authenticate protected routes as that user, but that unified auth dependency and route migration are not wired yet.
+- **`POST /auth/validate-api-key`** authenticates a user-created API key supplied in the **`X-API-Key`** header and returns the resolved user/project/groups/permissions context. Sending **both** `Authorization` and `X-API-Key` is rejected with `400 ambiguous_credentials`. The raw key/secret is never echoed back. This is the supported way to verify a key.
+- API keys are **still not a general protected-route auth mode**: the other protected endpoints (e.g. `/users/profile`) require a Bearer access JWT or the `session_token` cookie. `X-API-Key` populates request/audit context but does not by itself authorize arbitrary protected routes.
+
+See the [API Keys Documentation Suite](api-keys/README.md) for the full lifecycle, key format, scope model, and validation contract.
 
 ### Which to use?
 
@@ -255,8 +271,8 @@ Four different TTLs operate independently — don't confuse them:
 | TTL | Value | What it controls |
 |-----|-------|-----------------|
 | **Access JWT/cookie TTL** | Short-lived | How long the access token itself is valid for protected requests. |
-| **Refresh JWT/family TTL** | 72 hours (259200s), sliding | How long refresh continuity lives. Renewed on successful `POST /auth/refresh`. |
-| **Refresh anchor TTL** | 72 hours (259200s), sliding | How long `refresh_anchor:{family_id}` keeps non-secret refresh continuity context. This outlives `session:{access_jti}` but never stores raw tokens or permissions. |
+| **Refresh JWT/family TTL** | 72h (259200s) sliding, or 30 days absolute with `remember_me=true` | How long refresh continuity lives. With `remember_me=false` the 72h window slides on each successful `POST /auth/refresh`; with `remember_me=true` it is a fixed 30-day (2592000s) non-sliding window. |
+| **Refresh anchor TTL** | Matches the refresh family window | How long `refresh_anchor:{family_id}` keeps non-secret refresh continuity context. This outlives `session:{access_jti}` but never stores raw tokens or permissions. |
 | **Redis access session TTL** | Access-token TTL | How long `session:{access_jti}` lives in Redis. |
 | **Cache layer TTL** | 1 hour (session) / 30 min (permission checks) | How long cached permission/access-check results live in Redis. **Separate from auth sessions.** A user's session can be valid while their cached permissions are stale. |
 
@@ -304,7 +320,7 @@ The API still accepts `X-token-user` and `X-token-collection` headers as a fallb
 
 ### 7. CORS defaults to an explicit allow-list
 
-`ALLOWED_ORIGINS` defaults to `http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177`. In production, you **must** set `ALLOWED_ORIGINS` to the exact browser clients that should call this API directly.
+`ALLOWED_ORIGINS` falls back to a built-in set of localhost dev ports plus the project's auth UI (see `src/main.py` / [.env.example](../../.env.example) for the exact list). In production, you **must** set `ALLOWED_ORIGINS` to the exact browser clients that should call this API directly.
 
 ### 8. Password complexity is NOT enforced
 
@@ -325,11 +341,14 @@ Error messages mask UUIDs (e.g., `usr-[550e]...[0000]`). Clients cannot parse fu
 
 | Topic | Document |
 |-------|----------|
-| Full authentication flows | [Authentication Usage Cases](authentication-usage-cases.md) |
+| Full authentication flows (login, refresh, password, email verify) | [Authentication Usage Cases](authentication-usage-cases.md) |
 | Client integration (JS, Python, React) | [Client Authentication Guide](client-authentication-guide.md) |
+| Google sign-in (OAuth) | [Google OAuth Documentation Suite](google-oauth/README.md) |
+| API keys (lifecycle + validation) | [API Keys Documentation Suite](api-keys/README.md) |
+| Transactional email (templates, webhooks, delivery) | [Email Documentation Suite](email/README.md) |
 | Error codes and troubleshooting | [Error Reference](errors.md) |
 | How permissions actually work | [Permission Resolution](permissions/resolution.md) |
-| User management | [Users Documentation Suite](users/README.md) |
+| User management (incl. per-user email management) | [Users Documentation Suite](users/README.md) |
 | Groups architecture | [Groups Documentation Suite](groups/README.md) |
 | Projects | [Projects Documentation Suite](projects/README.md) |
 

@@ -35,6 +35,26 @@ Technical architecture of the audit and activity logging systems as they actuall
 
 **Excluded paths** (not logged): `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/auth/validate`
 
+### Source C: `email_messages` Table
+
+| Aspect | Detail |
+|--------|--------|
+| **Populated by** | The email **outbox worker** (writes/updates delivery state); not by middleware or the activity decorator |
+| **Query layer** | `db_email.list_email_delivery_logs()` — an inline `SELECT ... FROM email_messages ORDER BY created_at DESC LIMIT/OFFSET` (no stored procedure) |
+| **Exposed by** | `GET /admin/email/logs` → `list_admin_email_logs()` |
+| **Granularity** | One row per transactional email message (the canonical delivery ledger) |
+| **Redaction** | Returns `recipient_hash` (HEX) + `recipient_masked` only — never the plaintext recipient, subject/body, template variables, token secrets, or provider payloads |
+
+**Returned fields (19):** `id`, `user_id`, `user_email_id`, `purpose`, `template_code`, `recipient_hash` (HEX of `BINARY(32)`), `recipient_masked`, `provider`, `provider_message_id`, `status`, `priority`, `attempt_count`, `max_attempts`, `next_attempt_at`, `sent_at`, `terminal_at`, `last_error_code`, `created_at`, `updated_at`
+
+**`status` enum:** `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`
+
+**`purpose` enum:** `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`
+
+**`provider`:** free-text VARCHAR (default `resend`)
+
+The table's plaintext columns (`recipient_email`, `last_error_message`, `render_payload_ciphertext`, `provider_idempotency_key`, `token_id`, etc.) are **not** selected by the delivery-log query, so they never reach the API surface.
+
 **Excluded methods:** `OPTIONS` (CORS preflight)
 
 **Sensitive data filtering:** Passwords, tokens, API keys are masked as `***FILTERED***` in request/response bodies and headers. This is intentional and cannot be disabled.
@@ -54,14 +74,15 @@ The middleware flags requests as security events when:
 
 ## Route Organization
 
-### Dedicated Audit Endpoints (`src/routes/audit_logs.py`, 572 lines)
+### Dedicated Audit Endpoints (`src/routes/audit_logs.py`, 618 lines, 6 endpoints)
 
 All routes use `APIRouter(prefix="/admin")` — they coexist with `admin_dashboard.py` under the same `/admin` prefix.
 
 | Method | Path | Handler | Purpose |
 |--------|------|---------|---------|
+| GET | `/admin/email/logs` | `list_admin_email_logs()` | Email delivery logs from `email_messages` (redacted: recipient hash + masked email) |
 | GET | `/admin/audit/logs` | `list_audit_logs()` | Paginated API audit logs from `api_audit_log` |
-| GET | `/admin/audit/security-events` | `list_security_events()` | Combined security events from BOTH sources |
+| GET | `/admin/audit/security-events` | `list_security_events()` | Combined security events from BOTH audit sources |
 | GET | `/admin/audit/statistics` | `get_statistics()` | 4-section audit analytics |
 | POST | `/admin/audit/export` | `export_logs()` | CSV/JSON export, max 10,000 records |
 | GET | `/admin/users/{user_id}/activity` | `get_user_activity()` | Per-user combined activity summary + timeline |
@@ -166,6 +187,11 @@ def _check_admin_access(log_context: LogContext) -> None:
          │  /admin/audit/export                        │
          │  /admin/users/{id}/activity  (MERGED)       │
          └─────────────────────────────────────────────┘
+
+  EMAIL OUTBOX WORKER ──► email_messages (delivery ledger)
+         │
+         ▼
+  GET /admin/email/logs  (read-only, redacted: recipient_hash + recipient_masked)
 ```
 
 ---
@@ -183,5 +209,5 @@ def _check_admin_access(log_context: LogContext) -> None:
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

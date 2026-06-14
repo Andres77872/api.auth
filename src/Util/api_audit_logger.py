@@ -6,6 +6,7 @@ Works with the api_audit_log table and stored procedures.
 """
 
 import json
+import re
 import time
 import uuid
 import logging
@@ -13,6 +14,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from src.Util.db_config import get_connection
+from src.Util.auth_constants import OAUTH_REDACTION_FIELD_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -22,18 +24,49 @@ class APIAuditLogger:
     Utility class for logging API requests and responses to the audit log.
     Designed to work as background tasks without blocking requests.
     """
+    OAUTH_REDACTION_FIELD_FRAGMENTS = tuple(
+        field
+        for field in OAUTH_REDACTION_FIELD_NAMES
+        if field not in {"code", "state", "nonce"}
+    )
     
     # Sensitive fields to filter from request/response bodies
     SENSITIVE_FIELDS = [
         'password', 'password_hash', 'api_key', 'secret', 'token',
         'access_token', 'refresh_token', 'session_token', 'authorization',
-        'temporary_password', 'reset_token', 'api_secret'
+        'current_password', 'new_password', 'password_candidate',
+        'temporary_password', 'reset_token', 'reset_url', 'full_reset_url',
+        'api_secret',
+        'email', 'recipient', 'recipient_email', 'email_address',
+        'subject', 'html', 'text', 'body', 'template_variables',
+        'render_payload', 'provider_response', 'provider_payload',
+        'webhook_payload', 'idempotency_key', 'activation_link',
+        'reset_link', 'lookup_id', *OAUTH_REDACTION_FIELD_NAMES,
     ]
+
+    SENSITIVE_FIELD_EXACT = {
+        'email', 'recipient', 'subject', 'html', 'text', 'body',
+        'lookup_id', 'secret', 'token', 'idempotency_key',
+        'current_password', 'new_password', *OAUTH_REDACTION_FIELD_NAMES,
+    }
+
+    SENSITIVE_FIELD_FRAGMENTS = {
+        'password', 'password_hash', 'api_key', 'access_token',
+        'refresh_token', 'session_token', 'authorization',
+        'temporary_password', 'reset_token', 'api_secret',
+        'email', 'recipient_email', 'email_address', 'template_variables',
+        'render_payload', 'provider_response', 'provider_payload',
+        'webhook_payload', 'activation_link', 'reset_link',
+        'reset_url', 'idempotency_key', *OAUTH_REDACTION_FIELD_FRAGMENTS,
+    }
     
     # Sensitive headers to filter
     SENSITIVE_HEADERS = [
         'authorization', 'cookie', 'x-api-key', 'x-auth-token',
-        'x-session-token', 'x-api-secret'
+        'x-session-token', 'x-api-secret', 'idempotency-key',
+        'svix-id', 'svix-signature', 'svix-timestamp',
+        'webhook-signature', 'x-webhook-signature', 'x-resend-signature',
+        'x-provider-init-token', 'x-oauth-state', 'x-oauth-link-token',
     ]
     
     # Endpoints to exclude from audit logging (high-frequency, low-value)
@@ -45,7 +78,10 @@ class APIAuditLogger:
         '/redoc',
         '/openapi.json',
         '/auth/validate',  # Phase 1.3: high-frequency, low-value validation — skip sync audit log
+        '/webhooks/email',  # Provider webhooks verify raw bodies; never store raw payloads in API audit
     ]
+
+    REDACTED_VALUE = '***FILTERED***'
     
     @staticmethod
     def should_log_request(path: str, method: str) -> bool:
@@ -77,6 +113,53 @@ class APIAuditLogger:
                 return False
         
         return True
+
+    @staticmethod
+    def _is_sensitive_field(key: str) -> bool:
+        normalized = key.lower().replace('-', '_')
+        if normalized in APIAuditLogger.SENSITIVE_FIELD_EXACT:
+            return True
+        return any(fragment in normalized for fragment in APIAuditLogger.SENSITIVE_FIELD_FRAGMENTS)
+
+    @staticmethod
+    def is_google_oauth_path(path: str) -> bool:
+        """Return True for the public Google OAuth route family."""
+
+        normalized_path = (path or "").split("?", 1)[0]
+        return normalized_path == "/auth/google" or normalized_path.startswith("/auth/google/")
+
+    @staticmethod
+    def sanitize_sensitive_text(value: str) -> str:
+        """Redact email/link/token-like material from free-text audit values."""
+        if not isinstance(value, str) or not value:
+            return value
+
+        sanitized = re.sub(
+            r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',
+            APIAuditLogger.REDACTED_VALUE,
+            value,
+            flags=re.IGNORECASE,
+        )
+        sanitized = re.sub(r'https?://\S+', APIAuditLogger.REDACTED_VALUE, sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(
+            r'\b[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b',
+            APIAuditLogger.REDACTED_VALUE,
+            sanitized,
+        )
+        sanitized = re.sub(
+            r'\b(api[_-]?key|token|secret|idempotency[_-]?key)\s*[=:]\s*\S+',
+            lambda m: f"{m.group(1)}=[REDACTED]",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+        oauth_field_pattern = "|".join(re.escape(field) for field in OAUTH_REDACTION_FIELD_NAMES)
+        sanitized = re.sub(
+            rf'\b({oauth_field_pattern})\b\s*[=:]\s*([^\s,;&]+)',
+            lambda m: f"{m.group(1)}=[REDACTED]",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+        return sanitized
     
     @staticmethod
     def filter_sensitive_data(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -95,17 +178,21 @@ class APIAuditLogger:
         filtered = {}
         for key, value in data.items():
             # Check if key is sensitive
-            if any(sensitive in key.lower() for sensitive in APIAuditLogger.SENSITIVE_FIELDS):
-                filtered[key] = '***FILTERED***'
+            if APIAuditLogger._is_sensitive_field(key):
+                filtered[key] = APIAuditLogger.REDACTED_VALUE
             elif isinstance(value, dict):
                 # Recursively filter nested dictionaries
                 filtered[key] = APIAuditLogger.filter_sensitive_data(value)
             elif isinstance(value, list):
                 # Filter lists of dictionaries
                 filtered[key] = [
-                    APIAuditLogger.filter_sensitive_data(item) if isinstance(item, dict) else item
+                    APIAuditLogger.filter_sensitive_data(item) if isinstance(item, dict)
+                    else APIAuditLogger.sanitize_sensitive_text(item) if isinstance(item, str)
+                    else item
                     for item in value
                 ]
+            elif isinstance(value, str):
+                filtered[key] = APIAuditLogger.sanitize_sensitive_text(value)
             else:
                 filtered[key] = value
         
@@ -125,7 +212,7 @@ class APIAuditLogger:
         filtered = {}
         for key, value in headers.items():
             if key.lower() in APIAuditLogger.SENSITIVE_HEADERS:
-                filtered[key] = '***FILTERED***'
+                filtered[key] = APIAuditLogger.REDACTED_VALUE
             else:
                 filtered[key] = value
         
@@ -144,6 +231,12 @@ class APIAuditLogger:
             Tuple of (resource_type, resource_id)
         """
         parts = [p for p in path.strip('/').split('/') if p]
+
+        if 'emails' in parts:
+            idx = parts.index('emails')
+            if len(parts) > idx + 1 and parts[idx + 1] not in {'resend', 'primary'}:
+                return ('email', parts[idx + 1])
+            return ('email', None)
         
         # Common patterns: /api/v1/users/{hash}, /api/v1/projects/{hash}
         resource_keywords = {
@@ -185,6 +278,10 @@ class APIAuditLogger:
             True if this is a security event
         """
         # Failed authentication
+        if APIAuditLogger.is_google_oauth_path(path) and status_code >= 400:
+            return True
+
+        # Failed authentication
         if status_code == 401 and '/auth/' in path:
             return True
         
@@ -204,8 +301,12 @@ class APIAuditLogger:
         if any(keyword in path for keyword in ['/user-type', '/permissions', '/roles']):
             return True
         
-        # Password resets
+        # Authenticated password change and password-reset links
         if '/password' in path or '/reset' in path:
+            return True
+
+        # Email activation/delivery lifecycle, including webhook-originated events
+        if any(marker in path for marker in ['/auth/email', '/users/me/emails', '/webhooks/email']):
             return True
         
         return False
@@ -248,10 +349,23 @@ class APIAuditLogger:
         # Add endpoint category tags
         if '/auth/' in path:
             tags.append('authentication')
+        if APIAuditLogger.is_google_oauth_path(path):
+            tags.append('google_oauth')
+            tags.append('external_idp')
+        if APIAuditLogger.is_session_auth_security_path(path):
+            tags.append('password_change')
+            tags.append('session_auth')
+        elif '/auth/email' in path or '/auth/password' in path:
+            tags.append('email_link')
         if '/admin/' in path:
             tags.append('admin_action')
         if '/users/' in path:
             tags.append('user_management')
+        if '/users/me/emails' in path:
+            tags.append('email_identity')
+        if '/webhooks/email' in path:
+            tags.append('email_delivery')
+            tags.append('webhook')
         if '/projects/' in path:
             tags.append('project_management')
         if '/groups/' in path:
@@ -270,8 +384,18 @@ class APIAuditLogger:
             tags.append('delete')
         elif method == 'GET':
             tags.append('read')
+
+        if APIAuditLogger.is_security_event(path, method, status_code, user_type) and 'security_event' not in tags:
+            tags.append('security_event')
         
         return tags
+
+    @staticmethod
+    def is_session_auth_security_path(path: str) -> bool:
+        """Return True for security endpoints that require an existing session."""
+
+        normalized_path = (path or "").split("?", 1)[0]
+        return normalized_path == "/auth/password/change"
     
     @staticmethod
     def log_request(
@@ -312,6 +436,8 @@ class APIAuditLogger:
             # Filter sensitive data
             filtered_headers = APIAuditLogger.filter_headers(request_headers) if request_headers else None
             filtered_body = APIAuditLogger.filter_sensitive_data(request_body) if request_body else None
+            filtered_query = APIAuditLogger.filter_sensitive_data(request_query) if request_query else None
+            filtered_metadata = APIAuditLogger.filter_sensitive_data(metadata) if metadata else None
 
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -327,13 +453,13 @@ class APIAuditLogger:
                     session_id,
                     json.dumps(filtered_headers) if filtered_headers else None,
                     json.dumps(filtered_body) if filtered_body else None,
-                    json.dumps(request_query) if request_query else None,
+                    json.dumps(filtered_query) if filtered_query else None,
                     request_size_bytes,
                     client_ip,
                     user_agent,
                     referer,
                     project_id,
-                    json.dumps(metadata) if metadata else None,
+                    json.dumps(filtered_metadata) if filtered_metadata else None,
                     auth_method
                 ))
                 conn.commit()
@@ -385,6 +511,7 @@ class APIAuditLogger:
             # Filter sensitive data
             filtered_body = APIAuditLogger.filter_sensitive_data(response_body) if response_body else None
             filtered_headers = APIAuditLogger.filter_headers(response_headers) if response_headers else None
+            filtered_error_message = APIAuditLogger.sanitize_sensitive_text(error_message) if error_message else None
             
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -395,7 +522,7 @@ class APIAuditLogger:
                     json.dumps(filtered_headers) if filtered_headers else None,
                     response_size_bytes,
                     error_code,
-                    error_message,
+                    filtered_error_message,
                     target_resource_type,
                     target_resource_id,
                     json.dumps(tags) if tags else None,

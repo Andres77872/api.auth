@@ -168,6 +168,19 @@ The gap means permissions assigned via user groups or directly to users are visi
 - System roles must be created via direct DB access
 - System roles are intended to be blocked from API deletion, but the current route references missing `ErrorCode.OPERATION_NOT_ALLOWED`; until the enum/source is fixed, that path surfaces as a generic 500 rather than a clean 403
 
+### Missing `ErrorCode` members cause 500s on several branches
+
+`global_roles.py` references four `ErrorCode` members that are **absent from the `ErrorCode` enum** in `src/Util/error_handler.py`. Because the code reads the enum attribute while constructing the error, the missing attribute raises `AttributeError` and the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended status:
+
+| Missing member | Referenced at | Intended status |
+|----------------|---------------|-----------------|
+| `OPERATION_NOT_ALLOWED` | line 222 (system-role delete) | 403 |
+| `PERMISSION_GROUP_NOT_FOUND` | lines 260, 329, 419, 445, 478, 511, 557, 581 (permission-group not-found lookups) | 404 |
+| `ALREADY_EXISTS` | line 959 (duplicate project-catalog add) | 409 |
+| `NOT_FOUND` | lines 341, 600, 1051 (unlink / catalog-removal "not assigned" branches) | 404 |
+
+Note that `ErrorCode.NOT_FOUND` must not be confused with `ErrorCategory.NOT_FOUND` (which does exist); only the `ErrorCode` member is missing. These are runtime defects, not documented behaviors — see [troubleshooting.md](troubleshooting.md) and [reference.md](reference.md#error-responses).
+
 ### Project catalog is metadata only
 
 - Catalog endpoints have `"note": "This is METADATA ONLY"` in responses
@@ -194,5 +207,5 @@ The gap means permissions assigned via user groups or directly to users are visi
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

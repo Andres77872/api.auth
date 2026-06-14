@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS api_audit_log (
     user_id VARCHAR(64),
     user_type ENUM('root', 'admin', 'consumer'),
     session_id VARCHAR(256),
-    auth_method ENUM('session', 'api_key') NOT NULL DEFAULT 'session',
+    auth_method ENUM('session', 'api_key', 'anonymous', 'email_link', 'webhook', 'oauth') NOT NULL DEFAULT 'session',
     request_headers JSON,
     request_body JSON,
     request_query JSON,
@@ -227,19 +227,6 @@ CREATE TABLE IF NOT EXISTS api_audit_log (
     INDEX idx_request_id (request_id),
     INDEX idx_security (security_event, request_timestamp DESC),
     INDEX idx_audit_required (requires_audit, request_timestamp DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- =================== USER_PASSWORD_RESETS TABLE ===================
-CREATE TABLE IF NOT EXISTS user_password_resets (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    reset_token VARCHAR(255) NOT NULL,
-    temporary_password_hash VARCHAR(255) NOT NULL,
-    expires_at TIMESTAMP NOT NULL,
-    used_at TIMESTAMP NULL,
-    created_by VARCHAR(64) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =================== ROLE_ASSIGNMENT_HISTORY TABLE ===================

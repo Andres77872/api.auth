@@ -68,5 +68,5 @@ If you need the full group model first, read the [groups documentation suite](..
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

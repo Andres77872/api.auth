@@ -1,8 +1,11 @@
 """
 Password Generation Utility
 
-Provides secure password generation for administrative functions
-like password resets and temporary password creation.
+Provides legacy password generation helpers for older administrative utilities.
+
+These helpers are not authoritative for auth password reset/change flows. The
+current reset contract is link-only and the accepted password policy lives in
+``src.Util.password_security.validate_password_policy``.
 """
 
 import secrets
@@ -13,13 +16,21 @@ from typing import Dict, Any
 
 class PasswordGenerator:
     """
-    Secure password generation utility
+    Legacy password generation utility.
+
+    Do not use this class to implement auth reset/change policy. Character-class
+    scoring and temporary passwords are retained only for stale compatibility
+    paths until those callers are removed.
     """
 
     @staticmethod
     def generate_temporary_password(length: int = 12) -> str:
         """
-        Generate a secure temporary password
+        Generate a legacy temporary password.
+
+        Not authoritative for password recovery/change flows; reset/change must
+        use hash-only links plus caller-submitted passwords validated by
+        ``password_security.validate_password_policy``.
         
         Args:
             length: Password length (minimum 8, maximum 32)
@@ -59,7 +70,10 @@ class PasswordGenerator:
     @staticmethod
     def generate_reset_token() -> str:
         """
-        Generate a secure password reset token
+        Generate a legacy reset token.
+
+        Not used by current auth reset/change flows, which store only hash-only
+        purpose-scoped link-token verifiers.
         
         Returns:
             URL-safe reset token
@@ -69,7 +83,10 @@ class PasswordGenerator:
     @staticmethod
     def create_password_reset_data(user_id: str, expiry_hours: int = 24) -> Dict[str, Any]:
         """
-        Create password reset data structure
+        Create a legacy password reset data structure.
+
+        This contains plaintext reset/temporary password material and must not be
+        used for live auth reset/change flows.
         
         Args:
             user_id: User ID for the reset
@@ -94,7 +111,10 @@ class PasswordGenerator:
     @staticmethod
     def validate_password_strength(password: str) -> Dict[str, Any]:
         """
-        Validate password strength
+        Legacy character-class strength scoring.
+
+        This score is not the server-side authentication password policy. Use
+        ``src.Util.password_security.validate_password_policy`` instead.
         
         Args:
             password: Password to validate

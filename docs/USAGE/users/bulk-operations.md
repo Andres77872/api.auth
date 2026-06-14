@@ -46,7 +46,6 @@ Accepted update fields at the route layer:
 
 - `is_active`
 - `user_type`
-- `force_password_reset`
 
 Route-level limits and validation:
 
@@ -54,6 +53,12 @@ Route-level limits and validation:
 - maximum **100** users per request
 - `user_type` must be `root`, `admin`, or `consumer` if provided
 - at least one update field must be present
+- `force_password_reset` is not supported; the route rejects it with guidance to reset-link recovery or `/auth/password/change`
+
+Rejected password-control compatibility fields:
+
+- Do not send `force_password_reset`; there is no forced login-gated password-change workflow in this change.
+- Do not send `must_change_on_login` through direct utility callers; stale callers receive per-user errors instead of silent success.
 
 ### Result shape
 
@@ -159,6 +164,7 @@ Those belong to the groups/roles admin endpoints.
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[User Types](user-types.md)**
 - **[Architecture](architecture.md)**
 - **[Request & Data Flow](request-flow.md)**
@@ -168,5 +174,5 @@ Those belong to the groups/roles admin endpoints.
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026
 **Document Version**: 1.0

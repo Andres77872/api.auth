@@ -145,15 +145,6 @@ ALTER TABLE permission_cache
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- ===================================================================================
--- USER_PASSWORD_RESETS TABLE CONSTRAINTS
--- ===================================================================================
-ALTER TABLE user_password_resets
-    ADD CONSTRAINT fk_user_password_resets_user FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_password_resets_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- ===================================================================================
 -- ROLE_ASSIGNMENT_HISTORY TABLE CONSTRAINTS
 -- All FKs are nullable except performed_by to support different assignment types
 -- ===================================================================================
@@ -535,16 +526,6 @@ BEGIN
     IF NEW.expires_at <= NOW() THEN
         SIGNAL SQLSTATE '45000' 
         SET MESSAGE_TEXT = 'Permission cache expiry must be in the future';
-    END IF;
-END$$
-
-CREATE TRIGGER tr_validate_password_reset_expiry
-BEFORE INSERT ON user_password_resets
-FOR EACH ROW
-BEGIN
-    IF NEW.expires_at <= NOW() THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Password reset expiry must be in the future';
     END IF;
 END$$
 

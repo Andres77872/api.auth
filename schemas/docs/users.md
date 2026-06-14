@@ -89,7 +89,8 @@ CREATE TABLE users (
 |-------|---------|
 | `user_group_members` | User → User Group membership |
 | `user_sessions` | Active user sessions |
-| `user_password_resets` | Password reset tokens |
+| `user_emails` | Activated-email authority for login and recovery |
+| `user_email_link_tokens` | Hash-only purpose-scoped link-token verification for activation and password recovery |
 | `user_permission_groups` | Direct permission assignments (exceptions) |
 
 ---
@@ -100,7 +101,7 @@ CREATE TABLE users (
 
 | Procedure | Parameters | Description |
 |-----------|------------|-------------|
-| `sp_user_login` | `p_username_email` | Authenticate by username or email |
+| `sp_user_login` | `p_username_email` | Authenticate by username or active activated email |
 | `sp_update_last_login` | `p_user_id` | Update last login timestamp |
 
 **Login Example:**
@@ -156,7 +157,8 @@ CALL sp_create_consumer_user(
 |-----------|------------|-------------|
 | `sp_update_user` | `id, username, email, password_hash, user_type` | Update profile (NULL = keep) |
 | `sp_update_user_type` | `id, new_user_type` | Change user type |
-| `sp_update_password_hash` | `id, new_password_hash` | Update password |
+| `sp_change_user_password_if_hash_matches` | `id, expected_password_hash, new_password_hash` | Conditional authenticated password-change write after Python verification |
+| `sp_update_password_hash` | `id, new_password_hash` | Internal hash migration helper; not a profile password-change contract |
 | `sp_set_user_status` | `id, is_active` | Activate/deactivate |
 
 **Update Example:**
@@ -254,28 +256,40 @@ CALL sp_check_user_in_group('user-id', 'group-id');
 
 ## Password Management
 
-### Password Reset Table
+### Live Password-Recovery Storage
+
+Password recovery is link-only and uses the existing email-activation link-token model. Live recovery state is stored in `user_email_link_tokens` with purpose separation, lifecycle state, expiry, lookup metadata, and a non-reversible verifier hash.
 
 ```sql
-CREATE TABLE user_password_resets (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    reset_token VARCHAR(255) NOT NULL,
-    temporary_password_hash VARCHAR(255) NOT NULL,
-    expires_at TIMESTAMP NOT NULL,
-    used_at TIMESTAMP NULL,
-    created_by VARCHAR(64) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
+-- Conceptual shape only; see schemas/tables/14_email_activation.sql for the authoritative DDL.
+user_email_link_tokens(
+    id,
+    user_id,
+    user_email_id,
+    purpose,
+    lookup_id,
+    token_hash,
+    token_fingerprint,
+    expires_at,
+    consumed_at,
+    revoked_at
+)
+```
+
+Forgot-password and admin reset-link requests enqueue through the transactional auth-email outbox when the target has an active activated email. Reset-link consume writes a new one-way password hash and creates no session.
+
+### Authenticated Password Change
+
+```sql
+-- Python verifies current_password and hashes new_password before this conditional write.
+CALL sp_change_user_password_if_hash_matches(
+    'user-id',
+    'expected-current-argon2id-hash',
+    'new-argon2id-hash'
 );
 ```
 
-### Password Update
-
-```sql
--- Update password directly
-CALL sp_update_password_hash('user-id', 'new_hashed_password');
-```
+`PUT /users/profile` is not a password-change surface. Clients must use `POST /auth/password/change`, which re-authenticates with `current_password`, enforces the shared password policy, preserves the current session, and revokes other sessions/families after success.
 
 ---
 
@@ -329,7 +343,7 @@ CALL sp_create_consumer_user(
     'usr-hash-generated',
     'newuser',
     'newuser@example.com',
-    'bcrypt_hashed_password',
+    'argon2id_password_hash',
     'creator-user-id'
 );
 

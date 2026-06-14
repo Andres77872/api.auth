@@ -30,10 +30,36 @@ from src.Util.Models import (
 )
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
-from src.Util.password_security import hash_password, verify_password, needs_rehash
+from src.Util.password_security import assert_password_policy, hash_password, verify_password, needs_rehash
 from src.Util.uuid_generator import generate_user_id, generate_user_group_member_id
 from src.Util.db_error_wrapper import handle_db_operation
-from src.Util.error_handler import ValidationError, NotFoundError, ErrorCode, mask_uuid
+from src.Util.error_handler import (
+    ValidationError,
+    NotFoundError,
+    ErrorCode,
+    create_invalid_current_password_error,
+    mask_uuid,
+)
+
+
+# Argon2id hash for a fixed non-secret dummy password.  Used only to keep the
+# unknown-identifier and wrong-password login paths on the same verifier code
+# path now that `sp_user_login` can resolve activated email identifiers.
+_DUMMY_LOGIN_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=1$UnTB4vmrq4ep1cnWyQuR0A"
+    "$IvZyEmvLhY+omvSPYR3FQ239DBBwFeHOvlOTxpt6Ld8"
+)
+
+
+def _verify_dummy_login_password(password: str) -> None:
+    """Run password verification for generic invalid-login timing posture."""
+
+    try:
+        verify_password(password or "", _DUMMY_LOGIN_PASSWORD_HASH)
+    except Exception:
+        # Equalization is best-effort and must never turn invalid credentials
+        # into a server error.
+        return
 
 
 # =================== USER HASH UTILITY ===================
@@ -271,6 +297,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 pass
 
             if not result:
+                _verify_dummy_login_password(password)
                 return None
 
             # Map result to variables (assigned_project_id was removed in new schema)
@@ -286,6 +313,10 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 last_login,
                 is_active_flag,
             ) = result
+
+            if not stored_password_hash:
+                _verify_dummy_login_password(password)
+                return None
 
             # Verify password (handles legacy & new Argon2 hashes)
             if not verify_password(password, stored_password_hash):
@@ -517,6 +548,86 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
         _update,
         error_context=f"update_user(user_id={user_id}, username={username}, email={email}, user_type={user_type})"
     )
+
+
+def _row_value(row: Any, key: str, index: int, default: Any = None) -> Any:
+    """Read a DB row value from either DictCursor or tuple-style rows."""
+
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[index]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def change_user_password(
+    *,
+    user_id: str,
+    current_password: str,
+    new_password: str,
+    username: str | None = None,
+    email: str | None = None,
+) -> Dict[str, Any]:
+    """Change a user's password after current-password re-authentication.
+
+    Python owns policy, verification, and Argon2 hashing. SQL only locks the
+    current row and performs the conditional old-hash match/update transition.
+    Submitted password material is never logged, persisted, or returned.
+    """
+
+    rows_affected = 0
+    with get_connection() as con:
+        cur = con.cursor()
+        try:
+            con.begin()
+            cur.execute(
+                """
+                SELECT password_hash, is_active
+                FROM users
+                WHERE id = %s
+                  AND is_active = TRUE
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row or not bool(_row_value(row, "is_active", 1, False)):
+                raise create_invalid_current_password_error()
+
+            stored_hash = _row_value(row, "password_hash", 0)
+            if not stored_hash or not verify_password(current_password, stored_hash):
+                raise create_invalid_current_password_error()
+
+            assert_password_policy(new_password, username=username, email=email)
+            new_hash = hash_password(new_password)
+
+            cur.callproc(
+                "sp_change_user_password_if_hash_matches",
+                [user_id, stored_hash, new_hash],
+            )
+            result = cur.fetchone()
+            while cur.nextset():
+                pass
+
+            rows_affected = int(_row_value(result, "rows_affected", 0, 0) or 0)
+            if rows_affected != 1:
+                raise create_invalid_current_password_error()
+
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+    cache_manager.invalidate_user_cache(user_id)
+    return {"password_changed": True, "rows_affected": rows_affected}
 
 
 def delete_user(user_id: str, deleted_by: str = None) -> bool:

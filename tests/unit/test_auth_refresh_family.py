@@ -61,6 +61,7 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
         REFRESH_COOKIE_NAME,
         REFRESH_ANCHOR_PREFIX,
         REFRESH_FAMILY_TTL_SECONDS,
+        REMEMBER_ME_REFRESH_TTL_SECONDS,
     )
 
     fake = FakeStrictRedis()
@@ -104,6 +105,9 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     assert record["status"] == "current"
     assert record["token_hash"] == hashlib.sha256(pair.refresh_token.encode()).hexdigest()
     assert pair.refresh_token not in json.dumps(record)
+    assert family["remember_me"] is False
+    assert family["refresh_ttl_seconds"] == REFRESH_FAMILY_TTL_SECONDS
+    assert family["absolute_expires_at"] is None
     assert fake.ttl(f"refresh_family:{family_id}") == REFRESH_FAMILY_TTL_SECONDS
 
     anchor_raw = fake.get(f"{REFRESH_ANCHOR_PREFIX}{family_id}")
@@ -128,6 +132,9 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
         "created_at",
         "updated_at",
         "expires_at",
+        "remember_me",
+        "refresh_ttl_seconds",
+        "absolute_expires_at",
     }
     assert anchor["anchor_version"] == 1
     assert anchor["family_id"] == family_id
@@ -140,6 +147,9 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     assert anchor["collection"] == "prj-hash-1"
     assert anchor["project_hash"] == "prj-hash-1"
     assert anchor["expires_at"] == family["expires_at"]
+    assert anchor["remember_me"] is False
+    assert anchor["refresh_ttl_seconds"] == REFRESH_FAMILY_TTL_SECONDS
+    assert anchor["absolute_expires_at"] is None
     assert fake.ttl(f"{REFRESH_ANCHOR_PREFIX}{family_id}") == REFRESH_FAMILY_TTL_SECONDS
     serialized_anchor = json.dumps(anchor)
     assert pair.access_token not in serialized_anchor
@@ -148,6 +158,37 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     assert "permissions" not in anchor
     assert "groups" not in anchor
     assert "session_full" not in anchor
+
+    remembered = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-2",
+            "user_hash": "usr-hash-2",
+            "username": "remembered",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+        remember_me=True,
+    )
+    remembered_family_id = remembered.refresh_claims["family_id"]
+    remembered_refresh_jti = remembered.refresh_claims["jti"]
+    remembered_family = _decode(fake.get(f"refresh_family:{remembered_family_id}"))
+    remembered_record = _decode(fake.get(f"refresh_token:{remembered_refresh_jti}"))
+    remembered_anchor = _decode(fake.get(f"{REFRESH_ANCHOR_PREFIX}{remembered_family_id}"))
+
+    assert remembered.refresh_expires_in == REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert remembered.cookie_metadata["refresh"]["max_age"] == REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert remembered_family["remember_me"] is True
+    assert remembered_family["refresh_ttl_seconds"] == REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert remembered_family["absolute_expires_at"] == remembered_family["expires_at"]
+    assert remembered_record["absolute_expires_at"] == remembered_family["expires_at"]
+    assert remembered_anchor["absolute_expires_at"] == remembered_family["expires_at"]
+    assert fake.ttl(f"refresh_family:{remembered_family_id}") == REMEMBER_ME_REFRESH_TTL_SECONDS
 
 
 def test_revoke_refresh_family_marks_family_and_deletes_active_access(monkeypatch):
@@ -266,6 +307,60 @@ def test_rotate_refresh_succeeds_from_anchor_when_old_access_session_missing(mon
     assert anchor["current_refresh_jti"] == rotation.token_pair.refresh_claims["jti"]
     assert 0 < fake.ttl(f"session:{rotation.token_pair.access_claims['jti']}") <= rotation.token_pair.expires_in
     assert fake.ttl(f"refresh_anchor:{family_id}") == REFRESH_FAMILY_TTL_SECONDS
+
+
+def test_remembered_refresh_rotation_keeps_original_absolute_expiry(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+    from src.Util.auth_constants import REMEMBER_ME_REFRESH_TTL_SECONDS
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={
+            "id": "usr-db-1",
+            "user_hash": "usr-hash-1",
+            "username": "consumer",
+            "user_type": "consumer",
+        },
+        project={
+            "id": "prj-db-1",
+            "project_hash": "prj-hash-1",
+            "project_name": "Project One",
+        },
+        permissions=["read"],
+        groups=["Consumers"],
+        remember_me=True,
+    )
+    family_id = pair.refresh_claims["family_id"]
+    old_access_jti = pair.access_claims["jti"]
+    old_refresh_jti = pair.refresh_claims["jti"]
+    original_family = _decode(fake.get(f"refresh_family:{family_id}"))
+    original_expires_at = original_family["expires_at"]
+
+    fake.delete(f"session:{old_access_jti}", f"session_full:{old_access_jti}")
+
+    rotation = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    new_refresh_jti = rotation.token_pair.refresh_claims["jti"]
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    old_record = _decode(fake.get(f"refresh_token:{old_refresh_jti}"))
+    new_record = _decode(fake.get(f"refresh_token:{new_refresh_jti}"))
+    anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
+
+    assert family["remember_me"] is True
+    assert family["expires_at"] == original_expires_at
+    assert family["absolute_expires_at"] == original_expires_at
+    assert old_record["status"] == "used"
+    assert new_record["status"] == "current"
+    assert new_record["expires_at"] == original_expires_at
+    assert anchor["expires_at"] == original_expires_at
+    assert anchor["absolute_expires_at"] == original_expires_at
+    assert rotation.token_pair.refresh_expires_at.isoformat() == original_expires_at
+    assert 0 < rotation.token_pair.refresh_expires_in <= REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert 0 < fake.ttl(f"refresh_family:{family_id}") <= REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert 0 < fake.ttl(f"refresh_anchor:{family_id}") <= REMEMBER_ME_REFRESH_TTL_SECONDS
 
 
 def test_legacy_family_without_anchor_or_old_session_backfills_anchor(monkeypatch):
@@ -432,13 +527,16 @@ def test_concurrent_refresh_presentations_allow_at_most_one_success(monkeypatch)
         assert fake.get(f"refresh_anchor:{family_id}") is None
 
 
-def test_refresh_family_expiry_uses_72h_sliding_window():
+def test_refresh_family_expiry_uses_configured_windows():
     from src.Util.auth_lifecycle import compute_refresh_expires_at
-    from src.Util.auth_constants import REFRESH_FAMILY_TTL_SECONDS
+    from src.Util.auth_constants import REFRESH_FAMILY_TTL_SECONDS, REMEMBER_ME_REFRESH_TTL_SECONDS
 
     now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
 
     assert compute_refresh_expires_at(now) == now + timedelta(seconds=REFRESH_FAMILY_TTL_SECONDS)
+    assert compute_refresh_expires_at(now, REMEMBER_ME_REFRESH_TTL_SECONDS) == (
+        now + timedelta(seconds=REMEMBER_ME_REFRESH_TTL_SECONDS)
+    )
 
 
 def test_reconstruct_project_context_uses_existing_db_hooks(monkeypatch):

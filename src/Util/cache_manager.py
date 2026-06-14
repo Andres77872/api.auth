@@ -20,6 +20,14 @@ import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Iterator, List
 
+from src.Util.auth_constants import (
+    AUTH_CHANGE_PASSWORD_RATE_PREFIX as AUTH_PASSWORD_CHANGE_RATE_PREFIX,
+    EMAIL_COOLDOWN_PREFIX as AUTH_EMAIL_COOLDOWN_PREFIX,
+    EMAIL_IDEMPOTENCY_CACHE_PREFIX as AUTH_EMAIL_IDEMPOTENCY_CACHE_PREFIX,
+    EMAIL_RATE_PREFIX as AUTH_EMAIL_RATE_PREFIX,
+    EMAIL_WEBHOOK_EVENT_PREFIX as AUTH_EMAIL_WEBHOOK_EVENT_PREFIX,
+    EMAIL_WORKER_WAKE_PREFIX as AUTH_EMAIL_WORKER_WAKE_PREFIX,
+)
 from src.Util.db_config import redis_client
 
 # Configure logging
@@ -48,6 +56,12 @@ USER_INFO_PREFIX = "user_info:"
 PERMISSION_PREFIX = "permission:"
 USER_TYPE_PREFIX = "user_type:"
 APIKEY_PREFIX = "apikey:"
+EMAIL_RATE_PREFIX = AUTH_EMAIL_RATE_PREFIX
+EMAIL_COOLDOWN_PREFIX = AUTH_EMAIL_COOLDOWN_PREFIX
+EMAIL_IDEMPOTENCY_CACHE_PREFIX = AUTH_EMAIL_IDEMPOTENCY_CACHE_PREFIX
+EMAIL_WEBHOOK_EVENT_PREFIX = AUTH_EMAIL_WEBHOOK_EVENT_PREFIX
+EMAIL_WORKER_WAKE_PREFIX = AUTH_EMAIL_WORKER_WAKE_PREFIX
+PASSWORD_CHANGE_RATE_PREFIX = AUTH_PASSWORD_CHANGE_RATE_PREFIX
 
 # API key cache TTL (seconds) — short window to balance performance with security
 APIKEY_TTL = 60  # 60 seconds
@@ -131,6 +145,44 @@ class CacheManager:
         """Generate a hash for long keys"""
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
+    @staticmethod
+    def _stable_email_key(prefix: str, namespace: str, *parts: Optional[str]) -> str:
+        """Build non-PII Redis keys for email safety primitives.
+
+        Callers pass already-hashed identifiers where possible; this helper also
+        hashes the composite to avoid plaintext emails/idempotency keys ending up
+        in Redis key names or metrics output.
+        """
+        clean_parts = [str(part).strip().lower() for part in parts if part is not None]
+        material = "|".join([namespace, *clean_parts])
+        return f"{prefix}{namespace}:{CacheManager._hash_key(material)}"
+
+    @staticmethod
+    def email_rate_key(bucket: str, *parts: Optional[str]) -> str:
+        return CacheManager._stable_email_key(EMAIL_RATE_PREFIX, bucket, *parts)
+
+    @staticmethod
+    def email_cooldown_key(recipient_hash: str, purpose: str) -> str:
+        return CacheManager._stable_email_key(EMAIL_COOLDOWN_PREFIX, purpose, recipient_hash)
+
+    @staticmethod
+    def email_idempotency_cache_key(scope: str, key_hash: str) -> str:
+        return CacheManager._stable_email_key(EMAIL_IDEMPOTENCY_CACHE_PREFIX, scope, key_hash)
+
+    @staticmethod
+    def email_webhook_event_key(provider: str, event_id: str) -> str:
+        return CacheManager._stable_email_key(EMAIL_WEBHOOK_EVENT_PREFIX, provider, event_id)
+
+    @staticmethod
+    def email_worker_wake_key(worker_name: str = "global") -> str:
+        return CacheManager._stable_email_key(EMAIL_WORKER_WAKE_PREFIX, "wake", worker_name)
+
+    @staticmethod
+    def password_change_rate_key(bucket: str, *parts: Optional[str]) -> str:
+        """Build a non-PII Redis key for authenticated password-change buckets."""
+
+        return CacheManager._stable_email_key(PASSWORD_CHANGE_RATE_PREFIX, bucket, *parts)
+
     # =============================================================================
     # SESSION MANAGEMENT
     # =============================================================================
@@ -185,6 +237,43 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Failed to get JSON cache key {key}: {e}")
             return None
+
+    # =============================================================================
+    # EMAIL SAFETY PRIMITIVES (rate/cooldown/idempotency/webhook/wake)
+    # =============================================================================
+
+    def increment_email_rate_bucket(self, key: str, ttl_seconds: int) -> int:
+        """Increment a fixed-window email rate bucket and apply TTL on first hit."""
+        count = int(self.redis.incr(key))
+        if count == 1:
+            self.redis.expire(key, max(1, int(ttl_seconds)))
+        return count
+
+    def email_key_ttl(self, key: str) -> int:
+        """Return Redis TTL for email primitive keys, normalized to non-negative seconds."""
+        ttl = int(self.redis.ttl(key))
+        return max(0, ttl)
+
+    def mark_email_cooldown(self, key: str, ttl_seconds: int) -> bool:
+        """Mark a resend cooldown without storing recipient plaintext in the key."""
+        return bool(self.redis.set(key, "1", ex=max(1, int(ttl_seconds))))
+
+    def set_email_idempotency_replay(self, key: str, value: Dict[str, Any], ttl_seconds: int) -> bool:
+        """Cache a non-authoritative replay body; MySQL remains canonical."""
+        return self.set_json(key, value, max(1, int(ttl_seconds)))
+
+    def get_email_idempotency_replay(self, key: str) -> Optional[Dict[str, Any]]:
+        """Fetch cached email idempotency replay metadata if present."""
+        return self.get_json(key)
+
+    def mark_email_webhook_event_seen(self, key: str, ttl_seconds: int) -> bool:
+        """Return True only the first time a webhook event key is observed."""
+        return bool(self.redis.set(key, "1", ex=max(1, int(ttl_seconds)), nx=True))
+
+    def wake_email_worker(self, worker_name: str = "global", ttl_seconds: int = 30) -> bool:
+        """Best-effort Redis wake marker; the DB outbox remains canonical."""
+        key = self.email_worker_wake_key(worker_name)
+        return bool(self.redis.set(key, "1", ex=max(1, int(ttl_seconds))))
 
     def delete_access_session(self, access_jti: str) -> int:
         return self._delete_keys([self.session_key(access_jti), self.session_full_key(access_jti)])

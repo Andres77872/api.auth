@@ -77,9 +77,25 @@ When you soft-delete a role:
 **Fix:** manually clear the user's `role_id` after deleting their role:
 
 ```bash
-curl -X DELETE "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
+
+---
+
+### Removing an already-removed link/catalog entry returns 500 instead of 404
+
+Three "removal" endpoints try to return a clean 404 when the thing you are unlinking is not actually linked, but the `ErrorCode.NOT_FOUND` member they reference is **absent from the `ErrorCode` enum** (`src/Util/error_handler.py`). Referencing the missing member raises `AttributeError`, so the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended **404**:
+
+| Endpoint | Handler line | "Not found" branch |
+|----------|--------------|--------------------|
+| `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | `global_roles.py:341` | Permission group is not assigned to this role |
+| `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | `global_roles.py:600` | Permission is not assigned to this group |
+| `DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}` | `global_roles.py:1051` | Role is not in the project catalog |
+
+Note this only triggers when the **role/group/permission/project themselves DO exist** (those existence checks raise proper 404s with valid error codes) but the **link** does not. The duplicate-add counterpart (`POST /roles/projects/{hash}/catalog/roles/{role_hash}`) has the same class of defect via the missing `ErrorCode.ALREADY_EXISTS` — it returns 500 instead of the intended 409.
+
+**Workaround:** treat a 500 on these three unlink/catalog-delete calls as an idempotent no-op — the link was already gone, so there is nothing to undo. Do not retry as if the operation failed. This will return a proper 404 once the missing `ErrorCode.NOT_FOUND` member is added.
 
 ---
 
@@ -192,7 +208,7 @@ After deleting a role, check if any users still reference it:
 
 ```bash
 # This returns null for users with soft-deleted roles
-curl -X GET "http://localhost:8000/roles/users/usr-abc123/role" \
+curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -213,5 +229,5 @@ If it returns null but you know the user had a role, their role was likely soft-
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

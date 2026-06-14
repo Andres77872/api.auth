@@ -39,7 +39,7 @@ CREATE PROCEDURE sp_log_api_request(
     IN p_referer VARCHAR(512),
     IN p_project_id VARCHAR(64),
     IN p_metadata JSON,
-    IN p_auth_method ENUM('session', 'api_key')
+    IN p_auth_method ENUM('session', 'api_key', 'anonymous', 'email_link', 'webhook', 'oauth')
 )
 BEGIN
     INSERT INTO api_audit_log (
@@ -318,4 +318,3 @@ DELIMITER ;
 -- ===================================================================================
 SELECT 'API audit log stored procedures created successfully!' as status,
        '8 procedures for comprehensive API auditing' as details;
-

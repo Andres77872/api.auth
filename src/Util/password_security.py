@@ -13,11 +13,168 @@ Features:
 """
 
 import hashlib
+import re
 import secrets
-from typing import Optional
+import string
+from dataclasses import dataclass
+from typing import Iterable, Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, HashingError
+
+from src.Util.auth_constants import (
+    DEFAULT_PASSWORD_MIN_LENGTH,
+    DEFAULT_PASSWORD_WEAK_DENYLIST,
+)
+
+
+PASSWORD_POLICY_REASON_TOO_SHORT = "too_short"
+PASSWORD_POLICY_REASON_COMMON = "common_password"
+PASSWORD_POLICY_REASON_IDENTIFIER = "obvious_identifier_derivation"
+PASSWORD_POLICY_REASON_REPEATED_OR_SEQUENTIAL = "repeated_or_sequential"
+
+
+@dataclass(frozen=True)
+class PasswordPolicyResult:
+    """Secret-safe result for server-side password-policy validation.
+
+    The submitted password and contextual identifiers are intentionally omitted
+    from this object because tests, logs, and API errors may serialize it.
+    """
+
+    is_valid: bool
+    reason_codes: tuple[str, ...]
+    min_length: int
+
+
+def _as_policy_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().casefold()
+
+
+def _compact_policy_text(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", _as_policy_text(value))
+
+
+def _denylist_values(extra_blocklist: Iterable[str] | None = None) -> set[str]:
+    values: set[str] = set()
+    for item in DEFAULT_PASSWORD_WEAK_DENYLIST:
+        normalized = _as_policy_text(item)
+        compact = _compact_policy_text(item)
+        if normalized:
+            values.add(normalized)
+        if compact:
+            values.add(compact)
+
+    if extra_blocklist:
+        for item in extra_blocklist:
+            normalized = _as_policy_text(item)
+            compact = _compact_policy_text(item)
+            if normalized:
+                values.add(normalized)
+            if compact:
+                values.add(compact)
+    return values
+
+
+def _contextual_values(*values: str | None) -> set[str]:
+    contextual: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        normalized = _as_policy_text(value)
+        compact = _compact_policy_text(value)
+        local_part = normalized.split("@", 1)[0] if "@" in normalized else normalized
+        for candidate in (normalized, compact, _compact_policy_text(local_part)):
+            if len(candidate) >= 3:
+                contextual.add(candidate)
+    return contextual
+
+
+def _is_repeated_or_sequence(password: str) -> bool:
+    compact = _compact_policy_text(password)
+    if len(compact) < 8:
+        return False
+
+    if len(set(compact)) == 1:
+        return True
+
+    if compact.isalpha() and _is_monotonic_sequence(compact, string.ascii_lowercase):
+        return True
+    if compact.isdigit() and _is_monotonic_sequence(compact, string.digits):
+        return True
+
+    return False
+
+
+def _is_monotonic_sequence(value: str, alphabet: str) -> bool:
+    positions = [alphabet.find(char) for char in value]
+    if any(position < 0 for position in positions):
+        return False
+
+    size = len(alphabet)
+    forward = all((positions[index] - positions[index - 1]) % size == 1 for index in range(1, len(positions)))
+    backward = all((positions[index - 1] - positions[index]) % size == 1 for index in range(1, len(positions)))
+    return forward or backward
+
+
+def validate_password_policy(
+    password: str,
+    *,
+    username: str | None = None,
+    email: str | None = None,
+    identifier: str | None = None,
+    min_length: int | None = None,
+    extra_blocklist: Iterable[str] | None = None,
+) -> PasswordPolicyResult:
+    """Validate a candidate against the shared NIST-style server policy.
+
+    This helper intentionally avoids character-class requirements and never
+    returns the candidate password, context identifiers, or denylist contents.
+    """
+
+    candidate = password if isinstance(password, str) else ""
+    effective_min_length = max(1, int(min_length if min_length is not None else DEFAULT_PASSWORD_MIN_LENGTH))
+    reason_codes: list[str] = []
+
+    if len(candidate) < effective_min_length:
+        reason_codes.append(PASSWORD_POLICY_REASON_TOO_SHORT)
+
+    candidate_normalized = _as_policy_text(candidate)
+    candidate_compact = _compact_policy_text(candidate)
+    denylist = _denylist_values(extra_blocklist)
+    if candidate_normalized in denylist or candidate_compact in denylist:
+        reason_codes.append(PASSWORD_POLICY_REASON_COMMON)
+
+    contextual_values = _contextual_values(username, email, identifier)
+    if candidate_compact and any(value in candidate_compact for value in contextual_values):
+        reason_codes.append(PASSWORD_POLICY_REASON_IDENTIFIER)
+
+    if _is_repeated_or_sequence(candidate):
+        reason_codes.append(PASSWORD_POLICY_REASON_REPEATED_OR_SEQUENTIAL)
+
+    ordered_unique_reasons = tuple(dict.fromkeys(reason_codes))
+    return PasswordPolicyResult(
+        is_valid=not ordered_unique_reasons,
+        reason_codes=ordered_unique_reasons,
+        min_length=effective_min_length,
+    )
+
+
+def assert_password_policy(password: str, **context) -> None:
+    """Raise a sanitized VAL_3007 error when a candidate fails policy."""
+
+    result = validate_password_policy(password, **context)
+    if result.is_valid:
+        return
+
+    from src.Util.error_handler import create_weak_password_error
+
+    raise create_weak_password_error(
+        reason_codes=result.reason_codes,
+        min_length=result.min_length,
+    )
 
 
 class PasswordManager:

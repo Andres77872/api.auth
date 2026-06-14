@@ -6,9 +6,10 @@ Includes both data models and API response models.
 """
 
 from datetime import datetime
+import re
 from typing import List, Optional, Dict, Any
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from src.Util.auth_constants import TOKEN_TYPE_BEARER
 
@@ -22,6 +23,23 @@ class BaseModelConfig(BaseModel):
         validate_assignment=True,
         arbitrary_types_allowed=True
     )
+
+
+_EMAIL_FORMAT_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _optional_email_or_none(value: Any) -> Any:
+    """Treat omitted/blank optional email values as absent; reject bad supplied values."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Email must be a string")
+    normalized = value.strip()
+    if not _EMAIL_FORMAT_RE.match(normalized):
+        raise ValueError("Invalid email format")
+    return normalized
 
 
 # =================== CORE DATA ENTITIES ===================
@@ -337,6 +355,99 @@ class ValidateApiKeyResponse(BaseResponse):
 class LogoutResponse(BaseResponse):
     """Logout endpoint response"""
     pass
+
+
+class GoogleOAuthStartRequest(BaseModelConfig):
+    """Google OAuth start request.
+
+    Browser-provided strict project/group hashes are intentionally absent. The
+    server resolves those bindings only through the opaque provider-init token.
+    """
+
+    provider_init_token: str = Field(..., min_length=1, max_length=4096)
+    redirect_uri: Optional[str] = None
+    return_origin: Optional[str] = None
+    remember_me: bool = False
+
+    @field_validator("provider_init_token", mode="before")
+    @classmethod
+    def normalize_provider_init_token(cls, value: Any) -> Any:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("provider_init_token is required")
+        return value.strip()
+
+
+class GoogleOAuthStartResponse(BaseResponse):
+    """Non-browser/test Google OAuth start response.
+
+    Browser flows normally redirect. This model carries only a provider URL,
+    expiry, and non-reversible state fingerprint for explicit negotiated flows.
+    """
+
+    authorization_url: Optional[str] = None
+    expires_in: int
+    state_fingerprint: str
+
+
+class ExternalIdentityInfo(BaseModelConfig):
+    """Secret-safe external identity metadata returned by link/unlink flows."""
+
+    provider: str
+    provider_subject_masked: Optional[str] = None
+    provider_email_masked: Optional[str] = None
+    provider_email_verified_at_link: bool = False
+    linked_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    status: str
+
+
+class ExternalIdentityLinkResponse(BaseResponse):
+    """Response for linking an external identity to an existing local account."""
+
+    external_identity: Optional[ExternalIdentityInfo] = None
+
+
+class ExternalIdentityUnlinkResponse(BaseResponse):
+    """Response for unlinking an external identity without provider secrets."""
+
+    remaining_auth_methods: List[str] = Field(default_factory=list)
+    sessions_revoked: int = 0
+
+
+class OAuthErrorResponse(BaseResponse):
+    """Neutral OAuth error response with optional correlation only."""
+
+    success: bool = False
+    correlation_id: Optional[str] = None
+
+
+class WeakPasswordErrorDetails(BaseModelConfig):
+    """Secret-safe weak-password error details.
+
+    Contains only non-secret policy categories and server configuration. It must
+    never include the submitted password, contextual identifiers, or denylist
+    contents.
+    """
+
+    reason_codes: List[str] = Field(default_factory=list)
+    min_length: Optional[int] = None
+
+
+class ChangePasswordRequest(BaseModelConfig):
+    """Authenticated password-change request.
+
+    Password fields are accepted only by the dedicated change-password endpoint;
+    profile update models remain a non-credential surface.
+    """
+
+    current_password: str = Field(..., min_length=1, max_length=1024)
+    new_password: str = Field(..., min_length=1, max_length=1024)
+
+
+class ChangePasswordResponse(BaseResponse):
+    """Secret-free authenticated password-change response."""
+
+    message: Optional[str] = "Password changed successfully"
 
 
 class SwitchProjectResponse(BaseResponse, TokenPairFields):
@@ -792,8 +903,13 @@ class RegisterRequest(BaseModelConfig):
     """Register request model – updated to accept a *user_group_hash* instead of a project hash"""
     username: str
     password: str
-    email: str
+    email: Optional[str] = None
     user_group_hash: str
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_optional_email(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
 
 
 class SwitchProjectRequest(BaseModelConfig):
@@ -806,12 +922,27 @@ class CheckAvailabilityRequest(BaseModelConfig):
     username: Optional[str] = None
     email: Optional[str] = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_optional_email(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
+
 
 class UserUpdateRequest(BaseModelConfig):
-    """User update request model"""
+    """User update request model.
+
+    The legacy ``password`` field is retained only for parser compatibility
+    while routes reject it before persistence. Clients must use
+    ``POST /auth/password/change`` for credential rotation.
+    """
     username: Optional[str] = None
     email: Optional[str] = None
     password: Optional[str] = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_optional_email(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
 
 
 class ProjectCreateRequest(BaseModelConfig):
@@ -832,14 +963,24 @@ class CreateRootUserRequest(BaseModelConfig):
     password: str
     email: Optional[str] = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_optional_email(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
+
 
 class CreateAdminUserRequest(BaseModelConfig):
     """Create admin user request model"""
     username: str
     password: str
-    email: str
+    email: Optional[str] = None
     assigned_project_id: Optional[str] = None
     assigned_project_ids: Optional[List[str]] = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_optional_email(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
 
 
 class UpdateUserTypeRequest(BaseModelConfig):

@@ -92,7 +92,12 @@ If the user can’t see the project in their accessible list at login time, `/au
 
 ### Ownership transfer and archive routes are not implemented
 
-Both public endpoints exist, validate some state, then return `501`.
+Both public endpoints exist, validate some state, then return `501`:
+
+- `PATCH /projects/{hash}/owner` (form field `new_owner_hash`)
+- `PATCH /projects/{hash}/archive` (form field `archived`)
+
+Do not confuse the archive **endpoint** with archive **enforcement**. The `PATCH /archive` route is a `501` stub and there is no live API route that sets the `archived` flag. However, if a project's `archived` flag is already set in the database, that project is excluded from authorization workflows (logins, project tokens, API-key validation, session validation) as of commit `4e6e5de`. So you may see a project denied at auth time "for no reason" — check whether it is archived in the database, because no endpoint will surface or toggle that state for you.
 
 ### `access_level` labels reflect access path, not granular permissions
 
@@ -158,5 +163,5 @@ Soft delete is still destructive enough to remove active visibility and invalida
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

@@ -18,6 +18,16 @@ from src.Util.db_config import get_connection
 # Configure logging
 logger = logging.getLogger(__name__)
 
+_UNSUPPORTED_FORCED_PASSWORD_FIELDS = {"force_password_reset", "must_change_on_login"}
+
+
+def _unsupported_forced_password_fields(updates: Dict[str, Any]) -> List[str]:
+    return [
+        field
+        for field in sorted(_UNSUPPORTED_FORCED_PASSWORD_FIELDS)
+        if field in updates and updates.get(field) is not None
+    ]
+
 
 class BulkOperations:
     """
@@ -88,6 +98,26 @@ class BulkOperations:
                             for key, value in update_data.items()
                             if key not in {'user_hash', 'updates'}
                         })
+
+                        unsupported_force_fields = _unsupported_forced_password_fields(requested_updates)
+                        if unsupported_force_fields:
+                            error_message = (
+                                "Unsupported forced password-change field; use reset-link password recovery "
+                                "or /auth/password/change"
+                            )
+                            results["errors"].append({
+                                "user": user_hash,
+                                "error": error_message,
+                                "fields": unsupported_force_fields,
+                            })
+                            results["failed"] += 1
+                            results["error_count"] += 1
+                            results["results"].append({
+                                "user_hash": user_hash,
+                                "success": False,
+                                "error": error_message,
+                            })
+                            continue
 
                         username = requested_updates.get('username')
                         email = requested_updates.get('email')

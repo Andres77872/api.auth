@@ -33,6 +33,7 @@ from src.Util.db import (
 )
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.decorators import log_and_handle_errors
+from src.Util.auth_flow import require_recent_reauthentication
 from src.Util.error_handler import (
     AuthorizationError,
     ValidationError,
@@ -117,6 +118,14 @@ def _assert_key_ownership(key_data: dict, current_user_id: str):
         )
 
 
+def _require_recent_reauth_for_user_api_key_mutation(current_user: dict, operation: str) -> None:
+    require_recent_reauthentication(
+        user_id=str(current_user.get("user_id") or ""),
+        session_token=current_user.get("session_token"),
+        operation=operation,
+    )
+
+
 # =============================================================================
 # POST /users/api-keys — Create own API key
 # =============================================================================
@@ -142,6 +151,7 @@ async def user_create_api_key(
     the group chain (including root bypass).
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_user_api_key_mutation(current_user, "user_create_api_key")
 
     # Resolve project
     project = handle_db_operation(
@@ -320,6 +330,7 @@ async def user_update_api_key(
     Extending expires_at past NOW() on an expired key reactivates it.
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_user_api_key_mutation(current_user, "user_update_api_key")
 
     # Look up the key first to check ownership and get public_id
     key_data = get_api_key_by_public_id(key_id)
@@ -386,6 +397,7 @@ async def user_revoke_api_key(
     The key cannot be used for authentication after revocation.
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_user_api_key_mutation(current_user, "user_revoke_api_key")
 
     # Look up the key first to check ownership and get public_id
     key_data = get_api_key_by_public_id(key_id)

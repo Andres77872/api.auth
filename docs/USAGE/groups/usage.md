@@ -99,7 +99,16 @@ curl -X GET "http://localhost:8000/admin/user-groups/UG-PLATFORM123/members?limi
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-Use this when you need the operational list. Use `GET /admin/user-groups/{hash}` when you need the broader group view, including linked project groups.
+This members endpoint caps `limit` at 100 and returns each member with `user_hash`, `username`, `email`, `user_type`, `is_active`, and `joined_at`, plus a `statistics` block and a `generated_at` timestamp. Use it when you need the operational list. Use `GET /admin/user-groups/{hash}` when you need the broader group view, including linked project groups.
+
+### Reverse lookup: which groups does a user belong to?
+
+```bash
+curl -X GET "http://localhost:8000/admin/user-groups/users/usr-abc123/groups" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+Returns the user-groups a given user is a member of, each with `joined_at`, plus `statistics.total_groups`. Handy when debugging "why can this user reach this project?" from the user side instead of the group side.
 
 ---
 
@@ -203,6 +212,8 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/UG-PLATFORM123/project-g
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
+> **Revoke also kills live sessions.** This is not just a row deactivation. The route calls `revoke_project_sessions_losing_access(...)`, so every affected member's active session for the impacted projects is terminated immediately. Those users must re-authenticate.
+
 ### Delete a user group
 
 ```bash
@@ -216,7 +227,9 @@ Deletion is a **soft delete**. In current stored-procedure behavior, it also dea
 - linked `user_group_members` rows
 - linked `user_group_project_groups` rows
 
-So yeah, deleting a group is not just cosmetic. It removes live memberships and access links in one move.
+On top of that, the route calls `revoke_project_sessions_losing_access(..., reason="user_group_deleted")`, so the **live project sessions** of all affected members are revoked too. So yeah, deleting a group is not just cosmetic. It removes live memberships, access links, and active sessions in one move — affected users are forced to re-authenticate.
+
+The same active session-revocation applies to deleting a project group (`reason="project_group_deleted"`) and removing a project from a project group (`reason="project_removed_from_group"`).
 
 ---
 
@@ -231,5 +244,5 @@ So yeah, deleting a group is not just cosmetic. It removes live memberships and 
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 3.0
+**Last Updated**: June 2026  
+**Document Version**: 3.1

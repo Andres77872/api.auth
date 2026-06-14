@@ -98,14 +98,6 @@ CREATE INDEX idx_user_sessions_token_expires ON user_sessions (session_token, is
 CREATE INDEX idx_sessions_token_active ON user_sessions (session_token, is_active, expires_at);
 
 -- ===================================================================================
--- USER_PASSWORD_RESETS TABLE INDEXES
--- ===================================================================================
-CREATE INDEX idx_user_password_resets_user_id ON user_password_resets (user_id);
-CREATE INDEX idx_user_password_resets_token ON user_password_resets (reset_token);
-CREATE INDEX idx_user_password_resets_expires ON user_password_resets (expires_at);
-CREATE INDEX idx_user_password_resets_user_expires ON user_password_resets (user_id, expires_at);
-
--- ===================================================================================
 -- ROLE_ASSIGNMENT_HISTORY TABLE INDEXES
 -- Supports queries by different assignment types and entities
 -- ===================================================================================

@@ -64,6 +64,33 @@ async def test_platform_login_returns_access_refresh_pair_and_refresh_cookie(
 
 
 @pytest.mark.asyncio
+async def test_platform_login_remember_me_uses_30_day_refresh_cookie(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """remember_me=true issues a 30-day absolute refresh cookie for dashboard login."""
+    from src.Util.auth_constants import REMEMBER_ME_REFRESH_TTL_SECONDS
+
+    user = _make_platform_user()
+
+    with patch("src.routes.auth.get_user_by_credentials", return_value=user):
+        response = await client.post(
+            "/auth/platform/login",
+            data={"username": "adminuser", "password": "secret", "remember_me": "true"},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["refresh_expires_in"] == REMEMBER_ME_REFRESH_TTL_SECONDS
+
+    set_cookie_values = [value.decode().lower() for key, value in response.headers.raw if key.lower() == b"set-cookie"]
+    refresh_cookie = next(value for value in set_cookie_values if "refresh_token=" in value)
+    assert f"max-age={REMEMBER_ME_REFRESH_TTL_SECONDS}" in refresh_cookie
+
+
+@pytest.mark.asyncio
 async def test_platform_refresh_preserves_platform_scope_and_permissions(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,

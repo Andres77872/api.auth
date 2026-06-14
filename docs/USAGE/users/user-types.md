@@ -214,6 +214,7 @@ This removes the admin user from the matching admin group membership for that pr
 
 - **[Users Overview](README.md)**
 - **[Usage](usage.md)**
+- **[Email Management](email-management.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Architecture](architecture.md)**
 - **[Request & Data Flow](request-flow.md)**
@@ -223,5 +224,5 @@ This removes the admin user from the matching admin group membership for that pr
 
 ---
 
-**Last Updated**: April 2026  
+**Last Updated**: June 2026  
 **Document Version**: 1.0

@@ -12,13 +12,14 @@ Practical usage guide for operating the audit and activity logging systems in `a
 - [Security Events](#security-events)
 - [Audit Statistics](#audit-statistics)
 - [User Activity](#user-activity)
+- [Email Delivery Logs](#email-delivery-logs)
 - [Export](#export)
 
 ---
 
 ## System Distinction
 
-There are **two logging systems** in this API. They serve different purposes and have different endpoints:
+There are **two logging systems** in this API, plus a separate read-only **email delivery log**. They serve different purposes and have different endpoints. The two logging systems are summarized below; the third source (`email_messages`, exposed by [`GET /admin/email/logs`](#email-delivery-logs)) is the canonical delivery ledger written by the email outbox worker — not by middleware or the activity decorator.
 
 | Aspect | `/admin/activity` (Dashboard) | `/admin/audit/*` (Dedicated Audit) |
 |--------|-------------------------------|-----------------------------------|
@@ -271,11 +272,99 @@ curl -X GET "http://localhost:8000/admin/users/{user_id}/activity?days=30" \
 
 ---
 
+## Email Delivery Logs
+
+Read-only access to the transactional email **delivery ledger** (`email_messages` table, populated by the email outbox worker). This is a third data source, distinct from `activity_logs` and `api_audit_log`.
+
+```bash
+curl -X GET "http://localhost:8000/admin/email/logs?limit=50&offset=0" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+**Query parameters:**
+
+| Param | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `limit` | int | 50 | 1-500 | Records per page |
+| `offset` | int | 0 | >=0 | Skip count |
+| `status` | string | null | — | Exact match on outbox status |
+| `purpose` | string | null | — | Exact match on transactional purpose |
+| `provider` | string | null | — | Exact match on provider (e.g. `resend`) |
+
+**`status` values:** `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`
+
+**`purpose` values:** `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`
+
+**Example: find bounced messages**
+
+```bash
+curl -X GET "http://localhost:8000/admin/email/logs?status=bounced&days=7&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+**Example: dead-lettered password-reset emails for a provider**
+
+```bash
+curl -X GET "http://localhost:8000/admin/email/logs?status=dead&purpose=password_reset&provider=resend" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+**Response shape:**
+
+```json
+{
+  "success": true,
+  "logs": [
+    {
+      "id": "...",
+      "user_id": "...",
+      "user_email_id": "...",
+      "purpose": "password_reset",
+      "template_code": "...",
+      "recipient_hash": "A1B2...",
+      "recipient_masked": "j***@e***.com",
+      "provider": "resend",
+      "provider_message_id": "...",
+      "status": "delivered",
+      "priority": 5,
+      "attempt_count": 1,
+      "max_attempts": 8,
+      "next_attempt_at": "2026-06-01T12:00:00Z",
+      "sent_at": "2026-06-01T12:00:01Z",
+      "terminal_at": "2026-06-01T12:00:05Z",
+      "last_error_code": null,
+      "created_at": "2026-06-01T12:00:00Z",
+      "updated_at": "2026-06-01T12:00:05Z"
+    }
+  ],
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "returned": 1,
+    "has_more": false,
+    "next_offset": null
+  },
+  "filters": { "status": "delivered", "purpose": null, "provider": null },
+  "generated_at": "2026-06-01T12:05:00Z"
+}
+```
+
+**Redaction note:** these rows expose only `recipient_hash` (HEX) and `recipient_masked`. They never include the plaintext recipient address, subject/body, template variables, error messages, token references, or provider credentials/payloads.
+
+**Pagination note:** unlike `/admin/audit/logs`, this endpoint does **not** run a count query. `has_more` is a page-fill heuristic — it is `true` only when the page is exactly full (`returned == limit`). On an exactly-full final page it can report `has_more: true` even though the next page is empty.
+
+> Email *lifecycle* activity (enqueue, sent, delivered, bounced, complained, dead-lettered) is also recorded as semantic `activity_logs` entries (`act-cat-056` … `act-cat-062`). Those appear in the activity feed and security events; `GET /admin/email/logs` shows the per-message ledger state instead. See [audit-log-usage-cases.md](../audit-log-usage-cases.md#email-activation--delivery-audit-quick-reference) for the catalog IDs.
+
+---
+
 ## Export
 
 Exports activity logs or API audit logs in CSV or JSON format.
 
-**This endpoint requires a JSON body** — unlike 99% of the API which uses `multipart/form-data`.
+**This endpoint requires a JSON body** — unlike most of the API, which uses `multipart/form-data`. (Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the Google sign-in endpoints in `auth_google.py`.)
 
 ```bash
 curl -X POST "http://localhost:8000/admin/audit/export" \
@@ -331,5 +420,5 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

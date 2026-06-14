@@ -149,12 +149,27 @@ The response also includes `user_groups` that intersect the user and the new pro
 
 Both of these flows stop at the route layer today:
 
-- `PATCH /projects/{hash}/owner`
-- `PATCH /projects/{hash}/archive`
+- `PATCH /projects/{hash}/owner` — required form field `new_owner_hash`
+- `PATCH /projects/{hash}/archive` — required form field `archived` (bool)
 
-They validate session and target resources, then raise `FeatureNotImplementedError`.
+Flow for `PATCH /projects/{hash}/owner`:
+
+1. validate session
+2. require `admin`
+3. resolve project by hash
+4. resolve `new_owner_hash` (raises `USER_NOT_FOUND` if it does not exist)
+5. raise `FeatureNotImplementedError` (`501`)
+
+Flow for `PATCH /projects/{hash}/archive`:
+
+1. validate session
+2. require `admin`
+3. resolve project by hash
+4. raise `FeatureNotImplementedError` (`501`)
 
 So if you were expecting a deeper runtime flow here, ni en pedo — it doesn't exist yet.
+
+Note the distinction: even though the `PATCH /archive` **route** is a stub, archive **enforcement** is live elsewhere. Commit `4e6e5de` made the login, project-token, API-key, and session-validation flows exclude archived projects, so a project whose `archived` flag is already set in the database is denied at auth time. There is simply no API route that flips that flag yet.
 
 ---
 
@@ -169,5 +184,5 @@ So if you were expecting a deeper runtime flow here, ni en pedo — it doesn't e
 
 ---
 
-**Last Updated**: April 2026  
-**Document Version**: 1.0
+**Last Updated**: June 2026  
+**Document Version**: 1.1

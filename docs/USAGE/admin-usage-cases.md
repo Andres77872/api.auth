@@ -14,6 +14,7 @@ Complete practical guide for admin dashboard operations, system monitoring, bulk
 - [Admin Dashboard](#admin-dashboard)
 - [Activity Monitoring](#activity-monitoring)
 - [System Health & Metrics](#system-health--metrics)
+- [Admin Email Operations](#admin-email-operations)
 - [Cache Management](#cache-management)
 - [User Type Management](#user-type-management)
 - [Admin Project Management](#admin-project-management)
@@ -74,6 +75,23 @@ curl -X GET "http://localhost:8000/admin/dashboard/stats" \
   "generated_at": "2024-03-25T10:30:00Z"
 }
 ```
+
+**Derived fields and notes:**
+
+- `groups_summary.avg_users_per_group` is `round(total_users / max(total_user_groups, 1), 2)` and `avg_projects_per_group` is `round(total_projects / max(total_project_groups, 1), 2)`. The `max(..., 1)` guard means these never divide by zero — with zero groups the denominator is `1`, so the average equals the raw total.
+- `totals.project_groups` (and `groups_summary.total_project_groups`) come from `count_project_groups()` (project-group containers), which is **not** the same source as `/system/info` `total_project_groups` (`count_project_permission_groups()`). See [Project groups vs. permission groups](#project-groups-vs-permission-groups).
+- The `system_health.database` / `system_health.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` fields above are **illustrative**; the exact keys returned depend on those health-check helpers and are not guaranteed. `overall_status` is `"healthy"` only when both database and redis report `"healthy"`, otherwise `"degraded"`.
+
+#### Project groups vs. permission groups
+
+The system counts two distinct group concepts, and they surface in different endpoints:
+
+| Field | Endpoint | Source helper | Meaning |
+|-------|----------|---------------|---------|
+| `project_groups` | `/admin/dashboard/stats` | `count_project_groups()` | Project-group containers (groups-of-groups architecture) |
+| `total_project_groups` | `/system/info` | `count_project_permission_groups()` | Project **permission** groups |
+
+These count different things and can legitimately differ. Do not assume the two values match.
 
 ### Get User Statistics
 
@@ -172,9 +190,72 @@ curl -X GET "http://localhost:8000/admin/system/overview" \
 
 ## Activity Monitoring
 
-> **Note**: The activity feed (`/admin/activity`) and activity types (`/admin/activity/types`) are documented here for quick reference. For comprehensive audit log coverage including API audit logs, security events, export functionality, audit statistics, and detailed filtering, see [Audit Logs Usage Guide](audit_logs/usage.md).
+> **Note**: The activity feed (`/admin/activity`), activity detail (`/admin/activity/{activity_id}`), and activity types (`/admin/activity/types`) are documented here for quick reference. For comprehensive audit log coverage including API audit logs, security events, export functionality, audit statistics, and detailed filtering, see [Audit Logs Usage Guide](audit_logs/usage.md).
 
-For full endpoint documentation, query parameters, response shapes, and examples, see the canonical source: **[Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard)**.
+For full feed documentation, response shapes, and examples, see the canonical source: **[Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard)**.
+
+All three endpoints require **Admin/Root** (`user_type == 'admin'` or root); non-admins get `403 ACCESS_DENIED`.
+
+### Activity Feed Query Parameters
+
+`GET /admin/activity` accepts the following query parameters (all optional):
+
+| Parameter | Type | Default | Range / Notes |
+|-----------|------|---------|---------------|
+| `limit` | int | `50` | `1`–`500` |
+| `offset` | int | `0` | `>= 0` |
+| `activity_type_filter` | string | none | Filter by a single activity type (see `/admin/activity/types`) |
+| `user_id` | string | none | Filter by user ID |
+| `project_id` | string | none | Filter by project ID |
+| `days` | int | `30` | `1`–`365`, look-back window |
+| `search` | string | none | Free-text search across `activity_type`, `details`, and `username`. An empty string is treated as no filter. |
+
+The response includes `activities[]`, a `pagination` block (`total`, `limit`, `offset`, `has_more`, `next_offset`), the echoed `filters`, and `generated_at`. Canonical feed shape lives in [Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard).
+
+### Activity Detail
+
+**Scenario**: Inspect a single activity-log entry with full enriched metadata.
+
+```bash
+curl -X GET "http://localhost:8000/admin/activity/act-0123456789abcdef0123456789abcdef" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+**Input contract:**
+
+- `activity_id` (path) must match the regex `^act-[0-9a-fA-F]{32}$` — the literal prefix `act-` followed by exactly 32 hexadecimal characters.
+- An empty or malformed `activity_id` returns `400 INVALID_INPUT`.
+- A well-formed id that does not exist returns `404 RESOURCE_NOT_FOUND`.
+
+The detail response wraps the entry under `activity` and includes enriched fields beyond the feed shape: `severity_level`, `user_agent`, `metadata`, `activity_name`, `activity_category`, and `activity_description` — in addition to the standard `id`, `activity_type`, `details`, `created_at`, `user`, `project`, `target_user`, and `ip_address`. A `generated_at` timestamp is included at the top level.
+
+**Response (abridged):**
+```json
+{
+  "activity": {
+    "id": "act-0123456789abcdef0123456789abcdef",
+    "activity_type": "user_login",
+    "details": "User logged in",
+    "severity_level": "info",
+    "created_at": "2024-03-25T10:30:00Z",
+    "user": {"id": 42, "username": "alice", "user_hash": "usr-..."},
+    "project": null,
+    "target_user": null,
+    "ip_address": "203.0.113.10",
+    "user_agent": "my-client/1.0",
+    "metadata": {},
+    "activity_name": "User Login",
+    "activity_category": "authentication",
+    "activity_description": "A user authenticated successfully"
+  },
+  "generated_at": "2024-03-25T10:30:00Z"
+}
+```
+
+### Activity Types
+
+`GET /admin/activity/types` returns `activity_types[]` enumerated from the `ActivityType` enum (the full catalog of valid values for `activity_type_filter`), plus `generated_at`. Admin/Root only.
 
 ---
 
@@ -194,7 +275,7 @@ curl -X GET "http://localhost:8000/system/info"
   "success": true,
   "system": {
     "name": "Group-Based Multi-Project Authentication API",
-    "version": "2.2.0",
+    "version": "1.0.0",
     "architecture": "hierarchical-group-based",
     "status": "operational"
   },
@@ -216,6 +297,10 @@ curl -X GET "http://localhost:8000/system/info"
   ]
 }
 ```
+
+> **Note**: `system.version` is a build/code version hardcoded in `src/routes/system.py` (currently `1.0.0`) and is independent of the documentation/API version label (`2.2.0`) in this guide's footer — the two values may legitimately differ.
+>
+> **Note**: `statistics.total_project_groups` here is sourced from `count_project_permission_groups()` — i.e. project **permission** groups, not the project-group containers counted by `/admin/dashboard/stats`. The two numbers can legitimately differ; see [Project groups vs. permission groups](#project-groups-vs-permission-groups).
 
 ### System Health Check
 
@@ -243,10 +328,59 @@ curl -X GET "http://localhost:8000/system/health"
     "group_system": {
       "status": "healthy",
       "message": "Group system operational: 28 user groups, 12 project groups"
+    },
+    "email_provider": {
+      "status": "disabled",
+      "provider": "fake",
+      "delivery_enabled": false
+    },
+    "email_outbox": {
+      "status": "healthy",
+      "queue_depth": 0,
+      "dlq_depth": 0,
+      "success_ratio": null
+    },
+    "email_worker": {
+      "status": "disabled",
+      "heartbeat_count": 0,
+      "latest_heartbeat": null
     }
   }
 }
 ```
+
+**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails. This endpoint never returns `"unhealthy"` — the worst public status is `"degraded"`. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
+
+### Admin Email Operations
+
+Admin/root email operations expose operational state without leaking PII:
+
+```bash
+curl -X GET "http://localhost:8000/users/usr-target.../emails" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+curl -X POST "http://localhost:8000/users/usr-target.../emails/uem-123/resend" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+curl -X GET "http://localhost:8000/admin/email/logs?limit=50" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+Admin email logs return recipient hash + masked email only. They do not expose full recipient email, subject/body, template variables, tokens, reset/activation links, raw idempotency keys, or provider payloads.
+
+Admin password reset is reset-link based:
+
+```bash
+curl -X POST "http://localhost:8000/users/usr-target.../reset-password" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Idempotency-Key: admin-reset-001" \
+  -H "User-Agent: my-client/1.0"
+```
+
+The response does not contain a plaintext password, reset token, reset link, full recipient email, subject/body, or provider payload. If the target has a primary activated email, the route enqueues a reset-link email through the outbox. If not, the public/admin posture remains generic and operators must use redacted audit/email logs for troubleshooting.
 
 ### Simple Ping
 
@@ -292,13 +426,25 @@ curl -X GET "http://localhost:8000/admin/health" \
 }
 ```
 
+**Health scoring rule** (`/admin/health`): the score starts at `100`, with `-50` when the database is not `"healthy"` and `-30` when Redis is not `"healthy"`. The resulting `overall_status` is:
+
+| `health_score` | `overall_status` |
+|----------------|------------------|
+| `>= 100` | `healthy` |
+| `>= 70` | `degraded` |
+| otherwise | `unhealthy` |
+
+> **Note**: the `components.database` / `components.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` field shown above is **illustrative** — the exact keys depend on those helpers and are not guaranteed. Unlike `/system/health`, this endpoint requires **Admin/Root** auth and can return `"unhealthy"`.
+
 ---
 
 ## Cache Management
 
+> **Auth note**: `GET /system/cache/stats` requires only a **valid session** (any user type) — it is **not** admin-only. By contrast, `POST /system/cache/clear` and both invalidate endpoints require **Admin/Root** and return `403 ACCESS_DENIED` otherwise. The invalidate-on-failure paths return `500 INTERNAL_ERROR` if the cache operation fails.
+
 ### Get Cache Statistics
 
-**Scenario**: View cache performance metrics.
+**Scenario**: View cache performance metrics. Requires only a valid session (any user type), so `YOUR_TOKEN` below need not be an admin token.
 
 ```bash
 curl -X GET "http://localhost:8000/system/cache/stats" \
@@ -368,6 +514,8 @@ curl -X POST "http://localhost:8000/system/cache/invalidate/user/usr-target123..
 
 **Scenario**: Clear cache for a specific project.
 
+> The `{project_id}` path parameter is an **integer** project ID (e.g. `456`), **not** a project hash. The user-cache endpoint above, by contrast, takes a `{user_hash}` and returns `404` if the user is not found.
+
 ```bash
 curl -X POST "http://localhost:8000/system/cache/invalidate/project/456" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
@@ -436,7 +584,7 @@ Start here:
 
 ### Bulk Assign Roles in Project
 
-> **WARNING**: This endpoint is **currently broken** due to a parameter mismatch between the route and the utility function. It returns errors for every assignment. Do not use it in production.
+> **WARNING**: This endpoint is **currently broken** and returns `500 INTERNAL_ERROR`. Do not use it in production. The route (`src/routes/bulk_operations.py`) builds assignments keyed by `role_name`, but the utility (`src/Util/bulk_operations.py`) reads `role_id`; the utility then returns result keys `successful`/`failed`, while the route reads `result['success_count']`/`result['error_count']`. The missing keys raise a `KeyError`, which surfaces as a `500` rather than a clean per-assignment error list.
 >
 > **Workaround**: Assign roles individually via `PUT /roles/users/{user_hash}/role`.
 > See [Roles Troubleshooting → Bulk role assignment](roles/troubleshooting.md#bulk-role-assignment-always-fails) for details.
@@ -681,5 +829,5 @@ See detailed behavior in **[Users - Bulk Operations](users/bulk-operations.md)**
 
 ---
 
-**Last Updated**: April 2026
+**Last Updated**: June 2026
 **API Version**: 2.2.0

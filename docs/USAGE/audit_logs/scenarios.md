@@ -157,9 +157,51 @@ curl -X GET "http://localhost:8000/admin/audit/logs?endpoint_path=/user-types&da
 
 ---
 
+### Scenario 7: Investigate Email Delivery Failures
+
+**Goal:** Find out why a user did not receive an activation or password-reset email.
+
+```bash
+# Step 1: List bounced messages (provider rejected/returned the address)
+curl -X GET "http://localhost:8000/admin/email/logs?status=bounced&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+# Step 2: List dead-lettered messages (exhausted retries)
+curl -X GET "http://localhost:8000/admin/email/logs?status=dead&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+# Step 3: Narrow to a purpose + provider (e.g. failed password-reset via resend)
+curl -X GET "http://localhost:8000/admin/email/logs?status=dead&purpose=password_reset&provider=resend&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+# Step 4: Cross-reference the semantic activity feed for the same lifecycle events
+curl -X GET "http://localhost:8000/admin/activity?activity_type_filter=email_message_bounced&days=7" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+
+# Step 5: Check security events for complaints (act-cat-060 maps to critical severity)
+curl -X GET "http://localhost:8000/admin/audit/security-events?severity=critical&days=7" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "User-Agent: my-client/1.0"
+```
+
+**What to look for:**
+- `recipient_masked` + `recipient_hash` to identify the affected address without exposing the plaintext
+- `last_error_code` on failed rows
+- `attempt_count` vs `max_attempts` — a row at the cap with `status=dead` exhausted retries
+- `status=suppressed` rows — the address is on the suppression list (prior hard bounce/complaint)
+- Cross-references to activity catalog IDs `act-cat-056`…`act-cat-062` (see [audit-log-usage-cases.md](../audit-log-usage-cases.md#email-activation--delivery-audit-quick-reference))
+
+**Note:** `GET /admin/email/logs` reports `has_more` via a page-fill heuristic (no total count). When a page is exactly full, page through with `offset` until a page returns fewer than `limit` rows.
+
+---
+
 ## Compliance Scenarios
 
-### Scenario 7: Monthly Compliance Export
+### Scenario 8: Monthly Compliance Export
 
 **Goal:** Generate a full audit export for compliance purposes.
 
@@ -207,7 +249,7 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 
 ---
 
-### Scenario 8: Export Security Events Only
+### Scenario 9: Export Security Events Only
 
 **Goal:** Export only security-flagged audit log entries.
 
@@ -231,7 +273,7 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 
 ## Performance Scenarios
 
-### Scenario 9: API Performance Analysis
+### Scenario 10: API Performance Analysis
 
 **Goal:** Identify slow or problematic endpoints.
 
@@ -253,7 +295,7 @@ curl -X GET "http://localhost:8000/admin/audit/logs?endpoint_path=/admin/dashboa
 
 ---
 
-### Scenario 10: Identify High-Volume Users
+### Scenario 11: Identify High-Volume Users
 
 **Goal:** Find users generating the most API traffic.
 
@@ -283,5 +325,5 @@ The `api_audit_summary` in the user activity response includes `total_requests` 
 
 ---
 
-**Last Updated**: April 2026
-**Document Version**: 1.0
+**Last Updated**: June 2026
+**Document Version**: 1.1

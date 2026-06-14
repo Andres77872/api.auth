@@ -37,6 +37,7 @@ from src.Util.db import (
 )
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.decorators import log_and_handle_errors
+from src.Util.auth_flow import require_recent_reauthentication
 from src.Util.error_handler import (
     AuthorizationError,
     ValidationError,
@@ -150,6 +151,14 @@ def _parse_expires_at(expires_at_str: Optional[str]) -> Optional[datetime]:
     return dt
 
 
+def _require_recent_reauth_for_admin_api_key_mutation(current_user: dict, operation: str) -> None:
+    require_recent_reauthentication(
+        user_id=str(current_user.get("user_id") or ""),
+        session_token=current_user.get("session_token"),
+        operation=operation,
+    )
+
+
 def _format_key_response(key_data: dict, include_token: bool = False, token: Optional[str] = None) -> dict:
     """Format a key record for API response, never including secret_hash."""
     response = {
@@ -212,6 +221,7 @@ async def admin_create_api_key(
     Admin: limited to projects they administer; needs manage_users for other users.
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_admin_api_key_mutation(current_user, "admin_create_api_key")
     is_root = is_root_user(current_user_id)
 
     # Resolve target user
@@ -456,6 +466,7 @@ async def admin_update_api_key(
     Extending expires_at past NOW() on an expired key reactivates it.
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_admin_api_key_mutation(current_user, "admin_update_api_key")
     is_root = is_root_user(current_user_id)
 
     # Look up the key first to check scope and get public_id for cache invalidation
@@ -524,6 +535,7 @@ async def admin_revoke_api_key(
     Immediately invalidates the Redis cache entry.
     """
     current_user_id = current_user.get("user_id")
+    _require_recent_reauth_for_admin_api_key_mutation(current_user, "admin_revoke_api_key")
     is_root = is_root_user(current_user_id)
 
     # Look up the key first to check scope and get public_id
