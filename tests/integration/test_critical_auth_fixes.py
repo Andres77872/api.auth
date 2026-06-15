@@ -68,58 +68,6 @@ def patched_db_connections():
 
 
 # =============================================================================
-# G1 — Session payload schema: groups matches user_group_names
-# =============================================================================
-
-def test_session_groups_match_user_group_names(mock_fakeredis):
-    """
-    G1 (RED → GREEN): _create_session() payload must contain 'groups' equal
-    to 'user_group_names' AND 'username' key.
-
-    Should FAIL before Fix 1 (no 'groups' or 'username' in payload).
-    Should PASS after Fix 1.
-    """
-    from src.routes.auth import _create_session
-    from src.Util.db_config import redis_client
-
-    # Build mock user with group data
-    user = MagicMock()
-    user.id = "42"
-    user.user_hash = "usr-test-042"
-    user.username = "testroot"
-    user.user_type = "root"  # Root skips group resolution (groups = [])
-
-    # Mock get_user_groups_for_user to return empty list for root
-    with patch("src.routes.auth.get_user_groups_for_user", return_value=[]):
-        token, ttl = _create_session(user)
-
-    # Read raw session payload from Redis (not EnhancedUserLogin)
-    raw = redis_client.get(f"session:{token}")
-    assert raw is not None, "Session should exist in Redis"
-    payload = json.loads(raw)
-
-    # G1 assertion: 'groups' key MUST exist and equal 'user_group_names'
-    assert "groups" in payload, (
-        f"G1 FAIL (RED): 'groups' key missing in _create_session() payload. "
-        f"Found keys: {list(payload.keys())}"
-    )
-    assert "user_group_names" in payload, (
-        "Precondition: 'user_group_names' key must exist"
-    )
-    assert payload["groups"] == payload["user_group_names"], (
-        f"G1 FAIL: 'groups' ({payload['groups']}) != "
-        f"'user_group_names' ({payload['user_group_names']})"
-    )
-    # G1 assertion: 'username' key MUST exist
-    assert "username" in payload, (
-        f"G1 FAIL (RED): 'username' key missing in _create_session() payload"
-    )
-    assert payload["username"] == "testroot", (
-        f"G1 FAIL: 'username' ({payload['username']}) != 'testroot'"
-    )
-
-
-# =============================================================================
 # G5 — Old Redis session (no 'groups' key) still returns valid EnhancedUserLogin
 # =============================================================================
 
@@ -200,60 +148,13 @@ def test_old_session_without_groups_key_still_valid(mock_fakeredis):
 
 
 # =============================================================================
-# G6 — Platform session has 'groups' key (pre-existing) + 'username' (new)
-# =============================================================================
-
-def test_platform_session_has_groups_key(mock_fakeredis):
-    """
-    G6 (RED → GREEN): _create_platform_session() payload must contain 'groups'
-    (pre-existing — unchanged) AND 'username' (new additive key).
-
-    Should FAIL before Fix 1 ('username' missing in payload).
-    Should PASS after Fix 1.
-    """
-    from src.routes.auth import _create_platform_session
-    from src.Util.db_config import redis_client
-
-    user = MagicMock()
-    user.id = "42"
-    user.user_hash = "usr-test-042"
-    user.username = "testadmin"
-    user.user_type = "admin"
-    user.assigned_project_id = None
-
-    token, ttl = _create_platform_session(user)
-
-    raw = redis_client.get(f"session:{token}")
-    assert raw is not None, "Platform session should exist in Redis"
-    payload = json.loads(raw)
-
-    # 'groups' key MUST already exist (pre-existing — no regression)
-    assert "groups" in payload, (
-        "G6 FAIL: 'groups' key should already exist in _create_platform_session()"
-    )
-
-    # 'username' key MUST now exist (additive fix)
-    assert "username" in payload, (
-        "G6 FAIL (RED): 'username' key missing in _create_platform_session() payload"
-    )
-    assert payload["username"] == "testadmin", (
-        f"G6 FAIL: 'username' ({payload['username']}) != 'testadmin'"
-    )
-
-    # 'user_group_names' should still be present (empty list)
-    assert "user_group_names" in payload, (
-        "G6 FAIL: 'user_group_names' key must remain"
-    )
-
-
-# =============================================================================
 # G7 — Consumer user session: groups resolved fresh from DB (not hardcoded)
 # =============================================================================
 
 def test_consumer_session_groups_fresh_from_db(mock_fakeredis):
     """
-    G7: Consumer user via _create_session() → validate_session() returns correct
-    groups resolved fresh from DB (NOT from session_data.get('groups')).
+    G7: Consumer user via issue_project_token_pair() → validate_session() returns
+    correct groups resolved fresh from DB (NOT from session_data.get('groups')).
 
     Should PASS before AND after Fix 1 (consumer path unaffected by additive change).
     """

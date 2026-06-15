@@ -518,7 +518,6 @@ callers pass `lookup_id` plus an app-computed `BINARY(32)` HMAC `token_hash`.
 | `sp_record_email_delivery_attempt` | Append a sanitized delivery attempt row |
 | `sp_apply_email_provider_event` | Dedupe provider webhooks; update delivery state; upsert suppression and flip `user_emails` to `suppressed` on bounce/complaint |
 | `sp_email_idempotency_begin` / `_complete` / `_get` | Durable idempotency lifecycle |
-| `sp_backfill_legacy_user_emails` | One-time backfill of legacy `users.email` into pending `user_emails` |
 | `sp_email_retention_purge` | Redact payloads + recipient PII, delete expired tokens, strip old attempts, expire idempotency keys (run by the worker on a cadence) |
 | `sp_anonymize_user_email_data` | GDPR erasure of a user's email PII while preserving non-PII evidence |
 

@@ -30,17 +30,6 @@ def test_additive_email_schema_files_exist_and_define_canonical_tables():
     assert "uk_user_emails_one_primary" in sql
 
 
-def test_legacy_users_email_backfill_is_pending_not_activated():
-    sql = (ROOT / "schemas/stored_procedures/14_email_activation.sql").read_text()
-
-    assert "sp_backfill_legacy_user_emails" in sql
-    assert "users.email" in sql
-    assert "status" in sql
-    assert "pending" in sql
-    assert "legacy" in sql
-    assert "activated_at" not in sql.split("sp_backfill_legacy_user_emails", 1)[1].split("END", 1)[0]
-
-
 def test_users_email_shadow_syncs_only_from_primary_activation_change_or_removal():
     sql = (ROOT / "schemas/stored_procedures/14_email_activation.sql").read_text()
 

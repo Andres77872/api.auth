@@ -523,15 +523,6 @@ def get_email_idempotency(*, scope: str, key_hash: bytes) -> dict[str, Any] | No
 # =============================================================================
 
 
-def backfill_legacy_user_emails() -> dict[str, Any] | None:
-    return _callproc_one(
-        "sp_backfill_legacy_user_emails",
-        [],
-        context="backfill_legacy_user_emails()",
-        commit=True,
-    )
-
-
 def run_email_retention_purge() -> dict[str, Any] | None:
     return _callproc_one(
         "sp_email_retention_purge",
@@ -724,7 +715,6 @@ __all__ = [
     "add_user_email_and_enqueue",
     "anonymize_user_email_data",
     "apply_email_provider_event",
-    "backfill_legacy_user_emails",
     "begin_email_idempotency",
     "claim_email_messages",
     "complete_email_idempotency",

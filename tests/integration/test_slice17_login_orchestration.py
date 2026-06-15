@@ -3,7 +3,7 @@ Slice 17 (Strategy Slice 2) — Login Orchestration with Groups-of-Groups
 
 Characterization test: Verify POST /auth/login for non-root user calls:
   get_user_by_credentials → get_user_accessible_projects →
-  get_user_groups_for_user → _create_session with correct group data in Redis
+  get_user_groups_for_user → issue_project_token_pair with correct group data in Redis
 
 Proof layer: Layer 2 (integration, mocked DB)
 Trace: explore.md RISK 3, Gap 1

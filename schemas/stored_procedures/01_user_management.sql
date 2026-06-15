@@ -219,6 +219,24 @@ BEGIN
 END$$
 
 -- ===================================================================================
+-- USER HARD DELETION (ROOT-only debug deep clean)
+-- Permanently removes the user row. Every FK referencing users(id) is ON DELETE
+-- CASCADE (owned/identity content: sessions, api keys, emails, link tokens, external
+-- accounts, group memberships, permission grants, permission cache, etc.) or
+-- ON DELETE SET NULL (audit/ownership refs incl. projects/user_groups created_by), so
+-- this single DELETE performs the complete, atomic cleanup and frees the user's
+-- globally-unique activated emails for re-registration. Shared resources the user
+-- created (projects, user_groups) are preserved via SET NULL -- they are NOT deleted.
+-- ROW_COUNT() reflects the users row only: 1 = deleted, 0 = already gone (idempotent).
+-- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_hard_delete_user$$
+CREATE PROCEDURE sp_hard_delete_user(IN p_user_id VARCHAR(64))
+BEGIN
+    DELETE FROM users WHERE id = p_user_id;
+    SELECT ROW_COUNT() as rows_affected;
+END$$
+
+-- ===================================================================================
 -- USER LISTING & SEARCH
 -- ===================================================================================
 

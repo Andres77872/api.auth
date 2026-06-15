@@ -14,6 +14,7 @@ Endpoints:
 - PUT /{user_hash}/status - Update user active status
 - POST /{user_hash}/reset-password - Reset user password (admin only)
 - DELETE /{user_hash} - Delete user (soft delete, admin only)
+- DELETE /{user_hash}/hard - Permanently hard delete a user (root only, deep clean)
 - PATCH /{user_hash}/type - Change user type (root only)
 """
 
@@ -1556,6 +1557,128 @@ async def delete_user_endpoint(
         "message": f"User '{target_user.username}' has been deleted",
         "user_hash": target_user.user_hash,
         "username": target_user.username,
+        "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+
+
+@router.delete("/{user_hash}/hard")
+@log_and_handle_errors(
+    operation_name="hard_delete_user",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=True
+)
+async def hard_delete_user_endpoint(
+        user_hash: str,
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+        log_context: LogContext = None
+) -> Dict[str, Any]:
+    """
+    Permanently HARD delete a user account (ROOT-only debug deep clean).
+
+    Unlike the soft delete (DELETE /{user_hash}), this permanently removes the user
+    row and all owned/identity content via foreign-key cascade, and unlinks (frees)
+    all of the user's emails for re-registration. Shared resources the user created
+    (projects, user groups) are preserved with ownership cleared.
+
+    **ROOT access required.** Guards:
+    - Only root users may call this endpoint.
+    - You cannot hard-delete your own account.
+    - Works on inactive (already soft-deleted) users too.
+
+    Args:
+        user_hash: Hash of the user to permanently delete
+
+    Returns:
+        Deletion confirmation with a summary of what was removed
+    """
+    from src.Util.db import hard_delete_user, invalidate_user_sessions
+    from src.Util.cache_manager import cache_manager
+
+    # Get current user
+    current_user = handle_db_operation(
+        lambda: get_user_by_hash(log_context.user_hash),
+        error_context="current user lookup",
+        not_found_message=f"Current user not found: {mask_uuid(log_context.user_hash)}"
+    )
+
+    # ROOT only (stricter than the soft delete, which also allows admins)
+    if not is_root_user(current_user.id):
+        raise AuthorizationError(
+            message="Root permission required to permanently delete users",
+            error_code=ErrorCode.ACCESS_DENIED
+        )
+
+    # Get target user (include_inactive=True so soft-deleted users can also be purged)
+    target_user = handle_db_operation(
+        lambda: get_user_by_hash(user_hash, include_inactive=True),
+        error_context="target user lookup",
+        not_found_message=f"User not found: {mask_uuid(user_hash)}"
+    )
+
+    # Prevent self-deletion (only guard; any other target, including root, is allowed)
+    if current_user.user_hash == target_user.user_hash:
+        raise ValidationError(
+            message="Cannot permanently delete your own account",
+            error_code=ErrorCode.INVALID_INPUT
+        )
+
+    # Capture a pre-deletion snapshot for the audit log (rows are gone after delete)
+    pre_username = target_user.username
+    pre_user_type = target_user.user_type
+    email_count = handle_db_operation(
+        lambda: len(db_email.list_user_emails(target_user.id) or []),
+        error_context="hard delete email snapshot",
+        default_return=0
+    )
+
+    # Perform hard delete
+    deleted = handle_db_operation(
+        lambda: hard_delete_user(target_user.id, deleted_by=current_user.id),
+        error_context="user hard deletion"
+    )
+
+    if not deleted:
+        # Idempotency: the user disappeared between lookup and delete
+        raise NotFoundError(
+            message=f"User not found: {mask_uuid(user_hash)}",
+            error_code=ErrorCode.NOT_FOUND
+        )
+
+    # Revoke auth state, sessions, and cache (clears any lingering Redis/derived state)
+    revoke_user_auth_state(target_user.id, reason="user_hard_deleted")
+    invalidate_user_sessions(target_user.id)
+    cache_manager.invalidate_user_cache(target_user.id)
+
+    # Log the activity
+    log_operation_details(
+        user_id=log_context.user_id,
+        operation=OperationMetadata(
+            operation_name="hard_delete_user",
+            target_resource=user_hash,
+            target_resource_type="user",
+            additional_data={
+                "target_username": pre_username,
+                "target_user_type": pre_user_type,
+                "emails_unlinked": email_count,
+                "deleted_by": current_user.username,
+                "delete_mode": "hard"
+            }
+        ),
+        log_context=log_context
+    )
+
+    return {
+        "success": True,
+        "message": f"User '{pre_username}' has been permanently deleted",
+        "user_hash": user_hash,
+        "username": pre_username,
+        "removed": {
+            "mode": "hard",
+            "user_type": pre_user_type,
+            "emails_unlinked": email_count,
+            "owned_content": "cascade_deleted",
+            "shared_resources": "preserved (ownership cleared)"
+        },
         "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 

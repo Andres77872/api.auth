@@ -666,6 +666,50 @@ def delete_user(user_id: str, deleted_by: str = None) -> bool:
     )
 
 
+def hard_delete_user(user_id: str, deleted_by: str = None) -> bool:
+    """
+    Hard delete a user (permanent, irreversible row removal).
+
+    Unlike delete_user (soft delete / deactivation), this removes the user row
+    entirely. The schema's foreign keys do the rest: ON DELETE CASCADE wipes the
+    user's owned/identity content (sessions, API keys, emails, link tokens, external
+    accounts, group memberships, permission grants, permission cache, etc.) and
+    ON DELETE SET NULL clears audit/ownership references. Shared resources the user
+    created (projects, user groups) are preserved with ownership nulled.
+
+    Args:
+        user_id: ID of user to hard delete
+        deleted_by: User ID of who performed deletion (accepted for symmetry with
+            delete_user; the actor is recorded in the audit log at the route layer)
+
+    Returns:
+        True if a user row was removed, False if the user was already gone
+
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _hard_delete():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_hard_delete_user', [user_id])
+
+            # SP returns: SELECT ROW_COUNT() as rows_affected
+            result = cur.fetchone()
+            rows_affected = result[0] if result else 0
+
+            if rows_affected > 0:
+                con.commit()
+                # Invalidate cache for deleted user
+                cache_manager.invalidate_user_cache(user_id)
+                return True
+            return False
+
+    return handle_db_operation(
+        _hard_delete,
+        error_context=f"hard_delete_user(user_id={user_id})"
+    )
+
+
 def list_users(
         limit: int = 100,
         offset: int = 0,
@@ -1091,57 +1135,6 @@ def invalidate_user_sessions(user_id: str) -> bool:
     return handle_db_operation(
         _invalidate,
         error_context=f"invalidate_user_sessions(user_id={user_id})"
-    )
-
-
-def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
-    """Validate a session token and return user data with user type context"""
-    session_data = get_session_data(session_token)
-    if not session_data:
-        return None
-
-    # Get fresh project data
-    from src.Util.db.db_projects import get_project_by_hash
-    project = get_project_by_hash(session_data['project_hash'])
-    if not project:
-        return None
-
-    user_type = session_data.get('user_type', 'consumer')
-
-    # Build user login data based on user type
-    if user_type == 'root':
-        groups = ['root_users']
-        permissions = ['admin', 'global_admin', 'unrestricted_access']
-        available_projects = []  # Root users can access all projects
-    elif user_type == 'admin':
-        groups = ['project_admins']
-        permissions = ['admin', 'project_admin', 'manage_users', 'manage_groups']
-        available_projects = [project]  # Admin users see their assigned projects
-    elif user_type == 'consumer':
-        # Get fresh user groups and permissions for consumer users
-        from src.Util.db.db_user_groups import get_user_accessible_projects
-        groups = get_user_groups_in_project(session_data['user_id'], project.id)
-        permissions = get_user_permissions_in_project(session_data['user_id'], project.id)
-        available_projects = get_user_accessible_projects(session_data['user_id'])
-        groups = [g.group_name for g in groups]
-    else:
-        return None
-
-    return EnhancedUserLogin(
-        user_hash=session_data['user_hash'],
-        project_hash=session_data['project_hash'],
-        project_name=project.project_name,
-        user_project_hash='',  # Deprecated field
-        session_token=session_token,
-        session_length=0,  # We don't track remaining time
-        user_id=session_data['user_id'],
-        project_id=session_data['project_id'],
-        user_project_id=None,  # Deprecated field
-        groups=groups,
-        permissions=permissions,
-        available_projects=available_projects,
-        user_type=user_type,
-        assigned_project_id=None  # Deprecated field
     )
 
 

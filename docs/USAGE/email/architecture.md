@@ -47,6 +47,14 @@ On a retryable failure the worker computes a **full-jitter** delay: it picks the
 - `--once` processes a single batch and exits (used in tests / one-shot redrive). In `--once` mode the retention purge does **not** run.
 - In long-running mode the worker periodically calls `sp_email_retention_purge` on the `EMAIL_RETENTION_PURGE_INTERVAL_SECONDS` cadence (default hourly; `0` disables). The purge is idempotent and concurrency-safe; it redacts transient render payloads and plaintext recipients, deletes expired link tokens, strips old attempt metadata, and retires expired idempotency keys.
 
+### Running in a container
+
+The worker is a **separate process** from the API (`src/main.py` has no lifespan hook and the worker loop blocks). On the systemd host that is the `api-auth-email-worker` --user service via `scripts/run_email_worker.sh`. Under Docker the production image runs **both** processes in one container via `scripts/docker-entrypoint.sh` (the `Dockerfile` `CMD`): it launches `python -m src.workers.email_worker` and `uvicorn src.main:app` as siblings, forwards SIGTERM/SIGINT to both, and exits if either dies so the orchestrator restarts the container.
+
+> `scripts/run_email_worker.sh` is **not** for containers — it sources a `.env` file (excluded by `.dockerignore`) and uses `.venv/bin/python`. The container entrypoint reads config from the process environment instead.
+
+If the worker process is missing, `GET /system/health` reports `email_worker: unknown` (no Redis heartbeat) and, when delivery is enabled but provider config is absent, `email_provider: not_ready`. For both to go green the container must receive, via `--env-file`/compose `environment:` (never baked into the image): DB/Redis vars (`DB_HOST`, `DB_USER`, `DB_MYSQL_PASSWORD`, `DB_NAME`, `REDIS_HOST`, … — read at **import time**), `EMAIL_DELIVERY_ENABLED=true`, `EMAIL_PROVIDER=resend`, `EMAIL_FROM_ADDRESS`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_SENDER_DOMAIN_VERIFIED=true` (prod), plus the operational peppers/keys (`EMAIL_TOKEN_PEPPER`, `EMAIL_HASH_PEPPER`, `EMAIL_IDEMPOTENCY_PEPPER`, `EMAIL_PAYLOAD_KEY`). Each container replica runs its own worker with a distinct `--worker-id` (derived from `HOSTNAME`); leased claims keep concurrent workers safe.
+
 ---
 
 ## Provider abstraction

@@ -10,7 +10,7 @@ import time
 from typing import Optional, Any
 import json
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Response, Request
@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 # Initialize router and security
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearerOrCookie()
-PLATFORM_SCOPE = "platform"
 
 # Cookie settings
 COOKIE_NAME = "session_token"
@@ -95,34 +94,6 @@ from src.Util.password_security import assert_password_policy, hash_password
 # Session helpers (group-based, no user_projects table required)
 # ---------------------------------------------------------------------------
 
-SESSION_EXPIRE_HOURS = 72  # Default session lifetime (3 days)
-
-def _store_session(token: str, data: dict, hours: int = SESSION_EXPIRE_HOURS) -> None:
-    """Persist the session payload in Redis with appropriate TTL."""
-    redis_client.set(
-        f"session:{token}",
-        json.dumps(data, default=str),
-        ex=hours * 3600,
-    )
-
-def _delete_session(token: str) -> None:
-    """Remove session payload from Redis (logout / refresh). Also removes full-session cache."""
-    pipe = redis_client.pipeline()
-    pipe.delete(f"session:{token}")
-    pipe.delete(f"session_full:{token}")  # Phase 2.1c: also invalidate full-session cache
-    pipe.execute()
-
-def _get_session(token: str) -> Optional[dict]:
-    """Fetch session payload from Redis."""
-    raw = redis_client.get(f"session:{token}")
-    if not raw:
-        return None
-    # Handle both bytes (default Redis) and str (decode_responses=True)
-    if isinstance(raw, bytes):
-        raw = raw.decode()
-    return json.loads(raw)
-
-
 def _get_refresh_family(family_id: str) -> Optional[dict]:
     """Fetch refresh family metadata from Redis."""
     raw = redis_client.get(f"refresh_family:{family_id}")
@@ -131,83 +102,6 @@ def _get_refresh_family(family_id: str) -> Optional[dict]:
     if isinstance(raw, bytes):
         raw = raw.decode()
     return json.loads(raw)
-
-def _create_session(user: Any, project: Optional[Any] = None) -> tuple[str, int]:
-    """Generate JWT & persist session payload. Returns (token, ttl_seconds)."""
-    session_id = secrets.randbelow(2 ** 31)
-
-    collection = project.project_hash if project else ""
-    token = JWTTokenHandler.create_access_token(
-        session_id=session_id,
-        user_hash=user.user_hash,
-        collection=collection,
-        expires_delta=timedelta(hours=SESSION_EXPIRE_HOURS),
-    )
-
-    # Get user groups for caching in session (groups-of-groups architecture)
-    user_groups = get_user_groups_for_user(user.id) if user.user_type != "root" else []
-    user_group_ids = [str(g.id) for g in user_groups]
-    user_group_names = [g.group_name for g in user_groups]
-
-    payload = {
-        "session_id": session_id,
-        "user_id": user.id,
-        "user_hash": user.user_hash,
-        "user_type": user.user_type,
-        "project_id": getattr(project, "id", None),
-        "project_hash": getattr(project, "project_hash", ""),
-        "project_name": getattr(project, "project_name", None) if project else None,
-        "user_group_ids": user_group_ids,
-        "user_group_names": user_group_names,
-        # Fix 1: Add canonical 'groups' key matching what validate_session() reads
-        "groups": user_group_names,
-        # Fix 1: Add username for downstream decorator use
-        "username": user.username,
-    }
-
-    # Persist
-    _store_session(token, payload)
-    return token, SESSION_EXPIRE_HOURS * 3600
-
-
-def _create_platform_session(user: Any) -> tuple[str, int]:
-    """Generate JWT & persist a platform-scoped session for dashboard access."""
-    session_id = secrets.randbelow(2 ** 31)
-
-    token = JWTTokenHandler.create_access_token(
-        session_id=session_id,
-        user_hash=user.user_hash,
-        collection="__platform__",
-        expires_delta=timedelta(hours=SESSION_EXPIRE_HOURS),
-        scope=PLATFORM_SCOPE,
-    )
-
-    if user.user_type == "root":
-        permissions = ["admin", "global_admin", "manage_users", "manage_roles", "unrestricted_access"]
-        groups = ["platform_root_users"]
-    else:
-        permissions = ["admin", "project_admin", "manage_users", "manage_roles", "manage_permissions"]
-        groups = ["platform_admins"]
-
-    payload = {
-        "session_id": session_id,
-        "user_id": user.id,
-        "user_hash": user.user_hash,
-        "user_type": user.user_type,
-        "scope": PLATFORM_SCOPE,
-        "project_id": None,
-        "project_hash": None,
-        "project_name": None,
-        "permissions": permissions,
-        "groups": groups,
-        "user_group_ids": [],
-        "user_group_names": [],
-        "username": user.username,
-        "assigned_project_id": getattr(user, "assigned_project_id", None),
-    }
-
-    _store_session(token, payload)
-    return token, SESSION_EXPIRE_HOURS * 3600
 
 
 def _set_token_pair_cookies(response: Response, token_pair) -> None:

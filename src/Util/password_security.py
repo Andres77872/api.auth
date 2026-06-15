@@ -12,9 +12,7 @@ Features:
 - Migration support for existing hashes
 """
 
-import hashlib
 import re
-import secrets
 import string
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -231,10 +229,6 @@ class PasswordManager:
             True if password matches, False otherwise
         """
         try:
-            # Handle legacy SHA256 hashes during migration
-            if self._is_legacy_hash(hashed_password):
-                return self._verify_legacy_hash(password, hashed_password)
-
             # Verify Argon2 hash
             self.hasher.verify(hashed_password, password)
             return True
@@ -247,78 +241,22 @@ class PasswordManager:
     def needs_rehash(self, hashed_password: str) -> bool:
         """
         Check if a password hash needs to be updated.
-        
-        This will return True for:
-        - Legacy SHA256 hashes (for migration)
-        - Argon2 hashes with outdated parameters
-        
+
+        This will return True for Argon2 hashes with outdated parameters.
+
         Args:
             hashed_password: Hash to check
-            
+
         Returns:
             True if hash needs updating, False otherwise
         """
         try:
-            # Legacy hashes always need rehashing
-            if self._is_legacy_hash(hashed_password):
-                return True
-
             # Check if Argon2 parameters need updating
             return self.hasher.check_needs_rehash(hashed_password)
 
         except Exception:
             # If we can't parse the hash, it needs rehashing
             return True
-
-    def _is_legacy_hash(self, hashed_password: str) -> bool:
-        """
-        Check if a hash is a legacy SHA256 hash.
-        
-        Args:
-            hashed_password: Hash to check
-            
-        Returns:
-            True if it's a legacy hash, False otherwise
-        """
-        # Legacy SHA256 hashes are 64 characters of hex (uppercase or lowercase)
-        return (
-                isinstance(hashed_password, str) and
-                len(hashed_password) == 64 and
-                all(c in '0123456789ABCDEFabcdef' for c in hashed_password)
-        )
-
-    def _verify_legacy_hash(self, password: str, legacy_hash: str) -> bool:
-        """
-        Verify password against legacy SHA256 hash.
-        
-        Args:
-            password: Plain text password
-            legacy_hash: Legacy SHA256 hash (uppercase or lowercase)
-            
-        Returns:
-            True if password matches legacy hash, False otherwise
-        """
-        try:
-            computed_hash = hashlib.sha256(password.encode()).hexdigest()
-            # Compare case-insensitively by converting both to lowercase
-            return secrets.compare_digest(computed_hash.lower(), legacy_hash.lower())
-        except Exception:
-            return False
-
-    def migrate_legacy_hash(self, password: str, legacy_hash: str) -> Optional[str]:
-        """
-        Migrate a legacy hash to Argon2 if password is correct.
-        
-        Args:
-            password: Plain text password
-            legacy_hash: Legacy hash to migrate
-            
-        Returns:
-            New Argon2 hash if migration successful, None otherwise
-        """
-        if self._verify_legacy_hash(password, legacy_hash):
-            return self.hash_password(password)
-        return None
 
 
 # Global password manager instance
@@ -364,17 +302,3 @@ def needs_rehash(hashed_password: str) -> bool:
         True if hash needs updating, False otherwise
     """
     return password_manager.needs_rehash(hashed_password)
-
-
-def migrate_legacy_hash(password: str, legacy_hash: str) -> Optional[str]:
-    """
-    Migrate a legacy hash to Argon2 if password is correct.
-    
-    Args:
-        password: Plain text password
-        legacy_hash: Legacy hash to migrate
-        
-    Returns:
-        New Argon2 hash if migration successful, None otherwise
-    """
-    return password_manager.migrate_legacy_hash(password, legacy_hash)
