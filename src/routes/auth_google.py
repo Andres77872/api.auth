@@ -795,16 +795,27 @@ def _create_external_account_user(
     provider_sub_fp: str,
     provider_email_hash_value: bytes | None,
     provider_email_masked: str | None,
-) -> Any | None:
-    if not _can_auto_create(config) or not state_record.user_group_hash:
-        return None
+) -> tuple[Any | None, str | None]:
+    """Auto-create a consumer from a Google external account.
+
+    Returns ``(user, None)`` on success, or ``(None, sub_reason)`` on a closed
+    failure so the caller can log *why* provisioning was denied without exposing
+    it to the client. ``sub_reason`` is one of: ``auto_create_disabled``,
+    ``no_bound_user_group``, ``user_group_not_found``, ``auto_create_error``.
+    """
+    if not _can_auto_create(config):
+        return None, "auto_create_disabled"
+    if not state_record.user_group_hash:
+        return None, "no_bound_user_group"
     try:
         user_group = db.get_user_group_by_hash(state_record.user_group_hash)
     except Exception:
         user_group = None
     user_group_id = _string_field(user_group, "id")
     if not user_group_id:
-        return None
+        # The bound USER_GROUP_HASH does not resolve to a row in magic_auth —
+        # the single most common cause of a post-redirect 401 after a DB rebuild.
+        return None, "user_group_not_found"
 
     try:
         from src.Util.password_security import hash_password
@@ -817,7 +828,7 @@ def _create_external_account_user(
         username_seed = (email.split("@", 1)[0] if email else "google_user")[:40]
         username = f"{username_seed}_{secrets.token_hex(4)}"
         password_hash = hash_password(f"oauth-disabled-{secrets.token_urlsafe(48)}")
-        return db.create_consumer_user_from_external_account(
+        created = db.create_consumer_user_from_external_account(
             user_id=user_id,
             user_hash=user_hash,
             username=username,
@@ -838,9 +849,10 @@ def _create_external_account_user(
             created_by=None,
             metadata={"source": "google_oauth_auto_create"},
         )
+        return (created, None) if created else (None, "auto_create_error")
     except Exception:
         logger.debug("Google OAuth auto-create failed closed", exc_info=True)
-        return None
+        return None, "auto_create_error"
 
 
 def _resolve_identity(
@@ -852,11 +864,17 @@ def _resolve_identity(
     provider_sub_fp: str,
     provider_email_hash_value: bytes | None,
     provider_email_masked: str | None,
-) -> Any | None:
+) -> tuple[Any | None, str | None]:
+    """Resolve (or auto-create) the consumer behind a verified Google identity.
+
+    Returns ``(user, None)`` on success, or ``(None, sub_reason)`` when access is
+    denied. ``sub_reason`` is logged (never returned to the client) to make a
+    post-redirect 401 diagnosable from activity logs alone.
+    """
     user = db.get_user_by_external_account(provider="google", provider_sub_hash=provider_sub_hash_value)
     if user:
         if not _is_active_consumer(user):
-            return None
+            return None, "existing_user_not_active_consumer"
         try:
             db.touch_external_account_last_seen(
                 provider="google",
@@ -867,9 +885,9 @@ def _resolve_identity(
             )
         except Exception:
             logger.debug("Google OAuth last-seen update failed", exc_info=True)
-        return user
+        return user, None
 
-    created = _create_external_account_user(
+    created, create_reason = _create_external_account_user(
         config=config,
         state_record=state_record,
         claims=claims,
@@ -879,10 +897,12 @@ def _resolve_identity(
         provider_email_masked=provider_email_masked,
     )
     if created and _is_active_consumer(created):
-        return created
+        return created, None
     if _should_synthesize_success(state_record):
-        return _synthetic_test_user()
-    return None
+        return _synthetic_test_user(), None
+    if created is not None:
+        return None, "auto_create_inactive"
+    return None, create_reason or "provisioning_denied"
 
 
 def _accessible_projects_for_user(user: Any, state_record: OAuthStateRecord) -> list[Any]:
@@ -977,7 +997,7 @@ async def _issue_login_response(
         )
         return _oauth_error_response(ErrorCode.OAUTH_ID_TOKEN_INVALID)
 
-    user = _resolve_identity(
+    user, identity_denial_reason = _resolve_identity(
         config=config,
         state_record=state_record,
         claims=claims,
@@ -991,6 +1011,9 @@ async def _issue_login_response(
             ActivityType.GOOGLE_OAUTH_LOGIN_DENIED,
             details={
                 "reason": "identity_resolution_denied",
+                # Precise cause (e.g. user_group_not_found, auto_create_disabled)
+                # for operators; the client still only sees OAUTH_PROVISIONING_DENIED.
+                "sub_reason": identity_denial_reason or "unknown",
                 "state_fingerprint": state_record.state_fingerprint,
                 "provider_sub_fingerprint": provider_sub_fp,
                 "provider_email_hash_prefix": email_hash_prefix,
