@@ -35,6 +35,7 @@ from src.Util.auth_constants import (
     GOOGLE_OAUTH_PROVISIONING_LINK_ONLY,
     GOOGLE_OAUTH_PROVISIONING_MODE_ENV,
     GOOGLE_OAUTH_RECENT_REAUTH_SECONDS_ENV,
+    GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS_ENV,
     GOOGLE_OAUTH_REDIRECT_URIS_ENV,
     GOOGLE_OAUTH_RETURN_ORIGINS_ENV,
     GOOGLE_OAUTH_SCOPES_ENV,
@@ -97,6 +98,12 @@ class GoogleOAuthConfig:
     provider_init_return_origins: tuple[str, ...]
     app_env: str
     explicit_test_runtime: bool
+    # Optional restriction on Google Workspace hosted-domains (hd) for sign-in.
+    # Empty (default) = allow ALL accounts so the general public can log in; set a
+    # CSV (e.g. "budly.ai") to restrict to those domains (others get a propagated
+    # OAUTH_WORKSPACE_DENIED); "*" also means allow all. Consumer Gmail has no hd
+    # and is always allowed. Defaulted so direct constructors stay backward-compatible.
+    allowed_hosted_domains: tuple[str, ...] = ()
 
     @property
     def scope_set(self) -> frozenset[str]:
@@ -272,6 +279,7 @@ def load_google_oauth_config(*, env: Mapping[str, str] | None = None) -> GoogleO
         provider_init_return_origins=provider_init_return_origins,
         app_env=app_env,
         explicit_test_runtime=is_explicit_test_runtime(values),
+        allowed_hosted_domains=_csv_tuple(_get(values, GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS_ENV)),
     )
 
 

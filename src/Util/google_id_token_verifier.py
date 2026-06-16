@@ -87,6 +87,21 @@ def resolve_jwks_cache_ttl_seconds(headers: Mapping[str, Any] | None, *, default
     return max(1, min(int(default_seconds), MAX_JWKS_CACHE_TTL_SECONDS))
 
 
+def _hosted_domain_allowed(hd: str, allowed_hosted_domains: Sequence[str]) -> bool:
+    """Whether a Google Workspace hosted-domain (``hd``) claim may sign in.
+
+    Open by default: an empty allow-list permits any ``hd`` so the general public
+    (including Workspace accounts) can log in. A non-empty allow-list *restricts*
+    sign-in to those domains — ``"*"`` permits any ``hd``; otherwise the ``hd`` must
+    match a configured domain (case-insensitive), and non-matching domains are
+    rejected with a propagated ``OAUTH_WORKSPACE_DENIED``.
+    """
+    allowed = {str(d).strip().lower() for d in allowed_hosted_domains if str(d).strip()}
+    if not allowed:
+        return True
+    return "*" in allowed or str(hd).strip().lower() in allowed
+
+
 def _audience_matches(actual: Any, expected: str) -> bool:
     if isinstance(actual, str):
         return hmac.compare_digest(actual, expected)
@@ -103,8 +118,9 @@ def validate_google_claims(
     issuers: Sequence[str],
     now: int | None = None,
     leeway_seconds: int = 30,
+    allowed_hosted_domains: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Validate Google issuer/audience/time/nonce/consumer-only claims."""
+    """Validate Google issuer/audience/time/nonce/hosted-domain claims."""
 
     now = int(time.time() if now is None else now)
     leeway = max(0, min(int(leeway_seconds), 30))
@@ -131,7 +147,8 @@ def validate_google_claims(
         raise GoogleIDTokenValidationError("Google ID token issued in the future")
     if not hmac.compare_digest(str(normalized.get("nonce") or ""), str(expected_nonce or "")):
         raise GoogleIDTokenValidationError("Google ID token nonce mismatch")
-    if normalized.get("hd"):
+    hd = normalized.get("hd")
+    if hd and not _hosted_domain_allowed(str(hd), allowed_hosted_domains):
         raise GoogleIDTokenValidationError("Workspace hosted-domain accounts are not allowed")
     if not normalized.get("sub"):
         raise GoogleIDTokenValidationError("Google ID token subject is missing")
@@ -258,6 +275,7 @@ class GoogleIDTokenVerifier:
     issuers: Sequence[str] = ("https://accounts.google.com", "accounts.google.com")
     jwks_cache_ttl_seconds: int = MAX_JWKS_CACHE_TTL_SECONDS
     jwks_uri: str | None = None
+    allowed_hosted_domains: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         config = None
@@ -270,6 +288,9 @@ class GoogleIDTokenVerifier:
             self.jwks_cache_ttl_seconds = min(int(self.jwks_cache_ttl_seconds), int(config.jwks_cache_ttl_seconds))
             self.leeway_seconds = min(int(self.leeway_seconds), int(config.leeway_seconds))
             self.issuers = tuple(config.issuers)
+            # Production path (verify_google_id_token() builds with no args) loads config
+            # here, so the hosted-domain allow-list is sourced from GoogleOAuthConfig.
+            self.allowed_hosted_domains = tuple(self.allowed_hosted_domains) or tuple(config.allowed_hosted_domains)
         self.client_id = self.client_id or self.audience
         if not self.client_id:
             raise GoogleIDTokenValidationError("Google OAuth client ID is not configured")
@@ -365,6 +386,7 @@ class GoogleIDTokenVerifier:
             issuers=tuple(self.issuers),
             now=now,
             leeway_seconds=int(self.leeway_seconds),
+            allowed_hosted_domains=tuple(self.allowed_hosted_domains),
         )
         google_claims = dict(self._google_auth_claims(id_token_value))
         assert_google_auth_claims_agree(local_claims, google_claims)

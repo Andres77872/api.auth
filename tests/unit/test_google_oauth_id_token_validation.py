@@ -3,8 +3,8 @@
 Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 2.3 and
 spec/design requirements for RS256-only JOSE headers, JWKS cache-control cap,
 one `kid` miss refetch, `iss`/`aud`/`azp`/`exp`/`iat`/nonce checks, Workspace
-`hd` rejection, google-auth cross-check agreement, and sanitized output that
-discards raw token material.
+`hd` handling (open by default, optional allow-list restriction), google-auth
+cross-check agreement, and sanitized output that discards raw token material.
 
 The tests use fake JWT/JWKS data only and do not import or invoke real Google
 network or google-auth behavior.
@@ -178,10 +178,9 @@ def test_kid_miss_refetches_jwks_once_then_fails_closed():
         ({"exp": NOW - 31}, "expired"),
         ({"iat": NOW + 31}, "issued"),
         ({"nonce": "wrong-nonce"}, "nonce"),
-        ({"hd": "workspace.example.test"}, "Workspace|hosted"),
     ],
 )
-def test_claim_validation_enforces_issuer_audience_azp_time_nonce_and_consumer_only_hd(
+def test_claim_validation_enforces_issuer_audience_azp_time_and_nonce(
     claim_overrides: dict[str, Any],
     message: str,
 ):
@@ -199,6 +198,35 @@ def test_claim_validation_enforces_issuer_audience_azp_time_nonce_and_consumer_o
             now=NOW,
             leeway_seconds=30,
         )
+
+
+def _validate_with_hd(module, *, hd: str, allowed_hosted_domains):
+    """Run validate_google_claims for a token carrying a Workspace ``hd`` claim."""
+    return module.validate_google_claims(
+        _valid_claims(hd=hd),
+        expected_nonce=EXPECTED_NONCE,
+        client_id=CLIENT_ID,
+        issuers=("https://accounts.google.com", "accounts.google.com"),
+        now=NOW,
+        leeway_seconds=30,
+        allowed_hosted_domains=allowed_hosted_domains,
+    )
+
+
+def test_workspace_hd_is_open_by_default_and_restrictable_via_allow_list():
+    module = _future_verifier_module()
+    error_type = _validation_error(module)
+
+    # Open by default (no allow-list) — the public, including Workspace, can log in.
+    claims = _validate_with_hd(module, hd="budly.ai", allowed_hosted_domains=())
+    assert claims.get("hd") == "budly.ai"
+    # Explicit "*" is an allow-all synonym.
+    assert _validate_with_hd(module, hd="budly.ai", allowed_hosted_domains=("*",)).get("hd") == "budly.ai"
+    # A matching restriction permits that domain (case-insensitive).
+    assert _validate_with_hd(module, hd="budly.ai", allowed_hosted_domains=("BUDLY.ai",)).get("hd") == "budly.ai"
+    # A non-matching restriction rejects with a propagated Workspace error.
+    with pytest.raises(error_type, match="Workspace|hosted"):
+        _validate_with_hd(module, hd="budly.ai", allowed_hosted_domains=("other.test",))
 
 
 def test_google_auth_cross_check_must_agree_on_critical_claims():
