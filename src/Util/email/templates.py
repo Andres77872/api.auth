@@ -49,12 +49,17 @@ TRANSACTIONAL_TEMPLATE_CODES = frozenset(
         "admin_password_reset",
         "security_notification",
         "delivery_operation",
+        "patreon_link_proof",
+        "free_credit_invite",
     }
 )
 SENSITIVE_TEMPLATE_VARIABLES = frozenset(
     {
         "activation_link",
         "reset_link",
+        "patreon_link_proof_url",
+        "action_url",
+        "proof_token",
         "token",
         "secret",
         "lookup_id",
@@ -98,6 +103,29 @@ ALLOWED_TEMPLATE_VARIABLES: dict[str, frozenset[str]] = {
     ),
     "delivery_operation": frozenset(
         {"app_name", "support_email", "status_summary"}
+    ),
+    "patreon_link_proof": frozenset(
+        {
+            "app_name",
+            "recipient_masked",
+            "expires_in",
+            "expires_at",
+            "support_email",
+            "patreon_link_proof_url",
+            "proof_token",
+            "lookup_id",
+        }
+    ),
+    "free_credit_invite": frozenset(
+        {
+            "app_name",
+            "recipient_masked",
+            "credits",
+            "action_url",
+            "expires_at",
+            "support_email",
+            "expires_in",
+        }
     ),
 }
 
@@ -474,6 +502,76 @@ TEMPLATES: dict[str, TransactionalEmailTemplate] = {
         ),
         text_template=("Transactional email delivery update:\n\n$status_summary"),
     ),
+    "free_credit_invite": TransactionalEmailTemplate(
+        code="free_credit_invite",
+        purpose="delivery_operation",
+        subject_template="You have $credits Magic Worlds credits",
+        required_variables=("credits", "action_url"),
+        html_template=_document(
+            title="Magic Worlds credits",
+            preheader="A Magic Worlds administrator sent credits to this email address.",
+            content_html=(
+                _heading("Magic Worlds credits")
+                + _paragraph(
+                    "A Magic Worlds administrator sent <strong>$credits</strong> credits to "
+                    "$recipient_masked."
+                )
+                + _paragraph(
+                    "If this email is already linked to your account, the credits have been added. "
+                    "Otherwise, open Magic Worlds and create or activate an account with this email "
+                    "to receive them."
+                )
+                + _button("$action_url", "Open Magic Worlds")
+                + _link_fallback("$action_url")
+                + _paragraph("Expiration: $expires_at", muted=True, margin="0")
+            ),
+        ),
+        text_template=(
+            "Magic Worlds credits\n"
+            "====================\n\n"
+            "A Magic Worlds administrator sent $credits credits to $recipient_masked.\n\n"
+            "If this email is already linked to your account, the credits have been added. "
+            "Otherwise, open Magic Worlds and create or activate an account with this email to receive them:\n\n"
+            "$action_url\n\n"
+            "Expiration: $expires_at"
+        ),
+    ),
+    "patreon_link_proof": TransactionalEmailTemplate(
+        code="patreon_link_proof",
+        purpose="patreon_link_proof",
+        subject_template="Confirm your Patreon link",
+        required_variables=("patreon_link_proof_url", "proof_token"),
+        html_template=_document(
+            title="Confirm your Patreon link",
+            preheader="Use this one-time proof to confirm your Patreon membership link.",
+            content_html=(
+                _heading("Confirm your Patreon link")
+                + _paragraph(
+                    "Use the button below to confirm the Patreon membership link requested for "
+                    "$recipient_masked."
+                )
+                + _button("$patreon_link_proof_url", "Confirm Patreon link")
+                + _link_fallback("$patreon_link_proof_url")
+                + _paragraph("One-time proof code: <strong>$proof_token</strong>")
+                + _paragraph(
+                    "This proof expires at $expires_at. If you did not request this, you can safely "
+                    "ignore this message.",
+                    muted=True,
+                    margin="0",
+                )
+            ),
+        ),
+        text_template=(
+            "Confirm your Patreon link\n"
+            "=========================\n\n"
+            "Use this one-time proof to confirm the Patreon membership link requested for "
+            "$recipient_masked:\n\n"
+            "$patreon_link_proof_url\n\n"
+            "Proof code: $proof_token\n\n"
+            "This proof expires at $expires_at. If you did not request this, you can safely ignore "
+            "this message."
+        ),
+    ),
 }
 
 
@@ -491,6 +589,18 @@ def _template_from_row(code: str, row: Mapping[str, Any]) -> TransactionalEmailT
     text = str(row.get("text_template") or "")
     if not (subject and html and text):
         raise EmailTemplateError("DB template row is missing subject/html/text")
+    used = validate_template_identifiers(
+        template_code=code,
+        subject_template=subject,
+        html_template=html,
+        text_template=text,
+    )
+    missing_required = [name for name in default.required_variables if name not in used]
+    if missing_required:
+        raise EmailTemplateError(
+            "DB template row is missing required variable references: "
+            + ", ".join(sorted(missing_required))
+        )
     version = row.get("version")
     return TransactionalEmailTemplate(
         code=code,
@@ -645,6 +755,8 @@ def render_email_template(
 # email is never confused with a real one.
 _SAMPLE_LINK = "https://example.com/auth/email/verify?token=sample0000000000.preview000000000000"
 _SAMPLE_RESET_LINK = "https://example.com/auth/password/reset?token=sample0000000000.preview000000000000"
+_SAMPLE_PATREON_LINK = "https://example.com/auth/patreon/link/confirm?token=sample0000000000.preview000000000000"
+_SAMPLE_MAGIC_WORLDS_LINK = "https://example.com/"
 
 
 def sample_variables(template_code: str) -> dict[str, str]:
@@ -673,6 +785,23 @@ def sample_variables(template_code: str) -> dict[str, str]:
             "app_name": "Magic Auth",
             "support_email": "support@example.com",
             "status_summary": "Your recent email was delivered successfully.",
+        }
+    if code == "patreon_link_proof":
+        return {
+            **common,
+            "expires_in": "15 minutes",
+            "expires_at": "2026-01-01T00:15:00Z",
+            "patreon_link_proof_url": _SAMPLE_PATREON_LINK,
+            "proof_token": "sample0000000000.preview000000000000",
+            "lookup_id": "sample0000000000",
+        }
+    if code == "free_credit_invite":
+        return {
+            **common,
+            "app_name": "Magic Worlds",
+            "credits": "25",
+            "action_url": _SAMPLE_MAGIC_WORLDS_LINK,
+            "expires_at": "No expiration is configured.",
         }
     return common
 

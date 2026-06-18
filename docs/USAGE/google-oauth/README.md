@@ -4,6 +4,8 @@ Operator and integrator index for the consumer-only Google OAuth/OIDC login surf
 
 This guide is intentionally strict. Google OAuth is an additive login path that reuses the existing local project-scoped session lifecycle; it is **not** a replacement identity system and it is **not** a place to leak project/group scope.
 
+> Provider boundary: Google may login/link and can issue the existing local `LoginResponse` after OAuth/OIDC plus local authorization succeeds. Patreon is entitlement/link only, never starts a local login/session, and is documented separately in [Patreon account linking](../patreon-link/README.md).
+
 ## Quick Navigation
 
 | Document | Purpose |
@@ -15,6 +17,7 @@ This guide is intentionally strict. Google OAuth is an additive login path that 
 | [Reference](reference.md) | Env vars, endpoints, models, `EXT_8xxx` errors, `act-cat-064..074`, redaction, exact allowlists. |
 | [Runbook](../../RUNBOOKS/google-oauth.md) | Rollout, kill switch, staging `link_only`, auto-create gates, secret rotation, rollback. |
 | [External Account Schema](../../../schemas/docs/external-accounts.md) | `user_external_accounts`, HMAC provider-sub authority, no-token columns, link/unlink semantics. |
+| [Patreon Account Linking](../patreon-link/README.md) | Entitlement/link-only provider model; no local login/session authority. |
 
 ## Scope and Token-Minimization Rules
 

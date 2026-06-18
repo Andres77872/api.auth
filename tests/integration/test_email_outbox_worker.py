@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.Util.email.security import encrypt_render_payload
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SP_SQL = ROOT / "schemas/stored_procedures/14_email_activation.sql"
@@ -81,3 +83,69 @@ def test_suppression_skip_records_sanitized_attempt(fake_redis):
     assert result.status == "suppressed"
     assert provider.sent_messages == []
     assert "suppressed@example.com" not in str(result.attempt_metadata)
+
+
+def test_worker_sends_patreon_link_proof_without_logging_email_or_token(fake_redis):
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    class DbStub:
+        def __init__(self) -> None:
+            self.attempts = []
+            self.finalized = []
+
+        def is_recipient_suppressed(self, recipient_hash):
+            return False
+
+        def record_email_delivery_attempt(self, **kwargs):
+            self.attempts.append(kwargs)
+
+        def finalize_email_message(self, **kwargs):
+            self.finalized.append(kwargs)
+
+    raw_patreon_email = "patron-different@example.test"
+    proof_token = "lookupABC1234.secretDEF5678"
+    proof_url = f"https://auth.example.test/auth/patreon/link/confirm?token={proof_token}"
+    provider = FakeEmailProvider()
+    db = DbStub()
+    worker = EmailWorker(worker_id="worker-patreon-proof", provider=provider, redis=fake_redis, db_module=db)
+    ciphertext = encrypt_render_payload(
+        {
+            "purpose": "patreon_link_proof",
+            "patreon_link_proof_url": proof_url,
+            "proof_token": proof_token,
+            "lookup_id": "lookupABC1234",
+            "recipient_masked": "p***@example.test",
+            "expires_at": "2026-01-01T00:15:00Z",
+            "recipient_email": raw_patreon_email,  # must be ignored by the renderer/log metadata
+        },
+        key=worker.config.payload_key,
+    )
+
+    result = worker.process_message(
+        {
+            "id": "emsg-patreon-proof",
+            "purpose": "patreon_link_proof",
+            "template_code": "patreon_link_proof",
+            "recipient_hash": b"2" * 32,
+            "recipient_email": raw_patreon_email,
+            "recipient_masked": "p***@example.test",
+            "provider_idempotency_key": "patreon-link-proof-lookupABC1234",
+            "render_payload_ciphertext": ciphertext,
+            "attempt_count": 0,
+            "max_attempts": 8,
+        }
+    )
+
+    assert result.status == "sent"
+    assert len(provider.sent_messages) == 1
+    outbound = provider.sent_messages[0]
+    assert outbound.to == [raw_patreon_email]
+    assert proof_token in outbound.text
+    assert proof_url in outbound.html
+    assert outbound.tags["purpose"] == "patreon_link_proof"
+
+    recorded = f"{result.attempt_metadata} {db.attempts} {db.finalized}"
+    assert raw_patreon_email not in recorded
+    assert proof_token not in recorded
+    assert proof_url not in recorded

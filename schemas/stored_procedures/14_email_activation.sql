@@ -1532,6 +1532,50 @@ BEGIN
 END$$
 
 -- ===================================================================================
+-- sp_email_enqueue_patreon_link_proof
+-- Durable outbox enqueue for Patreon email-loop proof messages. This supports the
+-- `patreon_link_proof` purpose without inserting local user_email_link_tokens or
+-- changing local email activation/password reset semantics.
+-- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_email_enqueue_patreon_link_proof$$
+CREATE PROCEDURE sp_email_enqueue_patreon_link_proof(
+    IN p_email_message_id VARCHAR(64),
+    IN p_user_id VARCHAR(64),
+    IN p_recipient_email VARCHAR(255),
+    IN p_recipient_hash BINARY(32),
+    IN p_recipient_masked VARCHAR(255),
+    IN p_provider VARCHAR(50),
+    IN p_provider_idempotency_key VARCHAR(128),
+    IN p_render_payload_ciphertext LONGBLOB,
+    IN p_payload_purge_at DATETIME,
+    IN p_priority TINYINT
+)
+BEGIN
+    IF p_recipient_hash IS NULL OR OCTET_LENGTH(p_recipient_hash) <> 32 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Patreon link proof recipient hash must be 32 bytes';
+    END IF;
+
+    IF p_payload_purge_at IS NULL OR p_payload_purge_at <= NOW() THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Patreon link proof payload purge time must be in the future';
+    END IF;
+
+    INSERT INTO email_messages (
+        id, user_id, user_email_id, token_id, purpose, template_code,
+        recipient_email, recipient_hash, recipient_masked, provider,
+        provider_idempotency_key, status, priority, attempt_count, max_attempts,
+        next_attempt_at, render_payload_ciphertext, payload_purge_at, created_at, updated_at
+    ) VALUES (
+        p_email_message_id, p_user_id, NULL, NULL, 'patreon_link_proof', 'patreon_link_proof',
+        p_recipient_email, p_recipient_hash, p_recipient_masked, COALESCE(p_provider, 'resend'),
+        p_provider_idempotency_key, 'pending', COALESCE(p_priority, 4), 0, 8,
+        NOW(), p_render_payload_ciphertext, p_payload_purge_at, NOW(), NOW()
+    );
+
+    SELECT p_email_message_id AS email_message_id,
+           'patreon_link_proof_enqueued' AS lifecycle_status;
+END$$
+
+-- ===================================================================================
 -- DB-MANAGED TRANSACTIONAL EMAIL TEMPLATES
 -- ===================================================================================
 -- Admin-editable, versioned bodies for the fixed transactional-scope template
@@ -1689,4 +1733,4 @@ DELIMITER ;
 -- EMAIL ACTIVATION STORED PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Email activation stored procedures created!' AS status,
-       '26 procedures for email lifecycle, reset links, outbox delivery, webhooks, idempotency, retention, anonymization, and DB-managed templates' AS details;
+       '27 procedures for email lifecycle, reset links, outbox delivery, Patreon proof, webhooks, idempotency, retention, anonymization, and DB-managed templates' AS details;

@@ -7,7 +7,7 @@ Includes both data models and API response models.
 
 from datetime import datetime
 import re
-from typing import List, Optional, Dict, Any
+from typing import Any, ClassVar, Dict, FrozenSet, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
@@ -40,6 +40,16 @@ def _optional_email_or_none(value: Any) -> Any:
     if not _EMAIL_FORMAT_RE.match(normalized):
         raise ValueError("Invalid email format")
     return normalized
+
+
+def _optional_stripped_string_or_none(value: Any) -> Any:
+    """Treat omitted/blank optional string values as absent; reject non-strings."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if value is None:
+        return None
+    raise ValueError("Value must be a string")
 
 
 # =================== CORE DATA ENTITIES ===================
@@ -412,6 +422,402 @@ class ExternalIdentityUnlinkResponse(BaseResponse):
 
     remaining_auth_methods: List[str] = Field(default_factory=list)
     sessions_revoked: int = 0
+
+
+PatreonEntitlementStatus = Literal["active", "free", "pending", "former", "revoked", "stale"]
+PatreonSafeLinkStatus = Literal["none", "pending", "linked", "unlinked", "revoked", "blocked"]
+PatreonResyncAcceptanceStatus = Literal["accepted", "queued", "disabled", "rate_limited", "degraded"]
+
+PATREON_FORBIDDEN_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {
+        # Local-auth/session material: Patreon is entitlement/link only, never login.
+        "access_token",
+        "refresh_token",
+        "session_token",
+        "api_key",
+        "token_type",
+        "expires_in",
+        "refresh_expires_in",
+        "expires_at",
+        "refresh_expires_at",
+        # Raw Patreon/provider internals and secrets that must stay server-only.
+        "patreon_user_id",
+        "patreon_member_id",
+        "patreon_campaign_id",
+        "patreon_tier_id",
+        "raw_patreon_email",
+        "masked_patreon_email",
+        "patreon_email",
+        "proof_email",
+        "proof_email_hash",
+        "proof_email_masked",
+        "patreon_user_id_hash",
+        "patreon_member_id_hash",
+        "patreon_campaign_id_hash",
+        "patreon_tier_id_hash",
+        "patreon_user_id_fingerprint",
+        "patreon_member_id_fingerprint",
+        "patreon_campaign_id_fingerprint",
+        "patreon_tier_id_fingerprint",
+        "provider_sub_hash",
+        "provider_sub_fingerprint",
+        "hash_prefix",
+        "member_id_hash",
+        "campaign_id_hash",
+        "tier_id_hash",
+        "member_id_fingerprint",
+        "campaign_id_fingerprint",
+        "tier_id_fingerprint",
+        "patron_status",
+        "currently_entitled_tiers",
+        "last_charge_status",
+        "x-patreon-signature",
+        "patreon_signature",
+        "webhook_secret",
+        "creator_access_token",
+        "creator_refresh_token",
+        "patreon_access_token",
+        "patreon_refresh_token",
+        "patreon_payload",
+        "provider_payload",
+        "raw_payload",
+        "raw_body",
+        "delivery_hash",
+        "raw_body_sha256",
+        "payload_hash",
+        "audit_rows",
+        "proof_token",
+        "proof_secret",
+        "token_hash",
+        "token_fingerprint",
+        "s2s_token",
+        "s2s_bearer_token",
+        "hmac_secret",
+    }
+)
+
+PATREON_SAFE_ENTITLEMENT_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {
+        "external_source",
+        "status",
+        "plan_code",
+        "tier_code",
+        "tier_name",
+        "link_status",
+        "next_renewal_at",
+        "grace_period_until",
+        "last_synced_at",
+        "stale_after",
+        "classification_version",
+    }
+)
+PATREON_LINK_STATUS_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {"success", "message", "link_status", "entitlement", "retry_after_seconds"}
+)
+PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {"success", "message", "accepted", "link_status", "retry_after_seconds"}
+)
+PATREON_UNLINK_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {"success", "message", "link_status", "entitlement"}
+)
+PATREON_S2S_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {"success", "message", "user_hash", "entitlement", "contract_version"}
+)
+PATREON_RESYNC_ACCEPTED_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {
+        "success",
+        "message",
+        "accepted",
+        "status",
+        "user_hash",
+        "retry_after_seconds",
+        "not_before",
+        "correlation_id",
+        "contract_version",
+    }
+)
+
+
+def _assert_patreon_model_allow_list(model_cls: type[BaseModel], allow_list: FrozenSet[str]) -> FrozenSet[str]:
+    """Validate one Patreon response DTO against its explicit response allow-list."""
+
+    if not allow_list:
+        raise RuntimeError(f"{model_cls.__name__} is missing an explicit Patreon safe-field allow-list")
+    model_fields = frozenset(model_cls.model_fields)
+    forbidden = model_fields & PATREON_FORBIDDEN_RESPONSE_FIELD_NAMES
+    unexpected = model_fields - allow_list
+    missing = allow_list - model_fields
+    if forbidden or unexpected or missing:
+        raise RuntimeError(
+            f"{model_cls.__name__} is not Patreon-safe: "
+            f"forbidden={sorted(forbidden)}, unexpected={sorted(unexpected)}, missing={sorted(missing)}"
+        )
+    return allow_list
+
+
+def _model_dump_patreon_safe(instance: BaseModel, **kwargs: Any) -> Dict[str, Any]:
+    """Serialize only fields explicitly allow-listed for the Patreon DTO surface."""
+
+    safe_fields = getattr(instance.__class__, "safe_fields", frozenset())
+    allow_list = _assert_patreon_model_allow_list(instance.__class__, frozenset(safe_fields))
+    return instance.model_dump(include=set(allow_list), **kwargs)
+
+
+class PatreonSafeModelConfig(BaseModelConfig):
+    """Base for Patreon browser/S2S DTOs with explicit no-leak defaults.
+
+    Safe Patreon models are allow-list based: unknown extra fields are refused,
+    and response DTOs below publish only normalized fields. Raw Patreon IDs,
+    emails, payloads, signatures, provider tokens, session tokens, fingerprints,
+    hash prefixes, and audit rows belong only on server-side internals.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    safe_fields: ClassVar[FrozenSet[str]] = frozenset()
+    forbidden_response_fields: ClassVar[FrozenSet[str]] = PATREON_FORBIDDEN_RESPONSE_FIELD_NAMES
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        """Serialize using this DTO's explicit allow-list; no field fallback is allowed."""
+
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+class PatreonLinkRequest(PatreonSafeModelConfig):
+    """Authenticated Patreon link initiation request.
+
+    ``patreon_email_hint`` is only a lookup hint. The proof email must be sent
+    only to the non-null Patreon member email returned by the creator API.
+    """
+
+    patreon_email_hint: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=320,
+        description="Optional user-supplied lookup hint; never durable link authority.",
+    )
+    explicit_user_intent: bool = Field(
+        default=False,
+        description="Route-level guard that the user explicitly requested Patreon linking.",
+    )
+    confirm_email_match: bool = Field(
+        default=False,
+        description="User confirmation when a non-null Patreon email matches local email.",
+    )
+
+    @field_validator("patreon_email_hint", mode="before")
+    @classmethod
+    def normalize_patreon_email_hint(cls, value: Any) -> Any:
+        return _optional_email_or_none(value)
+
+
+class PatreonProofConfirmRequest(PatreonSafeModelConfig):
+    """Request body for consuming a Patreon email-loop proof.
+
+    The accepted ``token``/``lookup_id``/``secret`` values are request-only proof
+    material. They are not auth/session/provider tokens and must never be echoed
+    by any Patreon response model.
+    """
+
+    token: Optional[str] = Field(default=None, min_length=1, max_length=4096)
+    lookup_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    secret: Optional[str] = Field(default=None, min_length=1, max_length=4096)
+    explicit_user_intent: bool = Field(default=False)
+
+    @field_validator("token", "lookup_id", "secret", mode="before")
+    @classmethod
+    def normalize_optional_proof_part(cls, value: Any) -> Any:
+        return _optional_stripped_string_or_none(value)
+
+
+class PatreonLinkConfirmRequest(PatreonProofConfirmRequest):
+    """Compatibility name for Patreon link-confirm route bodies."""
+
+    pass
+
+
+class PatreonUnlinkRequest(PatreonSafeModelConfig):
+    """Authenticated unlink request body for clients that send DELETE JSON."""
+
+    explicit_user_intent: bool = Field(default=False)
+    confirm_unlink: bool = Field(default=False)
+
+
+class PatreonSafeEntitlement(PatreonSafeModelConfig):
+    """Normalized Patreon entitlement safe for S2S and client projection.
+
+    This DTO deliberately contains no raw Patreon IDs, campaign/tier IDs, raw or
+    masked email, provider payloads, charge details, signatures, hashes,
+    fingerprints, audit rows, secrets, or local auth tokens.
+    """
+
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_SAFE_ENTITLEMENT_FIELD_NAMES
+
+    external_source: Optional[Literal["patreon"]] = None
+    status: PatreonEntitlementStatus = "free"
+    plan_code: str = Field(default="free", min_length=1, max_length=128)
+    tier_code: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    tier_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    link_status: PatreonSafeLinkStatus = "none"
+    next_renewal_at: Optional[datetime] = None
+    grace_period_until: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = None
+    stale_after: Optional[datetime] = None
+    classification_version: int = Field(default=1, ge=1)
+
+    @field_validator("plan_code", "tier_code", "tier_name", mode="before")
+    @classmethod
+    def normalize_optional_codes(cls, value: Any) -> Any:
+        return _optional_stripped_string_or_none(value)
+
+
+class PatreonProofRequestResponse(BaseResponse):
+    """Generic, enumeration-safe response for link proof initiation."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES
+
+    accepted: bool = True
+    message: Optional[str] = "If the Patreon link can be processed, a proof request has been accepted."
+    link_status: Optional[PatreonSafeLinkStatus] = None
+    retry_after_seconds: Optional[int] = Field(default=None, ge=0)
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+class PatreonLinkRequestResponse(PatreonProofRequestResponse):
+    """Compatibility name for Patreon link-request responses."""
+
+    pass
+
+
+class PatreonLinkStatusResponse(BaseResponse):
+    """Owning-user Patreon link status response with safe entitlement only."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_LINK_STATUS_RESPONSE_FIELD_NAMES
+
+    link_status: PatreonSafeLinkStatus = "none"
+    entitlement: Optional[PatreonSafeEntitlement] = None
+    retry_after_seconds: Optional[int] = Field(default=None, ge=0)
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+class PatreonUnlinkResponse(BaseResponse):
+    """Safe unlink response; unlink never revokes or returns local sessions."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_UNLINK_RESPONSE_FIELD_NAMES
+
+    link_status: PatreonSafeLinkStatus = "unlinked"
+    entitlement: Optional[PatreonSafeEntitlement] = None
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+class PatreonEntitlementS2SResponse(BaseResponse):
+    """Dedicated Magic Worlds S2S entitlement response.
+
+    The contract is a normalized projection only. It intentionally excludes raw
+    provider identifiers, provider emails, webhook data, hashes/fingerprints,
+    audit rows, secrets, and all local auth token/session fields.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_S2S_RESPONSE_FIELD_NAMES
+
+    user_hash: str = Field(..., min_length=1, max_length=255)
+    entitlement: PatreonSafeEntitlement
+    contract_version: int = Field(default=1, ge=1)
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+class PatreonResyncRequest(PatreonSafeModelConfig):
+    """S2S/manual resync request body with no raw provider selectors."""
+
+    force: bool = False
+    reason: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: Any) -> Any:
+        return _optional_stripped_string_or_none(value)
+
+
+class PatreonResyncAcceptedResponse(BaseResponse):
+    """Safe acceptance response for internal Patreon resync enqueue requests."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_RESYNC_ACCEPTED_RESPONSE_FIELD_NAMES
+
+    accepted: bool = True
+    status: PatreonResyncAcceptanceStatus = "accepted"
+    user_hash: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    retry_after_seconds: Optional[int] = Field(default=None, ge=0)
+    not_before: Optional[datetime] = None
+    correlation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    contract_version: int = Field(default=1, ge=1)
+    message: Optional[str] = "Patreon entitlement resync request accepted."
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
+
+
+def assert_patreon_response_model_allow_lists() -> None:
+    """Fail fast if Patreon response DTOs drift outside their safe allow-lists."""
+
+    model_allow_lists = {
+        PatreonSafeEntitlement: PATREON_SAFE_ENTITLEMENT_FIELD_NAMES,
+        PatreonProofRequestResponse: PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES,
+        PatreonLinkRequestResponse: PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES,
+        PatreonLinkStatusResponse: PATREON_LINK_STATUS_RESPONSE_FIELD_NAMES,
+        PatreonUnlinkResponse: PATREON_UNLINK_RESPONSE_FIELD_NAMES,
+        PatreonEntitlementS2SResponse: PATREON_S2S_RESPONSE_FIELD_NAMES,
+        PatreonResyncAcceptedResponse: PATREON_RESYNC_ACCEPTED_RESPONSE_FIELD_NAMES,
+    }
+    for model_cls, allow_list in model_allow_lists.items():
+        if frozenset(getattr(model_cls, "safe_fields", frozenset())) != allow_list:
+            raise RuntimeError(f"{model_cls.__name__} safe_fields does not match its explicit allow-list")
+        _assert_patreon_model_allow_list(model_cls, allow_list)
+
+
+assert_patreon_response_model_allow_lists()
 
 
 class OAuthErrorResponse(BaseResponse):

@@ -19,6 +19,8 @@ import logging
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
+from src.Util.auth_constants import PATREON_REDACTION_FIELD_NAMES
+
 logger = logging.getLogger(__name__)
 
 # Check if DEBUG_MODE is enabled (default: False)
@@ -51,6 +53,7 @@ class ErrorCode(str, Enum):
     - DB_6xxx: Database errors
     - INT_7xxx: Internal errors
     - EXT_8xxx: External service errors
+    - EXT_81xx: Patreon entitlement/link provider errors
     - EMAIL_9xxx: Transactional auth email safety/delivery errors
     """
     
@@ -162,6 +165,24 @@ class ErrorCode(str, Enum):
     EXTERNAL_IDENTITY_NOT_LINKED = "EXT_8028"
     OAUTH_PASSWORD_REQUIRED_FOR_UNLINK = "EXT_8029"
     OAUTH_RATE_LIMITED = "EXT_8030"
+
+    PATREON_PROVIDER_NOT_CONFIGURED = "EXT_8100"
+    PATREON_PROVIDER_DISABLED = "EXT_8101"
+    PATREON_CONFIGURATION_INVALID = "EXT_8102"
+    PATREON_CREATOR_API_UNAVAILABLE = "EXT_8103"
+    PATREON_CREATOR_API_TIMEOUT = "EXT_8104"
+    PATREON_CREATOR_API_RATE_LIMITED = "EXT_8105"
+    PATREON_CREATOR_API_ERROR = "EXT_8106"
+    PATREON_LINK_ACTION_DENIED = "EXT_8107"
+    PATREON_LINK_CONFLICT = "EXT_8108"
+    PATREON_PROOF_INVALID = "EXT_8109"
+    PATREON_PROOF_RATE_LIMITED = "EXT_8110"
+    PATREON_WEBHOOK_SIGNATURE_INVALID = "EXT_8111"
+    PATREON_S2S_UNAUTHORIZED = "EXT_8112"
+    PATREON_SYNC_DEGRADED = "EXT_8113"
+    PATREON_TIER_MAP_NOT_READY = "EXT_8114"
+    PATREON_SECURITY_EVENT = "EXT_8115"
+    PATREON_RATE_LIMITED = "EXT_8116"
 
     # Transactional auth email errors (9xxx)
     EMAIL_DELIVERY_DISABLED = "EMAIL_9001"
@@ -284,6 +305,55 @@ OAUTH_SENSITIVE_FIELD_NAMES = (
     "oauth_link_token",
     "project_hash",
     "user_group_hash",
+    *PATREON_REDACTION_FIELD_NAMES,
+)
+
+PATREON_GENERIC_SENSITIVE_FIELD_NAMES = (
+    "campaign",
+    "campaign_id",
+    "tier",
+    "tier_id",
+    "member",
+    "member_id",
+    "membership",
+    "membership_id",
+    "provider_id",
+    "provider_sub",
+    "provider_payload",
+    "provider_response",
+    "proof",
+    "proof_state",
+    "proof_token",
+    "credential",
+    "credentials",
+    "signature",
+    "webhook_signature",
+    "webhook_secret",
+    "s2s_bearer",
+    "s2s_token",
+)
+
+_ERROR_SENSITIVE_FIELD_EXACT = {
+    field.lower().replace("-", "_")
+    for field in (*OAUTH_SENSITIVE_FIELD_NAMES, *PATREON_GENERIC_SENSITIVE_FIELD_NAMES)
+}
+_ERROR_SENSITIVE_FIELD_FRAGMENTS = (
+    "patreon",
+    "creator_access_token",
+    "creator_refresh_token",
+    "webhook_secret",
+    "webhook_signature",
+    "proof_token",
+    "proof_secret",
+    "campaign_id",
+    "tier_id",
+    "member_id",
+    "membership_id",
+    "provider_payload",
+    "provider_response",
+    "s2s_token",
+    "s2s_bearer",
+    "credential",
 )
 
 _OAUTH_FIELD_ASSIGNMENT_RE = re.compile(
@@ -294,6 +364,19 @@ _STRICT_HASH_VALUE_RE = re.compile(
     r"\b(?:project|user[_-]?group)[_-]?hash\b\s*[=:]\s*([^\s,;&]+)",
     flags=re.IGNORECASE,
 )
+_PATREON_GENERIC_FIELD_ASSIGNMENT_RE = re.compile(
+    r"\b("
+    + "|".join(re.escape(field) for field in PATREON_GENERIC_SENSITIVE_FIELD_NAMES)
+    + r")\b\s*[=:]\s*([^\s,;&]+)",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_error_sensitive_field(key: str) -> bool:
+    normalized = str(key or "").lower().replace("-", "_")
+    if normalized in _ERROR_SENSITIVE_FIELD_EXACT:
+        return True
+    return any(fragment in normalized for fragment in _ERROR_SENSITIVE_FIELD_FRAGMENTS)
 
 
 def sanitize_oauth_sensitive_text(message: str) -> str:
@@ -306,6 +389,10 @@ def sanitize_oauth_sensitive_text(message: str) -> str:
     )
     sanitized = _STRICT_HASH_VALUE_RE.sub(
         lambda match: match.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]",
+        sanitized,
+    )
+    sanitized = _PATREON_GENERIC_FIELD_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]",
         sanitized,
     )
     return sanitized
@@ -357,6 +444,11 @@ OAUTH_PROVIDER_UNAVAILABLE_MESSAGE = "OAuth provider is not available."
 OAUTH_LINKING_DENIED_MESSAGE = "External identity action could not be completed."
 OAUTH_RATE_LIMITED_MESSAGE = "Too many OAuth attempts. Please try again later."
 
+PATREON_NEUTRAL_PUBLIC_MESSAGE = "Patreon action could not be completed."
+PATREON_PROVIDER_UNAVAILABLE_MESSAGE = "Patreon service is not available."
+PATREON_RATE_LIMITED_MESSAGE = "Too many Patreon requests. Please try again later."
+PATREON_SECURITY_PUBLIC_MESSAGE = "Request could not be completed."
+
 OAUTH_ERROR_PUBLIC_MESSAGES: Dict[ErrorCode, str] = {
     ErrorCode.OAUTH_PROVIDER_NOT_CONFIGURED: OAUTH_PROVIDER_UNAVAILABLE_MESSAGE,
     ErrorCode.OAUTH_PROVIDER_DISABLED: OAUTH_PROVIDER_UNAVAILABLE_MESSAGE,
@@ -403,6 +495,46 @@ OAUTH_ERROR_HTTP_STATUS: Dict[ErrorCode, int] = {
     ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED: 404,
     ErrorCode.OAUTH_PASSWORD_REQUIRED_FOR_UNLINK: 409,
     ErrorCode.OAUTH_RATE_LIMITED: 429,
+}
+
+PATREON_ERROR_PUBLIC_MESSAGES: Dict[ErrorCode, str] = {
+    ErrorCode.PATREON_PROVIDER_NOT_CONFIGURED: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_PROVIDER_DISABLED: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_CONFIGURATION_INVALID: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_CREATOR_API_UNAVAILABLE: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_CREATOR_API_TIMEOUT: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_CREATOR_API_RATE_LIMITED: PATREON_RATE_LIMITED_MESSAGE,
+    ErrorCode.PATREON_CREATOR_API_ERROR: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_LINK_ACTION_DENIED: PATREON_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.PATREON_LINK_CONFLICT: PATREON_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.PATREON_PROOF_INVALID: PATREON_NEUTRAL_PUBLIC_MESSAGE,
+    ErrorCode.PATREON_PROOF_RATE_LIMITED: PATREON_RATE_LIMITED_MESSAGE,
+    ErrorCode.PATREON_RATE_LIMITED: PATREON_RATE_LIMITED_MESSAGE,
+    ErrorCode.PATREON_WEBHOOK_SIGNATURE_INVALID: PATREON_SECURITY_PUBLIC_MESSAGE,
+    ErrorCode.PATREON_S2S_UNAUTHORIZED: PATREON_SECURITY_PUBLIC_MESSAGE,
+    ErrorCode.PATREON_SYNC_DEGRADED: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_TIER_MAP_NOT_READY: PATREON_PROVIDER_UNAVAILABLE_MESSAGE,
+    ErrorCode.PATREON_SECURITY_EVENT: PATREON_SECURITY_PUBLIC_MESSAGE,
+}
+
+PATREON_ERROR_HTTP_STATUS: Dict[ErrorCode, int] = {
+    ErrorCode.PATREON_PROVIDER_NOT_CONFIGURED: 503,
+    ErrorCode.PATREON_PROVIDER_DISABLED: 404,
+    ErrorCode.PATREON_CONFIGURATION_INVALID: 503,
+    ErrorCode.PATREON_CREATOR_API_UNAVAILABLE: 502,
+    ErrorCode.PATREON_CREATOR_API_TIMEOUT: 504,
+    ErrorCode.PATREON_CREATOR_API_RATE_LIMITED: 429,
+    ErrorCode.PATREON_CREATOR_API_ERROR: 502,
+    ErrorCode.PATREON_LINK_ACTION_DENIED: 202,
+    ErrorCode.PATREON_LINK_CONFLICT: 409,
+    ErrorCode.PATREON_PROOF_INVALID: 202,
+    ErrorCode.PATREON_PROOF_RATE_LIMITED: 429,
+    ErrorCode.PATREON_RATE_LIMITED: 429,
+    ErrorCode.PATREON_WEBHOOK_SIGNATURE_INVALID: 401,
+    ErrorCode.PATREON_S2S_UNAUTHORIZED: 401,
+    ErrorCode.PATREON_SYNC_DEGRADED: 503,
+    ErrorCode.PATREON_TIER_MAP_NOT_READY: 503,
+    ErrorCode.PATREON_SECURITY_EVENT: 401,
 }
 
 
@@ -452,13 +584,15 @@ class AppException(Exception):
         """Sanitize details dictionary by masking sensitive data"""
         sanitized = {}
         for key, value in details.items():
-            if isinstance(value, str):
+            if _is_error_sensitive_field(key):
+                sanitized[key] = "[REDACTED]"
+            elif isinstance(value, str):
                 sanitized[key] = sanitize_error_message(value)
             elif isinstance(value, dict):
                 sanitized[key] = self._sanitize_details(value)
             elif isinstance(value, list):
                 sanitized[key] = [
-                    self._sanitize_details(item) if isinstance(item, dict) else mask_multiple_uuids(str(item))
+                    self._sanitize_details(item) if isinstance(item, dict) else sanitize_error_message(str(item))
                     for item in value
                 ]
             else:
@@ -865,6 +999,34 @@ class OAuthFlowError(AppException):
         )
 
 
+class PatreonFlowError(AppException):
+    """Neutral Patreon entitlement/link/provider error.
+
+    Public messages are intentionally generic: they do not reveal Patreon email,
+    membership existence, ownership, campaign/tier mapping, proof state, or
+    credential/configuration state.
+    """
+
+    def __init__(
+        self,
+        message: str | None = None,
+        error_code: ErrorCode = ErrorCode.PATREON_LINK_ACTION_DENIED,
+        status_code: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
+        original_error: Optional[Exception] = None,
+        error_context: Optional[str] = None,
+    ):
+        super().__init__(
+            message=message or PATREON_ERROR_PUBLIC_MESSAGES.get(error_code, PATREON_NEUTRAL_PUBLIC_MESSAGE),
+            error_code=error_code,
+            category=ErrorCategory.EXTERNAL,
+            status_code=status_code or PATREON_ERROR_HTTP_STATUS.get(error_code, 400),
+            details=details,
+            original_error=original_error,
+            error_context=error_context,
+        )
+
+
 class FeatureNotImplementedError(AppException):
     """Feature not yet implemented (501 Not Implemented)"""
     
@@ -1162,6 +1324,43 @@ def create_oauth_error(
         details=details,
         original_error=original_error,
         error_context=error_context,
+    )
+
+
+def create_patreon_error(
+    error_code: ErrorCode,
+    *,
+    message: Optional[str] = None,
+    status_code: Optional[int] = None,
+    details: Optional[Dict[str, Any]] = None,
+    original_error: Optional[Exception] = None,
+    error_context: Optional[str] = None,
+) -> PatreonFlowError:
+    """Create a neutral Patreon error using the EXT_81xx contract."""
+    return PatreonFlowError(
+        message=message,
+        error_code=error_code,
+        status_code=status_code,
+        details=details,
+        original_error=original_error,
+        error_context=error_context,
+    )
+
+
+def create_patreon_rate_limit_error(
+    retry_after_seconds: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> PatreonFlowError:
+    """Create the sanitized Patreon 429 posture with Retry-After metadata."""
+
+    retry_after = max(1, int(retry_after_seconds or 1))
+    safe_details = {"retry_after_seconds": retry_after}
+    if details:
+        safe_details.update(details)
+    return create_patreon_error(
+        ErrorCode.PATREON_RATE_LIMITED,
+        status_code=429,
+        details=safe_details,
     )
 
 

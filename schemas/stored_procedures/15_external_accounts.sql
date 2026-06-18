@@ -1,9 +1,11 @@
 -- ===================================================================================
 -- External Account Stored Procedures
 -- ===================================================================================
--- Consumer-only Google OAuth identity lifecycle. Procedures accept only hashed or
--- masked provider identity snapshots from application code and never persist provider
--- token material.
+-- Consumer external-account identity lifecycle. Generic link/unlink/get/touch
+-- procedures accept Google and Patreon provider subjects represented as HMACs and
+-- masked snapshots from application code. Google-only auto-create/login procedures
+-- remain Google-only because Patreon is entitlement/link authority only and never a
+-- local session issuer. Provider token material is never persisted here.
 -- ===================================================================================
 
 USE magic_auth;
@@ -17,7 +19,9 @@ SET collation_connection = utf8mb4_unicode_ci;
 DELIMITER $$
 
 -- ===================================================================================
--- Resolve a linked Google external account to an active local consumer only.
+-- Resolve a linked Google or Patreon external account to an active local consumer.
+-- Application policy decides whether a resolved provider can be used for login;
+-- Patreon callers must use this only as link/entitlement authority, never login.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_get_user_by_external_account$$
 CREATE PROCEDURE sp_get_user_by_external_account(
@@ -25,7 +29,7 @@ CREATE PROCEDURE sp_get_user_by_external_account(
     IN p_provider_sub_hash BINARY(32)
 )
 BEGIN
-    IF p_provider <> 'google' THEN
+    IF p_provider NOT IN ('google','patreon') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
     END IF;
 
@@ -64,7 +68,7 @@ BEGIN
 END$$
 
 -- ===================================================================================
--- Link a Google external account to an existing active consumer.
+-- Link a Google or Patreon external account to an existing active consumer.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_link_external_account$$
 CREATE PROCEDURE sp_link_external_account(
@@ -92,7 +96,7 @@ BEGIN
         RESIGNAL;
     END;
 
-    IF p_provider <> 'google' THEN
+    IF p_provider NOT IN ('google','patreon') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
     END IF;
 
@@ -185,7 +189,7 @@ BEGIN
 END$$
 
 -- ===================================================================================
--- Soft-unlink a user's active Google external account.
+-- Soft-unlink a user's active Google or Patreon external account.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_unlink_external_account$$
 CREATE PROCEDURE sp_unlink_external_account(
@@ -195,7 +199,7 @@ CREATE PROCEDURE sp_unlink_external_account(
     IN p_reason VARCHAR(64)
 )
 BEGIN
-    IF p_provider <> 'google' THEN
+    IF p_provider NOT IN ('google','patreon') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
     END IF;
 
@@ -216,7 +220,8 @@ BEGIN
 END$$
 
 -- ===================================================================================
--- Refresh last-seen and masked snapshots after a successful returning-user callback.
+-- Refresh last-seen and masked snapshots after a provider observation.
+-- For Patreon this is sync/webhook/link evidence only, never login authority.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_touch_external_account_last_seen$$
 CREATE PROCEDURE sp_touch_external_account_last_seen(
@@ -227,7 +232,7 @@ CREATE PROCEDURE sp_touch_external_account_last_seen(
     IN p_provider_email_verified_at_link BOOLEAN
 )
 BEGIN
-    IF p_provider <> 'google' THEN
+    IF p_provider NOT IN ('google','patreon') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
     END IF;
 
@@ -388,4 +393,4 @@ END$$
 DELIMITER ;
 
 SELECT 'External account stored procedures created successfully!' AS status,
-       '5 procedures created for Google external account lifecycle' AS details;
+       '5 procedures created; generic link/unlink/get/touch support google|patreon while auto-create remains Google-only' AS details;

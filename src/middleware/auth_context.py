@@ -15,6 +15,8 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from src.Util.auth_constants import PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX
+
 logger = logging.getLogger(__name__)
 
 GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = {
@@ -64,9 +66,22 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         Returns:
             Response from endpoint
         """
-        if request.url.path in GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS:
+        request_url = getattr(request, "url", None)
+        request_path = str(getattr(request_url, "path", "") or "")
+
+        if request_path in GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS:
             request.state.auth_method = "oauth"
             request.state.oauth_auth_context_skipped = True
+            return await call_next(request)
+
+        if self._is_patreon_internal_entitlements_path(request_path):
+            # Patreon S2S entitlement routes are authenticated by route-owned
+            # dedicated bearer validation. Middleware must not turn the S2S
+            # bearer, browser cookies, JWT-looking strings, or X-API-Key headers
+            # into a local user/session context here.
+            request.state.auth_method = "api_key"
+            request.state.s2s_auth_context_skipped = True
+            request.state.patreon_s2s_auth_context_skipped = True
             return await call_next(request)
 
         # --- Path 1: API Key Authentication (X-API-Key header) ---
@@ -302,3 +317,12 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                 permissions = []
 
         return permissions, groups
+
+    def _is_patreon_internal_entitlements_path(self, path: str) -> bool:
+        """Return True for Patreon internal S2S entitlement route paths."""
+        normalized_path = (path or "").split("?", 1)[0].rstrip("/") or "/"
+        if not normalized_path.startswith(PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX):
+            return False
+
+        parts = [part for part in normalized_path.strip("/").split("/") if part]
+        return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"

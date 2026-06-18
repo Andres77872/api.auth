@@ -176,6 +176,14 @@ async def system_health() -> HealthCheckResponse:
         if email_provider.get("status") == "not_ready" or email_outbox.get("status") not in {"healthy", "disabled"}:
             status = "degraded"
 
+    # Patreon is entitlement/link-only operational health. Keep it as a
+    # separate component so local auth health remains independently observable;
+    # disabled Patreon is safe and must not degrade unrelated auth checks.
+    patreon = SystemMetrics.get_patreon_metrics()
+    components["patreon"] = patreon
+    if patreon.get("status") in {"degraded", "stale", "retrying", "unhealthy", "not_ready", "unknown"}:
+        status = "degraded"
+
     return HealthCheckResponse(
         success=True,
         status=status,

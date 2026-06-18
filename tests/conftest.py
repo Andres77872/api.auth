@@ -66,14 +66,183 @@ _GOOGLE_OAUTH_TEST_ENV_DEFAULTS = {
     "PROVIDER_INIT_RETURN_ORIGINS": "http://localhost:3000,http://localhost:5173",
 }
 
+_PATREON_TEST_TIER_MAP_JSON = json.dumps(
+    {
+        "campaigns": [
+            {
+                "campaign_id": "campaign-mw-alpha",
+                "tiers": [
+                    {
+                        "tier_id": "tier-mw-alpha-artisan",
+                        "plan_code": "magic_worlds_plus",
+                        "tier_code": "artisan",
+                        "tier_name": "Artisan",
+                        "priority": 10,
+                    },
+                ],
+            },
+            {
+                "campaign_id": "campaign-mw-beta",
+                "tiers": [
+                    {
+                        "tier_id": "tier-mw-beta-architect",
+                        "plan_code": "magic_worlds_pro",
+                        "tier_code": "architect",
+                        "tier_name": "Architect",
+                        "priority": 90,
+                    }
+                ],
+            },
+        ]
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
+
+# Phase 3 Patreon RED harness defaults. These are synthetic-only values and all
+# feature flags remain disabled until individual tests opt in with monkeypatch.
+_PATREON_TEST_ENV_DEFAULTS = {
+    "PATREON_LINKING_ENABLED": "false",
+    "PATREON_WEBHOOKS_ENABLED": "false",
+    "PATREON_SYNC_ENABLED": "false",
+    "PATREON_S2S_ENTITLEMENT_ENABLED": "false",
+    "PATREON_CREATOR_TOKEN_REFRESH_ENABLED": "false",
+    "PATREON_RAW_PAYLOAD_CAPTURE_ENABLED": "false",
+    "PATREON_API_BASE_URL": "http://patreon.test/api/oauth2/v2",
+    "PATREON_OAUTH_TOKEN_URL": "http://patreon.test/api/oauth2/token",
+    "PATREON_CREATOR_ACCESS_TOKEN": "test-patreon-creator-access-token-not-real",
+    "PATREON_CREATOR_REFRESH_TOKEN": "test-patreon-creator-refresh-token-not-real",
+    "PATREON_CLIENT_ID": "test-patreon-client-id-not-real",
+    "PATREON_CLIENT_SECRET": "test-patreon-client-secret-not-real",
+    "PATREON_WEBHOOK_SECRET": "test-patreon-webhook-secret-not-real",
+    "PATREON_WEBHOOK_ID": "test-patreon-webhook-id-not-real",
+    "PATREON_S2S_BEARER_TOKEN": "test-patreon-s2s-bearer-token-not-real",
+    "PATREON_USER_AGENT": "api.auth Patreon tests (no real provider calls)",
+    "PATREON_PROVIDER_SUB_PEPPER": "test-patreon-provider-sub-pepper-not-real-min-32-bytes!!",
+    "PATREON_EMAIL_HASH_PEPPER": "test-patreon-email-hash-pepper-not-real-min-32-bytes!!",
+    "PATREON_PROOF_TOKEN_PEPPER": "test-patreon-proof-token-pepper-not-real-min-32-bytes!!",
+    "PATREON_ID_HMAC_SECRET": "test-patreon-id-hmac-secret-not-real-min-32-bytes!!",
+    "PATREON_HMAC_SECRET": "test-patreon-hmac-secret-not-real-min-32-bytes!!",
+    "PATREON_WEBHOOK_DELIVERY_HASH_PEPPER": "test-patreon-delivery-hash-pepper-not-real-min-32-bytes!!",
+    "PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY": "test-patreon-provider-token-encryption-key-not-real",
+    "PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY_ID": "test-key-id-not-real",
+    "PATREON_CAMPAIGN_IDS": "campaign-mw-alpha,campaign-mw-beta",
+    "PATREON_CAMPAIGN_TIER_MAP": _PATREON_TEST_TIER_MAP_JSON,
+    "PATREON_TIER_MAP_JSON": _PATREON_TEST_TIER_MAP_JSON,
+    "PATREON_TIER_MAP_FILE": "",
+    "PATREON_ALLOWED_WEBHOOK_EVENTS": (
+        "members:create,members:update,members:delete,"
+        "members:pledge:create,members:pledge:update,members:pledge:delete"
+    ),
+    "PATREON_PROOF_TOKEN_TTL_SECONDS": "900",
+    "PATREON_PROOF_RETENTION_AFTER_EXPIRY_HOURS": "24",
+    "PATREON_WEBHOOK_DELIVERY_RETENTION_DAYS": "90",
+    "PATREON_RAW_PAYLOAD_RETENTION_DAYS": "30",
+    "PATREON_API_TIMEOUT_SECONDS": "15",
+    "PATREON_API_CONNECT_TIMEOUT_SECONDS": "5",
+    "PATREON_API_PAGE_SIZE": "1000",
+    "PATREON_API_MAX_PAGES_PER_SYNC": "0",
+    "PATREON_API_RETRY_MAX_ATTEMPTS": "3",
+    "PATREON_API_RETRY_BACKOFF_SECONDS": "1,5,15",
+    "PATREON_API_RETRY_JITTER_SECONDS": "5",
+    "PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS": "604800",
+    "PATREON_SYNC_INTERVAL_SECONDS": "21600",
+    "PATREON_SYNC_JITTER_SECONDS": "900",
+    "PATREON_SYNC_STALE_AFTER_SECONDS": "86400",
+    "PATREON_SYNC_WORKER_POLL_SECONDS": "30",
+    "PATREON_SYNC_WORKER_BATCH_SIZE": "25",
+    "PATREON_SYNC_JOB_LEASE_SECONDS": "300",
+    "PATREON_SYNC_MAX_ATTEMPTS": "8",
+    "PATREON_SYNC_BACKOFF_SECONDS": "60,300,900,3600,10800,21600",
+    "PATREON_WEBHOOK_SIGNATURE_FAILURE_ALERT_LIMIT": "1",
+    "PATREON_WEBHOOK_SIGNATURE_FAILURE_ALERT_WINDOW_SECONDS": "60",
+    "PATREON_LINK_REQUEST_RATE_LIMIT": "5",
+    "PATREON_LINK_REQUEST_RATE_WINDOW_SECONDS": "3600",
+    "PATREON_PROOF_REQUEST_RATE_LIMIT": "3",
+    "PATREON_PROOF_REQUEST_RATE_WINDOW_SECONDS": "3600",
+    "PATREON_PROOF_CONSUME_RATE_LIMIT": "5",
+    "PATREON_PROOF_CONSUME_RATE_WINDOW_SECONDS": "900",
+    "PATREON_UNLINK_RATE_LIMIT": "5",
+    "PATREON_UNLINK_RATE_WINDOW_SECONDS": "300",
+    "PATREON_STATUS_RATE_LIMIT": "60",
+    "PATREON_STATUS_RATE_WINDOW_SECONDS": "60",
+    "PATREON_S2S_RATE_LIMIT": "120",
+    "PATREON_S2S_RATE_WINDOW_SECONDS": "60",
+    "PATREON_WEBHOOK_SIGNATURE_FAILURE_RATE_LIMIT": "30",
+    "PATREON_WEBHOOK_SIGNATURE_FAILURE_RATE_WINDOW_SECONDS": "60",
+    "PATREON_SYNC_ENQUEUE_RATE_LIMIT": "30",
+    "PATREON_SYNC_ENQUEUE_RATE_WINDOW_SECONDS": "300",
+    "PATREON_API_CLIENT_RATE_LIMIT": "100",
+    "PATREON_API_CLIENT_RATE_WINDOW_SECONDS": "2",
+    "PATREON_API_ACCESS_TOKEN_RATE_LIMIT": "100",
+    "PATREON_API_ACCESS_TOKEN_RATE_WINDOW_SECONDS": "60",
+    "PATREON_API_EDGE_4XX_RATE_LIMIT": "2000",
+    "PATREON_API_EDGE_4XX_RATE_WINDOW_SECONDS": "600",
+    "RUN_PATREON_LOCAL_E2E": "false",
+    "RUN_PATREON_E2E": "false",
+    "PATREON_LIVE_TEST_USER_HASH": "",
+    "PATREON_TEST_CAMPAIGN_ID": "",
+    "PATREON_TEST_MEMBER_EMAIL": "",
+    "PATREON_E2E_CREATOR_TOKEN": "",
+}
+
 for _oauth_env_key, _oauth_env_value in _GOOGLE_OAUTH_TEST_ENV_DEFAULTS.items():
     os.environ.setdefault(_oauth_env_key, _oauth_env_value)
+
+for _patreon_env_key, _patreon_env_value in _PATREON_TEST_ENV_DEFAULTS.items():
+    os.environ.setdefault(_patreon_env_key, _patreon_env_value)
 
 # ─── Step 3: Now import test dependencies ────────────────────────────────────
 import pytest
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 TEST_JWT_SECRET = os.environ["JWT_SECRET_KEY"]
+PATREON_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "patreon"
+PATREON_MANIFEST_PATH = PATREON_FIXTURE_ROOT / "manifest.json"
+PATREON_REDACTED_VALUE = "[REDACTED]"
+
+_PATREON_SECRET_ENV_NAMES = (
+    "PATREON_CREATOR_ACCESS_TOKEN",
+    "PATREON_CREATOR_REFRESH_TOKEN",
+    "PATREON_CLIENT_SECRET",
+    "PATREON_WEBHOOK_SECRET",
+    "PATREON_S2S_BEARER_TOKEN",
+    "PATREON_PROVIDER_SUB_PEPPER",
+    "PATREON_EMAIL_HASH_PEPPER",
+    "PATREON_PROOF_TOKEN_PEPPER",
+    "PATREON_ID_HMAC_SECRET",
+    "PATREON_HMAC_SECRET",
+    "PATREON_WEBHOOK_DELIVERY_HASH_PEPPER",
+    "PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY",
+    "PATREON_E2E_CREATOR_TOKEN",
+)
+_PATREON_SENSITIVE_KEY_FRAGMENTS = (
+    "authorization",
+    "bearer",
+    "token",
+    "secret",
+    "pepper",
+    "signature",
+    "payload",
+    "raw_body",
+    "patreon_email",
+    "raw_patreon_email",
+    "masked_patreon_email",
+    "patreon_user_id",
+    "patreon_member_id",
+    "patreon_campaign_id",
+    "patreon_tier_id",
+    "provider_sub_hash",
+    "provider_sub_fingerprint",
+    "hash_prefix",
+    "audit_rows",
+)
+_PATREON_FIXTURE_ONLY_SECRET_VALUES = (
+    "patreon_webhook_secret_fixture_do_not_use",
+    "s2s_bearer_fixture_do_not_log",
+    "creator_access_token_fixture_do_not_log",
+    "creator_refresh_token_fixture_do_not_log",
+)
 
 _OAUTH_REDIS_PATCH_LOCATIONS = (
     "src.Util.oauth_state.redis_client",
@@ -86,6 +255,99 @@ _OAUTH_REDIS_PATCH_LOCATIONS = (
 def _base64url_json(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _json_clone(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def _patreon_sensitive_values() -> tuple[str, ...]:
+    values = [os.environ.get(name, "") for name in _PATREON_SECRET_ENV_NAMES]
+    values.extend(_PATREON_FIXTURE_ONLY_SECRET_VALUES)
+    return tuple(value for value in values if value)
+
+
+def load_patreon_manifest() -> dict[str, Any]:
+    """Load the sanitized Patreon fixture manifest."""
+    return json.loads(PATREON_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def load_patreon_fixture(relative_path: str, *, as_bytes: bool = False) -> Any:
+    """Load a sanitized Patreon fixture under tests/fixtures/patreon."""
+    path = (PATREON_FIXTURE_ROOT / relative_path).resolve()
+    if PATREON_FIXTURE_ROOT.resolve() not in path.parents and path != PATREON_FIXTURE_ROOT.resolve():
+        raise ValueError("Patreon fixture path must stay under tests/fixtures/patreon")
+    if as_bytes:
+        return path.read_bytes()
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_patreon_member_fixture(name: str = "active_mapped") -> dict[str, Any]:
+    manifest = load_patreon_manifest()
+    return load_patreon_fixture(manifest["member_fixtures"][name])
+
+
+def load_patreon_webhook_fixture(name: str = "member_update_active") -> bytes:
+    manifest = load_patreon_manifest()
+    return load_patreon_fixture(manifest["webhook_fixtures"][name], as_bytes=True)
+
+
+def load_patreon_s2s_contract_fixture(name: str = "linked") -> dict[str, Any]:
+    manifest = load_patreon_manifest()
+    return load_patreon_fixture(manifest["s2s_contract_fixtures"][name])
+
+
+def redact_patreon_test_value(value: Any, *, replacement: str = PATREON_REDACTED_VALUE) -> Any:
+    """Return a copy with Patreon server-only values redacted for test assertions."""
+    if isinstance(value, Mapping):
+        redacted: dict[Any, Any] = {}
+        for key, child in value.items():
+            lowered_key = str(key).lower()
+            if any(fragment in lowered_key for fragment in _PATREON_SENSITIVE_KEY_FRAGMENTS):
+                redacted[key] = replacement
+            else:
+                redacted[key] = redact_patreon_test_value(child, replacement=replacement)
+        return redacted
+    if isinstance(value, list):
+        return [redact_patreon_test_value(item, replacement=replacement) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_patreon_test_value(item, replacement=replacement) for item in value)
+    if isinstance(value, str):
+        sanitized = value
+        for secret_value in _patreon_sensitive_values():
+            sanitized = sanitized.replace(secret_value, replacement)
+        return sanitized
+    return value
+
+
+def assert_no_patreon_secret_leak(value: Any, *, context: str = "Patreon test output") -> None:
+    """Fail if fake/live Patreon secret material appears in captured test output."""
+    serialized = json.dumps(value, sort_keys=True, default=str)
+    for secret_value in _patreon_sensitive_values():
+        assert secret_value not in serialized, f"{context} leaked Patreon secret-like test material"
+
+
+class FakePatreonAPI:
+    """Small in-memory fake for Patreon API seams; never performs network I/O."""
+
+    def __init__(self, members: Optional[Mapping[str, Any]] = None) -> None:
+        default_members = {
+            name: load_patreon_member_fixture(name)
+            for name in load_patreon_manifest()["member_fixtures"]
+        }
+        self.members = _json_clone(dict(members or default_members))
+        self.calls: list[dict[str, Any]] = []
+
+    def list_campaign_members(self, campaign_key: str = "active_mapped", **metadata: Any) -> dict[str, Any]:
+        self.calls.append(redact_patreon_test_value({"operation": "list_campaign_members", **metadata}))
+        return _json_clone(self.members[campaign_key])
+
+    async def async_list_campaign_members(self, campaign_key: str = "active_mapped", **metadata: Any) -> dict[str, Any]:
+        return self.list_campaign_members(campaign_key, **metadata)
+
+    def get_member(self, name: str = "active_mapped") -> dict[str, Any]:
+        self.calls.append({"operation": "get_member", "fixture": name})
+        return _json_clone(self.members[name])
 
 
 def build_fake_google_jwk(kid: str = "test-google-key-1") -> dict:
@@ -217,6 +479,74 @@ def fake_google_token_response(fake_google_id_token):
         "id_token": fake_google_id_token,
         "access_token": "fake-google-access-token-not-real",
     }
+
+
+@pytest.fixture
+def patreon_test_env(monkeypatch):
+    """Apply safe disabled Patreon env defaults for one test."""
+    for key, value in _PATREON_TEST_ENV_DEFAULTS.items():
+        monkeypatch.setenv(key, value)
+    return dict(_PATREON_TEST_ENV_DEFAULTS)
+
+
+@pytest.fixture
+def patreon_fixture_root() -> Path:
+    return PATREON_FIXTURE_ROOT
+
+
+@pytest.fixture
+def patreon_manifest() -> dict[str, Any]:
+    return load_patreon_manifest()
+
+
+@pytest.fixture
+def fake_patreon_member_fixture():
+    return load_patreon_member_fixture
+
+
+@pytest.fixture
+def fake_patreon_webhook_fixture():
+    return load_patreon_webhook_fixture
+
+
+@pytest.fixture
+def fake_patreon_s2s_contract_fixture():
+    return load_patreon_s2s_contract_fixture
+
+
+@pytest.fixture
+def fake_patreon_api() -> FakePatreonAPI:
+    return FakePatreonAPI()
+
+
+@pytest.fixture
+def fake_patreon_s2s_token(monkeypatch) -> str:
+    token = _PATREON_TEST_ENV_DEFAULTS["PATREON_S2S_BEARER_TOKEN"]
+    monkeypatch.setenv("PATREON_S2S_BEARER_TOKEN", token)
+    return token
+
+
+@pytest.fixture
+def fake_patreon_s2s_headers(fake_patreon_s2s_token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {fake_patreon_s2s_token}",
+        "User-Agent": "patreon-s2s-test-fixture",
+    }
+
+
+@pytest.fixture
+def patreon_redaction_helper():
+    return redact_patreon_test_value
+
+
+@pytest.fixture
+def patreon_no_secret_log_guard(caplog):
+    """Opt-in guard: fail if captured logs contain Patreon secret-like values."""
+    yield
+    assert_no_patreon_secret_leak(
+        "\n".join(record.getMessage() for record in caplog.records),
+        context="captured pytest logs",
+    )
 
 
 @pytest.fixture

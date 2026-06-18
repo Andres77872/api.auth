@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
     user_id VARCHAR(64) NULL,
     user_email_id VARCHAR(64) NULL,
     token_id VARCHAR(64) NULL,
-    purpose ENUM('email_activation','password_reset','admin_password_reset','security_notification','delivery_operation') NOT NULL,
+    purpose ENUM('email_activation','password_reset','admin_password_reset','security_notification','delivery_operation','patreon_link_proof') NOT NULL,
     template_code VARCHAR(100) NOT NULL,
     recipient_email VARCHAR(255) NULL,
     recipient_hash BINARY(32) NOT NULL,
@@ -216,10 +216,10 @@ CREATE TABLE IF NOT EXISTS email_idempotency_keys (
 
 -- =================== EMAIL_TEMPLATES TABLE ===================
 -- Transactional-auth-only template metadata. Rendered bodies are not retained here.
--- NOTE: This table is RESERVED for a future DB-managed template feature and is
--- intentionally left unseeded. The running system renders transactional email from
--- code (src/Util/email/templates.py TEMPLATES); nothing in src/ reads this table,
--- so an empty email_templates table does not affect delivery.
+-- NOTE: The running system may render transactional email from code
+-- (src/Util/email/templates.py TEMPLATES). This table stores DB-managed metadata for
+-- operational visibility/overrides. Patreon link proof is a distinct purpose and
+-- does not reuse local user_email_link_tokens or local activation templates.
 CREATE TABLE IF NOT EXISTS email_templates (
     id VARCHAR(64) NOT NULL,
     template_code VARCHAR(100) NOT NULL,
@@ -235,8 +235,46 @@ CREATE TABLE IF NOT EXISTS email_templates (
     INDEX idx_email_template_active (template_code, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Patreon proof template metadata. Render payloads and proof tokens remain in the
+-- durable outbox/proof tables; local email activation semantics are untouched.
+INSERT INTO email_templates (
+    id, template_code, version, subject_template, html_template, text_template,
+    is_active, created_at
+) VALUES (
+    'tmpl-patreon-link-proof-v1',
+    'patreon_link_proof',
+    1,
+    'Confirm your Patreon link',
+    '<p>Use the secure proof link or code provided by api.auth to confirm your Patreon membership link. If you did not request this, ignore this email.</p>',
+    'Use the secure proof link or code provided by api.auth to confirm your Patreon membership link. If you did not request this, ignore this email.',
+    TRUE,
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    subject_template = VALUES(subject_template),
+    html_template = VALUES(html_template),
+    text_template = VALUES(text_template),
+    is_active = VALUES(is_active);
+
+INSERT INTO email_templates (
+    id, template_code, version, subject_template, html_template, text_template,
+    is_active, created_at
+) VALUES (
+    'tmpl-free-credit-invite-v1',
+    'free_credit_invite',
+    1,
+    'You have $credits Magic Worlds credits',
+    '<p>A Magic Worlds administrator sent $credits credits to $recipient_masked.</p><p>If this email is already linked to your account, the credits have been added. Otherwise, open Magic Worlds and create or activate an account with this email to receive them.</p><p><a href="$action_url">Open Magic Worlds</a></p><p>Expiration: $expires_at</p>',
+    'A Magic Worlds administrator sent $credits credits to $recipient_masked. If this email is already linked to your account, the credits have been added. Otherwise, open Magic Worlds and create or activate an account with this email to receive them: $action_url Expiration: $expires_at',
+    TRUE,
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    subject_template = VALUES(subject_template),
+    html_template = VALUES(html_template),
+    text_template = VALUES(text_template),
+    is_active = VALUES(is_active);
+
 -- ===================================================================================
 -- EMAIL ACTIVATION TABLES COMPLETE
 -- ===================================================================================
 SELECT 'Email activation tables created successfully!' AS status,
-       '7 tables created: user_emails, user_email_link_tokens, email_messages, email_delivery_attempts, email_suppressions, email_idempotency_keys, email_templates' AS details;
+       '7 tables created: user_emails, user_email_link_tokens, email_messages, email_delivery_attempts, email_suppressions, email_idempotency_keys, email_templates; patreon_link_proof outbox purpose and companion delivery templates supported without overloading local email tokens' AS details;

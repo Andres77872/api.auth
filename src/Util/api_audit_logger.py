@@ -14,7 +14,13 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from src.Util.db_config import get_connection
-from src.Util.auth_constants import OAUTH_REDACTION_FIELD_NAMES
+from src.Util.auth_constants import (
+    OAUTH_REDACTION_FIELD_NAMES,
+    PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX,
+    PATREON_REDACTION_FIELD_NAMES,
+    PATREON_REDACTION_HEADER_NAMES,
+    PATREON_WEBHOOK_ROUTE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,10 @@ class APIAuditLogger:
         for field in OAUTH_REDACTION_FIELD_NAMES
         if field not in {"code", "state", "nonce"}
     )
+    PATREON_REDACTION_FIELD_FRAGMENTS = tuple(PATREON_REDACTION_FIELD_NAMES)
+    SENSITIVE_TEXT_FIELD_NAMES = tuple(
+        dict.fromkeys((*OAUTH_REDACTION_FIELD_NAMES, *PATREON_REDACTION_FIELD_NAMES))
+    )
     
     # Sensitive fields to filter from request/response bodies
     SENSITIVE_FIELDS = [
@@ -42,12 +52,14 @@ class APIAuditLogger:
         'render_payload', 'provider_response', 'provider_payload',
         'webhook_payload', 'idempotency_key', 'activation_link',
         'reset_link', 'lookup_id', *OAUTH_REDACTION_FIELD_NAMES,
+        *PATREON_REDACTION_FIELD_NAMES,
     ]
 
     SENSITIVE_FIELD_EXACT = {
         'email', 'recipient', 'subject', 'html', 'text', 'body',
         'lookup_id', 'secret', 'token', 'idempotency_key',
         'current_password', 'new_password', *OAUTH_REDACTION_FIELD_NAMES,
+        *PATREON_REDACTION_FIELD_NAMES,
     }
 
     SENSITIVE_FIELD_FRAGMENTS = {
@@ -58,6 +70,7 @@ class APIAuditLogger:
         'render_payload', 'provider_response', 'provider_payload',
         'webhook_payload', 'activation_link', 'reset_link',
         'reset_url', 'idempotency_key', *OAUTH_REDACTION_FIELD_FRAGMENTS,
+        *PATREON_REDACTION_FIELD_FRAGMENTS,
     }
     
     # Sensitive headers to filter
@@ -67,6 +80,12 @@ class APIAuditLogger:
         'svix-id', 'svix-signature', 'svix-timestamp',
         'webhook-signature', 'x-webhook-signature', 'x-resend-signature',
         'x-provider-init-token', 'x-oauth-state', 'x-oauth-link-token',
+        *PATREON_REDACTION_HEADER_NAMES,
+    ]
+
+    RAW_BODY_AUDIT_EXCLUDED_PATHS = [
+        '/webhooks/email',
+        PATREON_WEBHOOK_ROUTE,
     ]
     
     # Endpoints to exclude from audit logging (high-frequency, low-value)
@@ -129,6 +148,79 @@ class APIAuditLogger:
         return normalized_path == "/auth/google" or normalized_path.startswith("/auth/google/")
 
     @staticmethod
+    def _normalized_path(path: str) -> str:
+        return (path or "").split("?", 1)[0]
+
+    @staticmethod
+    def is_patreon_webhook_path(path: str) -> bool:
+        """Return True for the Patreon webhook route family."""
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        return normalized_path == PATREON_WEBHOOK_ROUTE or normalized_path.startswith(PATREON_WEBHOOK_ROUTE + "/")
+
+    @staticmethod
+    def is_patreon_auth_path(path: str) -> bool:
+        """Return True for Patreon account-link routes; never login routes."""
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        return normalized_path == "/auth/patreon" or normalized_path.startswith("/auth/patreon/")
+
+    @staticmethod
+    def is_patreon_internal_entitlement_path(path: str) -> bool:
+        """Return True for dedicated internal Patreon entitlement S2S routes."""
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        if not normalized_path.startswith(PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX):
+            return False
+        parts = [part for part in normalized_path.strip("/").split("/") if part]
+        return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"
+
+    @staticmethod
+    def is_patreon_path(path: str) -> bool:
+        """Return True for Patreon-owned link, webhook, or S2S route families."""
+
+        return (
+            APIAuditLogger.is_patreon_auth_path(path)
+            or APIAuditLogger.is_patreon_webhook_path(path)
+            or APIAuditLogger.is_patreon_internal_entitlement_path(path)
+        )
+
+    @staticmethod
+    def is_raw_body_audit_excluded(path: str) -> bool:
+        """Return True when audit metadata is allowed but raw body capture is not."""
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        for excluded in APIAuditLogger.RAW_BODY_AUDIT_EXCLUDED_PATHS:
+            if normalized_path == excluded or normalized_path.startswith(excluded + "/"):
+                return True
+        return False
+
+    @staticmethod
+    def raw_body_audit_exclusion_note(path: str) -> Optional[Dict[str, Any]]:
+        """Return a safe placeholder for routes whose raw body must not be audited.
+
+        Webhook routes still need exact bytes inside the route handler for HMAC
+        verification.  API audit capture must therefore store only this neutral
+        placeholder, never the provider payload, signature, or digest material.
+        """
+
+        if not APIAuditLogger.is_raw_body_audit_excluded(path):
+            return None
+        return {"_note": "Request body excluded from audit"}
+
+    @staticmethod
+    def infer_auth_method_for_path(path: str) -> Optional[str]:
+        """Infer audit auth-method tags without widening the DB enum."""
+
+        if APIAuditLogger.is_google_oauth_path(path):
+            return "oauth"
+        if APIAuditLogger.is_patreon_webhook_path(path):
+            return "webhook"
+        if APIAuditLogger.is_patreon_internal_entitlement_path(path):
+            return "api_key"
+        return None
+
+    @staticmethod
     def sanitize_sensitive_text(value: str) -> str:
         """Redact email/link/token-like material from free-text audit values."""
         if not isinstance(value, str) or not value:
@@ -152,7 +244,7 @@ class APIAuditLogger:
             sanitized,
             flags=re.IGNORECASE,
         )
-        oauth_field_pattern = "|".join(re.escape(field) for field in OAUTH_REDACTION_FIELD_NAMES)
+        oauth_field_pattern = "|".join(re.escape(field) for field in APIAuditLogger.SENSITIVE_TEXT_FIELD_NAMES)
         sanitized = re.sub(
             rf'\b({oauth_field_pattern})\b\s*[=:]\s*([^\s,;&]+)',
             lambda m: f"{m.group(1)}=[REDACTED]",
@@ -277,6 +369,16 @@ class APIAuditLogger:
         Returns:
             True if this is a security event
         """
+        method_upper = (method or "").upper()
+        if APIAuditLogger.is_patreon_webhook_path(path) and status_code >= 400:
+            return True
+
+        if APIAuditLogger.is_patreon_internal_entitlement_path(path) and status_code >= 400:
+            return True
+
+        if APIAuditLogger.is_patreon_auth_path(path) and (status_code >= 400 or method_upper in {"POST", "DELETE"}):
+            return True
+
         # Failed authentication
         if APIAuditLogger.is_google_oauth_path(path) and status_code >= 400:
             return True
@@ -294,7 +396,7 @@ class APIAuditLogger:
             return True
         
         # DELETE operations
-        if method == 'DELETE':
+        if method_upper == 'DELETE':
             return True
         
         # User type or permission changes
@@ -326,9 +428,10 @@ class APIAuditLogger:
             List of tags
         """
         tags = []
+        method_upper = (method or "").upper()
         
         # Add method tag
-        tags.append(method.lower())
+        tags.append((method or "").lower())
         
         # Add status category
         if status_code >= 500:
@@ -352,6 +455,18 @@ class APIAuditLogger:
         if APIAuditLogger.is_google_oauth_path(path):
             tags.append('google_oauth')
             tags.append('external_idp')
+        if APIAuditLogger.is_patreon_path(path):
+            tags.append('patreon')
+            tags.append('external_entitlement')
+        if APIAuditLogger.is_patreon_webhook_path(path):
+            tags.append('patreon_webhook')
+            tags.append('webhook')
+        if APIAuditLogger.is_patreon_internal_entitlement_path(path):
+            tags.append('internal')
+            tags.append('s2s')
+            tags.append('patreon_entitlement')
+        if APIAuditLogger.is_patreon_auth_path(path):
+            tags.append('patreon_link')
         if APIAuditLogger.is_session_auth_security_path(path):
             tags.append('password_change')
             tags.append('session_auth')
@@ -376,19 +491,25 @@ class APIAuditLogger:
             tags.append('permission_management')
         
         # Add operation type
-        if method == 'POST':
+        if method_upper == 'POST':
             tags.append('create')
-        elif method == 'PUT' or method == 'PATCH':
+        elif method_upper == 'PUT' or method_upper == 'PATCH':
             tags.append('update')
-        elif method == 'DELETE':
+        elif method_upper == 'DELETE':
             tags.append('delete')
-        elif method == 'GET':
+        elif method_upper == 'GET':
             tags.append('read')
 
         if APIAuditLogger.is_security_event(path, method, status_code, user_type) and 'security_event' not in tags:
             tags.append('security_event')
         
-        return tags
+        deduped_tags = []
+        seen = set()
+        for tag in tags:
+            if tag not in seen:
+                deduped_tags.append(tag)
+                seen.add(tag)
+        return deduped_tags
 
     @staticmethod
     def is_session_auth_security_path(path: str) -> bool:

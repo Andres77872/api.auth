@@ -53,6 +53,7 @@ TABLE_FILES = [
     'tables/08_activity_logging_tables.sql',
     'tables/09_email_activation_tables.sql',  # schemas/tables/09_email_activation_tables.sql
     'tables/10_external_accounts.sql',  # schemas/tables/10_external_accounts.sql
+    'tables/11_patreon_entitlements.sql',  # schemas/tables/11_patreon_entitlements.sql
 ]
 # Legacy plaintext password-reset schema is intentionally absent from fresh
 # bootstrap; reset links live in the hash-only email activation token tables.
@@ -73,6 +74,7 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/13_api_keys.sql',
     'stored_procedures/14_email_activation.sql',  # schemas/stored_procedures/14_email_activation.sql
     'stored_procedures/15_external_accounts.sql',  # schemas/stored_procedures/15_external_accounts.sql
+    'stored_procedures/16_patreon_entitlements.sql',  # schemas/stored_procedures/16_patreon_entitlements.sql
 ]
 
 TRIGGER_FILES = [
@@ -81,6 +83,7 @@ TRIGGER_FILES = [
     'triggers/03_api_key_activity_triggers.sql',
     'triggers/04_email_activation_triggers.sql',  # schemas/triggers/04_email_activation_triggers.sql
     'triggers/05_external_accounts_triggers.sql',  # schemas/triggers/05_external_accounts_triggers.sql
+    'triggers/06_patreon_entitlements_triggers.sql',  # schemas/triggers/06_patreon_entitlements_triggers.sql
 ]
 
 

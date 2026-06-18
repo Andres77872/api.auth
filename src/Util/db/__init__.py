@@ -14,6 +14,7 @@ The database operations are organized into specialized modules:
 - db_project_groups.py: Project group management and permission operations
 - db_global_roles.py: Global role system with roles, permissions, and permission groups
 - db_enhanced.py: Main authentication functions with user type handling
+- db_patreon.py: Patreon entitlement stored-procedure wrappers
 
 User Type Access Model:
 Root Users → Unrestricted Access to Everything
@@ -606,6 +607,9 @@ __all__ = [
     'link_external_account',
     'touch_external_account_last_seen',
     'unlink_external_account',
+
+    # Patreon External Accounts / Entitlement Wrapper
+    'db_patreon',
 
     # Transactional Auth Email
     'db_email',

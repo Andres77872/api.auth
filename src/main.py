@@ -12,7 +12,8 @@ from src.middleware.auth_context import AuthContextMiddleware
 from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
-    auth, auth_google, email_webhooks, users, user_types_auth, projects,
+    auth, auth_google, auth_patreon, email_webhooks, patreon_webhooks,
+    internal_patreon, internal_email, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
     audit_logs, api_keys, user_api_keys, email_templates,
 )
@@ -39,7 +40,9 @@ register_exception_handlers(app)
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
 app.include_router(auth_google.router, tags=['Google OAuth'])
+app.include_router(auth_patreon.router, tags=['Patreon Link'])
 app.include_router(email_webhooks.router, tags=["Email Webhooks"])
+app.include_router(patreon_webhooks.router, tags=["Patreon Webhooks"])
 # NOTE: user_api_keys must be registered BEFORE users to avoid /users/{user_hash}
 # catching /users/api-keys as a user_hash parameter
 app.include_router(user_api_keys.router, tags=["API Keys - User"])
@@ -51,6 +54,8 @@ app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
 app.include_router(email_templates.router, tags=['Admin - Email Templates'])
 app.include_router(system.router, tags=['System Information'])
+app.include_router(internal_patreon.router, tags=['Patreon Internal'])
+app.include_router(internal_email.router, tags=['Internal Email'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
 app.include_router(permission_assignments.router, tags=['Permission Assignments'])

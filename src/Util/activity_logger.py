@@ -8,6 +8,7 @@ Uses database activity catalog and stored procedures for consistent logging.
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -17,6 +18,12 @@ from contextvars import ContextVar
 
 from src.Util.db_config import get_connection
 from src.Util.uuid_generator import generate_activity_log_id
+from src.Util.auth_constants import (
+    PATREON_ACTIVITY_CATALOG_RANGE as AUTH_PATREON_ACTIVITY_CATALOG_RANGE,
+    PATREON_ACTIVITY_CATALOG_RANGE_END,
+    PATREON_ACTIVITY_CATALOG_RANGE_START,
+    PATREON_REDACTION_FIELD_NAMES,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -86,6 +93,22 @@ class ActivityType(Enum):
     GOOGLE_OAUTH_LOGIN_DENIED = "google_oauth_login_denied"
     GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED = "google_oauth_external_account_linked"
     GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED = "google_oauth_external_account_unlinked"
+    PATREON_LINK_PROOF_REQUESTED = "patreon_link_proof_requested"
+    PATREON_LINK_PROOF_CONSUMED = "patreon_link_proof_consumed"
+    PATREON_LINKED = "patreon_linked"
+    PATREON_LINK_REJECTED = "patreon_link_rejected"
+    PATREON_UNLINKED = "patreon_unlinked"
+    PATREON_WEBHOOK_RECEIVED = "patreon_webhook_received"
+    PATREON_WEBHOOK_REJECTED = "patreon_webhook_rejected"
+    PATREON_WEBHOOK_REPLAY_IGNORED = "patreon_webhook_replay_ignored"
+    PATREON_SYNC_STARTED = "patreon_sync_started"
+    PATREON_SYNC_COMPLETED = "patreon_sync_completed"
+    PATREON_SYNC_FAILED = "patreon_sync_failed"
+    PATREON_ENTITLEMENT_CHANGED = "patreon_entitlement_changed"
+    PATREON_TIER_MAP_MISS = "patreon_tier_map_miss"
+    PATREON_TOKEN_REFRESHED = "patreon_token_refreshed"
+    PATREON_TOKEN_REVOKED = "patreon_token_revoked"
+    PATREON_RETENTION_PURGED = "patreon_retention_purged"
 
 
 EMAIL_ACTIVITY_CATALOG_RANGE = {
@@ -125,6 +148,115 @@ GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE = {
     "act-cat-073": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED.value,
     "act-cat-074": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED.value,
 }
+
+PATREON_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-075": ActivityType.PATREON_LINK_PROOF_REQUESTED.value,
+    "act-cat-076": ActivityType.PATREON_LINK_PROOF_CONSUMED.value,
+    "act-cat-077": ActivityType.PATREON_LINKED.value,
+    "act-cat-078": ActivityType.PATREON_LINK_REJECTED.value,
+    "act-cat-079": ActivityType.PATREON_UNLINKED.value,
+    "act-cat-080": ActivityType.PATREON_WEBHOOK_RECEIVED.value,
+    "act-cat-081": ActivityType.PATREON_WEBHOOK_REJECTED.value,
+    "act-cat-082": ActivityType.PATREON_WEBHOOK_REPLAY_IGNORED.value,
+    "act-cat-083": ActivityType.PATREON_SYNC_STARTED.value,
+    "act-cat-084": ActivityType.PATREON_SYNC_COMPLETED.value,
+    "act-cat-085": ActivityType.PATREON_SYNC_FAILED.value,
+    "act-cat-086": ActivityType.PATREON_ENTITLEMENT_CHANGED.value,
+    "act-cat-087": ActivityType.PATREON_TIER_MAP_MISS.value,
+    "act-cat-088": ActivityType.PATREON_TOKEN_REFRESHED.value,
+    "act-cat-089": ActivityType.PATREON_TOKEN_REVOKED.value,
+    "act-cat-090": ActivityType.PATREON_RETENTION_PURGED.value,
+}
+PATREON_ACTIVITY_TYPES = tuple(PATREON_ACTIVITY_CATALOG_RANGE.values())
+PATREON_ACTIVITY_CATALOG_CODE_BY_TYPE = {
+    activity_type: catalog_id
+    for catalog_id, activity_type in PATREON_ACTIVITY_CATALOG_RANGE.items()
+}
+PATREON_ACTIVITY_REDACTED_VALUE = "***FILTERED***"
+PATREON_ACTIVITY_FORBIDDEN_DETAIL_FIELDS = frozenset(
+    field.lower().replace("-", "_") for field in PATREON_REDACTION_FIELD_NAMES
+)
+
+
+def is_patreon_activity_type(activity_type: Union[ActivityType, str]) -> bool:
+    """Return True when an activity type belongs to the Patreon catalog range."""
+    value = activity_type.value if isinstance(activity_type, ActivityType) else str(activity_type)
+    return value in PATREON_ACTIVITY_TYPES
+
+
+def get_patreon_activity_catalog_code(activity_type: Union[ActivityType, str]) -> str:
+    """Return the seeded act-cat-075..090 catalog id for a Patreon activity type."""
+    value = activity_type.value if isinstance(activity_type, ActivityType) else str(activity_type)
+    try:
+        return PATREON_ACTIVITY_CATALOG_CODE_BY_TYPE[value]
+    except KeyError as exc:
+        raise ValueError(f"Unknown Patreon activity type: {value}") from exc
+
+
+def _is_patreon_sensitive_detail_field(key: str) -> bool:
+    normalized = (key or "").lower().replace("-", "_")
+    if normalized in PATREON_ACTIVITY_FORBIDDEN_DETAIL_FIELDS:
+        return True
+    return any(
+        fragment in normalized
+        for fragment in (
+            "raw_",
+            "payload",
+            "secret",
+            "token",
+            "signature",
+            "email",
+            "fingerprint",
+            "hash",
+            "provider_sub",
+            "campaign_id",
+            "tier_id",
+            "member_id",
+            "user_id_hash",
+        )
+    )
+
+
+def _sanitize_patreon_activity_text(value: str) -> str:
+    """Redact obvious Patreon credential/PII fragments from free text details."""
+    sanitized = re.sub(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        PATREON_ACTIVITY_REDACTED_VALUE,
+        value,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r"Bearer\s+\S+", f"Bearer {PATREON_ACTIVITY_REDACTED_VALUE}", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"\b(token|secret|signature|payload)\s*[=:]\s*[^\s,;&]+",
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return sanitized
+
+
+def sanitize_patreon_activity_details(details: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:
+    """Return Patreon activity details with server-only fields redacted recursively."""
+    if isinstance(details, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, value in details.items():
+            if _is_patreon_sensitive_detail_field(str(key)):
+                sanitized[key] = PATREON_ACTIVITY_REDACTED_VALUE
+            else:
+                sanitized[key] = sanitize_patreon_activity_details(value)
+        return sanitized
+    if isinstance(details, list):
+        return [sanitize_patreon_activity_details(item) for item in details]
+    if isinstance(details, str):
+        return _sanitize_patreon_activity_text(details)
+    return details
+
+
+def build_patreon_activity_details(action: str, **details: Any) -> Dict[str, Any]:
+    """Build a redacted details payload for Patreon activity emission."""
+    payload: Dict[str, Any] = {"action": action}
+    payload.update(details)
+    return sanitize_patreon_activity_details(payload)
 
 
 def assert_email_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
@@ -205,6 +337,46 @@ def assert_google_oauth_activity_catalog_alignment(catalog_codes: Optional[Dict[
         if missing_catalog_ids or mismatched_values:
             raise RuntimeError(
                 "Google OAuth activity catalog drift: "
+                f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
+            )
+
+
+def assert_patreon_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
+    """Fail loudly if Patreon ActivityType values drift from act-cat-075..090."""
+
+    if PATREON_ACTIVITY_CATALOG_RANGE != dict(AUTH_PATREON_ACTIVITY_CATALOG_RANGE):
+        raise RuntimeError(
+            "Patreon activity catalog drift: "
+            f"activity_logger={PATREON_ACTIVITY_CATALOG_RANGE} auth_constants={AUTH_PATREON_ACTIVITY_CATALOG_RANGE}"
+        )
+
+    enum_values = {item.value for item in ActivityType}
+    expected_values = set(PATREON_ACTIVITY_CATALOG_RANGE.values())
+    missing_enum_values = expected_values - enum_values
+    if missing_enum_values:
+        raise RuntimeError(f"Missing Patreon ActivityType values: {sorted(missing_enum_values)}")
+
+    reserved_numbers = {
+        int(catalog_id.rsplit("-", 1)[1])
+        for catalog_id in PATREON_ACTIVITY_CATALOG_RANGE
+    }
+    expected_range = set(range(PATREON_ACTIVITY_CATALOG_RANGE_START, PATREON_ACTIVITY_CATALOG_RANGE_END + 1))
+    if reserved_numbers != expected_range:
+        raise RuntimeError(
+            "Patreon activity catalog drift: "
+            f"reserved_range={sorted(reserved_numbers)} expected={sorted(expected_range)}"
+        )
+
+    if catalog_codes is not None:
+        missing_catalog_ids = set(PATREON_ACTIVITY_CATALOG_RANGE) - set(catalog_codes)
+        mismatched_values = {
+            catalog_id: expected
+            for catalog_id, expected in PATREON_ACTIVITY_CATALOG_RANGE.items()
+            if catalog_codes.get(catalog_id) != expected
+        }
+        if missing_catalog_ids or mismatched_values:
+            raise RuntimeError(
+                "Patreon activity catalog drift: "
                 f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
             )
 
@@ -964,6 +1136,26 @@ class ActivityLogger:
             **kwargs
         )
 
+    @staticmethod
+    def log_patreon_activity(
+            activity_type: Union[ActivityType, str],
+            details: Union[Dict[str, Any], str],
+            user_id: Optional[str] = None,
+            **kwargs
+    ) -> bool:
+        """Log a Patreon activity using only the seeded act-cat-075..090 values."""
+        value = activity_type.value if isinstance(activity_type, ActivityType) else str(activity_type)
+        if not is_patreon_activity_type(value):
+            raise ValueError(f"Unknown Patreon activity type: {value}")
+
+        return ActivityLogger.log_activity(
+            user_id=user_id,
+            activity_type=value,
+            details=sanitize_patreon_activity_details(details),
+            **ActivityLogger._get_request_context(),
+            **kwargs,
+        )
+
     # ========== Context Management ==========
 
     @staticmethod
@@ -995,6 +1187,11 @@ activity_logger = ActivityLogger()
 def log_activity(user_id: Optional[str], activity_type: str, details: Union[Dict[str, Any], str], **kwargs) -> bool:
     """Convenience function for logging activities"""
     return activity_logger.log_activity(user_id, activity_type, details, **kwargs)
+
+
+def log_patreon_activity(activity_type: Union[ActivityType, str], details: Union[Dict[str, Any], str], **kwargs) -> bool:
+    """Convenience function for logging redacted Patreon activities."""
+    return activity_logger.log_patreon_activity(activity_type, details, **kwargs)
 
 
 def get_recent_activity(limit: int = 50, **kwargs) -> List[Dict[str, Any]]:
