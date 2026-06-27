@@ -16,7 +16,10 @@ This subsystem is **transactional auth email only**: email activation links, sel
 - Real provider sends must stay disabled in tests unless an explicit smoke-test opt-in is set.
 - Webhooks must verify raw request bytes; do not parse and reserialize before Svix verification.
 - A hard bounce or complaint flips the matching `user_emails` row to `status='suppressed'` (and clears `is_primary`), which removes that address from email login and password-reset resolution. Username login is unaffected. The `email_suppressions` hashed ledger blocks the worker from sending; the status flip is what excludes the address from the auth flows.
-- Transactional templates are **code-driven** (`src/Util/email/templates.py`). The `email_templates` table is reserved for future DB-managed templates and is intentionally left unseeded; an empty table does not break delivery.
+- Transactional templates are catalog-backed. `email_template_catalog` owns enabled/dynamic metadata and `email_templates` stores version history. Built-in templates may use in-code defaults only when enabled and no DB version exists.
+- The worker resolves the latest enabled template immediately before rendering each claimed message. Any template change committed before render starts is honored; sends already rendering may finish with the version they resolved.
+- Template DB lookup failures fail closed in the worker: the message retries with `EMAIL_TEMPLATE_LOOKUP_FAILED`, rather than falling back and possibly bypassing a disabled/dynamic template state.
+- `DELETE /admin/email-templates/{template_code}` means disable, not hard-delete. Pending/retry messages for that code are finalized `cancelled` with `EMAIL_TEMPLATE_DISABLED` when claimed.
 - Activation-resend cooldown (`EMAIL_RESEND_COOLDOWN_SECONDS`) is enforced both at the route via Redis and inside `sp_user_email_resend_and_enqueue` (returns lifecycle `cooldown` and enqueues nothing) so a resend cannot be replayed within the window even if the Redis check is bypassed.
 
 ## Required Configuration
@@ -71,6 +74,14 @@ Redrive guidance:
 3. If provider outage/config caused the terminal state, fix provider readiness first, then requeue only the affected durable message IDs.
 4. If render/template caused the failure, deploy the template fix first; otherwise the worker will dead-letter again.
 
+## Template Catalog Operations
+
+- Use `POST /admin/email-templates` only for internal dynamic templates (`delivery_operation` or `security_notification`). Auth/reset/Patreon purposes remain built-in.
+- Use `PUT /admin/email-templates/{template_code}` to save a new active version. If the template was disabled, a successful PUT re-enables it.
+- Use `DELETE /admin/email-templates/{template_code}` to disable. Do not delete rows manually; version history is audit evidence and rollback material.
+- Use rollback only after the target version validates. Rollback re-enables the template and bumps catalog `revision`.
+- Monitor worker attempts for `EMAIL_TEMPLATE_DISABLED`, `EMAIL_TEMPLATE_LOOKUP_FAILED`, and `EMAIL_RENDER_FAILED` to distinguish intentional disablement, transient catalog unavailability, and invalid active content.
+
 ## Password Recovery / Change Delta
 
 Password recovery and authenticated password change are a delta on this runbook, not a separate provider/outbox system.
@@ -88,11 +99,10 @@ The canonical schema in `schemas/` is the single source of truth, applied with
 `python scripts/recreate_database.py` (fresh/reset) or `scripts/create_database.py`. The one-off
 `migrate_*` scripts have been retired.
 
-1. The fresh schema stores **no** plaintext reset tokens: there is no `user_password_resets` table,
-   `reset_token` column, or `tr_validate_password_reset_expiry` trigger. Hash-only reset-link storage
-   is the only approved live recovery model.
-2. Confirm the modern reset objects exist after setup: `user_email_link_tokens`,
-   `sp_password_reset_link_enqueue`, and `sp_consume_password_reset_token`.
+1. The fresh schema uses only hash-backed `user_email_link_tokens` for password recovery.
+   Retired plaintext recovery storage must not reappear in fresh bootstrap or docs.
+2. Confirm the modern reset objects exist after setup: `user_email_link_tokens` plus the
+   password reset enqueue and consume procedures.
 3. If recovery must be paused, disable the public reset/change routes at ingress/router; the hash-only
    reset-link storage stays intact regardless.
 

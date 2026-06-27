@@ -9,7 +9,9 @@ Failure modes for the ROOT-only template API, the inbound Resend webhook, and th
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `403 ACCESS_DENIED` on any template endpoint | Caller is not ROOT | These are ROOT-only (`is_root_user`); a project-scoped admin cannot use them. Authenticate as a root user. |
-| `404 RESOURCE_NOT_FOUND` on GET/PUT/preview/send-test | `template_code` is not one of the five valid codes | Use `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, or `delivery_operation`. |
+| `404 RESOURCE_NOT_FOUND` on GET/PUT/preview/send-test | `template_code` is neither a built-in code nor a created dynamic code | Use one of the built-in codes (`email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`, `patreon_link_proof`, `email_credit_grant_notification`) or create a dynamic internal code first. |
+| Worker finalizes messages as `cancelled` with `EMAIL_TEMPLATE_DISABLED` | The template code was disabled through the admin API | Re-enable by saving a valid new version with PUT or by rolling back to a valid version. Do not redrive while disabled. |
+| Worker retries with `EMAIL_TEMPLATE_LOOKUP_FAILED` | Template catalog/active-version state could not be read | Restore DB/stored-procedure availability. The worker intentionally does not fall back on lookup failure. |
 | `404 RESOURCE_NOT_FOUND` on rollback | The requested `version` does not exist for that code | Call `GET /admin/email-templates/{code}` and pick a `version` from `versions[]`. |
 | `400 INVALID_INPUT` "template uses variables outside the allowlist: ..." | The draft uses a `$placeholder` not in the per-code allowlist | Use only the `allowed_variables` for that code (see the GET response). |
 | `400 INVALID_INPUT` "missing required template variables: ..." | The draft omits a required variable (e.g. `activation_link`, `reset_link`, `message`, `status_summary`) | Include every required placeholder for the code. |

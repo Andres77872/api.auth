@@ -12,6 +12,8 @@ This package contains all API route definitions organized by functional area:
 - global_roles: Global Role System (roles, permissions, permission groups)
 - permission_assignments: Permission assignments (user group & direct user assignments)
 - bulk_operations: Bulk operations endpoints
+- internal_billing: Provider-agnostic billing S2S endpoints
+- stripe_webhooks: Stripe billing webhook endpoint
 - system: System information and health check endpoints
 
 Note: Access verification is now handled through GET /auth/validate
@@ -19,6 +21,7 @@ Note: Access verification is now handled through GET /auth/validate
 
 from . import admin_dashboard
 from . import admin_project_groups
+from . import admin_patreon
 from . import admin_user_groups
 from . import auth
 from . import projects
@@ -30,6 +33,9 @@ from . import permission_assignments
 from . import bulk_operations
 from . import audit_logs
 from . import api_keys
+from . import admin_billing
+from . import internal_billing
+from . import stripe_webhooks
 from . import user_api_keys
 
 __all__ = [
@@ -40,11 +46,15 @@ __all__ = [
     'admin_user_groups',
     'admin_project_groups',
     'admin_dashboard',
+    'admin_patreon',
     'system',
     'global_roles',
     'permission_assignments',
     'bulk_operations',
     'audit_logs',
     'api_keys',
+    'admin_billing',
+    'internal_billing',
+    'stripe_webhooks',
     'user_api_keys',
 ]

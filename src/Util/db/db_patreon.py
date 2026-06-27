@@ -187,6 +187,37 @@ def _callproc_all(proc_name: str, args: list[Any], *, context: str, commit: bool
     return handle_db_operation(_operation, error_context=context, default_return=[])
 
 
+def _callproc_rows_and_total(proc_name: str, args: list[Any], *, context: str) -> tuple[list[dict[str, Any]], int]:
+    """Call a paginated proc that yields a page result set then a `total_count` scalar.
+
+    Unlike the generic ``_fetch_all_dicts`` helper, this reads the page rows from the
+    first result set WITHOUT draining, then advances exactly once to the trailing
+    ``SELECT FOUND_ROWS() AS total_count`` set before draining the rest. This is required
+    under pymysql, whose ``callproc`` exposes each procedure ``SELECT`` as a separate
+    result set; draining first would discard the count. Falls back to the page length
+    when the count set is absent.
+    """
+
+    def _operation() -> tuple[list[dict[str, Any]], int]:
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc(proc_name, args)
+            if not _advance_to_result_set(cur):
+                return [], 0
+            description = cur.description
+            rows = [row for row in (_row_to_dict(item, description) for item in cur.fetchall()) if row is not None]
+            total = len(rows)
+            if cur.nextset() and cur.description:
+                scalar = _row_to_dict(cur.fetchone(), cur.description)
+                if scalar and scalar.get("total_count") is not None:
+                    total = int(scalar.get("total_count") or 0)
+            _drain_remaining_result_sets(cur)
+            return rows, total
+
+    result = handle_db_operation(_operation, error_context=context, default_return=([], 0))
+    return result if isinstance(result, tuple) else ([], 0)
+
+
 # =============================================================================
 # Proof lifecycle
 # =============================================================================
@@ -636,6 +667,77 @@ def complete_sync_job(**kwargs: Any) -> dict[str, Any] | None:
 
 
 # =============================================================================
+# ROOT admin read/list surface (dashboard management)
+# =============================================================================
+#
+# These wrappers back the ROOT-only `/admin/patreon/*` list endpoints. They call
+# paginated procedures that return only normalized, non-secret columns; callers
+# still pass results through the route-level redaction allow-lists as defense in
+# depth. Context strings never include raw identifiers.
+
+
+def list_patreon_entitlements_admin(
+    *,
+    status: str | None,
+    plan_code: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """List current Patreon entitlements (paginated) for the ROOT dashboard."""
+
+    return _callproc_rows_and_total(
+        "sp_patreon_admin_list_entitlements",
+        [status or None, plan_code or None, limit, offset],
+        context=f"list_patreon_entitlements_admin(status={status or ''}, limit={limit}, offset={offset})",
+    )
+
+
+def list_patreon_tier_map_admin(
+    *,
+    active: bool | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """List configured tier-map entries (paginated) for the ROOT dashboard."""
+
+    return _callproc_rows_and_total(
+        "sp_patreon_admin_list_tier_map",
+        [None if active is None else int(active), limit, offset],
+        context=f"list_patreon_tier_map_admin(active={active}, limit={limit}, offset={offset})",
+    )
+
+
+def list_patreon_sync_jobs_admin(
+    *,
+    status: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """List sync jobs (paginated) for the ROOT dashboard."""
+
+    return _callproc_rows_and_total(
+        "sp_patreon_admin_list_sync_jobs",
+        [status or None, limit, offset],
+        context=f"list_patreon_sync_jobs_admin(status={status or ''}, limit={limit}, offset={offset})",
+    )
+
+
+def list_patreon_webhooks_admin(
+    *,
+    status: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """List webhook deliveries (paginated) for the ROOT dashboard."""
+
+    return _callproc_rows_and_total(
+        "sp_patreon_admin_list_webhooks",
+        [status or None, limit, offset],
+        context=f"list_patreon_webhooks_admin(status={status or ''}, limit={limit}, offset={offset})",
+    )
+
+
+# =============================================================================
 # Provider token state and raw-payload quarantine
 # =============================================================================
 
@@ -921,6 +1023,10 @@ __all__ = [
     "get_patreon_provider_token_state",
     "insert_patreon_raw_payload_quarantine",
     "link_patreon_account",
+    "list_patreon_entitlements_admin",
+    "list_patreon_sync_jobs_admin",
+    "list_patreon_tier_map_admin",
+    "list_patreon_webhooks_admin",
     "observe_patreon_membership",
     "record_patreon_webhook_delivery",
     "record_webhook_delivery",

@@ -1014,7 +1014,7 @@ BEGIN
     SET status = v_next_status,
         provider_message_id = COALESCE(p_provider_message_id, provider_message_id),
         attempt_count = CASE
-            WHEN p_status IN ('sent','retry','dead','suppressed') THEN v_next_attempt_count
+            WHEN p_status IN ('sent','retry','dead','suppressed','cancelled') THEN v_next_attempt_count
             ELSE attempt_count
         END,
         sent_at = CASE WHEN v_next_status = 'sent' THEN NOW() ELSE sent_at END,
@@ -1586,29 +1586,73 @@ END$$
 -- is_active.
 -- ===================================================================================
 
--- Return the active version for one code (deterministic newest-active).
+-- Return catalog metadata plus the active version for one code.
 DROP PROCEDURE IF EXISTS sp_email_template_get_active$$
 CREATE PROCEDURE sp_email_template_get_active(
     IN p_template_code VARCHAR(100)
 )
 BEGIN
-    SELECT template_code, version, subject_template, html_template, text_template,
-           is_active, created_at
-    FROM email_templates
-    WHERE template_code = p_template_code
-      AND is_active = TRUE
-    ORDER BY version DESC
+    SELECT c.template_code,
+           c.purpose,
+           c.allowed_variables,
+           c.required_variables,
+           c.is_builtin,
+           c.is_enabled,
+           c.revision,
+           c.created_at AS catalog_created_at,
+           c.updated_at,
+           c.disabled_at,
+           c.disabled_by,
+           et.version,
+           et.subject_template,
+           et.html_template,
+           et.text_template,
+           et.is_active,
+           et.created_at
+    FROM email_template_catalog c
+    LEFT JOIN email_templates et
+      ON et.template_code = c.template_code
+     AND et.is_active = TRUE
+     AND et.version = (
+         SELECT MAX(active_et.version)
+         FROM email_templates active_et
+         WHERE active_et.template_code = c.template_code
+           AND active_et.is_active = TRUE
+     )
+    WHERE c.template_code = p_template_code
     LIMIT 1;
 END$$
 
--- List the active version of every code (subject only; full bodies via get_active).
+-- List catalog state plus each code's active version metadata.
 DROP PROCEDURE IF EXISTS sp_email_template_list$$
 CREATE PROCEDURE sp_email_template_list()
 BEGIN
-    SELECT template_code, version, subject_template, is_active, created_at
-    FROM email_templates
-    WHERE is_active = TRUE
-    ORDER BY template_code ASC;
+    SELECT c.template_code,
+           c.purpose,
+           c.allowed_variables,
+           c.required_variables,
+           c.is_builtin,
+           c.is_enabled,
+           c.revision,
+           c.created_at AS catalog_created_at,
+           c.updated_at,
+           c.disabled_at,
+           c.disabled_by,
+           et.version,
+           et.subject_template,
+           et.is_active,
+           et.created_at
+    FROM email_template_catalog c
+    LEFT JOIN email_templates et
+      ON et.template_code = c.template_code
+     AND et.is_active = TRUE
+     AND et.version = (
+         SELECT MAX(active_et.version)
+         FROM email_templates active_et
+         WHERE active_et.template_code = c.template_code
+           AND active_et.is_active = TRUE
+     )
+    ORDER BY c.template_code ASC;
 END$$
 
 -- Version history for one code (metadata only; newest first).
@@ -1638,6 +1682,52 @@ BEGIN
     LIMIT 1;
 END$$
 
+-- Create a dynamic internal template code and its initial active version.
+DROP PROCEDURE IF EXISTS sp_email_template_create_dynamic$$
+CREATE PROCEDURE sp_email_template_create_dynamic(
+    IN p_id VARCHAR(64),
+    IN p_template_code VARCHAR(100),
+    IN p_purpose VARCHAR(64),
+    IN p_allowed_variables JSON,
+    IN p_required_variables JSON,
+    IN p_subject_template VARCHAR(255),
+    IN p_html_template TEXT,
+    IN p_text_template TEXT
+)
+BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    IF p_purpose NOT IN ('delivery_operation','security_notification') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'dynamic template purpose is not allowed';
+    END IF;
+
+    START TRANSACTION;
+
+    INSERT INTO email_template_catalog (
+        template_code, purpose, allowed_variables, required_variables,
+        is_builtin, is_enabled, revision, created_at, updated_at
+    ) VALUES (
+        p_template_code, p_purpose, p_allowed_variables, p_required_variables,
+        FALSE, TRUE, 1, NOW(), NOW()
+    );
+
+    INSERT INTO email_templates (
+        id, template_code, version, subject_template, html_template, text_template,
+        is_active, created_at
+    ) VALUES (
+        p_id, p_template_code, 1, p_subject_template, p_html_template,
+        p_text_template, TRUE, NOW()
+    );
+
+    COMMIT;
+
+    SELECT p_template_code AS template_code, 1 AS version, TRUE AS is_active, TRUE AS is_enabled, 1 AS revision;
+END$$
+
 -- Save a new version and make it the single active one, atomically.
 DROP PROCEDURE IF EXISTS sp_email_template_save_and_activate$$
 CREATE PROCEDURE sp_email_template_save_and_activate(
@@ -1649,6 +1739,7 @@ CREATE PROCEDURE sp_email_template_save_and_activate(
 )
 BEGIN
     DECLARE v_next_version INT DEFAULT 1;
+    DECLARE v_revision INT DEFAULT NULL;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -1657,6 +1748,17 @@ BEGIN
     END;
 
     START TRANSACTION;
+
+    SELECT revision
+      INTO v_revision
+    FROM email_template_catalog
+    WHERE template_code = p_template_code
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_revision IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email template code not found';
+    END IF;
 
     -- Lock existing rows for this code to serialise concurrent saves; the
     -- UNIQUE(template_code, version) key is the backstop on the empty-table race.
@@ -1679,9 +1781,58 @@ BEGIN
         p_text_template, TRUE, NOW()
     );
 
+    UPDATE email_template_catalog
+       SET is_enabled = TRUE,
+           revision = revision + 1,
+           updated_at = NOW(),
+           disabled_at = NULL,
+           disabled_by = NULL
+     WHERE template_code = p_template_code;
+
     COMMIT;
 
-    SELECT p_template_code AS template_code, v_next_version AS version, TRUE AS is_active;
+    SELECT p_template_code AS template_code, v_next_version AS version, TRUE AS is_active, TRUE AS is_enabled, v_revision + 1 AS revision;
+END$$
+
+-- Disable a template without deleting catalog or version history.
+DROP PROCEDURE IF EXISTS sp_email_template_disable$$
+CREATE PROCEDURE sp_email_template_disable(
+    IN p_template_code VARCHAR(100),
+    IN p_disabled_by VARCHAR(64)
+)
+BEGIN
+    DECLARE v_revision INT DEFAULT NULL;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT revision
+      INTO v_revision
+    FROM email_template_catalog
+    WHERE template_code = p_template_code
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_revision IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email template code not found';
+    END IF;
+
+    UPDATE email_template_catalog
+       SET is_enabled = FALSE,
+           revision = revision + 1,
+           updated_at = NOW(),
+           disabled_at = NOW(),
+           disabled_by = p_disabled_by
+     WHERE template_code = p_template_code;
+
+    COMMIT;
+
+    SELECT p_template_code AS template_code, FALSE AS is_enabled, v_revision + 1 AS revision;
 END$$
 
 -- Re-activate an existing prior version (rollback), atomically single-active.
@@ -1692,6 +1843,7 @@ CREATE PROCEDURE sp_email_template_rollback(
 )
 BEGIN
     DECLARE v_exists INT DEFAULT 0;
+    DECLARE v_revision INT DEFAULT NULL;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -1700,6 +1852,17 @@ BEGIN
     END;
 
     START TRANSACTION;
+
+    SELECT revision
+      INTO v_revision
+    FROM email_template_catalog
+    WHERE template_code = p_template_code
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_revision IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email template code not found';
+    END IF;
 
     SELECT COUNT(*)
       INTO v_exists
@@ -1722,9 +1885,17 @@ BEGIN
      WHERE template_code = p_template_code
        AND version = p_version;
 
+    UPDATE email_template_catalog
+       SET is_enabled = TRUE,
+           revision = revision + 1,
+           updated_at = NOW(),
+           disabled_at = NULL,
+           disabled_by = NULL
+     WHERE template_code = p_template_code;
+
     COMMIT;
 
-    SELECT p_template_code AS template_code, p_version AS version, TRUE AS is_active;
+    SELECT p_template_code AS template_code, p_version AS version, TRUE AS is_active, TRUE AS is_enabled, v_revision + 1 AS revision;
 END$$
 
 DELIMITER ;
@@ -1733,4 +1904,4 @@ DELIMITER ;
 -- EMAIL ACTIVATION STORED PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Email activation stored procedures created!' AS status,
-       '27 procedures for email lifecycle, reset links, outbox delivery, Patreon proof, webhooks, idempotency, retention, anonymization, and DB-managed templates' AS details;
+       '29 procedures for email lifecycle, reset links, outbox delivery, Patreon proof, webhooks, idempotency, retention, anonymization, and catalog-backed DB-managed templates' AS details;

@@ -277,7 +277,7 @@ def list_admin_user_emails(target_user_id: str) -> list[dict[str, Any]]:
 
 
 # =============================================================================
-# Internal free-credit invite support
+# Internal email credit grant notification support
 # =============================================================================
 
 

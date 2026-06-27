@@ -153,6 +153,9 @@ def validate_template_draft(
     subject_template: str,
     html_template: str,
     text_template: str,
+    purpose: str | None = None,
+    allowed_variable_names: tuple[str, ...] | frozenset[str] | None = None,
+    required_variable_names: tuple[str, ...] | frozenset[str] | None = None,
 ) -> dict[str, object]:
     """Validate an admin-submitted draft; raise on any problem.
 
@@ -160,7 +163,8 @@ def validate_template_draft(
     """
 
     code = str(template_code or "").strip().lower()
-    if code not in TRANSACTIONAL_TEMPLATE_CODES or code not in TEMPLATES:
+    is_builtin = code in TRANSACTIONAL_TEMPLATE_CODES and code in TEMPLATES
+    if not is_builtin and (allowed_variable_names is None or purpose is None):
         raise _violation("unknown or non-transactional template code")
 
     subject = str(subject_template or "")
@@ -182,7 +186,22 @@ def validate_template_draft(
     if len(text) > MAX_TEXT_LENGTH:
         raise _violation(f"plain-text body exceeds {MAX_TEXT_LENGTH} characters")
 
-    required = TEMPLATES[code].required_variables
+    allowed = tuple(
+        allowed_variable_names
+        if allowed_variable_names is not None
+        else sorted(allowed_variables(code))
+    )
+    required = tuple(
+        required_variable_names
+        if required_variable_names is not None
+        else (TEMPLATES[code].required_variables if code in TEMPLATES else ())
+    )
+    unknown_required = set(required) - set(allowed)
+    if unknown_required:
+        raise _violation(
+            "required variable(s) must be part of the allowlist: "
+            + ", ".join("$" + name for name in sorted(unknown_required))
+        )
     try:
         # 1. Placeholder allowlist (subject + html + text).
         used = validate_template_identifiers(
@@ -190,6 +209,7 @@ def validate_template_draft(
             subject_template=subject,
             html_template=html,
             text_template=text,
+            allowed_variable_names=allowed,
         )
 
         # 2. Required workflow variables must actually be referenced.
@@ -206,13 +226,14 @@ def validate_template_draft(
         # 4. Render smoke test through the real funnel with sample data.
         draft = TransactionalEmailTemplate(
             code=code,
-            purpose=TEMPLATES[code].purpose,
+            purpose=purpose or TEMPLATES[code].purpose,
             subject_template=subject,
             html_template=html,
             text_template=text,
             required_variables=required,
+            allowed_variables=allowed,
         )
-        render_template_parts(draft, sample_variables(code))
+        render_template_parts(draft, sample_variables(code, allowed))
     except TemplateValidationError:
         raise
     except EmailTemplateError as exc:
@@ -221,7 +242,7 @@ def validate_template_draft(
 
     return {
         "used_variables": sorted(used),
-        "allowed_variables": sorted(allowed_variables(code)),
+        "allowed_variables": sorted(allowed),
         "required_variables": list(required),
     }
 

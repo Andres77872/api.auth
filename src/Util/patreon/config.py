@@ -63,6 +63,7 @@ class PatreonConfig:
     user_agent: str
     allowed_webhook_events: tuple[str, ...]
     campaign_tier_maps: tuple[PatreonTierMapEntry, ...] = field(repr=False)
+    configured_campaign_ids: tuple[str, ...] = field(default_factory=tuple, repr=False)
     proof_token_ttl_seconds: int = constants.DEFAULT_PATREON_PROOF_TOKEN_TTL_SECONDS
     proof_retention_after_expiry_hours: int = (
         constants.DEFAULT_PATREON_PROOF_RETENTION_AFTER_EXPIRY_HOURS
@@ -163,6 +164,10 @@ class PatreonConfig:
             if entry.campaign_id not in seen:
                 seen.add(entry.campaign_id)
                 ordered.append(entry.campaign_id)
+        for campaign_id in self.configured_campaign_ids:
+            if campaign_id not in seen:
+                seen.add(campaign_id)
+                ordered.append(campaign_id)
         return tuple(ordered)
 
     def is_feature_enabled(self, feature: str) -> bool:
@@ -438,6 +443,10 @@ def _tier_map_from_env(values: Mapping[str, str]) -> tuple[PatreonTierMapEntry, 
     return ()
 
 
+def _campaign_ids_from_env(values: Mapping[str, str]) -> tuple[str, ...]:
+    return _csv_tuple(_get(values, constants.PATREON_CAMPAIGN_IDS_ENV))
+
+
 def load_patreon_config(*, env: Mapping[str, str] | None = None) -> PatreonConfig:
     """Parse Patreon environment configuration without provider side effects."""
 
@@ -493,6 +502,7 @@ def load_patreon_config(*, env: Mapping[str, str] | None = None) -> PatreonConfi
         user_agent=_get(values, constants.PATREON_USER_AGENT_ENV, constants.DEFAULT_PATREON_USER_AGENT),
         allowed_webhook_events=allowed_webhook_events,
         campaign_tier_maps=_tier_map_from_env(values),
+        configured_campaign_ids=_campaign_ids_from_env(values),
         proof_token_ttl_seconds=_int(
             values,
             constants.PATREON_PROOF_TOKEN_TTL_SECONDS_ENV,
@@ -685,6 +695,9 @@ def validate_patreon_readiness(config: PatreonConfig) -> PatreonReadiness:
 
     if any(config.primary_feature_flags.values()) and not config.campaign_tier_maps:
         missing.append(constants.PATREON_CAMPAIGN_TIER_MAP_ENV)
+
+    if any(config.primary_feature_flags.values()):
+        required.append((constants.PATREON_ID_HMAC_SECRET_ENV, config.id_hmac_secret))
 
     for name, value in required:
         if not value and name not in missing:

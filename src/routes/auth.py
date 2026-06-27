@@ -876,7 +876,8 @@ async def login(
     The project context is mandatory for all users:
     - Root users MUST provide a project_hash but bypass group-based access validation.
     - Root may access any project by role.
-    - Non-root users MUST provide a project_hash and are validated through group membership.
+    - Non-root users MUST provide a project_hash and are validated through group access.
+    - Billing must not be added to this identity/session response.
     - The complete list of accessible projects is always returned so clients may 
       switch context later with the `/auth/switch-project` endpoint.
     """
@@ -1095,6 +1096,9 @@ async def login(
     )
     _set_token_pair_cookies(response, token_pair)
 
+    from src.Util.session_plan import resolve_session_plan
+    login_plan = resolve_session_plan(user_record.id, target_project.id)
+
     return LoginResponse(
         success=True,
         message="Login successful",
@@ -1115,6 +1119,7 @@ async def login(
         project=project_info,
         accessible_projects=accessible_projects_info,
         user_groups=user_groups_info,
+        plan=login_plan,
         user_id=user_record.id
     )
 
@@ -1420,6 +1425,7 @@ async def validate_user_session(
                 "remember_me": bool(refresh_family.get("remember_me", False)),
             },
             user_groups=user_group_names,
+            plan=login_data.plan,
         )
     except Exception:
         duration_ms = (time.monotonic() - _t_start) * 1000
@@ -1481,6 +1487,11 @@ async def validate_user_api_key(
         },
     )
 
+    api_key_plan = None
+    if context.get("user_id") and context.get("project_id") and (context.get("user_type") or "consumer") == "consumer":
+        from src.Util.session_plan import resolve_session_plan
+        api_key_plan = resolve_session_plan(context.get("user_id"), context.get("project_id"))
+
     return ValidateApiKeyResponse(
         success=True,
         valid=True,
@@ -1501,6 +1512,7 @@ async def validate_user_api_key(
         ),
         user_groups=user_groups,
         permissions=permissions,
+        plan=api_key_plan,
     )
 
 

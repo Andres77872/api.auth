@@ -8,18 +8,20 @@ Reference for the email subsystem API surface in `api.auth`: the ROOT-only admin
 
 ## `/admin/email-templates` Endpoints (ROOT only)
 
-All six endpoints require ROOT. Auth is `HTTPBearerOrCookie` (session bearer/cookie) + `is_root_user` (`_require_root`). A non-root caller receives `403 ACCESS_DENIED`. Bodies, where present, are **JSON** (Pydantic models), not form data.
+All endpoints require ROOT. Auth is `HTTPBearerOrCookie` (session bearer/cookie) + `is_root_user` (`_require_root`). A non-root caller receives `403 ACCESS_DENIED`. Bodies, where present, are **JSON** (Pydantic models), not form data.
 
 | Endpoint | Method | Auth | Body | Purpose |
 |----------|--------|------|------|---------|
-| `/admin/email-templates` | GET | ROOT | – | List every transactional template code with its active `source`/`version`, `purpose`, `required_variables`, `allowed_variables` |
-| `/admin/email-templates/{template_code}` | GET | ROOT | – | Active subject/html/text body + allowlist + built-in `default` body + full `versions[]` history |
-| `/admin/email-templates/{template_code}` | PUT | ROOT | JSON `TemplateDraft` | Validate the draft, then save and activate it as a new version |
+| `/admin/email-templates` | GET | ROOT | – | List every cataloged template code with active `source`/`version`, `purpose`, enabled/dynamic state, `revision`, variables |
+| `/admin/email-templates` | POST | ROOT | JSON `TemplateCreateRequest` | Create a dynamic internal template code and activate version 1 |
+| `/admin/email-templates/{template_code}` | GET | ROOT | – | Active subject/html/text body + catalog metadata + built-in `default` body when applicable + full `versions[]` history |
+| `/admin/email-templates/{template_code}` | PUT | ROOT | JSON `TemplateDraft` | Validate the draft, then save and activate it as a new version; disabled templates are re-enabled on success |
+| `/admin/email-templates/{template_code}` | DELETE | ROOT | – | Disable the template without deleting catalog or version history |
 | `/admin/email-templates/{template_code}/preview` | POST | ROOT | JSON `TemplatePreviewRequest` (optional) | Render a draft (or the active version) with server-side sample data |
 | `/admin/email-templates/{template_code}/send-test` | POST | ROOT | JSON `TemplatePreviewRequest` (optional) | Send a rendered `[TEST]` email to the **caller's own** verified address |
-| `/admin/email-templates/{template_code}/rollback` | POST | ROOT | JSON `TemplateRollbackRequest` | Re-activate a prior version |
+| `/admin/email-templates/{template_code}/rollback` | POST | ROOT | JSON `TemplateRollbackRequest` | Validate and re-activate a prior version; disabled templates are re-enabled on success |
 
-`{template_code}` must be one of: `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`. An unknown code returns `404 RESOURCE_NOT_FOUND`.
+Built-in `{template_code}` values include `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`, `patreon_link_proof`, and `email_credit_grant_notification`. Dynamic codes must be created first with `POST /admin/email-templates`.
 
 ### Request bodies
 
@@ -29,6 +31,17 @@ All six endpoints require ROOT. Auth is `HTTPBearerOrCookie` (session bearer/coo
   "subject_template": "Activate your $app_name email",
   "html_template": "<!DOCTYPE html>...$activation_link...",
   "text_template": "Activate ...\n$activation_link\n..."
+}
+
+// TemplateCreateRequest  (POST /admin/email-templates)
+{
+  "template_code": "ops_incident_notice",
+  "purpose": "delivery_operation",
+  "allowed_variables": ["notice", "ticket_id"],
+  "required_variables": ["notice"],
+  "subject_template": "Notice $ticket_id",
+  "html_template": "<p>$notice</p>",
+  "text_template": "$notice"
 }
 
 // TemplatePreviewRequest  (preview, send-test) — all optional; omit body to use the active version
@@ -44,6 +57,8 @@ All six endpoints require ROOT. Auth is `HTTPBearerOrCookie` (session bearer/coo
 
 For `preview`/`send-test`: if **any** of the three fields is present, that draft is validated and rendered; if the body is omitted/empty, the **active** version is rendered. Variable *values* are always the server-side `sample_variables(code)` — an admin cannot inject variable values.
 
+Dynamic template creation is limited to internal purposes: `delivery_operation` and `security_notification`. `template_code` must be lowercase snake_case and cannot collide with a built-in code. `required_variables` must be a subset of `allowed_variables`, and every required variable must appear in the template body.
+
 ### Success responses
 
 **`GET /admin/email-templates`**
@@ -58,6 +73,11 @@ For `preview`/`send-test`: if **any** of the three fields is present, that draft
       "source": "code",
       "version": null,
       "is_customized": false,
+      "is_enabled": true,
+      "is_dynamic": false,
+      "revision": 1,
+      "disabled_at": null,
+      "disabled_by": null,
       "required_variables": ["activation_link"],
       "allowed_variables": ["activation_link", "app_name", "expires_in", "recipient_masked", "support_email"]
     }
@@ -75,6 +95,11 @@ For `preview`/`send-test`: if **any** of the three fields is present, that draft
   "source": "db",
   "version": 4,
   "is_customized": true,
+  "is_enabled": true,
+  "is_dynamic": false,
+  "revision": 7,
+  "disabled_at": null,
+  "disabled_by": null,
   "subject_template": "...",
   "html_template": "...",
   "text_template": "...",
@@ -92,8 +117,22 @@ For `preview`/`send-test`: if **any** of the three fields is present, that draft
 **`PUT /admin/email-templates/{template_code}`**
 
 ```json
-{ "success": true, "template_code": "email_activation", "version": 5, "used_variables": ["app_name", "recipient_masked", "activation_link", "expires_in"], "updated_at": "2026-06-14T12:00:00Z" }
+{ "success": true, "template_code": "email_activation", "version": 5, "revision": 8, "is_enabled": true, "used_variables": ["app_name", "recipient_masked", "activation_link", "expires_in"], "updated_at": "2026-06-14T12:00:00Z" }
 ```
+
+**`POST /admin/email-templates`**
+
+```json
+{ "success": true, "template_code": "ops_incident_notice", "purpose": "delivery_operation", "version": 1, "revision": 1, "is_dynamic": true, "is_enabled": true, "used_variables": ["notice", "ticket_id"], "created_at": "2026-06-14T12:00:00Z" }
+```
+
+**`DELETE /admin/email-templates/{template_code}`**
+
+```json
+{ "success": true, "template_code": "ops_incident_notice", "is_enabled": false, "revision": 2, "disabled_at": "2026-06-14T12:00:00Z" }
+```
+
+Delete means disable. The catalog row and all `email_templates` versions remain for audit/rollback. Pending or retrying worker messages for that code are finalized `cancelled` with `EMAIL_TEMPLATE_DISABLED` when claimed.
 
 **`POST /admin/email-templates/{template_code}/preview`**
 
@@ -114,7 +153,7 @@ The recipient is **never** in the body and never returned in clear — it is loc
 **`POST /admin/email-templates/{template_code}/rollback`**
 
 ```json
-{ "success": true, "template_code": "email_activation", "version": 3, "rolled_back_at": "2026-06-14T12:00:00Z" }
+{ "success": true, "template_code": "email_activation", "version": 3, "revision": 9, "is_enabled": true, "rolled_back_at": "2026-06-14T12:00:00Z" }
 ```
 
 ### Error codes
@@ -123,7 +162,7 @@ The recipient is **never** in the body and never returned in clear — it is loc
 |------|------|------|
 | `ACCESS_DENIED` | 403 | Caller is not ROOT |
 | `RESOURCE_NOT_FOUND` | 404 | Unknown `template_code`; or rollback to a `version` that does not exist for the code |
-| `INVALID_INPUT` | 400 | PUT/preview/send-test draft fails `validate_template_draft` (disallowed placeholder, missing required var, unsafe HTML, render failure); send-test: caller has no activated email, delivery not ready, or the provider send failed |
+| `INVALID_INPUT` | 400 | Dynamic create uses a forbidden purpose/colliding code; PUT/preview/send-test/rollback draft fails `validate_template_draft` (disallowed placeholder, missing required var, unsafe HTML, render failure); template is disabled for send-test; caller has no activated email; delivery not ready; provider send failed |
 | `RATE_LIMIT_EXCEEDED` | 400/429 | send-test exceeds the `email_template_test` rate-limit buckets |
 
 > See [errors.md](../errors.md) for the full error envelope. Validation failures surface the underlying `TemplateValidationError` message.
@@ -196,7 +235,7 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 | Env var | Default | Meaning |
 |---------|---------|---------|
 | `EMAIL_ACTIVATION_TOKEN_TTL_SECONDS` | `86400` | Activation link lifetime |
-| `EMAIL_PASSWORD_RESET_TOKEN_TTL_SECONDS` | `3600` | Reset link lifetime |
+| `EMAIL_PASSWORD_RESET_TOKEN_TTL_SECONDS` | `3600` | Reset link lifetime; not a token value |
 | `EMAIL_IDEMPOTENCY_TTL_SECONDS` | `86400` | Idempotency cache TTL |
 | `EMAIL_TERMINAL_RETENTION_DAYS` | `30` | Terminal message retention |
 | `EMAIL_DELIVERY_ATTEMPT_RETENTION_DAYS` | `365` | Delivery-attempt metadata retention |

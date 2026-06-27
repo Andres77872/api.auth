@@ -15,7 +15,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from src.Util.auth_constants import PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX
+from src.Util.auth_constants import BILLING_INTERNAL_ROUTE_PREFIX, PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,16 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
             request.state.auth_method = "api_key"
             request.state.s2s_auth_context_skipped = True
             request.state.patreon_s2s_auth_context_skipped = True
+            return await call_next(request)
+
+        if self._is_billing_internal_path(request_path):
+            # Billing S2S routes are authenticated by route-owned dedicated
+            # bearer validation. Middleware must not turn billing bearer values,
+            # browser cookies, JWT-looking strings, or X-API-Key headers into a
+            # local user/session authority here.
+            request.state.auth_method = "api_key"
+            request.state.s2s_auth_context_skipped = True
+            request.state.billing_s2s_auth_context_skipped = True
             return await call_next(request)
 
         # --- Path 1: API Key Authentication (X-API-Key header) ---
@@ -326,3 +336,12 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
 
         parts = [part for part in normalized_path.strip("/").split("/") if part]
         return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"
+
+    def _is_billing_internal_path(self, path: str) -> bool:
+        """Return True for billing internal S2S route paths."""
+        normalized_path = (path or "").split("?", 1)[0].rstrip("/") or "/"
+        if not normalized_path.startswith(BILLING_INTERNAL_ROUTE_PREFIX):
+            return False
+
+        parts = [part for part in normalized_path.strip("/").split("/") if part]
+        return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "billing"

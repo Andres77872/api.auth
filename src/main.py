@@ -13,9 +13,9 @@ from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
     auth, auth_google, auth_patreon, email_webhooks, patreon_webhooks,
-    internal_patreon, internal_email, users, user_types_auth, projects,
-    admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments,
-    audit_logs, api_keys, user_api_keys, email_templates,
+    stripe_webhooks, internal_patreon, internal_billing, internal_email, users, user_types_auth, projects,
+    admin_user_groups, admin_project_groups, admin_dashboard, admin_patreon, system, bulk_operations, global_roles, permission_assignments,
+    audit_logs, api_keys, user_api_keys, email_templates, admin_billing,
 )
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
 
@@ -43,6 +43,7 @@ app.include_router(auth_google.router, tags=['Google OAuth'])
 app.include_router(auth_patreon.router, tags=['Patreon Link'])
 app.include_router(email_webhooks.router, tags=["Email Webhooks"])
 app.include_router(patreon_webhooks.router, tags=["Patreon Webhooks"])
+app.include_router(stripe_webhooks.router, tags=["Stripe Webhooks"])
 # NOTE: user_api_keys must be registered BEFORE users to avoid /users/{user_hash}
 # catching /users/api-keys as a user_hash parameter
 app.include_router(user_api_keys.router, tags=["API Keys - User"])
@@ -52,9 +53,12 @@ app.include_router(projects.router, tags=['Project Management'])
 app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
 app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
+app.include_router(admin_patreon.router, tags=['Admin - Patreon'])
+app.include_router(admin_billing.router, tags=['Admin - Billing'])
 app.include_router(email_templates.router, tags=['Admin - Email Templates'])
 app.include_router(system.router, tags=['System Information'])
 app.include_router(internal_patreon.router, tags=['Patreon Internal'])
+app.include_router(internal_billing.router, tags=['Billing Internal'])
 app.include_router(internal_email.router, tags=['Internal Email'])
 app.include_router(bulk_operations.router, tags=['Bulk Operations'])
 app.include_router(global_roles.router, tags=['Global Role System'])
@@ -65,7 +69,7 @@ app.include_router(api_keys.router, tags=["API Keys - Admin"])
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5177,,http://localhost:5183,http://192.168.1.13:5173",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5780,,http://localhost:5183,http://192.168.1.13:5173",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 

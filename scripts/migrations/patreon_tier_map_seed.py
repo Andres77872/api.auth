@@ -5,7 +5,8 @@ Inputs are server-only configuration. Raw campaign IDs, tier IDs, and HMAC secre
 never printed. The database stores only HMAC-SHA256 bytes and short non-reversible
 fingerprints plus internal plan/tier codes.
 
-Expected config shape in PATREON_TIER_MAP_JSON or PATREON_TIER_MAP_FILE:
+Expected config shape in PATREON_CAMPAIGN_TIER_MAP, PATREON_TIER_MAP_JSON,
+or PATREON_TIER_MAP_FILE:
 [
   {
     "campaign_id": "server-only raw campaign id",
@@ -32,22 +33,10 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import pymysql
 import pymysql.cursors
-
-
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "3306")),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
-    "database": os.getenv("DB_NAME", "magic_auth"),
-    "charset": "utf8mb4",
-    "cursorclass": pymysql.cursors.DictCursor,
-    "autocommit": False,
-}
 
 
 @dataclass(frozen=True)
@@ -82,37 +71,77 @@ class ConfigError(ValueError):
     """Raised for non-secret configuration validation failures."""
 
 
-def _load_json_config(args: argparse.Namespace) -> list[dict[str, Any]]:
+def _load_env_file(path: str | None) -> None:
+    if not path:
+        return
+    env_path = Path(path)
+    if not env_path.exists():
+        raise ConfigError(f"Env file not found: {path}")
+
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+def _db_config() -> dict[str, Any]:
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "3306")),
+        "user": os.getenv("DB_USER", "root"),
+        "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
+        "database": os.getenv("DB_NAME", "magic_auth"),
+        "charset": "utf8mb4",
+        "cursorclass": pymysql.cursors.DictCursor,
+        "autocommit": False,
+    }
+
+
+def _load_json_config(args: argparse.Namespace) -> Any:
     if args.config_json:
         raw = args.config_json
     elif args.config_file:
         raw = Path(args.config_file).read_text(encoding="utf-8")
     elif os.getenv("PATREON_TIER_MAP_FILE"):
         raw = Path(os.environ["PATREON_TIER_MAP_FILE"]).read_text(encoding="utf-8")
+    elif os.getenv("PATREON_CAMPAIGN_TIER_MAP"):
+        raw = os.environ["PATREON_CAMPAIGN_TIER_MAP"]
     else:
         raw = os.getenv("PATREON_TIER_MAP_JSON", "")
 
     if not raw.strip():
-        raise ConfigError("Missing PATREON_TIER_MAP_JSON or PATREON_TIER_MAP_FILE")
+        raise ConfigError(
+            "Missing PATREON_CAMPAIGN_TIER_MAP, PATREON_TIER_MAP_JSON, or PATREON_TIER_MAP_FILE"
+        )
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ConfigError(f"Invalid tier map JSON at byte offset {exc.pos}") from exc
 
-    if not isinstance(parsed, list):
-        raise ConfigError("Tier map config must be a JSON array")
     return parsed
 
 
-def _required_text(item: dict[str, Any], key: str, index: int) -> str:
+def _required_text(item: Mapping[str, Any], key: str, index: str) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"Tier map entry #{index} is missing required field {key}")
+        raise ConfigError(f"Tier map entry {index} is missing required field {key}")
     return value.strip()
 
 
-def _optional_text(item: dict[str, Any], key: str) -> str | None:
+def _optional_text(item: Mapping[str, Any], key: str) -> str | None:
     value = item.get(key)
     if value is None:
         return None
@@ -122,19 +151,55 @@ def _optional_text(item: dict[str, Any], key: str) -> str | None:
     return value or None
 
 
-def _parse_entries(raw_entries: list[dict[str, Any]]) -> list[TierMapEntry]:
-    entries: list[TierMapEntry] = []
-    for index, item in enumerate(raw_entries, start=1):
-        if not isinstance(item, dict):
-            raise ConfigError(f"Tier map entry #{index} must be an object")
+def _iter_raw_entries(parsed: Any) -> Sequence[tuple[str, Mapping[str, Any]]]:
+    if isinstance(parsed, dict) and isinstance(parsed.get("campaigns"), list):
+        entries: list[tuple[str, Mapping[str, Any]]] = []
+        for campaign_index, campaign in enumerate(parsed["campaigns"], start=1):
+            if not isinstance(campaign, Mapping):
+                raise ConfigError(f"campaigns[{campaign_index}] must be an object")
+            campaign_id = _required_text(campaign, "campaign_id", f"campaigns[{campaign_index}]")
+            campaign_name = _optional_text(campaign, "campaign_name") or _optional_text(
+                campaign, "name"
+            )
+            tiers = campaign.get("tiers")
+            if not isinstance(tiers, list) or not tiers:
+                raise ConfigError(f"campaigns[{campaign_index}] must contain tiers[]")
+            for tier_index, tier in enumerate(tiers, start=1):
+                if not isinstance(tier, Mapping):
+                    raise ConfigError(
+                        f"campaigns[{campaign_index}].tiers[{tier_index}] must be an object"
+                    )
+                merged = dict(tier)
+                merged["campaign_id"] = campaign_id
+                if campaign_name is not None:
+                    merged.setdefault("campaign_name", campaign_name)
+                entries.append((f"campaigns[{campaign_index}].tiers[{tier_index}]", merged))
+        return entries
 
+    if isinstance(parsed, dict) and isinstance(parsed.get("entries"), list):
+        parsed = parsed["entries"]
+
+    if not isinstance(parsed, list):
+        raise ConfigError("Tier map config must be a JSON object with campaigns[] or a JSON array")
+
+    entries = []
+    for index, item in enumerate(parsed, start=1):
+        if not isinstance(item, Mapping):
+            raise ConfigError(f"entry #{index} must be an object")
+        entries.append((f"entries[{index}]", item))
+    return entries
+
+
+def _parse_entries(parsed: Any) -> list[TierMapEntry]:
+    entries: list[TierMapEntry] = []
+    for index, item in _iter_raw_entries(parsed):
         priority_value = item.get("priority", 0)
         if not isinstance(priority_value, int):
-            raise ConfigError(f"Tier map entry #{index} priority must be an integer")
+            raise ConfigError(f"Tier map entry {index} priority must be an integer")
 
         active_value = item.get("active", True)
         if not isinstance(active_value, bool):
-            raise ConfigError(f"Tier map entry #{index} active must be a boolean")
+            raise ConfigError(f"Tier map entry {index} active must be a boolean")
 
         entries.append(
             TierMapEntry(
@@ -216,9 +281,10 @@ def _safe_rows(entries: list[TierMapEntry], secret: bytes) -> list[SafeSeedRow]:
 
 
 def _connect():
-    if not DB_CONFIG["password"]:
+    db_config = _db_config()
+    if not db_config["password"]:
         raise ConfigError("Missing DB_MYSQL_PASSWORD or DB_PASSWORD for --apply")
-    return pymysql.connect(**DB_CONFIG)
+    return pymysql.connect(**db_config)
 
 
 def _seed(rows: list[SafeSeedRow]) -> None:
@@ -289,8 +355,15 @@ def _seed(rows: list[SafeSeedRow]) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Seed Patreon tier map from server-only config")
-    parser.add_argument("--config-json", help="JSON array. Prefer PATREON_TIER_MAP_JSON in server-only env.")
-    parser.add_argument("--config-file", help="Path to JSON array. Prefer PATREON_TIER_MAP_FILE in server-only env.")
+    parser.add_argument("--env-file", help="Load DB and Patreon config from an env file before reading OS env")
+    parser.add_argument(
+        "--config-json",
+        help="JSON array/object. Prefer PATREON_CAMPAIGN_TIER_MAP in server-only env.",
+    )
+    parser.add_argument(
+        "--config-file",
+        help="Path to JSON array/object. Prefer PATREON_TIER_MAP_FILE in server-only env.",
+    )
     parser.add_argument("--apply", action="store_true", help="Write validated HMAC/fingerprint rows to DB")
     parser.add_argument("--dry-run", action="store_true", help="Validate only; default behavior")
     return parser
@@ -298,12 +371,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    _load_env_file(args.env_file)
     secret = os.getenv("PATREON_ID_HMAC_SECRET") or os.getenv("PATREON_HMAC_SECRET")
     if not secret:
         raise ConfigError("Missing PATREON_ID_HMAC_SECRET or PATREON_HMAC_SECRET")
 
-    raw_entries = _load_json_config(args)
-    entries = _parse_entries(raw_entries)
+    parsed_config = _load_json_config(args)
+    entries = _parse_entries(parsed_config)
     _validate_ambiguity(entries)
     rows = _safe_rows(entries, secret.encode("utf-8"))
 

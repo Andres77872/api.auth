@@ -15,12 +15,18 @@ from datetime import datetime
 
 from src.Util.db_config import get_connection
 from src.Util.auth_constants import (
+    BILLING_INTERNAL_ROUTE_PREFIX,
+    BILLING_INTERNAL_PROJECT_ROUTE_PREFIX,
+    BILLING_REDACTION_FIELD_NAMES,
+    BILLING_REDACTION_HEADER_NAMES,
     OAUTH_REDACTION_FIELD_NAMES,
     PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX,
     PATREON_REDACTION_FIELD_NAMES,
     PATREON_REDACTION_HEADER_NAMES,
     PATREON_WEBHOOK_ROUTE,
+    STRIPE_WEBHOOK_ROUTE,
 )
+from src.Util.billing.redaction import sanitize_billing_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +42,9 @@ class APIAuditLogger:
         if field not in {"code", "state", "nonce"}
     )
     PATREON_REDACTION_FIELD_FRAGMENTS = tuple(PATREON_REDACTION_FIELD_NAMES)
+    BILLING_REDACTION_FIELD_FRAGMENTS = tuple(BILLING_REDACTION_FIELD_NAMES)
     SENSITIVE_TEXT_FIELD_NAMES = tuple(
-        dict.fromkeys((*OAUTH_REDACTION_FIELD_NAMES, *PATREON_REDACTION_FIELD_NAMES))
+        dict.fromkeys((*OAUTH_REDACTION_FIELD_NAMES, *PATREON_REDACTION_FIELD_NAMES, *BILLING_REDACTION_FIELD_NAMES))
     )
     
     # Sensitive fields to filter from request/response bodies
@@ -53,6 +60,7 @@ class APIAuditLogger:
         'webhook_payload', 'idempotency_key', 'activation_link',
         'reset_link', 'lookup_id', *OAUTH_REDACTION_FIELD_NAMES,
         *PATREON_REDACTION_FIELD_NAMES,
+        *BILLING_REDACTION_FIELD_NAMES,
     ]
 
     SENSITIVE_FIELD_EXACT = {
@@ -60,6 +68,7 @@ class APIAuditLogger:
         'lookup_id', 'secret', 'token', 'idempotency_key',
         'current_password', 'new_password', *OAUTH_REDACTION_FIELD_NAMES,
         *PATREON_REDACTION_FIELD_NAMES,
+        *BILLING_REDACTION_FIELD_NAMES,
     }
 
     SENSITIVE_FIELD_FRAGMENTS = {
@@ -71,6 +80,7 @@ class APIAuditLogger:
         'webhook_payload', 'activation_link', 'reset_link',
         'reset_url', 'idempotency_key', *OAUTH_REDACTION_FIELD_FRAGMENTS,
         *PATREON_REDACTION_FIELD_FRAGMENTS,
+        *BILLING_REDACTION_FIELD_FRAGMENTS,
     }
     
     # Sensitive headers to filter
@@ -81,11 +91,13 @@ class APIAuditLogger:
         'webhook-signature', 'x-webhook-signature', 'x-resend-signature',
         'x-provider-init-token', 'x-oauth-state', 'x-oauth-link-token',
         *PATREON_REDACTION_HEADER_NAMES,
+        *BILLING_REDACTION_HEADER_NAMES,
     ]
 
     RAW_BODY_AUDIT_EXCLUDED_PATHS = [
         '/webhooks/email',
         PATREON_WEBHOOK_ROUTE,
+        STRIPE_WEBHOOK_ROUTE,
     ]
     
     # Endpoints to exclude from audit logging (high-frequency, low-value)
@@ -176,6 +188,35 @@ class APIAuditLogger:
         return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"
 
     @staticmethod
+    def is_stripe_webhook_path(path: str) -> bool:
+        """Return True for the Stripe webhook route family."""
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        return normalized_path == STRIPE_WEBHOOK_ROUTE or normalized_path.startswith(STRIPE_WEBHOOK_ROUTE + "/")
+
+    @staticmethod
+    def is_billing_internal_path(path: str) -> bool:
+        """Return True for dedicated internal billing S2S route paths.
+
+        Covers both the user-scoped family (`/internal/users/{user_hash}/billing*`) and the
+        project-scoped catalog read (`/internal/projects/{project_hash}/billing/catalog`).
+        """
+
+        normalized_path = APIAuditLogger._normalized_path(path)
+        parts = [part for part in normalized_path.strip("/").split("/") if part]
+        if normalized_path.startswith(BILLING_INTERNAL_ROUTE_PREFIX):
+            return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "billing"
+        if normalized_path.startswith(BILLING_INTERNAL_PROJECT_ROUTE_PREFIX):
+            return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "projects" and parts[3] == "billing"
+        return False
+
+    @staticmethod
+    def is_billing_path(path: str) -> bool:
+        """Return True for billing-owned webhook or internal S2S route families."""
+
+        return APIAuditLogger.is_stripe_webhook_path(path) or APIAuditLogger.is_billing_internal_path(path)
+
+    @staticmethod
     def is_patreon_path(path: str) -> bool:
         """Return True for Patreon-owned link, webhook, or S2S route families."""
 
@@ -218,6 +259,10 @@ class APIAuditLogger:
             return "webhook"
         if APIAuditLogger.is_patreon_internal_entitlement_path(path):
             return "api_key"
+        if APIAuditLogger.is_stripe_webhook_path(path):
+            return "webhook"
+        if APIAuditLogger.is_billing_internal_path(path):
+            return "api_key"
         return None
 
     @staticmethod
@@ -251,7 +296,7 @@ class APIAuditLogger:
             sanitized,
             flags=re.IGNORECASE,
         )
-        return sanitized
+        return sanitize_billing_sensitive_text(sanitized)
     
     @staticmethod
     def filter_sensitive_data(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -379,6 +424,12 @@ class APIAuditLogger:
         if APIAuditLogger.is_patreon_auth_path(path) and (status_code >= 400 or method_upper in {"POST", "DELETE"}):
             return True
 
+        if APIAuditLogger.is_stripe_webhook_path(path) and status_code >= 400:
+            return True
+
+        if APIAuditLogger.is_billing_internal_path(path) and status_code >= 400:
+            return True
+
         # Failed authentication
         if APIAuditLogger.is_google_oauth_path(path) and status_code >= 400:
             return True
@@ -467,6 +518,17 @@ class APIAuditLogger:
             tags.append('patreon_entitlement')
         if APIAuditLogger.is_patreon_auth_path(path):
             tags.append('patreon_link')
+        if APIAuditLogger.is_billing_path(path):
+            tags.append('billing')
+        if APIAuditLogger.is_stripe_webhook_path(path):
+            tags.append('stripe')
+            tags.append('stripe_webhook')
+            tags.append('webhook')
+        if APIAuditLogger.is_billing_internal_path(path):
+            tags.append('internal')
+            tags.append('s2s')
+            tags.append('api_key')
+            tags.append('billing_s2s')
         if APIAuditLogger.is_session_auth_security_path(path):
             tags.append('password_change')
             tags.append('session_auth')

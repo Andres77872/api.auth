@@ -21,7 +21,7 @@ EXTERNAL_ACCOUNTS_TRIGGERS_SQL = ROOT / "schemas" / "triggers" / "05_external_ac
 CREATE_TABLES_SQL = ROOT / "schemas" / "tables" / "02_create_tables.sql"
 ACTIVITY_SQL = ROOT / "schemas" / "tables" / "08_activity_logging_tables.sql"
 SESSION_ANALYTICS_SQL = ROOT / "schemas" / "stored_procedures" / "07_sessions_analytics.sql"
-PATREON_MIGRATION_SQL = ROOT / "scripts" / "migrations" / "patreon_account_link.sql"
+SCHEMA_SYNC_SCRIPT = ROOT / "scripts" / "schema_sync.py"
 CREATE_DATABASE_SCRIPT = ROOT / "scripts" / "create_database.py"
 RECREATE_DATABASE_SCRIPT = ROOT / "scripts" / "recreate_database.py"
 
@@ -131,16 +131,18 @@ def test_external_account_link_unlink_and_triggers_preserve_google_invariants_af
     assert "terminal external account transition requires unlink time" in trigger_source
 
 
-def test_patreon_migration_is_additive_and_preserves_existing_google_external_account_rows():
-    source = _read(PATREON_MIGRATION_SQL).lower()
-    compact = _compact(source)
+def test_schema_sync_provider_widening_is_additive_and_preserves_existing_google_external_account_rows():
+    external_accounts = _read(EXTERNAL_ACCOUNTS_SQL).lower()
+    sync_source = _read(SCHEMA_SYNC_SCRIPT).lower()
+    compact_schema = _compact(external_accounts)
+    compact_sync = _compact(sync_source)
 
-    assert "alter table user_external_accounts" in source
-    assert "modifyproviderenum('google','patreon')notnull" in compact
-    assert "preserve google rows" in source or "preserves google rows" in source
-    assert "drop table user_external_accounts" not in source
-    assert "truncate table user_external_accounts" not in source
-    assert not re.search(r"delete\s+from\s+user_external_accounts\b", source)
+    assert "providerenum('google','patreon')notnull" in compact_schema
+    assert "altertableuser_external_accounts" in compact_sync
+    assert "modifyproviderenum('google','patreon')notnull" in compact_sync
+    assert "drop table user_external_accounts" not in sync_source
+    assert "truncate table user_external_accounts" not in sync_source
+    assert not re.search(r"delete\s+from\s+user_external_accounts\b", sync_source)
 
 
 def test_schema_and_fresh_bootstrap_accept_oauth_auth_method_and_activity_range():

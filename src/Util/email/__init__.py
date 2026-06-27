@@ -50,7 +50,9 @@ from src.Util.email.security import (
     verify_link_token,
 )
 from src.Util.email.templates import (
+    EmailTemplateDisabled,
     EmailTemplateError,
+    EmailTemplateLookupError,
     RenderedEmailTemplate,
     TransactionalEmailTemplate,
     get_transactional_template,
@@ -67,7 +69,9 @@ __all__ = [
     "EmailReadiness",
     "EmailSendRequest",
     "EmailSendResult",
+    "EmailTemplateDisabled",
     "EmailTemplateError",
+    "EmailTemplateLookupError",
     "GeneratedLinkToken",
     "IdempotencyKeyError",
     "IdempotencyRecord",

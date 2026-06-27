@@ -15,6 +15,7 @@ The database operations are organized into specialized modules:
 - db_global_roles.py: Global role system with roles, permissions, and permission groups
 - db_enhanced.py: Main authentication functions with user type handling
 - db_patreon.py: Patreon entitlement stored-procedure wrappers
+- db_billing.py: Provider-agnostic billing stored-procedure wrappers
 
 User Type Access Model:
 Root Users → Unrestricted Access to Everything
@@ -201,6 +202,8 @@ from src.Util.db.db_external_accounts import (
     touch_external_account_last_seen,
     unlink_external_account,
 )
+# Import provider-agnostic billing wrapper module
+from src.Util.db import db_billing
 # Import transactional auth email functions
 from src.Util.db import db_email
 from src.Util.db.db_email import (
@@ -610,6 +613,9 @@ __all__ = [
 
     # Patreon External Accounts / Entitlement Wrapper
     'db_patreon',
+
+    # Provider-Agnostic Billing Wrapper
+    'db_billing',
 
     # Transactional Auth Email
     'db_email',

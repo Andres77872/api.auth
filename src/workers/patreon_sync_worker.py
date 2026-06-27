@@ -717,16 +717,36 @@ class PatreonSyncWorker:
     def run_forever(self, *, once: bool = False) -> None:
         signal.signal(signal.SIGTERM, self.request_stop)
         signal.signal(signal.SIGINT, self.request_stop)
-        while not self._stopping:
-            asyncio.run(self.run_once())
-            if once:
-                return
-            time.sleep(max(1, self._worker_poll_seconds()))
+        # A single event loop must span the worker's whole lifetime: the Patreon
+        # client creates its aiohttp ClientSession lazily and then reuses it, and
+        # an aiohttp session is bound to the loop it was created in. Driving each
+        # pass with its own asyncio.run() would bind the session to a loop that is
+        # then closed, breaking every later pass that touches the Patreon API.
+        asyncio.run(self._serve(once=once))
+
+    async def _serve(self, *, once: bool = False) -> None:
+        try:
+            while not self._stopping:
+                await self.run_once()
+                if once:
+                    return
+                await asyncio.sleep(max(1, self._worker_poll_seconds()))
+        finally:
+            await self.aclose()
 
     async def run_loop(self) -> None:
-        while not self._stopping:
-            await self.run_once()
-            await asyncio.sleep(max(1, self._worker_poll_seconds()))
+        await self._serve(once=False)
+
+    async def aclose(self) -> None:
+        """Close the Patreon client's HTTP session if the worker owns it."""
+
+        close = getattr(self.client, "close", None)
+        if not callable(close):
+            return
+        try:
+            await _maybe_await(close())
+        except Exception:
+            pass
 
     def _worker_batch_size(self) -> int:
         return _int_field(
@@ -1331,16 +1351,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     worker = PatreonSyncWorker(worker_id=args.worker_id)
     if args.once:
-        asyncio.run(
-            worker.run_once(
-                mode=args.mode,
-                limit=args.limit,
-                member_id=args.member_id,
-                member_id_hash=args.member_id_hash,
-                user_id=args.user_id,
-                campaign_id=args.campaign_id,
-            )
-        )
+
+        async def _run_once_scoped() -> None:
+            try:
+                await worker.run_once(
+                    mode=args.mode,
+                    limit=args.limit,
+                    member_id=args.member_id,
+                    member_id_hash=args.member_id_hash,
+                    user_id=args.user_id,
+                    campaign_id=args.campaign_id,
+                )
+            finally:
+                await worker.aclose()
+
+        asyncio.run(_run_once_scoped())
     else:
         worker.run_forever(once=False)
     return 0

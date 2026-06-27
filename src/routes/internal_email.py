@@ -19,7 +19,14 @@ from src.Util.db import db_email
 from src.Util.email.config import EmailConfigError
 from src.Util.email.route_support import load_route_email_config, new_email_id, utc_now
 from src.Util.email.security import encrypt_render_payload, hash_email, mask_email, normalize_email
-from src.Util.email.templates import EmailTemplateError, allowed_variables, render_email_template, resolve_template
+from src.Util.email.templates import (
+    EmailTemplateDisabled,
+    EmailTemplateError,
+    EmailTemplateLookupError,
+    allowed_variables,
+    render_template_parts,
+    resolve_template,
+)
 from src.routes.user_types_auth import require_root_user
 
 
@@ -73,15 +80,15 @@ def _validate_action_url_if_present(variables: dict[str, Any]) -> None:
         )
 
 
-def _template_variables(template_code: str, variables: dict[str, Any], *, recipient_email: str) -> dict[str, str]:
-    allowed = allowed_variables(template_code)
+def _template_variables(allowed: tuple[str, ...] | None, variables: dict[str, Any], *, recipient_email: str) -> dict[str, str]:
+    allowed_set = set(allowed or ())
     merged: dict[str, str] = {
         "app_name": "Magic Worlds",
         "recipient_masked": mask_email(recipient_email),
     }
     for key, value in variables.items():
         name = str(key or "").strip()
-        if not name or name not in allowed:
+        if not name or name not in allowed_set:
             continue
         merged[name] = "" if value is None else str(value)
     _validate_action_url_if_present(merged)
@@ -123,7 +130,17 @@ async def send_template_email(
     recipient_email = _normalize_email_or_422(payload.recipient_email)
     template_code = str(payload.template_code or "").strip().lower()
     try:
-        template = resolve_template(template_code)
+        template = resolve_template(template_code, fail_closed_on_db_error=True)
+    except EmailTemplateDisabled as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="template_code is disabled",
+        ) from exc
+    except EmailTemplateLookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Transactional email template state is unavailable.",
+        ) from exc
     except EmailTemplateError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -134,9 +151,13 @@ async def send_template_email(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="template_code is not allowed for internal template delivery",
         )
-    variables = _template_variables(template_code, dict(payload.variables or {}), recipient_email=recipient_email)
+    variables = _template_variables(
+        tuple(allowed_variables(template_code, template.allowed_variables)),
+        dict(payload.variables or {}),
+        recipient_email=recipient_email,
+    )
     try:
-        render_email_template(template_code, variables)
+        render_template_parts(template, variables)
     except EmailTemplateError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -29,7 +29,12 @@ from src.Util.email.mailpit import MailpitProvider
 from src.Util.email.provider import EmailProvider, EmailProviderError, EmailSendRequest
 from src.Util.email.resend_provider import ResendProvider
 from src.Util.email.security import decrypt_render_payload, sanitize_email_log_value
-from src.Util.email.templates import EmailTemplateError, render_email_template
+from src.Util.email.templates import (
+    EmailTemplateDisabled,
+    EmailTemplateError,
+    EmailTemplateLookupError,
+    render_email_template,
+)
 from src.Util.patreon.security import PATREON_PROOF_PURPOSE
 
 
@@ -85,6 +90,10 @@ class DrainResult:
     @property
     def dead_count(self) -> int:
         return sum(1 for result in self.results if result.status == "dead")
+
+    @property
+    def cancelled_count(self) -> int:
+        return sum(1 for result in self.results if result.status == "cancelled")
 
     @property
     def processed_count(self) -> int:
@@ -325,6 +334,19 @@ class EmailWorker:
         try:
             send_request = self._build_send_request(message)
             send_result = self.provider.send(send_request)
+        except EmailTemplateDisabled as exc:
+            return self._handle_cancelled(
+                message,
+                error_code="EMAIL_TEMPLATE_DISABLED",
+                error_message=_public_error(exc),
+            )
+        except EmailTemplateLookupError as exc:
+            return self._handle_retryable_failure(
+                message,
+                error_code="EMAIL_TEMPLATE_LOOKUP_FAILED",
+                error_message=_public_error(exc),
+                retryable=True,
+            )
         except EmailTemplateError as exc:
             return self._handle_permanent_failure(message, error_code="EMAIL_RENDER_FAILED", exc=exc)
         except EmailProviderError as exc:
@@ -386,7 +408,12 @@ class EmailWorker:
 
         template_code = _template_code_for_message(message)
         variables = self._render_variables(message)
-        rendered = render_email_template(template_code, variables, message_id=message_id)
+        rendered = render_email_template(
+            template_code,
+            variables,
+            message_id=message_id,
+            fail_closed_on_db_error=True,
+        )
         return EmailSendRequest(
             message_id=message_id,
             from_address=self.config.from_address or "no-reply@example.invalid",
@@ -422,6 +449,35 @@ class EmailWorker:
         self._record_attempt(message, status="permanent_failure", error_code=error_code, error_message=_public_error(exc), metadata=metadata)
         self._finalize(message_id=message_id, status="dead", error_code=error_code, error_message=_public_error(exc))
         return ProcessResult(message_id=message_id, status="dead", attempt_metadata=metadata)
+
+    def _handle_cancelled(
+        self,
+        message: Mapping[str, Any],
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> ProcessResult:
+        message_id = str(message.get("id") or message.get("email_message_id") or "")
+        metadata = self._attempt_metadata(
+            message,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        self._record_attempt(
+            message,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+            metadata=metadata,
+        )
+        self._finalize(
+            message_id=message_id,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        return ProcessResult(message_id=message_id, status="cancelled", attempt_metadata=metadata)
 
     def _handle_retryable_failure(
         self,
@@ -561,6 +617,7 @@ class EmailWorker:
                     "suppressed": sum(1 for result in results if result.status == "suppressed"),
                     "retry": sum(1 for result in results if result.status == "retry"),
                     "dead": sum(1 for result in results if result.status == "dead"),
+                    "cancelled": sum(1 for result in results if result.status == "cancelled"),
                 },
             )
         except Exception:

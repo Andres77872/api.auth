@@ -14,6 +14,57 @@ ROOT = Path(__file__).resolve().parents[2]
 SP_SQL = ROOT / "schemas/stored_procedures/14_email_activation.sql"
 
 
+class WorkerDbStub:
+    def __init__(self) -> None:
+        self.attempts = []
+        self.finalized = []
+
+    def is_recipient_suppressed(self, recipient_hash):
+        return False
+
+    def record_email_delivery_attempt(self, **kwargs):
+        self.attempts.append(kwargs)
+
+    def finalize_email_message(self, **kwargs):
+        self.finalized.append(kwargs)
+
+
+def _dynamic_template_row(**overrides):
+    row = {
+        "template_code": "ops_notice",
+        "purpose": "delivery_operation",
+        "allowed_variables": ["notice"],
+        "required_variables": ["notice"],
+        "is_builtin": False,
+        "is_enabled": True,
+        "revision": 1,
+        "version": 1,
+        "subject_template": "Notice $notice",
+        "html_template": "<p>$notice</p>",
+        "text_template": "$notice",
+        "is_active": 1,
+    }
+    row.update(overrides)
+    return row
+
+
+def _message(worker, *, template_code: str = "ops_notice", variables=None, message_id: str = "emsg-template"):
+    return {
+        "id": message_id,
+        "purpose": "delivery_operation",
+        "template_code": template_code,
+        "recipient_hash": b"3" * 32,
+        "recipient_email": "recipient@example.test",
+        "recipient_masked": "r***@example.test",
+        "render_payload_ciphertext": encrypt_render_payload(
+            dict(variables or {}),
+            key=worker.config.payload_key,
+        ),
+        "attempt_count": 0,
+        "max_attempts": 8,
+    }
+
+
 def test_add_email_and_enqueue_procedure_uses_single_transaction_boundary():
     sql = SP_SQL.read_text()
 
@@ -85,9 +136,12 @@ def test_suppression_skip_records_sanitized_attempt(fake_redis):
     assert "suppressed@example.com" not in str(result.attempt_metadata)
 
 
-def test_worker_sends_patreon_link_proof_without_logging_email_or_token(fake_redis):
+def test_worker_sends_patreon_link_proof_without_logging_email_or_token(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
     from src.Util.email.fake_provider import FakeEmailProvider
     from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: None)
 
     class DbStub:
         def __init__(self) -> None:
@@ -149,3 +203,143 @@ def test_worker_sends_patreon_link_proof_without_logging_email_or_token(fake_red
     assert raw_patreon_email not in recorded
     assert proof_token not in recorded
     assert proof_url not in recorded
+
+
+def test_worker_uses_latest_active_template_at_render_time(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    active_row = _dynamic_template_row(
+        version=1,
+        revision=1,
+        subject_template="Old $notice",
+        html_template="<p>Old $notice</p>",
+        text_template="Old $notice",
+    )
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: dict(active_row))
+
+    provider = FakeEmailProvider()
+    db = WorkerDbStub()
+    worker = EmailWorker(worker_id="worker-latest-template", provider=provider, redis=fake_redis, db_module=db)
+    message = _message(worker, variables={"notice": "delivery state"})
+
+    active_row.update(
+        version=2,
+        revision=2,
+        subject_template="Latest $notice",
+        html_template="<p>Latest $notice</p>",
+        text_template="Latest $notice",
+    )
+
+    result = worker.process_message(message)
+
+    assert result.status == "sent"
+    assert len(provider.sent_messages) == 1
+    outbound = provider.sent_messages[0]
+    assert outbound.subject == "Latest delivery state"
+    assert outbound.headers["X-Template-Version"] == "2"
+    assert outbound.headers["X-Template-Revision"] == "2"
+
+
+def test_worker_cancels_disabled_template_without_provider_send(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setattr(
+        db_email_templates,
+        "get_active_template",
+        lambda code: _dynamic_template_row(
+            is_enabled=False,
+            revision=7,
+            version=3,
+            subject_template="",
+            html_template="",
+            text_template="",
+        ),
+    )
+
+    provider = FakeEmailProvider()
+    db = WorkerDbStub()
+    worker = EmailWorker(worker_id="worker-disabled-template", provider=provider, redis=fake_redis, db_module=db)
+    result = worker.process_message(_message(worker, variables={"notice": "do not send"}))
+
+    assert result.status == "cancelled"
+    assert provider.sent_messages == []
+    assert db.attempts[-1]["status"] == "cancelled"
+    assert db.attempts[-1]["error_code"] == "EMAIL_TEMPLATE_DISABLED"
+    assert db.finalized[-1]["status"] == "cancelled"
+    assert db.finalized[-1]["error_code"] == "EMAIL_TEMPLATE_DISABLED"
+
+
+def test_worker_retries_template_lookup_failure_without_fallback_send(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    def boom(code):
+        raise RuntimeError("template catalog unavailable")
+
+    monkeypatch.setattr(db_email_templates, "get_active_template", boom)
+
+    provider = FakeEmailProvider()
+    db = WorkerDbStub()
+    worker = EmailWorker(worker_id="worker-template-lookup-failed", provider=provider, redis=fake_redis, db_module=db)
+    result = worker.process_message(
+        _message(
+            worker,
+            template_code="delivery_operation",
+            variables={"status_summary": "latest state"},
+        )
+    )
+
+    assert result.status == "retry"
+    assert provider.sent_messages == []
+    assert db.attempts[-1]["status"] == "temporary_failure"
+    assert db.attempts[-1]["error_code"] == "EMAIL_TEMPLATE_LOOKUP_FAILED"
+    assert db.finalized[-1]["status"] == "retry"
+    assert db.finalized[-1]["error_code"] == "EMAIL_TEMPLATE_LOOKUP_FAILED"
+
+
+def test_worker_dead_letters_invalid_active_template(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setattr(
+        db_email_templates,
+        "get_active_template",
+        lambda code: {
+            "template_code": "delivery_operation",
+            "purpose": "delivery_operation",
+            "allowed_variables": ["app_name", "support_email", "status_summary"],
+            "required_variables": ["status_summary"],
+            "is_builtin": True,
+            "is_enabled": True,
+            "revision": 4,
+            "version": 2,
+            "subject_template": "Broken template",
+            "html_template": "<p>No status summary placeholder</p>",
+            "text_template": "No status summary placeholder",
+            "is_active": 1,
+        },
+    )
+
+    provider = FakeEmailProvider()
+    db = WorkerDbStub()
+    worker = EmailWorker(worker_id="worker-invalid-template", provider=provider, redis=fake_redis, db_module=db)
+    result = worker.process_message(
+        _message(
+            worker,
+            template_code="delivery_operation",
+            variables={"status_summary": "latest state"},
+        )
+    )
+
+    assert result.status == "dead"
+    assert provider.sent_messages == []
+    assert db.attempts[-1]["status"] == "permanent_failure"
+    assert db.attempts[-1]["error_code"] == "EMAIL_RENDER_FAILED"
+    assert db.finalized[-1]["status"] == "dead"
+    assert db.finalized[-1]["error_code"] == "EMAIL_RENDER_FAILED"

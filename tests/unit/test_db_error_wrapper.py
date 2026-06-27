@@ -182,6 +182,21 @@ class TestHandleDbOperation:
             handle_db_operation(raise_unexpected)
         assert exc_info.value.error_code.value == "INT_7001"
 
+    def test_existing_app_exception_propagates_without_rewrap(self):
+        def raise_database_error():
+            raise DatabaseError("Already classified")
+
+        with pytest.raises(DatabaseError) as exc_info:
+            handle_db_operation(raise_database_error, error_context="nested op")
+        assert exc_info.value.message == "Already classified"
+
+    def test_existing_app_exception_with_default_return(self):
+        def raise_validation_error():
+            raise ValidationError("Invalid input")
+
+        result = handle_db_operation(raise_validation_error, default_return="fallback")
+        assert result == "fallback"
+
     def test_default_return_with_unexpected_error(self):
         def raise_unexpected():
             raise RuntimeError("Something broke")

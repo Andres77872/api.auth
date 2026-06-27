@@ -98,6 +98,10 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             auth_method = "webhook"
         elif self._is_patreon_internal_entitlements_path(path):
             auth_method = "api_key"
+        elif self._is_stripe_webhook_path(path):
+            auth_method = "webhook"
+        elif self._is_billing_internal_path(path):
+            auth_method = "api_key"
         elif hasattr(request.state, 'auth_method'):
             auth_method = request.state.auth_method
         else:
@@ -365,7 +369,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
     def _is_raw_body_audit_excluded(self, path: str) -> bool:
         """Return True for provider webhook/token paths where raw body is sensitive."""
         normalized_path = self._normalize_path(path)
-        return normalized_path.startswith("/webhooks/email") or self._is_patreon_webhook_path(normalized_path)
+        return APIAuditLogger.is_raw_body_audit_excluded(normalized_path)
 
     def _infer_auth_method(self, path: str, user_id: Optional[str], session_id: Optional[str]) -> str:
         """Classify unauthenticated email-link/webhook flows for audit taxonomy."""
@@ -375,6 +379,10 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         if normalized_path.startswith("/webhooks/email") or self._is_patreon_webhook_path(normalized_path):
             return "webhook"
         if self._is_patreon_internal_entitlements_path(normalized_path):
+            return "api_key"
+        if self._is_stripe_webhook_path(normalized_path):
+            return "webhook"
+        if self._is_billing_internal_path(normalized_path):
             return "api_key"
         if APIAuditLogger.is_session_auth_security_path(normalized_path):
             return "session" if user_id or session_id else "anonymous"
@@ -399,6 +407,14 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         parts = [part for part in normalized_path.strip("/").split("/") if part]
         return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"
 
+    def _is_stripe_webhook_path(self, path: str) -> bool:
+        """Return True for the Stripe webhook route family."""
+        return APIAuditLogger.is_stripe_webhook_path(self._normalize_path(path))
+
+    def _is_billing_internal_path(self, path: str) -> bool:
+        """Return True for internal billing S2S route paths."""
+        return APIAuditLogger.is_billing_internal_path(self._normalize_path(path))
+
     def _add_route_specific_tags(self, path: str, tags: list, status_code: int) -> list:
         """Add Patreon route tags without relying on new DB enum values."""
         deduped_tags = list(dict.fromkeys(tags))
@@ -419,6 +435,19 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             add_tag("api_key")
             if status_code in {401, 403}:
                 add_tag("security_event")
+        elif self._is_stripe_webhook_path(path):
+            add_tag("billing")
+            add_tag("stripe")
+            add_tag("webhook")
+            if status_code >= 400:
+                add_tag("security_event")
+        elif self._is_billing_internal_path(path):
+            add_tag("billing")
+            add_tag("internal")
+            add_tag("s2s")
+            add_tag("api_key")
+            if status_code in {401, 403}:
+                add_tag("security_event")
 
         return deduped_tags
 
@@ -427,5 +456,9 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         if self._is_patreon_webhook_path(path):
             return status_code >= 400
         if self._is_patreon_internal_entitlements_path(path):
+            return status_code in {401, 403}
+        if self._is_stripe_webhook_path(path):
+            return status_code >= 400
+        if self._is_billing_internal_path(path):
             return status_code in {401, 403}
         return False

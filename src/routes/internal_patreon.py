@@ -463,6 +463,28 @@ def _s2s_response_from_row(row: Any, *, user_hash: str) -> PatreonEntitlementS2S
     )
 
 
+def _free_s2s_response(*, user_hash: str) -> PatreonEntitlementS2SResponse:
+    return PatreonEntitlementS2SResponse(
+        success=True,
+        message="Patreon entitlement retrieved.",
+        user_hash=user_hash,
+        entitlement=PatreonSafeEntitlement(
+            external_source=None,
+            status=constants.PATREON_ENTITLEMENT_STATUS_FREE,
+            plan_code="free",
+            tier_code=None,
+            tier_name=None,
+            link_status=constants.PATREON_LINK_STATUS_NONE,
+            next_renewal_at=None,
+            grace_period_until=None,
+            last_synced_at=None,
+            stale_after=None,
+            classification_version=constants.PATREON_DEFAULT_CONTRACT_VERSION,
+        ),
+        contract_version=constants.PATREON_DEFAULT_CONTRACT_VERSION,
+    )
+
+
 async def _read_current_entitlement_row(user_hash: str) -> Any:
     return await _maybe_await(get_entitlement_by_user_hash(user_hash))
 
@@ -584,12 +606,12 @@ async def get_internal_patreon_entitlement(user_hash: str, request: Request) -> 
         response = _s2s_response_from_row(row, user_hash=user_hash)
         if response is None:
             await capture_patreon_internal_audit(
-                "s2s_entitlement_denied",
-                outcome="not_available",
+                "s2s_entitlement_read",
+                outcome="free_no_patreon",
                 request=request,
-                status_code=404,
+                status_code=200,
             )
-            return _generic_error_response(status_code=404)
+            return _safe_json_response_from_model(_free_s2s_response(user_hash=user_hash), status_code=200)
         await capture_patreon_internal_audit(
             "s2s_entitlement_read",
             outcome="served",

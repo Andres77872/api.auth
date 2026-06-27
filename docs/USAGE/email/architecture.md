@@ -19,9 +19,11 @@ EmailWorker.drain_once()
    │     ├─ suppression check (row flag or is_recipient_suppressed)
    │     │      → record sanitized attempt + finalize "suppressed"
    │     ├─ decrypt transient render payload IN MEMORY (EMAIL_PAYLOAD_KEY / Fernet)
-   │     ├─ render_email_template(template_code, variables)   # active DB version → in-code fallback
+   │     ├─ render_email_template(template_code, variables)   # strict latest catalog/DB lookup
    │     ├─ provider.send(EmailSendRequest)
    │     ├─ on success → record attempt "sent" + finalize "sent" (+ provider_message_id)
+   │     ├─ on disabled template → record cancelled attempt + finalize "cancelled"
+   │     ├─ on template DB lookup failure → retry with EMAIL_TEMPLATE_LOOKUP_FAILED
    │     ├─ on EmailTemplateError (render) → permanent failure → finalize "dead"
    │     └─ on EmailProviderError / other → retryable failure
    │            → compute_next_retry (full jitter) → finalize "retry"
@@ -81,20 +83,33 @@ Both the worker (`_provider_from_config`) and the admin `send-test` handler (`_p
 
 ## Template resolution, versioning, and rendering
 
-Templates have two provenances:
+Templates have catalog metadata plus versioned bodies:
 
-- **`code`** — the in-code defaults in `src/Util/email/templates.py` (`TEMPLATES`), always available as a resilient fallback.
-- **`db`** — a customized active version stored in the `email_templates` table via `db_email_templates`.
+- **`email_template_catalog`** — one row per template code. It stores purpose, allowed/required variables, built-in vs dynamic state, enabled/disabled state, revision, and disabled audit metadata.
+- **`email_templates`** — append-only version rows. One version is active per code.
+- **`code` defaults** — built-in fallback bodies in `src/Util/email/templates.py` for built-in codes only.
 
-`resolve_template(code)` returns the active DB version when present and **falls back to the in-code default on an empty result OR any DB error**, so a missing/unavailable table never breaks delivery.
+The worker resolves templates immediately before rendering each claimed message with `fail_closed_on_db_error=True`. Guarantee: any template create/update/disable/rollback committed before render starts is honored. A send already rendering may finish with the version it resolved.
+
+Worker delivery rules:
+
+- Enabled built-in template with no active DB version may use its in-code default.
+- Enabled dynamic template must have an active DB version.
+- Disabled template raises `EmailTemplateDisabled`; the worker records a `cancelled` attempt and finalizes the message `cancelled` with `EMAIL_TEMPLATE_DISABLED`.
+- Template DB lookup failure raises `EmailTemplateLookupError`; the worker retries with `EMAIL_TEMPLATE_LOOKUP_FAILED` and does not fall back.
+- Invalid active template/render failure is permanent and dead-letters as `EMAIL_RENDER_FAILED`.
+
+Non-worker editor paths may still use built-in code defaults for preview/offline resilience, but real delivery fails closed on catalog lookup failures so disabled or dynamic state cannot be bypassed.
 
 Admin edits go through `db_email_templates`:
 
+- `create_dynamic_template(...)` creates a dynamic internal code and version 1 atomically. Dynamic purposes are limited to `delivery_operation` and `security_notification`.
 - `save_and_activate_template(...)` writes a **new active version** (PUT). Each save bumps the version; prior versions remain.
+- `disable_template(code, disabled_by)` is the DELETE behavior. It preserves history, sets `is_enabled=false`, and bumps `revision`.
 - `list_template_versions(code)` / `get_template_version(code, version)` back the GET history and rollback lookup.
-- `rollback_template(code, version)` re-activates a stored prior version.
+- `rollback_template(code, version)` validates and re-activates a stored prior version, sets `is_enabled=true`, and bumps `revision`.
 
-`required_variables` are intrinsic to the workflow and are always taken from the in-code default, never from the editable DB row.
+Dynamic templates use catalog `allowed_variables` and `required_variables`; required variables must be a subset of allowed variables and must appear in the subject/html/text before a version can be saved or restored.
 
 ### The single render funnel
 
@@ -103,7 +118,7 @@ Admin edits go through `db_email_templates`:
 1. validates every placeholder against the per-code allowlist (`validate_template_identifiers`);
 2. fills base-variable defaults and enforces `required_variables`;
 3. HTML-escapes values, then substitutes with `string.Template` (`$name`) — **not** `str.format`, eliminating attribute/expression injection on admin-editable text;
-4. sets transactional headers (`X-Transactional-Scope`, `X-Template-Code`, optional `X-Template-Version`/`X-Entity-Ref-ID`) and **omits** `List-Unsubscribe*` (this is auth email, not marketing).
+4. sets transactional headers (`X-Transactional-Scope`, `X-Template-Code`, optional `X-Template-Version`, `X-Template-Revision`, `X-Entity-Ref-ID`) and **omits** `List-Unsubscribe*` (this is auth email, not marketing).
 
 The admin save path additionally runs `validate_template_draft` (placeholder allowlist + required-var presence + HTML safety + render smoke test) before persisting.
 
