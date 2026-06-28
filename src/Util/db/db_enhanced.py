@@ -208,6 +208,10 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
     client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)  # Redis store
 
     # Build response --------------------------------------------------------
+    session_plan = None
+    if user_type == "consumer":
+        from src.Util.session_plan import resolve_session_plan
+        session_plan = resolve_session_plan(user.id, project.id)
     return EnhancedUserLogin(
         user_hash=user.user_hash,
         project_hash=project.project_hash,
@@ -223,6 +227,7 @@ def enhanced_login(username: str, password: str, project_hash: str = None) -> Op
         available_projects=available_projects,
         user_type=user_type,
         assigned_project_id=session_data.get('assigned_project_id'),
+        plan=session_plan,
     )
 
 
@@ -545,6 +550,10 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
 
     duration_ms = (time.monotonic() - t_total) * 1000
     outcome = "hit" if cache_hit else "miss"
+    session_plan = None
+    if user_type == "consumer":
+        from src.Util.session_plan import resolve_session_plan
+        session_plan = resolve_session_plan(session_data['user_id'], session_data['project_id'])
     login_data = EnhancedUserLogin(
         user_hash=session_data['user_hash'],
         scope=scope,
@@ -560,7 +569,8 @@ def validate_session(session_token: str) -> Optional[EnhancedUserLogin]:
         permissions=permissions,
         available_projects=available_projects,
         user_type=user_type,
-        assigned_project_id=session_data.get('assigned_project_id')
+        assigned_project_id=session_data.get('assigned_project_id'),
+        plan=session_plan,
     )
     # Phase 2.1: Cache full result for subsequent requests
     if VALIDATE_CACHE_ENABLED:

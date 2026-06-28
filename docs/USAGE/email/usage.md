@@ -21,7 +21,7 @@ curl -X GET "${BASE_URL}/admin/email-templates" \
   -H "User-Agent: ops/1.0"
 ```
 
-Each entry reports `source` (`code` = built-in default, `db` = customized), `version` (a number when DB-managed, `null` for the in-code default), `required_variables`, and the `allowed_variables` allowlist.
+Each entry reports `source` (`code` = built-in default, `db` = customized), `version` (a number when DB-managed, `null` for the in-code default), `is_enabled`, `is_dynamic`, `revision`, `required_variables`, and the `allowed_variables` allowlist.
 
 Inspect one code — active body, the built-in `default` body, the allowlist, and full `versions[]` history:
 
@@ -31,11 +31,35 @@ curl -X GET "${BASE_URL}/admin/email-templates/email_activation" \
   -H "User-Agent: ops/1.0"
 ```
 
-An unknown code returns `404 RESOURCE_NOT_FOUND`. The five valid codes are `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, and `delivery_operation`.
+An unknown code returns `404 RESOURCE_NOT_FOUND`. Built-in codes are `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`, `patreon_link_proof`, and `email_credit_grant_notification`; ROOT admins may create additional dynamic internal codes.
 
 ---
 
-## 2. Edit a template safely (PUT creates a new active version)
+## 2. Create a dynamic internal template
+
+Dynamic templates are for internal delivery only. Their `purpose` must be `delivery_operation` or `security_notification`; auth/reset/Patreon purposes stay built-in. The code must be lowercase snake_case and cannot collide with a built-in code.
+
+```bash
+curl -X POST "${BASE_URL}/admin/email-templates" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "User-Agent: ops/1.0" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "template_code": "ops_incident_notice",
+        "purpose": "delivery_operation",
+        "allowed_variables": ["notice", "ticket_id"],
+        "required_variables": ["notice"],
+        "subject_template": "Notice $ticket_id",
+        "html_template": "<p>$notice</p>",
+        "text_template": "$notice"
+      }'
+```
+
+The create path validates placeholders, HTML safety, and render-smoke behavior before inserting the catalog row and version 1 atomically.
+
+---
+
+## 3. Edit a template safely (PUT creates a new active version)
 
 `PUT` runs the full draft validation pipeline (`validate_template_draft`) before anything is saved:
 
@@ -59,16 +83,34 @@ curl -X PUT "${BASE_URL}/admin/email-templates/email_activation" \
 On success the response returns the **new** `version` and the `used_variables` the validator detected:
 
 ```json
-{ "success": true, "template_code": "email_activation", "version": 5, "used_variables": ["app_name", "recipient_masked", "activation_link", "expires_in"], "updated_at": "2026-06-14T12:00:00Z" }
+{ "success": true, "template_code": "email_activation", "version": 5, "revision": 8, "is_enabled": true, "used_variables": ["app_name", "recipient_masked", "activation_link", "expires_in"], "updated_at": "2026-06-14T12:00:00Z" }
 ```
 
-A validation failure returns `400 INVALID_INPUT` and **does not** save a version. Use `$name` / `${name}` placeholders only — templates render with `string.Template`, not `str.format`, and a stray `$` is itself rejected.
+A validation failure returns `400 INVALID_INPUT` and **does not** save a version. Use `$name` / `${name}` placeholders only — templates render with `string.Template`, not `str.format`, and a stray `$` is itself rejected. PUT against a disabled template re-enables it only after the new version validates and is saved.
 
 > Placeholders are limited to each code's allowlist. For example `email_activation` allows `app_name`, `recipient_masked`, `expires_in`, `support_email`, `activation_link`; `security_notification` allows `app_name`, `support_email`, `event_title`, `message`. See the `allowed_variables` field returned by the GET endpoints.
 
 ---
 
-## 3. Preview a draft (sandboxed iframe)
+## 4. Disable a template
+
+`DELETE` does not hard-delete. It marks the catalog row disabled, preserves version history, and bumps `revision`.
+
+```bash
+curl -X DELETE "${BASE_URL}/admin/email-templates/ops_incident_notice" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "User-Agent: ops/1.0"
+```
+
+```json
+{ "success": true, "template_code": "ops_incident_notice", "is_enabled": false, "revision": 2, "disabled_at": "2026-06-14T12:00:00Z" }
+```
+
+Pending/retry worker messages for a disabled code are not sent. When claimed, they are finalized `cancelled` with `EMAIL_TEMPLATE_DISABLED`.
+
+---
+
+## 5. Preview a draft (sandboxed iframe)
 
 Preview validates and renders a draft using the **server-side** `sample_variables` (you never supply variable values):
 
@@ -88,7 +130,7 @@ Omit the body (or send `{}`) to preview the **active** version instead of a draf
 
 ---
 
-## 4. Send a test to your own verified address
+## 6. Send a test to your own verified address
 
 `send-test` renders the template and sends a `[TEST]`-prefixed message. Three guarantees:
 
@@ -112,7 +154,7 @@ Like preview, you may include draft fields in the body to test an unsaved draft.
 
 ---
 
-## 5. Roll back to a prior version
+## 7. Roll back to a prior version
 
 Re-activate an earlier version by number (find versions via the GET-by-code `versions[]` list):
 
@@ -125,14 +167,14 @@ curl -X POST "${BASE_URL}/admin/email-templates/email_activation/rollback" \
 ```
 
 ```json
-{ "success": true, "template_code": "email_activation", "version": 3, "rolled_back_at": "2026-06-14T12:00:00Z" }
+{ "success": true, "template_code": "email_activation", "version": 3, "revision": 9, "is_enabled": true, "rolled_back_at": "2026-06-14T12:00:00Z" }
 ```
 
-A `version` that does not exist for the code returns `404 RESOURCE_NOT_FOUND`. Rollback re-activates the stored version as the active one; it does not delete the version you rolled away from.
+A `version` that does not exist for the code returns `404 RESOURCE_NOT_FOUND`. Rollback validates the stored version, re-activates it, and re-enables the template; it does not delete the version you rolled away from.
 
 ---
 
-## 6. Configure and verify a Resend webhook endpoint
+## 8. Configure and verify a Resend webhook endpoint
 
 Point your Resend/Svix webhook at:
 

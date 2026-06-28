@@ -1,8 +1,10 @@
 -- ===================================================================================
 -- External Account Integrity Triggers
 -- ===================================================================================
--- Database-boundary invariants for Google external account lifecycle rows.
--- Workflow ownership stays in stored procedures and application policy code.
+-- Database-boundary invariants for Google and Patreon external account lifecycle
+-- rows. Google may be login-capable in application policy; Patreon is no-login
+-- entitlement/link authority only. Workflow ownership stays in stored procedures
+-- and application policy code.
 -- ===================================================================================
 
 USE magic_auth;
@@ -12,7 +14,7 @@ DELIMITER //
 DROP TRIGGER IF EXISTS trg_external_accounts_before_insert//
 CREATE TRIGGER trg_external_accounts_before_insert BEFORE INSERT ON user_external_accounts FOR EACH ROW
 BEGIN
-    IF NEW.provider <> 'google' THEN
+    IF NEW.provider NOT IN ('google','patreon') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
     END IF;
 
@@ -54,6 +56,10 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'External account identity fields are immutable';
     END IF;
 
+    IF NEW.provider NOT IN ('google','patreon') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unsupported external account provider';
+    END IF;
+
     IF NEW.provider_sub_hash IS NULL OR OCTET_LENGTH(NEW.provider_sub_hash) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'External account subject hash must be 32 bytes';
     END IF;
@@ -90,4 +96,4 @@ END//
 DELIMITER ;
 
 SELECT 'External account triggers created!' AS status,
-       'Integrity triggers for user_external_accounts' AS details;
+       'Integrity triggers for google|patreon user_external_accounts' AS details;

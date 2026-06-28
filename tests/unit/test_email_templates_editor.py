@@ -11,7 +11,9 @@ import pytest
 
 from src.Util.email import mailpit
 from src.Util.email.templates import (
+    EmailTemplateDisabled,
     EmailTemplateError,
+    EmailTemplateLookupError,
     TEMPLATES,
     TransactionalEmailTemplate,
     allowed_variables,
@@ -21,6 +23,7 @@ from src.Util.email.templates import (
     resolve_template,
     sample_variables,
 )
+from src.Util.error_handler import ValidationError
 from src.Util.email.template_validation import (
     TemplateValidationError,
     validate_html_body,
@@ -29,6 +32,26 @@ from src.Util.email.template_validation import (
 
 
 ACTIVATION_LINK = "https://app.example.com/auth/email/verify?token=lookupabcdef0123.secretabcdef0123456"
+
+
+def _catalog_row(code: str, **overrides):
+    tpl = TEMPLATES[code]
+    row = {
+        "template_code": code,
+        "purpose": tpl.purpose,
+        "allowed_variables": sorted(allowed_variables(code)),
+        "required_variables": list(tpl.required_variables),
+        "is_builtin": True,
+        "is_enabled": True,
+        "revision": 3,
+        "version": 7,
+        "subject_template": tpl.subject_template,
+        "html_template": tpl.html_template,
+        "text_template": tpl.text_template,
+        "is_active": 1,
+    }
+    row.update(overrides)
+    return row
 
 
 # --------------------------------------------------------------------------- #
@@ -117,22 +140,21 @@ def test_missing_required_variable_raises():
 def test_resolver_uses_db_active_version(monkeypatch):
     from src.Util.db import db_email_templates
 
-    row = {
-        "template_code": "email_activation",
-        "version": 7,
-        "subject_template": "Custom $app_name activation",
-        "html_template": TEMPLATES["email_activation"].html_template,
-        "text_template": "$activation_link",
-        "is_active": 1,
-    }
+    row = _catalog_row(
+        "email_activation",
+        subject_template="Custom $app_name activation",
+        revision=9,
+    )
     monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: row)
     resolved = resolve_template("email_activation")
     assert resolved.source == "db"
     assert resolved.version == 7
+    assert resolved.revision == 9
     assert "Custom" in resolved.subject_template
 
     rendered = render_transactional_template("email_activation", {"activation_link": ACTIVATION_LINK})
     assert rendered.headers.get("X-Template-Version") == "7"
+    assert rendered.headers.get("X-Template-Revision") == "9"
 
 
 def test_resolver_falls_back_when_db_empty(monkeypatch):
@@ -158,6 +180,17 @@ def test_resolver_falls_back_on_db_error(monkeypatch):
     assert "Activate" in rendered.subject
 
 
+def test_resolver_raises_retryable_lookup_error_in_worker_mode(monkeypatch):
+    from src.Util.db import db_email_templates
+
+    def boom(code):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db_email_templates, "get_active_template", boom)
+    with pytest.raises(EmailTemplateLookupError):
+        resolve_template("email_activation", fail_closed_on_db_error=True)
+
+
 def test_invalid_db_row_falls_back(monkeypatch):
     from src.Util.db import db_email_templates
 
@@ -168,6 +201,75 @@ def test_invalid_db_row_falls_back(monkeypatch):
     )
     resolved = resolve_template("email_activation")
     assert resolved.source == "code"
+
+
+def test_dynamic_enabled_template_resolves_and_renders(monkeypatch):
+    from src.Util.db import db_email_templates
+
+    row = {
+        "template_code": "ops_notice",
+        "purpose": "delivery_operation",
+        "allowed_variables": ["notice"],
+        "required_variables": ["notice"],
+        "is_builtin": False,
+        "is_enabled": True,
+        "revision": 12,
+        "version": 4,
+        "subject_template": "Notice $notice",
+        "html_template": "<p>$notice</p>",
+        "text_template": "$notice",
+        "is_active": 1,
+    }
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: row)
+
+    rendered = render_email_template(
+        "ops_notice",
+        {"notice": "Template update"},
+        fail_closed_on_db_error=True,
+    )
+
+    assert rendered.subject == "Notice Template update"
+    assert rendered.headers["X-Template-Version"] == "4"
+    assert rendered.headers["X-Template-Revision"] == "12"
+
+
+def test_disabled_template_raises_disabled_even_if_body_is_invalid(monkeypatch):
+    from src.Util.db import db_email_templates
+
+    row = _catalog_row(
+        "email_activation",
+        is_enabled=False,
+        subject_template="",
+        html_template="",
+        text_template="",
+    )
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: row)
+
+    with pytest.raises(EmailTemplateDisabled):
+        resolve_template("email_activation", fail_closed_on_db_error=True)
+
+    disabled = resolve_template("email_activation", fail_closed_on_db_error=True, allow_disabled=True)
+    assert disabled.is_enabled is False
+    assert disabled.source == "code"
+
+
+def test_invalid_db_row_dead_letters_in_worker_mode(monkeypatch):
+    from src.Util.db import db_email_templates
+
+    monkeypatch.setattr(
+        db_email_templates,
+        "get_active_template",
+        lambda code: _catalog_row(
+            "email_activation",
+            version=3,
+            subject_template="Custom",
+            html_template="<p>No activation link</p>",
+            text_template="No activation link",
+        ),
+    )
+
+    with pytest.raises(EmailTemplateError):
+        resolve_template("email_activation", fail_closed_on_db_error=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -242,6 +344,288 @@ def test_validator_accepts_reasonable_edit():
 def test_validate_html_body_allows_structure():
     # The full best-practice document must pass the HTML guard unchanged.
     validate_html_body(TEMPLATES["email_activation"].html_template)
+
+
+def test_dynamic_validator_uses_catalog_allowlist_and_required_vars():
+    summary = validate_template_draft(
+        template_code="ops_notice",
+        purpose="delivery_operation",
+        allowed_variable_names=("notice", "ticket_id"),
+        required_variable_names=("notice",),
+        subject_template="Notice $ticket_id",
+        html_template="<p>$notice</p>",
+        text_template="$notice",
+    )
+
+    assert summary["used_variables"] == ["notice", "ticket_id"]
+    assert summary["required_variables"] == ["notice"]
+
+
+def test_dynamic_validator_rejects_required_var_outside_allowlist():
+    with pytest.raises(TemplateValidationError):
+        validate_template_draft(
+            template_code="ops_notice",
+            purpose="delivery_operation",
+            allowed_variable_names=("notice",),
+            required_variable_names=("ticket_id",),
+            subject_template="Notice",
+            html_template="<p>$notice</p>",
+            text_template="$notice",
+        )
+
+
+def test_dynamic_validator_allows_static_template_with_empty_variable_lists():
+    summary = validate_template_draft(
+        template_code="ops_static_notice",
+        purpose="delivery_operation",
+        allowed_variable_names=(),
+        required_variable_names=(),
+        subject_template="Static notice",
+        html_template="<p>Static notice</p>",
+        text_template="Static notice",
+    )
+
+    assert summary["used_variables"] == []
+    assert summary["allowed_variables"] == []
+    assert summary["required_variables"] == []
+
+
+@pytest.mark.asyncio
+async def test_route_create_dynamic_template_rejects_non_internal_purpose(monkeypatch):
+    from src.routes import email_templates as route
+
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    body = route.TemplateCreateRequest(
+        template_code="customer_reset_notice",
+        purpose="password_reset",
+        allowed_variables=["reset_link"],
+        required_variables=["reset_link"],
+        subject_template="Reset",
+        html_template='<p><a href="$reset_link">Reset</a></p>',
+        text_template="$reset_link",
+    )
+
+    with pytest.raises(ValidationError):
+        await route.create_email_template.__wrapped__(
+            body=body,
+            credentials=None,
+            log_context=type("Ctx", (), {"user_id": "root"})(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_route_create_dynamic_template_persists_catalog_metadata(monkeypatch):
+    from src.routes import email_templates as route
+
+    captured = {}
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_audit", lambda *args, **kwargs: None)
+
+    def create_dynamic_template(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"version": 1, "revision": 1}
+
+    monkeypatch.setattr(route.db_email_templates, "create_dynamic_template", create_dynamic_template)
+
+    body = route.TemplateCreateRequest(
+        template_code="ops_notice",
+        purpose="delivery_operation",
+        allowed_variables=["notice", "ticket_id"],
+        required_variables=["notice"],
+        subject_template="Notice $ticket_id",
+        html_template="<p>$notice</p>",
+        text_template="$notice",
+    )
+
+    response = await route.create_email_template.__wrapped__(
+        body=body,
+        credentials=None,
+        log_context=type("Ctx", (), {"user_id": "root"})(),
+    )
+
+    assert response["success"] is True
+    assert response["is_dynamic"] is True
+    assert captured["kwargs"]["template_code"] == "ops_notice"
+    assert captured["kwargs"]["purpose"] == "delivery_operation"
+    assert captured["kwargs"]["allowed_variables"] == ("notice", "ticket_id")
+    assert captured["kwargs"]["required_variables"] == ("notice",)
+
+
+@pytest.mark.asyncio
+async def test_route_disable_preserves_versions_by_calling_disable(monkeypatch):
+    from src.routes import email_templates as route
+
+    calls = {}
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        route,
+        "_load_template",
+        lambda code, allow_disabled=True: TEMPLATES["delivery_operation"],
+    )
+
+    def disable_template(**kwargs):
+        calls["kwargs"] = kwargs
+        return {"revision": 6}
+
+    monkeypatch.setattr(route.db_email_templates, "disable_template", disable_template)
+
+    response = await route.disable_email_template.__wrapped__(
+        template_code="delivery_operation",
+        credentials=None,
+        log_context=type("Ctx", (), {"user_id": "root-user"})(),
+    )
+
+    assert response["is_enabled"] is False
+    assert response["revision"] == 6
+    assert calls["kwargs"] == {"template_code": "delivery_operation", "disabled_by": "root-user"}
+
+
+@pytest.mark.asyncio
+async def test_route_put_after_disable_reenables_with_new_version(monkeypatch):
+    from src.routes import email_templates as route
+
+    disabled = TransactionalEmailTemplate(
+        code="ops_notice",
+        purpose="delivery_operation",
+        subject_template="Old $notice",
+        html_template="<p>$notice</p>",
+        text_template="$notice",
+        required_variables=("notice",),
+        allowed_variables=("notice",),
+        version=1,
+        source="db",
+        is_dynamic=True,
+        is_enabled=False,
+        revision=4,
+    )
+    captured = {}
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(route, "_load_template", lambda code, allow_disabled=True: disabled)
+
+    def save_and_activate_template(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"version": 2, "revision": 5}
+
+    monkeypatch.setattr(route.db_email_templates, "save_and_activate_template", save_and_activate_template)
+
+    response = await route.update_email_template.__wrapped__(
+        template_code="ops_notice",
+        body=route.TemplateDraft(
+            subject_template="New $notice",
+            html_template="<p>$notice</p>",
+            text_template="$notice",
+        ),
+        credentials=None,
+        log_context=type("Ctx", (), {"user_id": "root-user"})(),
+    )
+
+    assert response["is_enabled"] is True
+    assert response["version"] == 2
+    assert response["revision"] == 5
+    assert captured["kwargs"]["template_code"] == "ops_notice"
+
+
+@pytest.mark.asyncio
+async def test_route_rollback_rejects_invalid_target_before_reenabling(monkeypatch):
+    from src.routes import email_templates as route
+
+    state = TransactionalEmailTemplate(
+        code="ops_notice",
+        purpose="delivery_operation",
+        subject_template="Current $notice",
+        html_template="<p>$notice</p>",
+        text_template="$notice",
+        required_variables=("notice",),
+        allowed_variables=("notice",),
+        version=2,
+        source="db",
+        is_dynamic=True,
+        is_enabled=False,
+        revision=4,
+    )
+    rollback_called = False
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_load_template", lambda code, allow_disabled=True: state)
+    monkeypatch.setattr(
+        route.db_email_templates,
+        "get_template_version",
+        lambda code, version: {
+            "version": version,
+            "subject_template": "Broken",
+            "html_template": "<p>No required placeholder</p>",
+            "text_template": "No required placeholder",
+        },
+    )
+
+    def rollback_template(**kwargs):
+        nonlocal rollback_called
+        rollback_called = True
+        return {"revision": 5}
+
+    monkeypatch.setattr(route.db_email_templates, "rollback_template", rollback_template)
+
+    with pytest.raises(ValidationError):
+        await route.rollback_email_template.__wrapped__(
+            template_code="ops_notice",
+            body=route.TemplateRollbackRequest(version=1),
+            credentials=None,
+            log_context=type("Ctx", (), {"user_id": "root-user"})(),
+        )
+
+    assert rollback_called is False
+
+
+@pytest.mark.asyncio
+async def test_route_rollback_reenables_valid_existing_version(monkeypatch):
+    from src.routes import email_templates as route
+
+    state = TransactionalEmailTemplate(
+        code="ops_notice",
+        purpose="delivery_operation",
+        subject_template="Current $notice",
+        html_template="<p>$notice</p>",
+        text_template="$notice",
+        required_variables=("notice",),
+        allowed_variables=("notice",),
+        version=2,
+        source="db",
+        is_dynamic=True,
+        is_enabled=False,
+        revision=4,
+    )
+    calls = {}
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(route, "_load_template", lambda code, allow_disabled=True: state)
+    monkeypatch.setattr(
+        route.db_email_templates,
+        "get_template_version",
+        lambda code, version: {
+            "version": version,
+            "subject_template": "Restored $notice",
+            "html_template": "<p>$notice</p>",
+            "text_template": "$notice",
+        },
+    )
+
+    def rollback_template(**kwargs):
+        calls["kwargs"] = kwargs
+        return {"revision": 5}
+
+    monkeypatch.setattr(route.db_email_templates, "rollback_template", rollback_template)
+
+    response = await route.rollback_email_template.__wrapped__(
+        template_code="ops_notice",
+        body=route.TemplateRollbackRequest(version=1),
+        credentials=None,
+        log_context=type("Ctx", (), {"user_id": "root-user"})(),
+    )
+
+    assert response["is_enabled"] is True
+    assert response["revision"] == 5
+    assert calls["kwargs"] == {"template_code": "ops_notice", "version": 1}
 
 
 def test_router_and_app_wire_up():

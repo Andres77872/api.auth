@@ -133,9 +133,9 @@ mysql -u root -p < schemas/triggers/04_email_activation_triggers.sql
 ```
 
 > The Python bootstrap (`scripts/create_database.py` / `recreate_database.py`) is
-> the source of truth for file order and already applies every file above. The
-> legacy plaintext `user_password_resets` table is intentionally **not** created;
-> password reset uses hash-only `user_email_link_tokens`.
+> the source of truth for file order and already applies every file above.
+> Password reset uses hash-only `user_email_link_tokens`; retired plaintext
+> recovery storage must not re-enter bootstrap.
 
 ---
 
@@ -268,7 +268,8 @@ schemas/
 | `email_delivery_attempts` | Append-only sanitized worker/provider attempt + webhook-event ledger |
 | `email_suppressions` | Hashed suppression ledger for hard bounces / complaints / manual blocks (no plaintext recipient) |
 | `email_idempotency_keys` | Durable replay authority for public/authenticated send + consume flows |
-| `email_templates` | Reserved metadata table for future DB-managed templates; **unseeded** (templates are code-driven in `src/Util/email/templates.py`) |
+| `email_template_catalog` | One row per template code: purpose, allowed/required variables, built-in/dynamic flag, enabled state, revision, disabled audit metadata |
+| `email_templates` | Versioned subject/html/text bodies for cataloged templates; active version resolved by the worker immediately before send |
 
 ---
 
@@ -510,9 +511,9 @@ callers pass `lookup_id` plus an app-computed `BINARY(32)` HMAC `token_hash`.
 | `sp_user_email_remove` | Soft-remove an owned email and re-elect primary |
 | `sp_user_email_set_primary` | Switch primary to an owned activated email |
 | `sp_user_email_list_for_user` / `sp_admin_user_email_list` | Owner / admin (masked+hashed) email listings |
-| `sp_password_reset_link_enqueue` | Self-service reset: resolve activated email/username, mint reset token, enqueue mail |
+| `sp_password_reset_link_enqueue` | Self-service reset: resolve activated email/username, mint a one-use hash-backed recovery link, enqueue mail; do not expose raw token material |
 | `sp_admin_password_reset_link_enqueue` | Admin-triggered reset link (no password mutation) |
-| `sp_consume_password_reset_token` | Atomically consume reset/admin-reset token and update the password hash |
+| `sp_consume_password_reset_token` | Atomically consume reset/admin-reset proof and update the password hash; do not expose raw token material |
 | `sp_claim_email_messages` | Worker batch claim with `FOR UPDATE SKIP LOCKED` + lease + suppression flag |
 | `sp_finalize_email_message` | Apply sent/retry/dead-letter outcome, backoff, and terminal payload purge |
 | `sp_record_email_delivery_attempt` | Append a sanitized delivery attempt row |

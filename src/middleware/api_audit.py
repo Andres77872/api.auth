@@ -19,6 +19,7 @@ from src.Util.api_audit_logger import (
     generate_audit_id,
     generate_request_id
 )
+from src.Util.auth_constants import PATREON_WEBHOOK_ROUTE
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +90,22 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         if hasattr(request.state, 'project_id'):
             project_id = request.state.project_id
         
-        if APIAuditLogger.is_google_oauth_path(request.url.path):
+        path = str(request.url.path)
+
+        if APIAuditLogger.is_google_oauth_path(path):
             auth_method = "oauth"
+        elif self._is_patreon_webhook_path(path):
+            auth_method = "webhook"
+        elif self._is_patreon_internal_entitlements_path(path):
+            auth_method = "api_key"
+        elif self._is_stripe_webhook_path(path):
+            auth_method = "webhook"
+        elif self._is_billing_internal_path(path):
+            auth_method = "api_key"
         elif hasattr(request.state, 'auth_method'):
             auth_method = request.state.auth_method
         else:
-            auth_method = self._infer_auth_method(request.url.path, user_id=user_id, session_id=session_id)
+            auth_method = self._infer_auth_method(path, user_id=user_id, session_id=session_id)
         
         # Get client IP address
         client_ip = self._get_client_ip(request)
@@ -207,25 +218,26 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             
             # Extract resource info from path
             resource_type, resource_id = APIAuditLogger.extract_resource_info(
-                str(request.url.path),
+                path,
                 request.method
             )
             
             # Determine if this is a security event
             is_security = APIAuditLogger.is_security_event(
-                str(request.url.path),
+                path,
                 request.method,
                 status_code,
                 user_type
-            )
+            ) or self._is_route_specific_security_event(path, status_code)
             
             # Generate tags
             tags = APIAuditLogger.generate_tags(
-                str(request.url.path),
+                path,
                 request.method,
                 status_code,
                 user_type
             )
+            tags = self._add_route_specific_tags(path, tags, status_code=status_code)
             
             # Get response headers
             response_headers = dict(response.headers) if hasattr(response, 'headers') else {}
@@ -281,17 +293,17 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             
             # Get resource info
             resource_type, resource_id = APIAuditLogger.extract_resource_info(
-                str(request.url.path),
+                path,
                 request.method
             )
             
             # Flag as security event if it's an auth error
             is_security = APIAuditLogger.is_security_event(
-                str(request.url.path),
+                path,
                 request.method,
                 500,
                 user_type,
-            ) or (
+            ) or self._is_route_specific_security_event(path, 500) or (
                 'auth' in error_code.lower() or
                 'permission' in error_code.lower() or
                 'unauthorized' in error_code.lower()
@@ -299,12 +311,13 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             
             # Generate tags for failed request
             tags = APIAuditLogger.generate_tags(
-                str(request.url.path),
+                path,
                 request.method,
                 500,  # Server error
                 user_type
             )
             tags.append('exception')
+            tags = self._add_route_specific_tags(path, tags, status_code=500)
             
             # Log the error response immediately (before re-raising)
             try:
@@ -355,18 +368,97 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
 
     def _is_raw_body_audit_excluded(self, path: str) -> bool:
         """Return True for provider webhook/token paths where raw body is sensitive."""
-        return path.startswith("/webhooks/email")
+        normalized_path = self._normalize_path(path)
+        return APIAuditLogger.is_raw_body_audit_excluded(normalized_path)
 
     def _infer_auth_method(self, path: str, user_id: Optional[str], session_id: Optional[str]) -> str:
         """Classify unauthenticated email-link/webhook flows for audit taxonomy."""
-        if APIAuditLogger.is_google_oauth_path(path):
+        normalized_path = self._normalize_path(path)
+        if APIAuditLogger.is_google_oauth_path(normalized_path):
             return "oauth"
-        if path.startswith("/webhooks/email"):
+        if normalized_path.startswith("/webhooks/email") or self._is_patreon_webhook_path(normalized_path):
             return "webhook"
-        if APIAuditLogger.is_session_auth_security_path(path):
+        if self._is_patreon_internal_entitlements_path(normalized_path):
+            return "api_key"
+        if self._is_stripe_webhook_path(normalized_path):
+            return "webhook"
+        if self._is_billing_internal_path(normalized_path):
+            return "api_key"
+        if APIAuditLogger.is_session_auth_security_path(normalized_path):
             return "session" if user_id or session_id else "anonymous"
-        if path.startswith("/auth/email/") or path.startswith("/auth/password/reset"):
+        if normalized_path.startswith("/auth/email/") or normalized_path.startswith("/auth/password/reset"):
             return "email_link"
         if user_id or session_id:
             return "session"
         return "anonymous"
+
+    def _normalize_path(self, path: str) -> str:
+        """Normalize a request path without query parameters for route classification."""
+        return (path or "").split("?", 1)[0].rstrip("/") or "/"
+
+    def _is_patreon_webhook_path(self, path: str) -> bool:
+        """Return True for the Patreon webhook route family."""
+        normalized_path = self._normalize_path(path)
+        return normalized_path == PATREON_WEBHOOK_ROUTE or normalized_path.startswith(f"{PATREON_WEBHOOK_ROUTE}/")
+
+    def _is_patreon_internal_entitlements_path(self, path: str) -> bool:
+        """Return True for internal Patreon entitlement S2S route paths."""
+        normalized_path = self._normalize_path(path)
+        parts = [part for part in normalized_path.strip("/").split("/") if part]
+        return len(parts) >= 4 and parts[0] == "internal" and parts[1] == "users" and parts[3] == "entitlements"
+
+    def _is_stripe_webhook_path(self, path: str) -> bool:
+        """Return True for the Stripe webhook route family."""
+        return APIAuditLogger.is_stripe_webhook_path(self._normalize_path(path))
+
+    def _is_billing_internal_path(self, path: str) -> bool:
+        """Return True for internal billing S2S route paths."""
+        return APIAuditLogger.is_billing_internal_path(self._normalize_path(path))
+
+    def _add_route_specific_tags(self, path: str, tags: list, status_code: int) -> list:
+        """Add Patreon route tags without relying on new DB enum values."""
+        deduped_tags = list(dict.fromkeys(tags))
+
+        def add_tag(tag: str) -> None:
+            if tag not in deduped_tags:
+                deduped_tags.append(tag)
+
+        if self._is_patreon_webhook_path(path):
+            add_tag("patreon")
+            add_tag("webhook")
+            if status_code >= 400:
+                add_tag("security_event")
+        elif self._is_patreon_internal_entitlements_path(path):
+            add_tag("patreon")
+            add_tag("internal")
+            add_tag("s2s")
+            add_tag("api_key")
+            if status_code in {401, 403}:
+                add_tag("security_event")
+        elif self._is_stripe_webhook_path(path):
+            add_tag("billing")
+            add_tag("stripe")
+            add_tag("webhook")
+            if status_code >= 400:
+                add_tag("security_event")
+        elif self._is_billing_internal_path(path):
+            add_tag("billing")
+            add_tag("internal")
+            add_tag("s2s")
+            add_tag("api_key")
+            if status_code in {401, 403}:
+                add_tag("security_event")
+
+        return deduped_tags
+
+    def _is_route_specific_security_event(self, path: str, status_code: int) -> bool:
+        """Classify Patreon webhook/S2S auth failures as security events."""
+        if self._is_patreon_webhook_path(path):
+            return status_code >= 400
+        if self._is_patreon_internal_entitlements_path(path):
+            return status_code in {401, 403}
+        if self._is_stripe_webhook_path(path):
+            return status_code >= 400
+        if self._is_billing_internal_path(path):
+            return status_code in {401, 403}
+        return False

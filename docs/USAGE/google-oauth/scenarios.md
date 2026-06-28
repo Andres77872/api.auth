@@ -2,6 +2,10 @@
 
 These scenarios describe expected behavior. They are not a manual for bypassing the provider-init boundary. Use only fake/local placeholders in examples.
 
+## Provider Boundary: Google vs Patreon
+
+The scenarios below are Google login/link scenarios. Patreon is entitlement/link only and has separate account-link, proof, webhook, sync, rollback, and S2S entitlement scenarios in [Patreon account linking](../patreon-link/README.md). A Patreon link must not be treated as a Google-style callback success or local session source.
+
 ## Returning Linked User
 
 **Given** an active `user_external_accounts` row exists for provider `google` and the HMAC of Google's `sub`.

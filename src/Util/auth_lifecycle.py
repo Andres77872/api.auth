@@ -877,6 +877,13 @@ def _login_from_context(access_token: str, session: Dict[str, Any], context: Aut
             permissions=list(_field(available_project, "permissions", []) or []),
         ))
 
+    user_type_value = str(session.get("user_type") or _field(context.user, "user_type", "consumer"))
+
+    session_plan = None
+    if context.scope == AUTH_SCOPE_PROJECT and user_type_value == "consumer" and project_id:
+        from src.Util.session_plan import resolve_session_plan
+        session_plan = resolve_session_plan(str(session.get("user_id")), str(project_id))
+
     return EnhancedUserLogin(
         user_hash=str(session.get("user_hash")),
         scope=context.scope,
@@ -892,8 +899,9 @@ def _login_from_context(access_token: str, session: Dict[str, Any], context: Aut
         groups=context.groups,
         permissions=context.permissions,
         available_projects=available_projects,
-        user_type=str(session.get("user_type") or _field(context.user, "user_type", "consumer")),
+        user_type=user_type_value,
         assigned_project_id=session.get("assigned_project_id") or _field(context.user, "assigned_project_id", None),
+        plan=session_plan,
     )
 
 

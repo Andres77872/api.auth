@@ -210,6 +210,36 @@ ON DUPLICATE KEY UPDATE
     requires_audit = VALUES(requires_audit),
     is_active = VALUES(is_active);
 
+-- Patreon Entitlement/Link Activities (reserved act-cat-075+ range)
+-- These are redacted operational/security evidence events. Details must never contain
+-- raw Patreon IDs, raw email, signatures, raw payloads, creator tokens, proof tokens,
+-- webhook secrets, or provider API responses.
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-075', 'patreon_link_proof_requested', 'Patreon Link Proof Requested', 'Patreon email-loop link proof was requested and enqueued', 'patreon', 'info', TRUE, TRUE),
+('act-cat-076', 'patreon_link_proof_consumed', 'Patreon Link Proof Consumed', 'Patreon email-loop link proof was consumed', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-077', 'patreon_linked', 'Patreon Linked', 'Patreon provider identity linked to a local consumer', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-078', 'patreon_link_rejected', 'Patreon Link Rejected', 'Patreon link request was rejected or blocked safely', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-079', 'patreon_unlinked', 'Patreon Unlinked', 'Patreon provider identity was soft-unlinked from a local consumer', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-080', 'patreon_webhook_received', 'Patreon Webhook Received', 'Verified Patreon webhook was accepted for idempotent processing', 'patreon', 'info', TRUE, TRUE),
+('act-cat-081', 'patreon_webhook_rejected', 'Patreon Webhook Rejected', 'Patreon webhook was rejected before mutation', 'patreon', 'critical', TRUE, TRUE),
+('act-cat-082', 'patreon_webhook_replay_ignored', 'Patreon Webhook Replay Ignored', 'Duplicate Patreon webhook delivery was ignored idempotently', 'patreon', 'info', TRUE, TRUE),
+('act-cat-083', 'patreon_sync_started', 'Patreon Sync Started', 'Patreon scheduled or manual sync started', 'patreon', 'info', TRUE, TRUE),
+('act-cat-084', 'patreon_sync_completed', 'Patreon Sync Completed', 'Patreon scheduled or manual sync completed', 'patreon', 'info', TRUE, TRUE),
+('act-cat-085', 'patreon_sync_failed', 'Patreon Sync Failed', 'Patreon sync failed or entered retry/degraded state', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-086', 'patreon_entitlement_changed', 'Patreon Entitlement Changed', 'Normalized Patreon entitlement changed', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-087', 'patreon_tier_map_miss', 'Patreon Tier Map Miss', 'Observed Patreon tier did not match an active internal tier map', 'patreon', 'warning', TRUE, TRUE),
+('act-cat-088', 'patreon_token_refreshed', 'Patreon Token Refreshed', 'Server-only Patreon creator token state refreshed or rotated', 'patreon', 'info', TRUE, TRUE),
+('act-cat-089', 'patreon_token_revoked', 'Patreon Token Revoked', 'Server-only Patreon creator token appears revoked or unusable', 'patreon', 'critical', TRUE, TRUE),
+('act-cat-090', 'patreon_retention_purged', 'Patreon Retention Purged', 'Bounded Patreon proof, webhook, or raw-payload retention purge ran', 'patreon', 'info', TRUE, TRUE)
+ON DUPLICATE KEY UPDATE
+    activity_code = VALUES(activity_code),
+    activity_name = VALUES(activity_name),
+    activity_description = VALUES(activity_description),
+    activity_category = VALUES(activity_category),
+    severity_level = VALUES(severity_level),
+    requires_audit = VALUES(requires_audit),
+    is_active = VALUES(is_active);
+
 -- =================== TABLE CREATION COMPLETE ===================
 SELECT 'Activity logging tables created successfully!' as status, 
        '3 tables created: activity_catalog, activity_logs, permission_audit_log' as details;

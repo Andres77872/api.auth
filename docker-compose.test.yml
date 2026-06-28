@@ -26,6 +26,7 @@ services:
       - ./schemas/tables/08_activity_logging_tables.sql:/docker-entrypoint-initdb.d/08_activity_logging_tables.sql
       - ./schemas/tables/09_email_activation_tables.sql:/docker-entrypoint-initdb.d/09_email_activation_tables.sql
       - ./schemas/tables/10_external_accounts.sql:/docker-entrypoint-initdb.d/10_external_accounts.sql
+      - ./schemas/tables/11_patreon_entitlements.sql:/docker-entrypoint-initdb.d/10_patreon_entitlements.sql
       - ./schemas/stored_procedures/01_user_management.sql:/docker-entrypoint-initdb.d/10_sp_01_user_management.sql
       - ./schemas/stored_procedures/02_user_groups.sql:/docker-entrypoint-initdb.d/11_sp_02_user_groups.sql
       - ./schemas/stored_procedures/03_projects.sql:/docker-entrypoint-initdb.d/12_sp_03_projects.sql
@@ -41,11 +42,13 @@ services:
       - ./schemas/stored_procedures/13_api_keys.sql:/docker-entrypoint-initdb.d/22_sp_13_api_keys.sql
       - ./schemas/stored_procedures/14_email_activation.sql:/docker-entrypoint-initdb.d/23_sp_14_email_activation.sql
       - ./schemas/stored_procedures/15_external_accounts.sql:/docker-entrypoint-initdb.d/24_sp_15_external_accounts.sql
+      - ./schemas/stored_procedures/16_patreon_entitlements.sql:/docker-entrypoint-initdb.d/25_sp_16_patreon_entitlements.sql
       - ./schemas/triggers/01_activity_logging_triggers.sql:/docker-entrypoint-initdb.d/30_tr_01_activity_logging.sql
       - ./schemas/triggers/02_permission_activity_triggers.sql:/docker-entrypoint-initdb.d/31_tr_02_permission_activity.sql
       - ./schemas/triggers/03_api_key_activity_triggers.sql:/docker-entrypoint-initdb.d/32_tr_03_api_key_activity.sql
       - ./schemas/triggers/04_email_activation_triggers.sql:/docker-entrypoint-initdb.d/33_tr_04_email_activation.sql
       - ./schemas/triggers/05_external_accounts_triggers.sql:/docker-entrypoint-initdb.d/34_tr_05_external_accounts.sql
+      - ./schemas/triggers/06_patreon_entitlements_triggers.sql:/docker-entrypoint-initdb.d/35_tr_06_patreon_entitlements.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -110,6 +113,24 @@ services:
       MAILPIT_SMTP_HOST: mailpit-test
       MAILPIT_SMTP_PORT: "1025"
       MAILPIT_HTTP_BASE_URL: http://mailpit-test:8025
+      # Patreon test placeholders are fake and disabled by default. Never put real
+      # creator/member secrets in docker-compose.test.yml.
+      PATREON_LINKING_ENABLED: "false"
+      PATREON_WEBHOOKS_ENABLED: "false"
+      PATREON_SYNC_ENABLED: "false"
+      PATREON_S2S_ENTITLEMENT_ENABLED: "false"
+      PATREON_RAW_PAYLOAD_CAPTURE_ENABLED: "false"
+      PATREON_CREATOR_ACCESS_TOKEN: ""
+      PATREON_CREATOR_REFRESH_TOKEN: ""
+      PATREON_CLIENT_ID: "fake-patreon-client-id-for-tests"
+      PATREON_CLIENT_SECRET: ""
+      PATREON_WEBHOOK_SECRET: "fake-patreon-webhook-secret-for-tests"
+      PATREON_ID_HMAC_SECRET: "fake-patreon-id-hmac-secret-for-tests"
+      PATREON_PROOF_TOKEN_PEPPER: "fake-patreon-proof-token-pepper-for-tests"
+      PATREON_S2S_BEARER_TOKEN: "fake-patreon-s2s-bearer-token-for-tests"
+      PATREON_TIER_MAP_JSON: "[]"
+      RUN_PATREON_LOCAL_E2E: "false"
+      RUN_PATREON_E2E: "false"
     working_dir: /workspace
     volumes:
       - .:/workspace

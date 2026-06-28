@@ -13,6 +13,7 @@ import pymysql
 from redis.exceptions import RedisError
 
 from src.Util.error_handler import (
+    AppException,
     DatabaseError,
     NotFoundError,
     ConflictError,
@@ -115,6 +116,14 @@ def handle_db_operation(
         if default_return is not None:
             return default_return() if callable(default_return) else default_return
         # Otherwise re-raise NotFoundError as-is
+        raise
+
+    except AppException:
+        # Preserve already-classified application errors raised by nested
+        # wrappers/routes. Rewrapping them hides the intended status/category.
+        if default_return is not None:
+            logger.warning(f"Application error, returning default: {error_context}", exc_info=True)
+            return default_return() if callable(default_return) else default_return
         raise
         
     except pymysql.IntegrityError as e:

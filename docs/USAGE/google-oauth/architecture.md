@@ -2,6 +2,12 @@
 
 Google OAuth/OIDC is an additive, consumer-only authentication path. It validates Google identity, then hands control back to the existing `api.auth` local identity, project access, session, audit, and refresh-token lifecycle.
 
+## Provider Boundary: Google vs Patreon
+
+Google may login/link: a successful Google OAuth/OIDC callback can resolve or create the local consumer and then issue the existing local session after project authorization. Patreon is entitlement/link only; its proof, webhook, sync, and S2S flows never issue local sessions and are covered in [Patreon account linking](../patreon-link/README.md).
+
+Do not copy Google callback/session semantics into Patreon docs or code. The shared external-account schema preserves HMAC provider-sub authority for both providers, but only Google participates in the local login/session lifecycle.
+
 ## Architecture Decisions
 
 | Decision | Why |

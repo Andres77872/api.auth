@@ -2,6 +2,8 @@
 
 Reference for environment keys, endpoints, response models, OAuth error taxonomy, activity catalog, redaction fields, and allowlist behavior.
 
+> Provider boundary: this reference covers Google OAuth login/link contracts. Patreon is entitlement/link only and has separate route, S2S, retention, activity, and forbidden-browser-field references in [Patreon account linking](../patreon-link/README.md). Do not reuse Google `LoginResponse`, cookie, refresh-token, or callback semantics for Patreon.
+
 ## Configuration Keys
 
 Values below are names only. Do not paste real secrets into docs. Use localhost examples in local smoke only.

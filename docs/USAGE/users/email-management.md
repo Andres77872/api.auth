@@ -282,8 +282,8 @@ returns a generic `202`. It does **not** read an `Idempotency-Key`.
 - Email is optional for registration and account use; a user with no activated
   email simply cannot use email login or email recovery, but username login and
   account access still work.
-- None of these routes ever return a token, activation/reset URL, email body, or
-  provider payload. Admin list views additionally withhold the plaintext address.
+- These routes do not return a token, activation/reset URL, or email body, and
+  do not expose provider payload. Admin list views additionally withhold the plaintext address.
 - Add/resend success cannot be inferred from the `202` body — confirm delivery
   through the outbox/worker and audit log as described in the runbook.
 - Removing or re-pointing the primary email is a security-relevant action that

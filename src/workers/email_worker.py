@@ -29,10 +29,30 @@ from src.Util.email.mailpit import MailpitProvider
 from src.Util.email.provider import EmailProvider, EmailProviderError, EmailSendRequest
 from src.Util.email.resend_provider import ResendProvider
 from src.Util.email.security import decrypt_render_payload, sanitize_email_log_value
-from src.Util.email.templates import EmailTemplateError, render_email_template
+from src.Util.email.templates import (
+    EmailTemplateDisabled,
+    EmailTemplateError,
+    EmailTemplateLookupError,
+    render_email_template,
+)
+from src.Util.patreon.security import PATREON_PROOF_PURPOSE
 
 
 logger = logging.getLogger(__name__)
+
+_PATREON_LINK_PROOF_TEMPLATE_CODE = "patreon_link_proof"
+_PATREON_LINK_PROOF_ALLOWED_VARIABLES = frozenset(
+    {
+        "app_name",
+        "recipient_masked",
+        "expires_in",
+        "expires_at",
+        "support_email",
+        "patreon_link_proof_url",
+        "proof_token",
+        "lookup_id",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +90,10 @@ class DrainResult:
     @property
     def dead_count(self) -> int:
         return sum(1 for result in self.results if result.status == "dead")
+
+    @property
+    def cancelled_count(self) -> int:
+        return sum(1 for result in self.results if result.status == "cancelled")
 
     @property
     def processed_count(self) -> int:
@@ -110,6 +134,44 @@ def _hex_hash(value: Any) -> str | None:
 
 def _public_error(exc: BaseException) -> str:
     return sanitize_email_log_value(str(exc))[:500]
+
+
+def _is_patreon_link_proof(message: Mapping[str, Any]) -> bool:
+    purpose = str(message.get("purpose") or "").strip().lower()
+    template_code = str(message.get("template_code") or "").strip().lower()
+    return purpose == PATREON_PROOF_PURPOSE or template_code == _PATREON_LINK_PROOF_TEMPLATE_CODE
+
+
+def _template_code_for_message(message: Mapping[str, Any]) -> str:
+    if _is_patreon_link_proof(message):
+        return _PATREON_LINK_PROOF_TEMPLATE_CODE
+    return str(message.get("template_code") or "")
+
+
+def _patreon_link_proof_variables(
+    variables: Mapping[str, Any],
+    *,
+    message: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return only render-time values allowed in the Patreon proof email.
+
+    The raw proof token/link may exist in worker memory and in the outbound
+    message body, but it must never be copied into attempt metadata, logs, audit
+    records, or unrelated local email activation/password-reset render paths.
+    """
+
+    purpose = str(variables.get("purpose") or PATREON_PROOF_PURPOSE).strip().lower()
+    if purpose != PATREON_PROOF_PURPOSE:
+        raise EmailTemplateError("Patreon proof payload purpose mismatch")
+
+    safe = {key: variables[key] for key in _PATREON_LINK_PROOF_ALLOWED_VARIABLES if key in variables}
+    if "recipient_masked" not in safe and message.get("recipient_masked"):
+        safe["recipient_masked"] = message.get("recipient_masked")
+    if "expires_at" not in safe:
+        safe["expires_at"] = "soon"
+    if "expires_in" not in safe:
+        safe["expires_in"] = "a short time"
+    return safe
 
 
 def should_dead_letter(*, attempt_count: int, max_attempts: int) -> bool:
@@ -272,6 +334,19 @@ class EmailWorker:
         try:
             send_request = self._build_send_request(message)
             send_result = self.provider.send(send_request)
+        except EmailTemplateDisabled as exc:
+            return self._handle_cancelled(
+                message,
+                error_code="EMAIL_TEMPLATE_DISABLED",
+                error_message=_public_error(exc),
+            )
+        except EmailTemplateLookupError as exc:
+            return self._handle_retryable_failure(
+                message,
+                error_code="EMAIL_TEMPLATE_LOOKUP_FAILED",
+                error_message=_public_error(exc),
+                retryable=True,
+            )
         except EmailTemplateError as exc:
             return self._handle_permanent_failure(message, error_code="EMAIL_RENDER_FAILED", exc=exc)
         except EmailProviderError as exc:
@@ -331,9 +406,14 @@ class EmailWorker:
         if not recipient_email:
             raise EmailTemplateError("missing recipient for claimed email message")
 
-        template_code = str(message.get("template_code") or "")
+        template_code = _template_code_for_message(message)
         variables = self._render_variables(message)
-        rendered = render_email_template(template_code, variables, message_id=message_id)
+        rendered = render_email_template(
+            template_code,
+            variables,
+            message_id=message_id,
+            fail_closed_on_db_error=True,
+        )
         return EmailSendRequest(
             message_id=message_id,
             from_address=self.config.from_address or "no-reply@example.invalid",
@@ -352,7 +432,10 @@ class EmailWorker:
             return {}
         if isinstance(ciphertext, memoryview):
             ciphertext = ciphertext.tobytes()
-        return decrypt_render_payload(ciphertext, key=self.config.payload_key)
+        variables = decrypt_render_payload(ciphertext, key=self.config.payload_key)
+        if _is_patreon_link_proof(message):
+            return _patreon_link_proof_variables(variables, message=message)
+        return variables
 
     def _handle_permanent_failure(
         self,
@@ -366,6 +449,35 @@ class EmailWorker:
         self._record_attempt(message, status="permanent_failure", error_code=error_code, error_message=_public_error(exc), metadata=metadata)
         self._finalize(message_id=message_id, status="dead", error_code=error_code, error_message=_public_error(exc))
         return ProcessResult(message_id=message_id, status="dead", attempt_metadata=metadata)
+
+    def _handle_cancelled(
+        self,
+        message: Mapping[str, Any],
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> ProcessResult:
+        message_id = str(message.get("id") or message.get("email_message_id") or "")
+        metadata = self._attempt_metadata(
+            message,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        self._record_attempt(
+            message,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+            metadata=metadata,
+        )
+        self._finalize(
+            message_id=message_id,
+            status="cancelled",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        return ProcessResult(message_id=message_id, status="cancelled", attempt_metadata=metadata)
 
     def _handle_retryable_failure(
         self,
@@ -418,7 +530,7 @@ class EmailWorker:
         metadata = {
             "message_id": str(message.get("id") or message.get("email_message_id") or ""),
             "provider": getattr(self.provider, "provider_name", self.config.provider),
-            "template_code": str(message.get("template_code") or ""),
+            "template_code": _template_code_for_message(message),
             "purpose": str(message.get("purpose") or ""),
             "status": status,
             "recipient_hash": _hex_hash(message.get("recipient_hash")),
@@ -505,6 +617,7 @@ class EmailWorker:
                     "suppressed": sum(1 for result in results if result.status == "suppressed"),
                     "retry": sum(1 for result in results if result.status == "retry"),
                     "dead": sum(1 for result in results if result.status == "dead"),
+                    "cancelled": sum(1 for result in results if result.status == "cancelled"),
                 },
             )
         except Exception:

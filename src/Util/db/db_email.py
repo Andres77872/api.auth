@@ -277,6 +277,109 @@ def list_admin_user_emails(target_user_id: str) -> list[dict[str, Any]]:
 
 
 # =============================================================================
+# Internal email credit grant notification support
+# =============================================================================
+
+
+def resolve_activated_email_identity(*, email_normalized: str) -> dict[str, Any] | None:
+    """Resolve a linked/activated email to the active auth user projection."""
+
+    def _operation():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.execute(
+                """
+                SELECT u.id AS user_id,
+                       u.user_hash,
+                       u.username,
+                       u.user_type,
+                       ue.email_normalized,
+                       ue.email_masked,
+                       ue.is_primary,
+                       ue.activated_at
+                FROM user_emails ue
+                JOIN users u ON u.id = ue.user_id
+                WHERE u.is_active = TRUE
+                  AND ue.status = 'activated'
+                  AND ue.removed_at IS NULL
+                  AND ue.email_normalized = %s
+                ORDER BY ue.is_primary DESC, ue.activated_at ASC, ue.added_at ASC
+                LIMIT 1
+                """,
+                [email_normalized],
+            )
+            return _fetch_one_dict(cur)
+
+    return handle_db_operation(
+        _operation,
+        error_context="resolve_activated_email_identity(email=[REDACTED])",
+    )
+
+
+def enqueue_template_delivery_email(
+    *,
+    email_message_id: str,
+    purpose: str,
+    template_code: str,
+    recipient_email: str,
+    recipient_hash: bytes,
+    recipient_masked: str,
+    provider: str,
+    provider_idempotency_key: str,
+    render_payload_ciphertext: bytes,
+    payload_purge_at: datetime,
+    priority: int = 4,
+) -> dict[str, Any] | None:
+    """Enqueue a generic template-backed email delivery message.
+
+    Domain-specific ownership stays with the caller. This only creates a normal
+    auth delivery outbox row using an existing email_messages purpose.
+    """
+
+    def _operation():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.execute(
+                """
+                INSERT INTO email_messages (
+                    id, user_id, user_email_id, token_id, purpose, template_code,
+                    recipient_email, recipient_hash, recipient_masked, provider,
+                    provider_idempotency_key, status, priority, attempt_count, max_attempts,
+                    next_attempt_at, render_payload_ciphertext, payload_purge_at, created_at, updated_at
+                ) VALUES (
+                    %s, NULL, NULL, NULL, %s, %s,
+                    %s, %s, %s, COALESCE(%s, 'resend'),
+                    %s, 'pending', %s, 0, 8,
+                    NOW(), %s, %s, NOW(), NOW()
+                )
+                """,
+                [
+                    email_message_id,
+                    purpose,
+                    template_code,
+                    recipient_email,
+                    recipient_hash,
+                    recipient_masked,
+                    provider,
+                    provider_idempotency_key,
+                    int(priority),
+                    render_payload_ciphertext,
+                    payload_purge_at,
+                ],
+            )
+            con.commit()
+            return {
+                "email_message_id": email_message_id,
+                "lifecycle_status": "template_email_enqueued",
+            }
+
+    return handle_db_operation(
+        _operation,
+        error_context=f"enqueue_template_delivery_email(email_message_id={email_message_id})",
+    )
+
+
+# =============================================================================
 # Password reset link enqueue / consume
 # =============================================================================
 
@@ -608,6 +711,47 @@ def list_email_delivery_logs(
     )
 
 
+def get_email_delivery_log(email_message_id: str) -> dict[str, Any] | None:
+    """Return one delivery log row without plaintext recipient/body/template vars."""
+
+    def _operation():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.execute(
+                """
+                SELECT em.id,
+                       em.user_id,
+                       em.user_email_id,
+                       em.purpose,
+                       em.template_code,
+                       HEX(em.recipient_hash) AS recipient_hash,
+                       em.recipient_masked,
+                       em.provider,
+                       em.provider_message_id,
+                       em.status,
+                       em.priority,
+                       em.attempt_count,
+                       em.max_attempts,
+                       em.next_attempt_at,
+                       em.sent_at,
+                       em.terminal_at,
+                       em.last_error_code,
+                       em.created_at,
+                       em.updated_at
+                FROM email_messages em
+                WHERE em.id = %s
+                LIMIT 1
+                """,
+                [email_message_id],
+            )
+            return _fetch_one_dict(cur)
+
+    return handle_db_operation(
+        _operation,
+        error_context="get_email_delivery_log(email_message_id=[REDACTED])",
+    )
+
+
 def is_recipient_suppressed(recipient_hash: bytes) -> bool:
     def _operation():
         with get_connection() as con:
@@ -722,8 +866,10 @@ __all__ = [
     "consume_password_reset_token",
     "enqueue_admin_password_reset_link",
     "enqueue_password_reset_link",
+    "enqueue_template_delivery_email",
     "finalize_email_message",
     "get_email_delivery_attempts",
+    "get_email_delivery_log",
     "get_email_idempotency",
     "get_email_outbox_health",
     "is_recipient_suppressed",

@@ -4,6 +4,8 @@ Troubleshooting must preserve the security boundary. Do not copy raw Google auth
 
 Use fingerprints, correlation IDs, activity IDs, and masked snapshots.
 
+> Provider boundary: use this page for Google OAuth login/link failures. Patreon proof, webhook, sync, S2S, stale-entitlement, and tier-map failures belong to [Patreon account linking](../patreon-link/README.md); Patreon is entitlement/link only and must not be diagnosed as a Google-style local session callback.
+
 ## Fast Triage Table
 
 | Symptom | Likely Cause | Safe Action |

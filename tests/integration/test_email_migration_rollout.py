@@ -21,6 +21,7 @@ def test_additive_email_schema_files_exist_and_define_canonical_tables():
         "email_delivery_attempts",
         "email_suppressions",
         "email_idempotency_keys",
+        "email_template_catalog",
         "email_templates",
     ]:
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
@@ -50,6 +51,57 @@ def test_gdpr_retention_and_anonymization_routines_are_present():
     assert "recipient_email = NULL" in sql
     assert "365" in sql
     assert "30" in sql
+
+
+def test_email_template_catalog_seed_includes_all_builtin_codes():
+    sql = (ROOT / "schemas/tables/09_email_activation_tables.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS email_template_catalog" in sql
+    assert "allowed_variables JSON NOT NULL" in sql
+    assert "required_variables JSON NOT NULL" in sql
+    assert "is_enabled BOOLEAN NOT NULL DEFAULT TRUE" in sql
+    assert "revision INT NOT NULL DEFAULT 1" in sql
+    for code in [
+        "email_activation",
+        "password_reset",
+        "admin_password_reset",
+        "security_notification",
+        "delivery_operation",
+        "patreon_link_proof",
+        "email_credit_grant_notification",
+    ]:
+        assert f"'{code}'" in sql
+
+
+def test_email_template_stored_procedures_are_catalog_aware():
+    sql = (ROOT / "schemas/stored_procedures/14_email_activation.sql").read_text()
+
+    for procedure in [
+        "sp_email_template_get_active",
+        "sp_email_template_create_dynamic",
+        "sp_email_template_save_and_activate",
+        "sp_email_template_disable",
+        "sp_email_template_rollback",
+    ]:
+        assert procedure in sql
+    assert "email_template_catalog" in sql
+    assert "is_enabled = FALSE" in sql
+    assert "revision = revision + 1" in sql
+    assert "p_purpose NOT IN ('delivery_operation','security_notification')" in sql
+    assert "WHEN p_status IN ('sent','retry','dead','suppressed','cancelled')" in sql
+
+
+def test_schema_sync_catches_existing_env_latest_template_delivery_rollout():
+    schema_sync = (ROOT / "scripts/schema_sync.py").read_text()
+    canonical_tables = (ROOT / "schemas/tables/09_email_activation_tables.sql").read_text()
+    canonical_sp = (ROOT / "schemas/stored_procedures/14_email_activation.sql").read_text()
+
+    assert "email_template_catalog" in schema_sync
+    assert "email_delivery_attempts.status" in schema_sync
+    assert "'cancelled'" in schema_sync
+    assert "stored_procedures/14_email_activation.sql" in schema_sync
+    assert "CREATE TABLE IF NOT EXISTS email_template_catalog" in canonical_tables
+    assert "sp_email_template_get_active" in canonical_sp
 
 
 def test_bootstrap_registers_email_table_trigger_and_sp_files():

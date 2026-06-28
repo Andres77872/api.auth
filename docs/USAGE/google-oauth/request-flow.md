@@ -13,6 +13,8 @@ All examples use localhost-only placeholders. Do not paste real Google codes, to
 | `POST /auth/google/reauth/start` | Existing local session | Start Google step-up/reauth round-trip. |
 | `DELETE /auth/google/unlink` | Existing local session + recent reauth | Soft-unlink Google if fallback auth exists. |
 
+> Provider boundary: the route family below is Google OAuth login/link behavior. Patreon has separate link request/confirm/status/unlink, webhook, sync, and internal S2S flows documented in [Patreon account linking](../patreon-link/README.md); those flows are entitlement/link only and do not produce `LoginResponse`, local session cookies, or refresh tokens.
+
 > Unlike `link/start`, the `reauth/start` handler is **not** gated by provisioning mode and does **not** pre-require recent reauth (`require_recent_reauthentication`); it only initiates a Google step-up round-trip (`prompt=login`). Any failure returns `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`). The `link/start` and `link/finish` handlers both call `require_recent_reauthentication` (op `google_oauth_link`) and require provisioning mode `link_only`/`both`.
 
 ## Login Start

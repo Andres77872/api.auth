@@ -56,6 +56,7 @@ TABLE_FILES = [
     'tables/08_activity_logging_tables.sql',
     'tables/09_email_activation_tables.sql',  # schemas/tables/09_email_activation_tables.sql
     'tables/10_external_accounts.sql',  # schemas/tables/10_external_accounts.sql
+    'tables/11_patreon_entitlements.sql',  # schemas/tables/11_patreon_entitlements.sql
 ]
 # Legacy plaintext password-reset schema is intentionally absent from fresh
 # destructive bootstrap; reset links live in hash-only email activation tables.
@@ -76,6 +77,7 @@ STORED_PROCEDURE_FILES = [
     'stored_procedures/13_api_keys.sql',
     'stored_procedures/14_email_activation.sql',  # schemas/stored_procedures/14_email_activation.sql
     'stored_procedures/15_external_accounts.sql',  # schemas/stored_procedures/15_external_accounts.sql
+    'stored_procedures/16_patreon_entitlements.sql',  # schemas/stored_procedures/16_patreon_entitlements.sql
 ]
 
 TRIGGER_FILES = [
@@ -84,6 +86,14 @@ TRIGGER_FILES = [
     'triggers/03_api_key_activity_triggers.sql',
     'triggers/04_email_activation_triggers.sql',  # schemas/triggers/04_email_activation_triggers.sql
     'triggers/05_external_accounts_triggers.sql',  # schemas/triggers/05_external_accounts_triggers.sql
+    'triggers/06_patreon_entitlements_triggers.sql',  # schemas/triggers/06_patreon_entitlements_triggers.sql
+]
+
+BILLING_PROVIDER_FACT_FILES = [
+    'tables/12_billing_provider_facts.sql',  # schemas/tables/12_billing_provider_facts.sql (incl. billing_groups, mapping, catalog, re-keyed facts, v_user_billing_group_access)
+    'stored_procedures/17_billing_provider_facts.sql',  # schemas/stored_procedures/17_billing_provider_facts.sql
+    'stored_procedures/18_billing_groups.sql',  # schemas/stored_procedures/18_billing_groups.sql (group/catalog/resolver procs)
+    'triggers/07_billing_provider_facts_triggers.sql',  # schemas/triggers/07_billing_provider_facts_triggers.sql
 ]
 
 
@@ -241,7 +251,7 @@ def recreate_database():
             sys.exit(1)
         
         # Calculate total steps
-        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES) + len(TRIGGER_FILES)
+        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES) + len(TRIGGER_FILES) + len(BILLING_PROVIDER_FACT_FILES)
         current_step = 0
         
         # Execute table files
@@ -287,6 +297,21 @@ def recreate_database():
             print_step(current_step, total_steps, f"Processing {file_name}")
             if not execute_sql_file(connection, file_path):
                 print("\n✗ Failed to execute trigger file. Aborting.")
+                sys.exit(1)
+
+        # Execute additive billing provider-fact files after existing Patreon artifacts
+        print_header("Creating Billing Provider Fact Artifacts")
+        for file_name in BILLING_PROVIDER_FACT_FILES:
+            current_step += 1
+            file_path = SCHEMAS_DIR / file_name
+
+            if not file_path.exists():
+                print(f"✗ File not found: {file_path}")
+                sys.exit(1)
+
+            print_step(current_step, total_steps, f"Processing {file_name}")
+            if not execute_sql_file(connection, file_path):
+                print("\n✗ Failed to execute billing provider fact file. Aborting.")
                 sys.exit(1)
         
         # Verify database creation

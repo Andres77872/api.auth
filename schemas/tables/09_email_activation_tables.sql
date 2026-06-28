@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
     user_id VARCHAR(64) NULL,
     user_email_id VARCHAR(64) NULL,
     token_id VARCHAR(64) NULL,
-    purpose ENUM('email_activation','password_reset','admin_password_reset','security_notification','delivery_operation') NOT NULL,
+    purpose ENUM('email_activation','password_reset','admin_password_reset','security_notification','delivery_operation','patreon_link_proof') NOT NULL,
     template_code VARCHAR(100) NOT NULL,
     recipient_email VARCHAR(255) NULL,
     recipient_hash BINARY(32) NOT NULL,
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS email_delivery_attempts (
     email_message_id VARCHAR(64) NOT NULL,
     attempt_no INT NOT NULL,
     provider VARCHAR(50) NOT NULL,
-    status ENUM('sent','temporary_failure','permanent_failure','suppressed','webhook_event') NOT NULL,
+    status ENUM('sent','temporary_failure','permanent_failure','suppressed','cancelled','webhook_event') NOT NULL,
     provider_message_id VARCHAR(255) NULL,
     provider_event_id VARCHAR(255) NULL,
     error_code VARCHAR(100) NULL,
@@ -214,12 +214,31 @@ CREATE TABLE IF NOT EXISTS email_idempotency_keys (
         REFERENCES email_messages(id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =================== EMAIL_TEMPLATE_CATALOG TABLE ===================
+-- One row per known template code. Dynamic codes are limited by app validation to
+-- internal delivery purposes; built-in codes are seeded here and may fall back to
+-- in-code defaults when no DB-managed version exists.
+CREATE TABLE IF NOT EXISTS email_template_catalog (
+    template_code VARCHAR(100) NOT NULL,
+    purpose ENUM('email_activation','password_reset','admin_password_reset','security_notification','delivery_operation','patreon_link_proof') NOT NULL,
+    allowed_variables JSON NOT NULL,
+    required_variables JSON NOT NULL,
+    is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    revision INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NULL,
+    disabled_at DATETIME NULL,
+    disabled_by VARCHAR(64) NULL,
+
+    PRIMARY KEY (template_code),
+    INDEX idx_email_template_catalog_enabled (is_enabled, purpose),
+    INDEX idx_email_template_catalog_builtin (is_builtin)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =================== EMAIL_TEMPLATES TABLE ===================
--- Transactional-auth-only template metadata. Rendered bodies are not retained here.
--- NOTE: This table is RESERVED for a future DB-managed template feature and is
--- intentionally left unseeded. The running system renders transactional email from
--- code (src/Util/email/templates.py TEMPLATES); nothing in src/ reads this table,
--- so an empty email_templates table does not affect delivery.
+-- Versioned subject/body rows. The catalog owns template availability, dynamic
+-- metadata, and revision; this table preserves editable version history.
 CREATE TABLE IF NOT EXISTS email_templates (
     id VARCHAR(64) NOT NULL,
     template_code VARCHAR(100) NOT NULL,
@@ -235,8 +254,78 @@ CREATE TABLE IF NOT EXISTS email_templates (
     INDEX idx_email_template_active (template_code, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+INSERT INTO email_template_catalog (
+    template_code, purpose, allowed_variables, required_variables,
+    is_builtin, is_enabled, revision, created_at, updated_at
+) VALUES
+    ('email_activation', 'email_activation',
+     JSON_ARRAY('activation_link','app_name','expires_in','recipient_masked','support_email'),
+     JSON_ARRAY('activation_link'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('password_reset', 'password_reset',
+     JSON_ARRAY('app_name','expires_in','recipient_masked','reset_link','support_email'),
+     JSON_ARRAY('reset_link'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('admin_password_reset', 'admin_password_reset',
+     JSON_ARRAY('app_name','expires_in','recipient_masked','reset_link','support_email'),
+     JSON_ARRAY('reset_link'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('security_notification', 'security_notification',
+     JSON_ARRAY('app_name','event_title','message','support_email'),
+     JSON_ARRAY('message'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('delivery_operation', 'delivery_operation',
+     JSON_ARRAY('app_name','status_summary','support_email'),
+     JSON_ARRAY('status_summary'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('patreon_link_proof', 'patreon_link_proof',
+     JSON_ARRAY('app_name','expires_at','expires_in','lookup_id','patreon_link_proof_url','proof_token','recipient_masked','support_email'),
+     JSON_ARRAY('patreon_link_proof_url','proof_token'), TRUE, TRUE, 1, NOW(), NOW()),
+    ('email_credit_grant_notification', 'delivery_operation',
+     JSON_ARRAY('action_url','app_name','credits','expires_at','expires_in','recipient_masked','support_email'),
+     JSON_ARRAY('credits','action_url','expires_at'), TRUE, TRUE, 1, NOW(), NOW())
+ON DUPLICATE KEY UPDATE
+    purpose = VALUES(purpose),
+    allowed_variables = VALUES(allowed_variables),
+    required_variables = VALUES(required_variables),
+    is_builtin = TRUE,
+    updated_at = NOW();
+
+-- Patreon proof template metadata. Render payloads and proof tokens remain in the
+-- durable outbox/proof tables; local email activation semantics are untouched.
+INSERT INTO email_templates (
+    id, template_code, version, subject_template, html_template, text_template,
+    is_active, created_at
+) VALUES (
+    'tmpl-patreon-link-proof-v1',
+    'patreon_link_proof',
+    1,
+    'Confirm your Patreon link',
+    '<p>Use this one-time proof link to confirm your Patreon membership link for $recipient_masked:</p><p><a href="$patreon_link_proof_url">Confirm Patreon link</a></p><p>Proof code: $proof_token</p><p>This proof expires at $expires_at. If you did not request this, ignore this email.</p>',
+    'Use this one-time proof link to confirm your Patreon membership link for $recipient_masked: $patreon_link_proof_url Proof code: $proof_token This proof expires at $expires_at. If you did not request this, ignore this email.',
+    TRUE,
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    subject_template = VALUES(subject_template),
+    html_template = VALUES(html_template),
+    text_template = VALUES(text_template),
+    is_active = VALUES(is_active);
+
+INSERT INTO email_templates (
+    id, template_code, version, subject_template, html_template, text_template,
+    is_active, created_at
+) VALUES (
+    'tmpl-email-credit-grant-notification-v1',
+    'email_credit_grant_notification',
+    1,
+    'You have $credits Magic Worlds credits',
+    '<p>A Magic Worlds administrator sent $credits credits to $recipient_masked.</p><p>If this email is already linked to your account, the credits have been added. Otherwise, open Magic Worlds and create or activate an account with this email to receive them.</p><p><a href="$action_url">Open Magic Worlds</a></p><p>Expiration: $expires_at</p>',
+    'A Magic Worlds administrator sent $credits credits to $recipient_masked. If this email is already linked to your account, the credits have been added. Otherwise, open Magic Worlds and create or activate an account with this email to receive them: $action_url Expiration: $expires_at',
+    TRUE,
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    subject_template = VALUES(subject_template),
+    html_template = VALUES(html_template),
+    text_template = VALUES(text_template),
+    is_active = VALUES(is_active);
+
 -- ===================================================================================
 -- EMAIL ACTIVATION TABLES COMPLETE
 -- ===================================================================================
 SELECT 'Email activation tables created successfully!' AS status,
-       '7 tables created: user_emails, user_email_link_tokens, email_messages, email_delivery_attempts, email_suppressions, email_idempotency_keys, email_templates' AS details;
+       '8 tables created: user_emails, user_email_link_tokens, email_messages, email_delivery_attempts, email_suppressions, email_idempotency_keys, email_template_catalog, email_templates; catalog-backed latest-template delivery supported' AS details;

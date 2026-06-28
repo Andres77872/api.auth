@@ -176,6 +176,50 @@ async def system_health() -> HealthCheckResponse:
         if email_provider.get("status") == "not_ready" or email_outbox.get("status") not in {"healthy", "disabled"}:
             status = "degraded"
 
+    # Patreon is entitlement/link-only operational health. Keep it as a
+    # separate component so local auth health remains independently observable;
+    # disabled Patreon is safe and must not degrade unrelated auth checks.
+    patreon = SystemMetrics.get_patreon_metrics()
+    components["patreon"] = patreon
+    if patreon.get("status") in {"degraded", "stale", "retrying", "unhealthy", "not_ready", "unknown"}:
+        status = "degraded"
+
+    # Billing/Stripe health is additive. Disabled or not-ready billing must not
+    # degrade unrelated local auth/session health unless billing is explicitly
+    # enabled and operationally unhealthy.
+    billing = SystemMetrics.get_billing_metrics()
+    billing_provider_stripe = (
+        billing.get("provider_stripe")
+        if isinstance(billing.get("provider_stripe"), dict)
+        else SystemMetrics.get_billing_provider_stripe_health()
+    )
+    billing_webhooks = (
+        billing.get("webhooks")
+        if isinstance(billing.get("webhooks"), dict)
+        else SystemMetrics.get_billing_webhook_metrics()
+    )
+    billing_sync = (
+        billing.get("sync")
+        if isinstance(billing.get("sync"), dict)
+        else SystemMetrics.get_billing_sync_metrics()
+    )
+    components["billing"] = billing
+    components["billing_provider_stripe"] = billing_provider_stripe
+    components["billing_webhooks"] = billing_webhooks
+    components["billing_sync"] = billing_sync
+
+    billing_enabled = not bool(billing.get("readiness", {}).get("disabled", billing.get("status") == "disabled"))
+    if billing_enabled and any(
+        item in {"degraded", "stale", "retrying", "unhealthy", "not_ready", "unknown"}
+        for item in (
+            billing.get("status"),
+            billing_provider_stripe.get("status"),
+            billing_webhooks.get("status"),
+            billing_sync.get("status"),
+        )
+    ):
+        status = "degraded"
+
     return HealthCheckResponse(
         success=True,
         status=status,

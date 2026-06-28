@@ -72,7 +72,7 @@ USER → USER_GROUP → PROJECT_GROUP → PROJECTS
 | `/admin/project-groups` | `admin_project_groups.py` | 7 | Admin/manage_roles | CRUD, project links |
 | `/roles` | `global_roles.py` | 28 | Mixed | Role/permission-group/permission CRUD, user role assignment, project catalog |
 | `/permissions` | `permission_assignments.py` | 17 | Mixed | Assign permission groups to user-groups/users, self-service queries, catalogs |
-| `/admin/email-templates` | `email_templates.py` | 6 | Root | list, get, update, preview, send-test, rollback |
+| `/admin/email-templates` | `email_templates.py` | 8 | Root | list, create, get, update, disable, preview, send-test, rollback |
 | `/webhooks/email` | `email_webhooks.py` | 1 | Svix sig | resend delivery-event webhook |
 | `/admin` (audit) | `audit_logs.py` | 6 | Admin/Root | audit/logs, audit/security-events, audit/statistics, audit/export, email/logs, users/{id}/activity |
 | `/admin` (dashboard) | `admin_dashboard.py` | 8 | Admin/Root | dashboard/stats, activity, activity/{id}, activity/types, health, users/projects statistics, system/overview |

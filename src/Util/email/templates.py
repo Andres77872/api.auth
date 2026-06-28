@@ -22,14 +22,15 @@ per-code allowlist before substitution.
 Template source
 ---------------
 ``render_transactional_template`` resolves each ``template_code`` to its active
-DB-managed version when present and falls back to the in-code :data:`TEMPLATES`
-defaults below on an empty result OR any database error, so an empty/unavailable
-``email_templates`` table never breaks delivery. The in-code defaults and the DB
-seed are kept byte-identical (the seed inserts these very strings).
+DB-managed version when present. Built-in templates can fall back to the in-code
+:data:`TEMPLATES` defaults for editor/offline rendering, but worker delivery
+passes ``fail_closed_on_db_error=True`` so disabled or dynamic template state is
+never bypassed when mail is actually sent.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from html import escape
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 AUTH_TRANSACTIONAL_SCOPE = "auth_transactional"
+DYNAMIC_TEMPLATE_PURPOSES = frozenset({"delivery_operation", "security_notification"})
 TRANSACTIONAL_TEMPLATE_CODES = frozenset(
     {
         "email_activation",
@@ -49,12 +51,17 @@ TRANSACTIONAL_TEMPLATE_CODES = frozenset(
         "admin_password_reset",
         "security_notification",
         "delivery_operation",
+        "patreon_link_proof",
+        "email_credit_grant_notification",
     }
 )
 SENSITIVE_TEMPLATE_VARIABLES = frozenset(
     {
         "activation_link",
         "reset_link",
+        "patreon_link_proof_url",
+        "action_url",
+        "proof_token",
         "token",
         "secret",
         "lookup_id",
@@ -99,11 +106,42 @@ ALLOWED_TEMPLATE_VARIABLES: dict[str, frozenset[str]] = {
     "delivery_operation": frozenset(
         {"app_name", "support_email", "status_summary"}
     ),
+    "patreon_link_proof": frozenset(
+        {
+            "app_name",
+            "recipient_masked",
+            "expires_in",
+            "expires_at",
+            "support_email",
+            "patreon_link_proof_url",
+            "proof_token",
+            "lookup_id",
+        }
+    ),
+    "email_credit_grant_notification": frozenset(
+        {
+            "app_name",
+            "recipient_masked",
+            "credits",
+            "action_url",
+            "expires_at",
+            "support_email",
+            "expires_in",
+        }
+    ),
 }
 
 
 class EmailTemplateError(ValueError):
     """Raised when a transactional template cannot be rendered safely."""
+
+
+class EmailTemplateDisabled(EmailTemplateError):
+    """Raised when a template code is known but explicitly disabled."""
+
+
+class EmailTemplateLookupError(EmailTemplateError):
+    """Raised when current DB template state cannot be read safely."""
 
 
 @dataclass(frozen=True)
@@ -119,6 +157,12 @@ class TransactionalEmailTemplate:
     # in-code fallback.
     version: int | None = None
     source: str = "code"
+    allowed_variables: tuple[str, ...] | None = None
+    is_dynamic: bool = False
+    is_enabled: bool = True
+    revision: int | None = None
+    disabled_at: str | None = None
+    disabled_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,9 +184,43 @@ def _clean_text(value: Any) -> str:
     return " ".join(text.replace("\r", " ").replace("\n", " ").split())
 
 
-def allowed_variables(template_code: str) -> frozenset[str]:
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _decode_variable_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = [part.strip() for part in value.split(",") if part.strip()]
+    if not isinstance(value, (list, tuple, set)):
+        return ()
+    return tuple(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+
+def allowed_variables(
+    template_code: str,
+    allowed_variable_names: tuple[str, ...] | frozenset[str] | None = None,
+) -> frozenset[str]:
     """Return the placeholder identifiers an editor may use for a template."""
 
+    if allowed_variable_names is not None:
+        return frozenset(allowed_variable_names)
     code = str(template_code or "").strip().lower()
     return ALLOWED_TEMPLATE_VARIABLES.get(code, frozenset(BASE_TEMPLATE_VARIABLES))
 
@@ -174,6 +252,7 @@ def validate_template_identifiers(
     subject_template: str,
     html_template: str,
     text_template: str,
+    allowed_variable_names: tuple[str, ...] | frozenset[str] | None = None,
 ) -> set[str]:
     """Reject any placeholder not in the per-code allowlist; return the used set.
 
@@ -181,7 +260,7 @@ def validate_template_identifiers(
     template can never reference an identifier outside the vetted allowlist.
     """
 
-    allowed = allowed_variables(template_code)
+    allowed = allowed_variables(template_code, allowed_variable_names)
     used: set[str] = set()
     for raw_template in (subject_template, html_template, text_template):
         used |= template_identifiers(raw_template)
@@ -474,37 +553,229 @@ TEMPLATES: dict[str, TransactionalEmailTemplate] = {
         ),
         text_template=("Transactional email delivery update:\n\n$status_summary"),
     ),
+    "email_credit_grant_notification": TransactionalEmailTemplate(
+        code="email_credit_grant_notification",
+        purpose="delivery_operation",
+        subject_template="You have $credits Magic Worlds credits",
+        required_variables=("credits", "action_url", "expires_at"),
+        html_template=_document(
+            title="Magic Worlds credits",
+            preheader="A Magic Worlds administrator sent credits to this email address.",
+            content_html=(
+                _heading("Magic Worlds credits")
+                + _paragraph(
+                    "A Magic Worlds administrator sent <strong>$credits</strong> credits to "
+                    "$recipient_masked."
+                )
+                + _paragraph(
+                    "If this email is already linked to your account, the credits have been added. "
+                    "Otherwise, open Magic Worlds and create or activate an account with this email "
+                    "to receive them."
+                )
+                + _button("$action_url", "Open Magic Worlds")
+                + _link_fallback("$action_url")
+                + _paragraph("Expiration: $expires_at", muted=True, margin="0")
+            ),
+        ),
+        text_template=(
+            "Magic Worlds credits\n"
+            "====================\n\n"
+            "A Magic Worlds administrator sent $credits credits to $recipient_masked.\n\n"
+            "If this email is already linked to your account, the credits have been added. "
+            "Otherwise, open Magic Worlds and create or activate an account with this email to receive them:\n\n"
+            "$action_url\n\n"
+            "Expiration: $expires_at"
+        ),
+    ),
+    "patreon_link_proof": TransactionalEmailTemplate(
+        code="patreon_link_proof",
+        purpose="patreon_link_proof",
+        subject_template="Confirm your Patreon link",
+        required_variables=("patreon_link_proof_url", "proof_token"),
+        html_template=_document(
+            title="Confirm your Patreon link",
+            preheader="Use this one-time proof to confirm your Patreon membership link.",
+            content_html=(
+                _heading("Confirm your Patreon link")
+                + _paragraph(
+                    "Use the button below to confirm the Patreon membership link requested for "
+                    "$recipient_masked."
+                )
+                + _button("$patreon_link_proof_url", "Confirm Patreon link")
+                + _link_fallback("$patreon_link_proof_url")
+                + _paragraph("One-time proof code: <strong>$proof_token</strong>")
+                + _paragraph(
+                    "This proof expires at $expires_at. If you did not request this, you can safely "
+                    "ignore this message.",
+                    muted=True,
+                    margin="0",
+                )
+            ),
+        ),
+        text_template=(
+            "Confirm your Patreon link\n"
+            "=========================\n\n"
+            "Use this one-time proof to confirm the Patreon membership link requested for "
+            "$recipient_masked:\n\n"
+            "$patreon_link_proof_url\n\n"
+            "Proof code: $proof_token\n\n"
+            "This proof expires at $expires_at. If you did not request this, you can safely ignore "
+            "this message."
+        ),
+    ),
 }
 
 
-def _template_from_row(code: str, row: Mapping[str, Any]) -> TransactionalEmailTemplate:
-    """Build a template from a DB ``email_templates`` row.
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
-    ``required_variables`` are intrinsic to the workflow (which variables the
-    enqueue path provides) and are taken from the in-code default, never from
-    the editable DB row.
-    """
 
+def _catalog_flags(code: str, row: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    row = row or {}
+    is_builtin = _as_bool(row.get("is_builtin"), default=code in TEMPLATES)
+    catalog_allowed = (
+        _decode_variable_list(row.get("allowed_variables"))
+        if row.get("allowed_variables") is not None
+        else None
+    )
+    catalog_required = (
+        _decode_variable_list(row.get("required_variables"))
+        if row.get("required_variables") is not None
+        else None
+    )
+    return {
+        "allowed_variables": (
+            catalog_allowed
+            if catalog_allowed is not None
+            else tuple(sorted(ALLOWED_TEMPLATE_VARIABLES.get(code, frozenset(BASE_TEMPLATE_VARIABLES))))
+        ),
+        "required_variables": (
+            catalog_required
+            if catalog_required is not None
+            else (TEMPLATES[code].required_variables if code in TEMPLATES else ())
+        ),
+        "purpose": str(row.get("purpose") or (TEMPLATES[code].purpose if code in TEMPLATES else "")).strip(),
+        "is_dynamic": not is_builtin,
+        "is_enabled": _as_bool(row.get("is_enabled"), default=True),
+        "revision": _int_or_none(row.get("revision")),
+        "disabled_at": str(row.get("disabled_at")) if row.get("disabled_at") is not None else None,
+        "disabled_by": str(row.get("disabled_by")) if row.get("disabled_by") is not None else None,
+    }
+
+
+def _code_template_from_catalog(code: str, row: Mapping[str, Any] | None = None) -> TransactionalEmailTemplate:
     default = TEMPLATES[code]
-    subject = str(row.get("subject_template") or "")
-    html = str(row.get("html_template") or "")
-    text = str(row.get("text_template") or "")
-    if not (subject and html and text):
-        raise EmailTemplateError("DB template row is missing subject/html/text")
-    version = row.get("version")
+    flags = _catalog_flags(code, row)
     return TransactionalEmailTemplate(
         code=code,
-        purpose=default.purpose,
-        subject_template=subject,
-        html_template=html,
-        text_template=text,
-        required_variables=default.required_variables,
-        version=int(version) if version is not None else None,
-        source="db",
+        purpose=flags["purpose"] or default.purpose,
+        subject_template=default.subject_template,
+        html_template=default.html_template,
+        text_template=default.text_template,
+        required_variables=tuple(flags["required_variables"]),
+        version=None,
+        source="code",
+        allowed_variables=tuple(flags["allowed_variables"]),
+        is_dynamic=False,
+        is_enabled=bool(flags["is_enabled"]),
+        revision=flags["revision"],
+        disabled_at=flags["disabled_at"],
+        disabled_by=flags["disabled_by"],
     )
 
 
-def resolve_template(template_code: str) -> TransactionalEmailTemplate:
+def _template_from_row(code: str, row: Mapping[str, Any]) -> TransactionalEmailTemplate:
+    """Build a template from catalog metadata plus an optional active DB version."""
+
+    flags = _catalog_flags(code, row)
+    subject = str(row.get("subject_template") or "")
+    html = str(row.get("html_template") or "")
+    text = str(row.get("text_template") or "")
+    version = _int_or_none(row.get("version"))
+    required = tuple(flags["required_variables"])
+    allowed = tuple(flags["allowed_variables"])
+
+    if not flags["is_enabled"]:
+        if not (subject and html and text) and code in TEMPLATES:
+            fallback = _code_template_from_catalog(code, row)
+            return TransactionalEmailTemplate(
+                code=fallback.code,
+                purpose=fallback.purpose,
+                subject_template=fallback.subject_template,
+                html_template=fallback.html_template,
+                text_template=fallback.text_template,
+                required_variables=fallback.required_variables,
+                version=None,
+                source="code",
+                allowed_variables=fallback.allowed_variables,
+                is_dynamic=fallback.is_dynamic,
+                is_enabled=False,
+                revision=fallback.revision,
+                disabled_at=fallback.disabled_at,
+                disabled_by=fallback.disabled_by,
+            )
+        return TransactionalEmailTemplate(
+            code=code,
+            purpose=flags["purpose"],
+            subject_template=subject,
+            html_template=html,
+            text_template=text,
+            required_variables=required,
+            version=version,
+            source="db" if version is not None else "catalog",
+            allowed_variables=allowed,
+            is_dynamic=bool(flags["is_dynamic"]),
+            is_enabled=False,
+            revision=flags["revision"],
+            disabled_at=flags["disabled_at"],
+            disabled_by=flags["disabled_by"],
+        )
+
+    if not (subject and html and text):
+        if code in TEMPLATES and not flags["is_dynamic"]:
+            return _code_template_from_catalog(code, row)
+        raise EmailTemplateError("dynamic DB template row is missing subject/html/text")
+
+    used = validate_template_identifiers(
+        template_code=code,
+        subject_template=subject,
+        html_template=html,
+        text_template=text,
+        allowed_variable_names=allowed,
+    )
+    missing_required = [name for name in required if name not in used]
+    if missing_required:
+        raise EmailTemplateError(
+            "DB template row is missing required variable references: "
+            + ", ".join(sorted(missing_required))
+        )
+    return TransactionalEmailTemplate(
+        code=code,
+        purpose=flags["purpose"],
+        subject_template=subject,
+        html_template=html,
+        text_template=text,
+        required_variables=required,
+        version=version,
+        source="db",
+        allowed_variables=allowed,
+        is_dynamic=bool(flags["is_dynamic"]),
+        is_enabled=bool(flags["is_enabled"]),
+        revision=flags["revision"],
+        disabled_at=flags["disabled_at"],
+        disabled_by=flags["disabled_by"],
+    )
+
+
+def resolve_template(
+    template_code: str,
+    *,
+    fail_closed_on_db_error: bool = False,
+    allow_disabled: bool = False,
+) -> TransactionalEmailTemplate:
     """Resolve a template to its active DB version, falling back to in-code.
 
     Resilience contract: an empty ``email_templates`` table OR any database
@@ -513,7 +784,7 @@ def resolve_template(template_code: str) -> TransactionalEmailTemplate:
     """
 
     code = str(template_code or "").strip().lower()
-    if code not in TEMPLATES:
+    if not code:
         raise EmailTemplateError("template is not allowed for transactional auth email")
 
     row: Mapping[str, Any] | None = None
@@ -522,6 +793,8 @@ def resolve_template(template_code: str) -> TransactionalEmailTemplate:
 
         row = db_email_templates.get_active_template(code)
     except Exception:  # pragma: no cover - defensive: DB unavailable
+        if fail_closed_on_db_error:
+            raise EmailTemplateLookupError("email template state could not be read") from None
         logger.warning(
             "email template DB lookup failed; using in-code fallback for %s",
             sanitize_email_log_value(code),
@@ -531,23 +804,45 @@ def resolve_template(template_code: str) -> TransactionalEmailTemplate:
 
     if row:
         try:
-            return _template_from_row(code, row)
+            template = _template_from_row(code, row)
+            if not template.is_enabled and not allow_disabled:
+                raise EmailTemplateDisabled(f"email template is disabled: {sanitize_email_log_value(code)}")
+            return template
+        except EmailTemplateDisabled:
+            raise
         except Exception:
+            if fail_closed_on_db_error:
+                raise
             logger.warning(
                 "invalid DB email template row; using in-code fallback for %s",
                 sanitize_email_log_value(code),
                 exc_info=True,
             )
+    if code not in TEMPLATES:
+        raise EmailTemplateError("template is not allowed for transactional auth email")
     return TEMPLATES[code]
 
 
-def get_transactional_template(template_code: str) -> TransactionalEmailTemplate:
+def get_transactional_template(
+    template_code: str,
+    *,
+    fail_closed_on_db_error: bool = False,
+    allow_disabled: bool = False,
+) -> TransactionalEmailTemplate:
     """Return a template only if it belongs to the auth transactional scope."""
 
     code = str(template_code or "").strip().lower()
-    if code not in TRANSACTIONAL_TEMPLATE_CODES or code not in TEMPLATES:
-        raise EmailTemplateError("template is not allowed for transactional auth email")
-    return resolve_template(code)
+    if code in TRANSACTIONAL_TEMPLATE_CODES or code in TEMPLATES:
+        return resolve_template(
+            code,
+            fail_closed_on_db_error=fail_closed_on_db_error,
+            allow_disabled=allow_disabled,
+        )
+    return resolve_template(
+        code,
+        fail_closed_on_db_error=fail_closed_on_db_error,
+        allow_disabled=allow_disabled,
+    )
 
 
 def render_template_parts(
@@ -577,7 +872,10 @@ def render_template_parts(
         subject_template=template.subject_template,
         html_template=template.html_template,
         text_template=template.text_template,
+        allowed_variable_names=template.allowed_variables,
     )
+    if not template.is_enabled:
+        raise EmailTemplateDisabled(f"email template is disabled: {sanitize_email_log_value(template.code)}")
 
     values = _base_variables(variables)
     missing = [name for name in template.required_variables if not values.get(name)]
@@ -595,6 +893,8 @@ def render_template_parts(
     }
     if template.version is not None:
         headers["X-Template-Version"] = str(template.version)
+    if template.revision is not None:
+        headers["X-Template-Revision"] = str(template.revision)
     if message_id:
         headers["X-Entity-Ref-ID"] = _clean_text(message_id)
     headers.pop("List-Unsubscribe-Post", None)
@@ -612,6 +912,7 @@ def render_template_parts(
             "scope": AUTH_TRANSACTIONAL_SCOPE,
             "purpose": template.purpose,
             "template": template.code,
+            "template_revision": str(template.revision or ""),
         },
         redaction_safe_variables=_redaction_safe_variables(used_values),
     )
@@ -622,10 +923,11 @@ def render_transactional_template(
     variables: Mapping[str, Any] | None = None,
     *,
     message_id: str | None = None,
+    fail_closed_on_db_error: bool = False,
 ) -> RenderedEmailTemplate:
     """Resolve a template (DB active version → in-code fallback) and render it."""
 
-    template = get_transactional_template(template_code)
+    template = get_transactional_template(template_code, fail_closed_on_db_error=fail_closed_on_db_error)
     return render_template_parts(template, variables, message_id=message_id)
 
 
@@ -634,10 +936,16 @@ def render_email_template(
     variables: Mapping[str, Any] | None = None,
     *,
     message_id: str | None = None,
+    fail_closed_on_db_error: bool = False,
 ) -> RenderedEmailTemplate:
     """Compatibility alias for callers that use a shorter name."""
 
-    return render_transactional_template(template_code, variables, message_id=message_id)
+    return render_transactional_template(
+        template_code,
+        variables,
+        message_id=message_id,
+        fail_closed_on_db_error=fail_closed_on_db_error,
+    )
 
 
 # Realistic, non-sensitive sample values used to render previews / send-tests and
@@ -645,12 +953,40 @@ def render_email_template(
 # email is never confused with a real one.
 _SAMPLE_LINK = "https://example.com/auth/email/verify?token=sample0000000000.preview000000000000"
 _SAMPLE_RESET_LINK = "https://example.com/auth/password/reset?token=sample0000000000.preview000000000000"
+_SAMPLE_PATREON_LINK = "https://example.com/auth/patreon/link/confirm?token=sample0000000000.preview000000000000"
+_SAMPLE_MAGIC_WORLDS_LINK = "https://example.com/"
 
 
-def sample_variables(template_code: str) -> dict[str, str]:
+def _sample_value_for_variable(name: str) -> str:
+    samples = {
+        "app_name": "Magic Auth",
+        "recipient_masked": "j***@example.com",
+        "expires_in": "1 hour",
+        "expires_at": "2026-01-01T00:15:00Z",
+        "support_email": "support@example.com",
+        "event_title": "New account event",
+        "message": "A security event was recorded on your account.",
+        "status_summary": "Your recent email was delivered successfully.",
+        "credits": "25",
+        "action_url": _SAMPLE_MAGIC_WORLDS_LINK,
+        "activation_link": _SAMPLE_LINK,
+        "reset_link": _SAMPLE_RESET_LINK,
+        "patreon_link_proof_url": _SAMPLE_PATREON_LINK,
+        "proof_token": "sample0000000000.preview000000000000",
+        "lookup_id": "sample0000000000",
+    }
+    return samples.get(name, f"sample {name.replace('_', ' ')}")
+
+
+def sample_variables(
+    template_code: str,
+    allowed_variable_names: tuple[str, ...] | frozenset[str] | None = None,
+) -> dict[str, str]:
     """Return safe placeholder sample values for previewing a template."""
 
     code = str(template_code or "").strip().lower()
+    if allowed_variable_names is not None and code not in TEMPLATES:
+        return {name: _sample_value_for_variable(name) for name in sorted(allowed_variable_names)}
     common = {
         "app_name": "Magic Auth",
         "recipient_masked": "j***@example.com",
@@ -674,6 +1010,28 @@ def sample_variables(template_code: str) -> dict[str, str]:
             "support_email": "support@example.com",
             "status_summary": "Your recent email was delivered successfully.",
         }
+    if code == "patreon_link_proof":
+        return {
+            **common,
+            "expires_in": "15 minutes",
+            "expires_at": "2026-01-01T00:15:00Z",
+            "patreon_link_proof_url": _SAMPLE_PATREON_LINK,
+            "proof_token": "sample0000000000.preview000000000000",
+            "lookup_id": "sample0000000000",
+        }
+    if code == "email_credit_grant_notification":
+        return {
+            **common,
+            "app_name": "Magic Worlds",
+            "credits": "25",
+            "action_url": _SAMPLE_MAGIC_WORLDS_LINK,
+            "expires_at": "No expiration is configured.",
+        }
+    if allowed_variable_names is not None:
+        merged = dict(common)
+        for name in allowed_variable_names:
+            merged.setdefault(name, _sample_value_for_variable(name))
+        return merged
     return common
 
 
@@ -681,7 +1039,10 @@ __all__ = [
     "ALLOWED_TEMPLATE_VARIABLES",
     "AUTH_TRANSACTIONAL_SCOPE",
     "BASE_TEMPLATE_VARIABLES",
+    "DYNAMIC_TEMPLATE_PURPOSES",
+    "EmailTemplateDisabled",
     "EmailTemplateError",
+    "EmailTemplateLookupError",
     "RenderedEmailTemplate",
     "SENSITIVE_TEMPLATE_VARIABLES",
     "TEMPLATES",
