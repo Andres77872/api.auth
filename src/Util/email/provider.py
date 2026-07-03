@@ -41,6 +41,38 @@ class WebhookVerificationError(RuntimeError):
     """Raised when a provider webhook signature cannot be verified."""
 
 
+class DisabledEmailProvider:
+    """No-op provider used only when delivery is explicitly disabled."""
+
+    provider_name = "disabled"
+
+    def __init__(self, *, configured_provider: str = "") -> None:
+        self.configured_provider = str(configured_provider or "").strip() or "unknown"
+
+    def send(self, request: EmailSendRequest) -> EmailSendResult:
+        del request
+        raise EmailProviderError(
+            "Email delivery is disabled",
+            metadata={
+                "provider": self.provider_name,
+                "configured_provider": self.configured_provider,
+            },
+            retryable=False,
+        )
+
+    def verify_webhook(self, raw_body: bytes, headers: Mapping[str, str]) -> list[dict[str, Any]]:
+        del raw_body, headers
+        return []
+
+    def health_check(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider_name,
+            "configured_provider": self.configured_provider,
+            "status": "disabled",
+            "ready": False,
+        }
+
+
 class EmailProvider(Protocol):
     provider_name: str
 

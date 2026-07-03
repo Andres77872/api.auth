@@ -173,7 +173,12 @@ async def system_health() -> HealthCheckResponse:
     components["email_worker"] = email_worker
 
     if email_provider.get("delivery_enabled"):
-        if email_provider.get("status") == "not_ready" or email_outbox.get("status") not in {"healthy", "disabled"}:
+        if (
+            email_provider.get("ready") is not True
+            or email_provider.get("status") != "ready"
+            or email_outbox.get("status") not in {"healthy", "disabled"}
+            or email_worker.get("status") != "healthy"
+        ):
             status = "degraded"
 
     # Patreon is entitlement/link-only operational health. Keep it as a

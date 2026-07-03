@@ -23,10 +23,10 @@ from typing import Any, Mapping, Sequence
 import src.Util.db_config as db_config
 from src.Util.cache_manager import CacheManager
 from src.Util.db import db_email
-from src.Util.email.config import EmailConfig, load_email_config
+from src.Util.email.config import EmailConfig, EmailConfigError, load_email_config, validate_email_readiness
 from src.Util.email.fake_provider import FakeEmailProvider
 from src.Util.email.mailpit import MailpitProvider
-from src.Util.email.provider import EmailProvider, EmailProviderError, EmailSendRequest
+from src.Util.email.provider import DisabledEmailProvider, EmailProvider, EmailProviderError, EmailSendRequest
 from src.Util.email.resend_provider import ResendProvider
 from src.Util.email.security import decrypt_render_payload, sanitize_email_log_value
 from src.Util.email.templates import (
@@ -227,11 +227,19 @@ class EmailWorker:
 
     @staticmethod
     def _provider_from_config(config: EmailConfig) -> EmailProvider:
+        if not config.delivery_enabled:
+            return DisabledEmailProvider(configured_provider=config.provider)
+        readiness = validate_email_readiness(config)
+        if not readiness.ready:
+            missing = ", ".join(readiness.missing) if readiness.missing else readiness.status
+            raise EmailConfigError(f"Email delivery is not ready: {missing}")
         if config.provider == "resend":
             return ResendProvider.from_config(config)
         if config.provider == "mailpit":
             return MailpitProvider.from_config(config)
-        return FakeEmailProvider()
+        if config.provider == "fake" and config.explicit_test_runtime:
+            return FakeEmailProvider()
+        raise EmailConfigError(f"Unsupported email provider: {config.provider}")
 
     @property
     def delivery_enabled(self) -> bool:

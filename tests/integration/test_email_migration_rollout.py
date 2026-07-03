@@ -122,3 +122,34 @@ def test_disabled_delivery_rollout_env_is_documented_without_dropping_tables():
     assert "EMAIL_PROVIDER=fake" in env_example
     assert "mailpit" in compose_test.lower()
     assert "axllent/mailpit" in compose_test.lower()
+
+
+def test_docker_email_worker_deployment_uses_runtime_env_contract():
+    compose_test = (ROOT / "docker-compose.test.yml").read_text()
+    env_test = (ROOT / ".env.test").read_text()
+    effective_test_env = f"{compose_test}\n{env_test}"
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    entrypoint = (ROOT / "scripts/docker-entrypoint.sh").read_text()
+
+    assert "CMD [\"bash\", \"scripts/docker-entrypoint.sh\"]" in dockerfile
+    assert "python -m src.workers.email_worker" in entrypoint
+    assert "--worker-id" in entrypoint
+    assert "uvicorn src.main:app" in entrypoint
+
+    for env_name in (
+        "DB_HOST",
+        "DB_USER",
+        "DB_MYSQL_PASSWORD",
+        "DB_NAME",
+        "REDIS_HOST",
+        "EMAIL_DELIVERY_ENABLED",
+        "EMAIL_PROVIDER",
+        "EMAIL_ALLOW_REAL_SEND_IN_TESTS",
+        "MAILPIT_SMTP_HOST",
+        "MAILPIT_SMTP_PORT",
+        "MAILPIT_API_BASE_URL",
+    ):
+        assert env_name in effective_test_env, f"test Docker deployment must define {env_name}"
+
+    assert "EMAIL_REAL_SEND_TEST_OPT_IN" not in compose_test
+    assert "MAILPIT_HTTP_BASE_URL" not in compose_test
