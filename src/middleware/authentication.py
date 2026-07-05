@@ -549,8 +549,12 @@ Optional[Dict[str, Any]]:
                 "groups": session_data.groups,
                 "session_token": session_token
             }
+    except HTTPException:
+        # Credential rejection (expired/invalid/revoked JWT) bubbling up from
+        # validate_session → decode degrades to anonymous, per the docstring.
+        return None
     except Exception:
-        logger.warning(f"optional_auth: validate_session failed for token {session_token[:8]}...")
+        logger.warning("optional_auth: authentication system error during validate_session", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication system error"

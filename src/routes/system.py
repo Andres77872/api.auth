@@ -19,7 +19,7 @@ from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
 from src.Util.activity_logger import ActivityType
-from src.Util.error_handler import AuthorizationError, ErrorCode, mask_uuid
+from src.Util.error_handler import AuthenticationError, AuthorizationError, ErrorCode, mask_uuid
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.cache_manager import cache_manager
 from src.Util.system_metrics import SystemMetrics
@@ -37,13 +37,27 @@ security = HTTPBearerOrCookie()
 
 
 @router.get("/info", response_model=SystemInfoResponse)
-async def get_system_info() -> SystemInfoResponse:
+async def get_system_info(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> SystemInfoResponse:
     """
     Get system information and health status.
-    
+    Requires a valid session token.
+
     Returns:
         System status and configuration information
     """
+    # Require a valid session — tenant aggregate counts are not public.
+    session_data = handle_db_operation(
+        lambda: validate_session(credentials.credentials),
+        error_context="session validation for system info"
+    )
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
+        )
+
     # Get basic system statistics (safely - all return 0 on error)
     total_users = handle_db_operation(
         lambda: count_users(),
@@ -103,13 +117,27 @@ async def get_system_info() -> SystemInfoResponse:
 
 
 @router.get("/health", response_model=HealthCheckResponse)
-async def system_health() -> HealthCheckResponse:
+async def system_health(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> HealthCheckResponse:
     """
     Comprehensive system health check.
-    
+    Requires a valid session token.
+
     Returns:
         Detailed health status of all system components
     """
+    # Require a valid session — infra/billing/email component health is not public.
+    session_data = handle_db_operation(
+        lambda: validate_session(credentials.credentials),
+        error_context="session validation for system health"
+    )
+    if not session_data:
+        raise AuthenticationError(
+            message="Invalid or expired session",
+            error_code=ErrorCode.SESSION_INVALID
+        )
+
     status = "healthy"
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     components = {}

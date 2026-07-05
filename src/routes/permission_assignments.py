@@ -413,6 +413,24 @@ async def remove_permission_group_from_user_direct(
         }
     }
     
+@router.get("/users/me/permission-groups", status_code=200)
+async def get_my_permission_groups(session_data=Depends(require_valid_session)):
+    """Get all permission groups for current user (direct assignments only)"""
+    user_data = get_user_by_hash(session_data.user_hash)
+    
+    # Get direct permission groups
+    permission_groups = get_user_permission_groups(user_data.id)
+    
+    return {
+        "user": {
+            "hash": user_data.user_hash,
+            "username": user_data.username
+        },
+        "direct_permission_groups": permission_groups,
+        "count": len(permission_groups)
+    }
+
+
 @router.get("/users/{user_hash}/permission-groups", status_code=200)
 async def get_user_direct_permission_groups(
     user_hash: str = Path(..., description="User hash"),
@@ -481,24 +499,6 @@ async def check_my_permission(
         },
         "permission": permission_name,
         "has_permission": has_permission
-    }
-
-
-@router.get("/users/me/permission-groups", status_code=200)
-async def get_my_permission_groups(session_data=Depends(require_valid_session)):
-    """Get all permission groups for current user (direct assignments only)"""
-    user_data = get_user_by_hash(session_data.user_hash)
-    
-    # Get direct permission groups
-    permission_groups = get_user_permission_groups(user_data.id)
-    
-    return {
-        "user": {
-            "hash": user_data.user_hash,
-            "username": user_data.username
-        },
-        "direct_permission_groups": permission_groups,
-        "count": len(permission_groups)
     }
 
 

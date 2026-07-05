@@ -210,7 +210,12 @@ def _extract_bearer_token(request: Request) -> str | None:
 
 
 def _s2s_feature_ready(config: BillingConfig) -> bool:
-    return bool(config.billing_enabled and config.s2s_enabled and config.s2s_bearer_token)
+    return bool(
+        config.billing_enabled
+        and config.s2s_enabled
+        and config.s2s_bearer_token
+        and config.id_hmac_secret
+    )
 
 
 def _authorized_internal_bearer(request: Request, config: BillingConfig) -> bool:
@@ -424,7 +429,7 @@ async def _begin_checkout_with_db(
             provider=constants.STRIPE_PROVIDER_NAME,
             kind=str(request_body.price_ref.ref_type),
             raw_id=str(request_body.price_ref.value),
-            secret=config.id_hmac_secret or "billing-route-local-hmac-not-for-production",
+            secret=config.id_hmac_secret,
         )
         return await _maybe_await(
             begin_checkout_intent(
@@ -1184,7 +1189,7 @@ async def enqueue_internal_billing_resync(
         dedupe = billing_sync.sync_job_dedupe_hmac(
             provider=constants.STRIPE_PROVIDER_NAME,
             job_type=billing_sync.JOB_TYPE_WEBHOOK_RESYNC,
-            secret=config.id_hmac_secret or "billing-route-local-hmac-not-for-production",
+            secret=config.id_hmac_secret,
             user_id=str(scope["user_id"]),
             project_id=str(scope["project_id"]),
             billing_group_id=_string_field(scope, "billing_group_id"),

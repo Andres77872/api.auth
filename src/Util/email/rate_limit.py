@@ -24,6 +24,8 @@ from src.Util.auth_constants import (
     EMAIL_CONSUME_IP_HOURLY_LIMIT,
     EMAIL_CONSUME_LOOKUP_HOURLY_LIMIT,
     EMAIL_COOLDOWN_PREFIX,
+    EMAIL_LOGIN_ACCOUNT_FAILURE_LIMIT,
+    EMAIL_LOGIN_ACCOUNT_FAILURE_WINDOW_SECONDS,
     EMAIL_LOGIN_IDENTIFIER_FAILURE_LIMIT,
     EMAIL_LOGIN_IDENTIFIER_FAILURE_WINDOW_SECONDS,
     EMAIL_RATE_PREFIX,
@@ -61,6 +63,8 @@ class RateLimitPolicy:
     resend_cooldown_seconds: int = EMAIL_RESEND_COOLDOWN_SECONDS
     login_identifier_failure_limit: int = EMAIL_LOGIN_IDENTIFIER_FAILURE_LIMIT
     login_identifier_failure_window_seconds: int = EMAIL_LOGIN_IDENTIFIER_FAILURE_WINDOW_SECONDS
+    login_account_failure_limit: int = EMAIL_LOGIN_ACCOUNT_FAILURE_LIMIT
+    login_account_failure_window_seconds: int = EMAIL_LOGIN_ACCOUNT_FAILURE_WINDOW_SECONDS
     change_password_failure_limit: int = AUTH_CHANGE_PASSWORD_FAILURE_LIMIT
     change_password_failure_window_seconds: int = AUTH_CHANGE_PASSWORD_FAILURE_WINDOW_SECONDS
     change_password_user_hourly_limit: int = AUTH_CHANGE_PASSWORD_USER_HOURLY_LIMIT
@@ -265,19 +269,36 @@ class EmailRateLimiter:
         identifier_digest = _digest_part(str(identifier or "").strip().lower())
         return _rate_key("login_identifier_15m", _digest_part(ip_address), identifier_digest)
 
+    def _login_account_key(self, identifier: str) -> str:
+        # Per-account bucket: digests only the identifier (no IP), so rotating
+        # source IPs cannot buy a fresh allowance against a single account.
+        identifier_digest = _digest_part(str(identifier or "").strip().lower())
+        return _rate_key("login_account_15m", identifier_digest)
+
     def record_login_identifier_failure(self, ip_address: str, identifier: str) -> RateLimitDecision:
         key = self._login_identifier_key(ip_address, identifier)
-        return self._consume_bucket(
+        decision = self._consume_bucket(
             "login_identifier_15m",
             key,
             limit=max(self.policy.login_identifier_failure_limit, 10**9),
             window_seconds=self.policy.login_identifier_failure_window_seconds,
         )
+        # Also advance the per-account bucket. Use a huge limit so incrementing
+        # never raises here; enforcement happens in check_login_identifier_allowed.
+        self._consume_bucket(
+            "login_account_15m",
+            self._login_account_key(identifier),
+            limit=max(self.policy.login_account_failure_limit, 10**9),
+            window_seconds=self.policy.login_account_failure_window_seconds,
+        )
+        return decision
 
     def check_login_identifier_allowed(self, ip_address: str, identifier: str) -> RateLimitDecision:
         key = self._login_identifier_key(ip_address, identifier)
+        account_key = self._login_account_key(identifier)
         try:
             count = self._value_as_int(self.redis.get(key))
+            account_count = self._value_as_int(self.redis.get(account_key))
         except Exception:
             return self._redis_unavailable("login_identifier_15m")
         if count >= self.policy.login_identifier_failure_limit:
@@ -287,10 +308,23 @@ class EmailRateLimiter:
                 limit=self.policy.login_identifier_failure_limit,
                 key=key,
             )
+        if account_count >= self.policy.login_account_failure_limit:
+            raise RateLimitExceeded(
+                bucket="login_account_15m",
+                retry_after=self._ttl(account_key, self.policy.login_account_failure_window_seconds),
+                limit=self.policy.login_account_failure_limit,
+                key=account_key,
+            )
         return RateLimitDecision(
             allowed=True,
             bucket="login_identifier_15m",
-            remaining=max(0, self.policy.login_identifier_failure_limit - count),
+            remaining=max(
+                0,
+                min(
+                    self.policy.login_identifier_failure_limit - count,
+                    self.policy.login_account_failure_limit - account_count,
+                ),
+            ),
         )
 
     def check_change_password_attempt(

@@ -4,6 +4,7 @@ Request Validation and Processing Middleware
 Handles request validation, processing time tracking, and activity logging context.
 """
 
+import os
 import time
 import logging
 from typing import Callable
@@ -17,6 +18,22 @@ from src.Util.logger_ws import logger
 
 # Configure logging
 log = logging.getLogger(__name__)
+
+# CORS allowlist — kept in sync with main.py so early reject branches never emit
+# an invalid wildcard under the credentialed CORS policy (allow_credentials=True).
+_allowed_origins_env = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5780,,http://localhost:5183,http://192.168.1.13:5173",
+)
+ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+
+
+def _apply_cors_reject_headers(request: Request, response: Response) -> None:
+    """Reflect a whitelisted Origin on early reject responses (never wildcard)."""
+    origin = request.headers.get('origin')
+    if origin and origin in ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
 
 
 class RequestValidationMiddleware(BaseHTTPMiddleware):
@@ -56,7 +73,7 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
             response = returnJson_422()
             process_time = time.time() - start_time
             response.headers["X-Process-Time"] = str(process_time)
-            response.headers['Access-Control-Allow-Origin'] = '*'
+            _apply_cors_reject_headers(request, response)
             return response
         
         # Validate POST request size
@@ -66,7 +83,7 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
                 response = returnJson_413()
                 process_time = time.time() - start_time
                 response.headers["X-Process-Time"] = str(process_time)
-                response.headers['Access-Control-Allow-Origin'] = '*'
+                _apply_cors_reject_headers(request, response)
                 return response
         
         # Extract IP address for activity logging

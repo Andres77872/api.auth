@@ -20,7 +20,7 @@ from src.Util.bulk_operations import (
     bulk_update_users, bulk_delete_users,
     bulk_assign_roles, bulk_add_users_to_group
 )
-from src.Util.db import validate_session, get_user_by_hash
+from src.Util.db import validate_session, get_user_by_hash, is_root_user
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, InternalError, ErrorCode, mask_uuid,
@@ -98,6 +98,16 @@ async def bulk_update_users_endpoint(
             message="Admin permission required for bulk operations",
             error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
             details={"required_permission": "admin or manage_users"}
+        )
+
+    # Only root users may change user_type via bulk update — mirrors the
+    # root-only guard on PATCH /users/{user_hash}/type and prevents privilege
+    # escalation (e.g. setting user_type='root') by non-root admins.
+    if user_type is not None and not is_root_user(current_user.id):
+        raise AuthorizationError(
+            message="Root user access required to change user types",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"required_user_type": "root"}
         )
 
     # Validate input

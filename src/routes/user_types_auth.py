@@ -726,22 +726,25 @@ async def update_admin_projects(
     current_assignments = get_admin_project_assignments_with_details(target_user.id)
     current_project_ids = [str(a['project_id']) for a in current_assignments]
     
+    # Track per-project failures so a partial reassignment does not report success.
+    failures = []
+
     # Remove from projects not in the new list
     for old_project_id in current_project_ids:
         if old_project_id not in assigned_project_ids:
             try:
                 remove_admin_from_project(target_user.id, old_project_id, removed_by=current_user.id)
-            except Exception:
-                pass  # Continue if removal fails
-    
+            except Exception as e:
+                failures.append({"op": "remove", "project_id": old_project_id, "error": str(e)})
+
     # Add to new projects
     for project_id in assigned_project_ids:
         if project_id not in current_project_ids:
             try:
                 add_admin_to_project(target_user.id, project_id, assigned_by=current_user.id)
-            except Exception:
-                pass  # Continue if addition fails (may already exist)
-    
+            except Exception as e:
+                failures.append({"op": "add", "project_id": project_id, "error": str(e)})
+
     # Get updated assignments
     updated_assignments = get_admin_project_assignments_with_details(target_user.id)
     
@@ -758,7 +761,20 @@ async def update_admin_projects(
         ))
     
     logger.info(f"Updated admin {target_user.username} projects to {len(project_list)} projects by {current_user.username}")
-    
+
+    if failures:
+        failed_ids = [f["project_id"] for f in failures]
+        logger.warning(
+            f"Admin project reassignment for {target_user.username} had {len(failures)} failed operations: {failures}"
+        )
+        return UpdateAdminProjectsResponse(
+            success=False,
+            message=f"Admin projects partially updated; failed operations for project ids: {failed_ids}",
+            user_hash=user_hash,
+            assigned_projects=project_list,
+            total_projects=len(project_list)
+        )
+
     return UpdateAdminProjectsResponse(
         success=True,
         message=f"Admin projects updated",
