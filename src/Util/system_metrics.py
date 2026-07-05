@@ -7,6 +7,7 @@ and health status tracking for the authentication system.
 
 import time
 import json
+import os
 from datetime import datetime, timezone
 from typing import Dict, Any
 
@@ -221,6 +222,9 @@ class SystemMetrics:
             return {
                 "status": "not_ready",
                 "ready": False,
+                "provider": os.environ.get(constants.EMAIL_PROVIDER_ENV, "unknown"),
+                "delivery_enabled": str(os.environ.get(constants.EMAIL_DELIVERY_ENABLED_ENV, "")).strip().lower()
+                in {"1", "true", "yes", "y", "on"},
                 "error": str(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
@@ -300,6 +304,7 @@ class SystemMetrics:
 
         try:
             config = load_email_config(validate_real_send_guard=False)
+            readiness = validate_email_readiness(config)
             heartbeats = []
             for key in redis_client.scan_iter(match=f"{EMAIL_WORKER_WAKE_PREFIX}heartbeat:*", count=100):
                 raw = redis_client.get(key)
@@ -315,10 +320,18 @@ class SystemMetrics:
                     heartbeats.append(decoded)
 
             latest = max((item.get("recorded_at", "") for item in heartbeats), default=None)
-            status = "healthy" if heartbeats else ("disabled" if not config.delivery_enabled else "unknown")
+            if not config.delivery_enabled:
+                status = "disabled"
+            elif not readiness.ready:
+                status = "not_ready"
+            elif heartbeats:
+                status = "healthy"
+            else:
+                status = "unknown"
             return {
                 "status": status,
                 "delivery_enabled": config.delivery_enabled,
+                "ready": status == "healthy",
                 "heartbeat_count": len(heartbeats),
                 "latest_heartbeat": latest,
                 "workers": heartbeats[:10],
@@ -327,6 +340,9 @@ class SystemMetrics:
         except Exception as e:
             return {
                 "status": "unknown",
+                "delivery_enabled": str(os.environ.get(constants.EMAIL_DELIVERY_ENABLED_ENV, "")).strip().lower()
+                in {"1", "true", "yes", "y", "on"},
+                "ready": False,
                 "heartbeat_count": 0,
                 "latest_heartbeat": None,
                 "workers": [],

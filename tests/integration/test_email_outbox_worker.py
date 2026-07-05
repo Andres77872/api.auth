@@ -111,6 +111,57 @@ def test_retry_backoff_dead_letters_after_eight_attempts():
     assert 0 <= retry.delay_seconds <= 600
 
 
+def test_worker_startup_tolerates_disabled_delivery_with_incomplete_resend_config(fake_redis, monkeypatch):
+    from src.Util.email.provider import DisabledEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setenv("EMAIL_DELIVERY_ENABLED", "false")
+    monkeypatch.setenv("EMAIL_PROVIDER", "resend")
+    monkeypatch.setenv("RESEND_API_KEY", "")
+    monkeypatch.setenv("RESEND_WEBHOOK_SECRET", "")
+
+    worker = EmailWorker(worker_id="worker-disabled-resend", redis=fake_redis, db_module=WorkerDbStub())
+
+    assert worker.delivery_enabled is False
+    assert isinstance(worker.provider, DisabledEmailProvider)
+    assert worker.provider.health_check()["status"] == "disabled"
+    assert worker.drain_once(limit=10) == []
+
+
+def test_worker_enabled_delivery_rejects_incomplete_resend_config(fake_redis, monkeypatch):
+    from src.Util.email.config import EmailConfigError
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setenv("EMAIL_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_PROVIDER", "resend")
+    monkeypatch.setenv("RESEND_API_KEY", "")
+    monkeypatch.setenv("RESEND_WEBHOOK_SECRET", "")
+
+    try:
+        EmailWorker(worker_id="worker-bad-resend", redis=fake_redis, db_module=WorkerDbStub())
+    except EmailConfigError as exc:
+        assert "RESEND_API_KEY" in str(exc)
+        assert "RESEND_WEBHOOK_SECRET" in str(exc)
+    else:
+        raise AssertionError("enabled delivery with incomplete Resend config must fail fast")
+
+
+def test_worker_enabled_delivery_rejects_fake_provider_outside_test_runtime(fake_redis, monkeypatch):
+    from src.Util.email.config import EmailConfigError
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("EMAIL_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_PROVIDER", "fake")
+
+    try:
+        EmailWorker(worker_id="worker-fake-dev", redis=fake_redis, db_module=WorkerDbStub())
+    except EmailConfigError as exc:
+        assert "EMAIL_PROVIDER" in str(exc)
+    else:
+        raise AssertionError("runtime fake provider must not be accepted outside explicit test runtime")
+
+
 def test_suppression_skip_records_sanitized_attempt(fake_redis):
     from src.Util.email.fake_provider import FakeEmailProvider
     from src.workers.email_worker import EmailWorker

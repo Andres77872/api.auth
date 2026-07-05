@@ -265,6 +265,9 @@ def validate_email_readiness(config: EmailConfig) -> EmailReadiness:
             missing.append(MAILPIT_SMTP_HOST_ENV)
         if not config.mailpit_smtp_port:
             missing.append(MAILPIT_SMTP_PORT_ENV)
+    elif config.provider == "fake":
+        if not config.explicit_test_runtime:
+            missing.append(EMAIL_PROVIDER_ENV)
     elif config.provider != "fake":
         missing.append(EMAIL_PROVIDER_ENV)
 

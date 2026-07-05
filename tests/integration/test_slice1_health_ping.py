@@ -77,3 +77,30 @@ async def test_health_degraded_when_db_fails(client, fake_redis, patched_cache_m
     data = response.json()
     assert data["status"] == "degraded"
     assert data["components"]["database"]["status"] == "unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_health_degraded_when_email_delivery_enabled_but_worker_missing(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
+    """Enabled email delivery must not look operational without a worker heartbeat."""
+    billing_disabled = {
+        "status": "disabled",
+        "readiness": {"disabled": True},
+        "provider_stripe": {"status": "disabled"},
+        "webhooks": {"status": "disabled"},
+        "sync": {"status": "disabled"},
+    }
+
+    with patch("src.routes.system.count_users", return_value=42), \
+         patch("src.routes.system.count_user_groups", return_value=5), \
+         patch("src.routes.system.count_project_permission_groups", return_value=3), \
+         patch("src.routes.system.SystemMetrics.get_email_provider_health", return_value={"status": "ready", "ready": True, "delivery_enabled": True}), \
+         patch("src.routes.system.SystemMetrics.get_email_outbox_metrics", return_value={"status": "healthy"}), \
+         patch("src.routes.system.SystemMetrics.get_email_worker_metrics", return_value={"status": "unknown", "delivery_enabled": True, "heartbeat_count": 0}), \
+         patch("src.routes.system.SystemMetrics.get_patreon_metrics", return_value={"status": "disabled"}), \
+         patch("src.routes.system.SystemMetrics.get_billing_metrics", return_value=billing_disabled):
+        response = await client.get("/system/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["components"]["email_worker"]["status"] == "unknown"

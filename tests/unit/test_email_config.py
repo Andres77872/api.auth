@@ -112,3 +112,21 @@ def test_delivery_disabled_is_safe_not_ready_without_real_send(monkeypatch):
     assert loaded.delivery_enabled is False
     assert readiness.status == "disabled"
     assert readiness.ready is False
+
+
+def test_enabled_fake_provider_is_not_ready_outside_explicit_test_runtime(monkeypatch):
+    config = _config_module()
+
+    for key, value in _base_env(
+        APP_ENV="development",
+        PYTEST_CURRENT_TEST="",
+        EMAIL_DELIVERY_ENABLED="true",
+        EMAIL_PROVIDER="fake",
+    ).items():
+        monkeypatch.setenv(key, value)
+
+    readiness = config.validate_email_readiness(config.load_email_config())
+
+    assert readiness.ready is False
+    assert readiness.status == "not_ready"
+    assert "EMAIL_PROVIDER" in readiness.missing
