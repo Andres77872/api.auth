@@ -56,6 +56,7 @@ async def test_platform_login_returns_access_refresh_pair_and_refresh_cookie(
     assert data["refresh_token"]
     assert data["session_token"] == data["access_token"]
     assert data["project"] is None
+    assert data["remember_me"] is False
     assert data["accessible_projects"] == []
 
     set_cookie_values = [value.decode().lower() for key, value in response.headers.raw if key.lower() == b"set-cookie"]
@@ -84,6 +85,13 @@ async def test_platform_login_remember_me_uses_30_day_refresh_cookie(
     assert response.status_code == 200
     data = response.json()
     assert data["refresh_expires_in"] == REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert data["remember_me"] is True
+
+    from src.Util.JWT_Security import JWTTokenHandler
+    refresh_claims = JWTTokenHandler.decode_refresh_token(data["refresh_token"])
+    family = fake_redis.get(f"refresh_family:{refresh_claims['family_id']}")
+    assert family is not None
+    assert 0 < fake_redis.ttl(f"refresh_family:{refresh_claims['family_id']}") <= REMEMBER_ME_REFRESH_TTL_SECONDS
 
     set_cookie_values = [value.decode().lower() for key, value in response.headers.raw if key.lower() == b"set-cookie"]
     refresh_cookie = next(value for value in set_cookie_values if "refresh_token=" in value)
@@ -105,6 +113,7 @@ async def test_platform_refresh_preserves_platform_scope_and_permissions(
             user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
             permissions=["admin", "manage_users", "manage_roles"],
             groups=["platform_admins"],
+            remember_me=True,
         )
 
     with patch("src.routes.auth.get_user_by_hash", return_value=user):
@@ -120,6 +129,7 @@ async def test_platform_refresh_preserves_platform_scope_and_permissions(
     assert data["access_token"]
     assert data["refresh_token"]
     assert data["project"] is None
+    assert data["remember_me"] is True
     assert data["accessible_projects"] == []
     assert "outdated" not in data.get("message", "").lower()
 

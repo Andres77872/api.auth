@@ -238,6 +238,7 @@ def _login_response_from_rotation(rotation) -> LoginResponse:
         refresh_expires_in=token_pair.refresh_expires_in,
         expires_at=token_pair.expires_at,
         refresh_expires_at=token_pair.refresh_expires_at,
+        remember_me=token_pair.remember_me,
         user=UserInfo(
             user_hash=login_data.user_hash,
             username=login_data.username or login_data.user_hash,
@@ -967,6 +968,7 @@ async def login(
             refresh_expires_in=token_pair.refresh_expires_in,
             expires_at=token_pair.expires_at,
             refresh_expires_at=token_pair.refresh_expires_at,
+            remember_me=token_pair.remember_me,
             user=UserInfo(
                 user_hash=user_record.user_hash,
                 username=user_record.username,
@@ -1024,6 +1026,7 @@ async def login(
             refresh_expires_in=token_pair.refresh_expires_in,
             expires_at=token_pair.expires_at,
             refresh_expires_at=token_pair.refresh_expires_at,
+            remember_me=token_pair.remember_me,
             user=UserInfo(
                 user_hash=user_record.user_hash,
                 username=user_record.username,
@@ -1110,6 +1113,7 @@ async def login(
         refresh_expires_in=token_pair.refresh_expires_in,
         expires_at=token_pair.expires_at,
         refresh_expires_at=token_pair.refresh_expires_at,
+        remember_me=token_pair.remember_me,
         user=UserInfo(
             user_hash=user_record.user_hash,
             username=user_record.username,
@@ -1198,6 +1202,7 @@ async def platform_login(
         refresh_expires_in=token_pair.refresh_expires_in,
         expires_at=token_pair.expires_at,
         refresh_expires_at=token_pair.refresh_expires_at,
+        remember_me=token_pair.remember_me,
         user=UserInfo(
             user_hash=user_record.user_hash,
             username=user_record.username,
@@ -1336,6 +1341,7 @@ async def register(
         refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
         expires_at=token_pair.expires_at if token_pair else None,
         refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
+        remember_me=token_pair.remember_me if token_pair else False,
         user=user_info,
         project=project_info,
         user_id=getattr(register_result, 'user_id', None)
@@ -1696,6 +1702,7 @@ async def switch_project(
         refresh_expires_in=rotation.token_pair.refresh_expires_in,
         expires_at=rotation.token_pair.expires_at,
         refresh_expires_at=rotation.token_pair.refresh_expires_at,
+        remember_me=rotation.token_pair.remember_me,
         project=project_info,
         user_groups=user_group_names,
     )

@@ -70,7 +70,7 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 | Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`. Max-Age tracks the refresh family TTL (72h sliding, or ~30 days when `remember_me=true`) |
 | Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
 | Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family. Default rotation slides the 72h window; a `remember_me=true` family keeps its fixed `absolute_expires_at` and does not slide |
-| Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window |
+| Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window. Successful login, refresh, and switch-project responses return the mode as top-level `remember_me`; `/auth/validate` returns it under `session.remember_me` |
 
 `POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
 

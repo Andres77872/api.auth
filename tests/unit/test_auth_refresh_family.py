@@ -86,6 +86,7 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     assert pair.access_token
     assert pair.refresh_token
     assert pair.session_token == pair.access_token
+    assert pair.remember_me is False
     assert pair.cookie_metadata["access"]["name"] == ACCESS_COOKIE_NAME
     assert pair.cookie_metadata["refresh"]["name"] == REFRESH_COOKIE_NAME
 
@@ -182,6 +183,7 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
     remembered_anchor = _decode(fake.get(f"{REFRESH_ANCHOR_PREFIX}{remembered_family_id}"))
 
     assert remembered.refresh_expires_in == REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert remembered.remember_me is True
     assert remembered.cookie_metadata["refresh"]["max_age"] == REMEMBER_ME_REFRESH_TTL_SECONDS
     assert remembered_family["remember_me"] is True
     assert remembered_family["refresh_ttl_seconds"] == REMEMBER_ME_REFRESH_TTL_SECONDS
@@ -309,7 +311,7 @@ def test_rotate_refresh_succeeds_from_anchor_when_old_access_session_missing(mon
     assert fake.ttl(f"refresh_anchor:{family_id}") == REFRESH_FAMILY_TTL_SECONDS
 
 
-def test_remembered_refresh_rotation_keeps_original_absolute_expiry(monkeypatch):
+def test_remembered_refresh_rotation_keeps_original_absolute_expiry_in_final_week(monkeypatch, frozen_time):
     from fakeredis import FakeStrictRedis
     import src.Util.auth_lifecycle as lifecycle
     from src.Util.auth_constants import REMEMBER_ME_REFRESH_TTL_SECONDS
@@ -339,6 +341,8 @@ def test_remembered_refresh_rotation_keeps_original_absolute_expiry(monkeypatch)
     original_family = _decode(fake.get(f"refresh_family:{family_id}"))
     original_expires_at = original_family["expires_at"]
 
+    frozen_time.tick(delta=timedelta(days=24))
+
     fake.delete(f"session:{old_access_jti}", f"session_full:{old_access_jti}")
 
     rotation = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
@@ -358,9 +362,13 @@ def test_remembered_refresh_rotation_keeps_original_absolute_expiry(monkeypatch)
     assert anchor["expires_at"] == original_expires_at
     assert anchor["absolute_expires_at"] == original_expires_at
     assert rotation.token_pair.refresh_expires_at.isoformat() == original_expires_at
-    assert 0 < rotation.token_pair.refresh_expires_in <= REMEMBER_ME_REFRESH_TTL_SECONDS
-    assert 0 < fake.ttl(f"refresh_family:{family_id}") <= REMEMBER_ME_REFRESH_TTL_SECONDS
-    assert 0 < fake.ttl(f"refresh_anchor:{family_id}") <= REMEMBER_ME_REFRESH_TTL_SECONDS
+    assert rotation.token_pair.remember_me is True
+    assert rotation.token_pair.refresh_claims["exp"] == int(datetime.fromisoformat(original_expires_at).timestamp())
+    assert rotation.token_pair.refresh_expires_in == 6 * 24 * 60 * 60
+    assert rotation.token_pair.cookie_metadata["refresh"]["max_age"] == 6 * 24 * 60 * 60
+    assert fake.ttl(f"refresh_family:{family_id}") == 6 * 24 * 60 * 60
+    assert fake.ttl(f"refresh_anchor:{family_id}") == 6 * 24 * 60 * 60
+    assert rotation.token_pair.refresh_expires_in < REMEMBER_ME_REFRESH_TTL_SECONDS
 
 
 def test_legacy_family_without_anchor_or_old_session_backfills_anchor(monkeypatch):

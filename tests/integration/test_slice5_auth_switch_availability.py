@@ -88,6 +88,7 @@ async def test_switch_project_valid(
             project={"id": current_project.id, "project_hash": current_project.project_hash, "project_name": current_project.project_name},
             groups=[group.group_name],
             permissions=[],
+            remember_me=True,
         )
     old_access_jti = pair.access_claims["jti"]
 
@@ -109,6 +110,7 @@ async def test_switch_project_valid(
     assert data["refresh_token"]
     assert data["session_token"] == data["access_token"]
     assert data["project"]["project_hash"] == "prj-other-002"
+    assert data["remember_me"] is True
     assert fake_redis.get(f"session:{old_access_jti}") is None
 
 

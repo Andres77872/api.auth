@@ -57,6 +57,7 @@ class TokenPair:
     refresh_expires_in: int
     expires_at: datetime
     refresh_expires_at: datetime
+    remember_me: bool
     access_claims: Dict[str, Any]
     refresh_claims: Dict[str, Any]
     cookie_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -755,6 +756,7 @@ def _issue_token_pair(
         refresh_expires_in=effective_refresh_ttl,
         expires_at=access_expires_at,
         refresh_expires_at=refresh_expires_at,
+        remember_me=bool(remember_me),
         access_claims=access_claims,
         refresh_claims=refresh_claims,
         cookie_metadata=_build_cookie_metadata(effective_refresh_ttl),
@@ -1103,6 +1105,7 @@ def _build_rotated_pair(
             refresh_expires_in=refresh_ttl,
             expires_at=access_expires_at,
             refresh_expires_at=refresh_expires_at,
+            remember_me=remember_me,
             access_claims=access_claims,
             refresh_claims=new_refresh_claims,
             cookie_metadata=_build_cookie_metadata(refresh_ttl),

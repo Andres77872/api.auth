@@ -966,6 +966,7 @@ def _login_response(
         refresh_expires_in=token_pair.refresh_expires_in,
         expires_at=token_pair.expires_at,
         refresh_expires_at=token_pair.refresh_expires_at,
+        remember_me=token_pair.remember_me,
         user=UserInfo(
             user_hash=user_data["user_hash"],
             username=user_data["username"],

@@ -156,6 +156,7 @@ def fake_redis():
          patch("src.Util.decorators.validate_session", return_value=session_mock), \
          patch("src.Util.decorators.get_user_by_hash", return_value=user_mock), \
          patch("src.Util.db.validate_session", return_value=session_mock), \
+         patch("src.Util.db.db_enhanced.validate_session", return_value=session_mock), \
          _optional_patch_targets(_OAUTH_REDIS_PATCH_LOCATIONS, fake):
         # Directly set the singleton's redis attribute (cannot be patched after import)
         cache_manager.redis = fake

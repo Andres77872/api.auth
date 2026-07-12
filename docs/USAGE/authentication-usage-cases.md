@@ -40,7 +40,7 @@ The authentication system uses **short-lived access JWTs** (default 15-minute ex
 - **Access Token**: short-lived JWT (default 15 min, `expires_in: 900`) used for protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`. The default is set by `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default `15`).
 - **Refresh Token**: JWT used only by `/auth/refresh`; returned in JSON and as HttpOnly Secure `refresh_token` cookie. 72-hour sliding by default, or a 30-day absolute window when `remember_me=true` (see above).
 - **Session Token**: deprecated response/cookie alias for the access token
-- **`remember_me`**: optional `bool` form field on `/auth/login` and `/auth/platform/login` (default `false`) that switches the refresh family from 72h-sliding to 30-day-absolute. It is reflected in `/auth/validate` as `session.remember_me` and in `refresh_expires_at`.
+- **`remember_me`**: optional `bool` form field on `/auth/login` and `/auth/platform/login` (default `false`) that switches the refresh family from 72h-sliding to 30-day-absolute. Successful login, refresh, and switch-project token-pair responses return the selected mode as top-level `remember_me`; `/auth/validate` also exposes it as `session.remember_me`.
 - **Project Context**: All users (including root) operate within a project context on `/auth/login`
 - **Root Users**: Have global access (bypass group-membership validation) but still require `project_hash` on `/auth/login`. Use `/auth/platform/login` for login without project binding.
 - **User Groups**: Determine which projects a user can access (root bypasses this validation)
@@ -244,7 +244,7 @@ curl -X POST "http://localhost:8000/auth/login" \
   -d "username=john_doe&password=SecurePass123!&project_hash=proj-xyz789...&remember_me=true"
 ```
 
-The flag is surfaced afterwards in `GET /auth/validate` as `session.remember_me` and in the `refresh_expires_at` value returned by login/refresh.
+The flag is preserved as top-level `remember_me` on login, refresh, and switch-project responses, and is also surfaced by `GET /auth/validate` as `session.remember_me`. `refresh_expires_at` carries the fixed remembered-session deadline.
 
 ---
 
