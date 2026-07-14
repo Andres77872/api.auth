@@ -352,6 +352,7 @@ def enhanced_register(
         refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
         expires_at=token_pair.expires_at if token_pair else None,
         refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
+        remember_me=token_pair.remember_me if token_pair else False,
         cookie_metadata=token_pair.cookie_metadata if token_pair else {},
     )
 

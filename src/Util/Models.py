@@ -2375,6 +2375,7 @@ class EnhancedUserLogin(BaseModelConfig):
     refresh_expires_in: Optional[int] = None
     expires_at: Optional[datetime] = None
     refresh_expires_at: Optional[datetime] = None
+    remember_me: bool = False
     cookie_metadata: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     plan: Optional[SessionPlanStatus] = None
 
