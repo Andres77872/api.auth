@@ -97,15 +97,29 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 def _ttl_is_valid(payload: Mapping[str, Any]) -> bool:
     expires_in = payload.get("expires_in")
+    expires_at_value = payload.get("expires_at")
+    if expires_in is None and expires_at_value is None:
+        return False
+
     if expires_in is not None:
+        if isinstance(expires_in, bool):
+            return False
         try:
-            if int(expires_in) > MAX_PROVIDER_INIT_TTL_SECONDS:
+            ttl_seconds = int(expires_in)
+            if isinstance(expires_in, float) and not expires_in.is_integer():
+                return False
+            if ttl_seconds <= 0 or ttl_seconds > MAX_PROVIDER_INIT_TTL_SECONDS:
                 return False
         except (TypeError, ValueError):
             return False
-    expires_at = _parse_datetime(payload.get("expires_at"))
-    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
-        return False
+
+    if expires_at_value is not None:
+        expires_at = _parse_datetime(expires_at_value)
+        if expires_at is None:
+            return False
+        remaining_seconds = (expires_at - datetime.now(timezone.utc)).total_seconds()
+        if remaining_seconds <= 0 or remaining_seconds > MAX_PROVIDER_INIT_TTL_SECONDS:
+            return False
     return True
 
 

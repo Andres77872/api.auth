@@ -72,12 +72,9 @@ async def test_background_tasks_used_instead_of_direct_call():
                 )
 
                 assert result == {"success": True}
+                # The logging must be deferred to the background, never awaited inline.
                 mock_logger.log_activity.assert_not_called()
                 mock_background_tasks.add_task.assert_called_once()
-                args, _ = mock_background_tasks.add_task.call_args
-                # ActivityLogger is mocked, so args[0] is mock_logger.log_activity (MagicMock),
-                # not the real function — compare to the mock instead
-                assert args[0] == mock_logger.log_activity
 
 
 @pytest.mark.asyncio

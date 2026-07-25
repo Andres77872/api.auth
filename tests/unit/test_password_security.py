@@ -18,6 +18,12 @@ from src.Util.password_security import (
 # ─── hash_password ──────────────────────────────────────────────────────────
 
 class TestHashPassword:
+    def test_new_manager_uses_production_argon2_costs(self):
+        pm = PasswordManager()
+        assert pm.hasher.time_cost == 3
+        assert pm.hasher.memory_cost == 65536
+        assert pm.hasher.parallelism == 1
+
     def test_returns_argon2_hash(self):
         h = hash_password("test_password")
         assert h.startswith("$argon2")

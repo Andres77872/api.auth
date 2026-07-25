@@ -10,7 +10,7 @@ import io
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, Generator, Tuple
+from typing import Optional, Dict, Any, AsyncGenerator, Tuple
 
 from src.Util.error_handler import ErrorCode
 
@@ -172,11 +172,11 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
-def stream_csv_export(
+async def stream_csv_export(
     source: str,
     filters: Dict[str, Any],
     limit: int,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     """
     Generate CSV export rows as a streaming generator.
 
@@ -234,11 +234,11 @@ def stream_csv_export(
         yield output.getvalue()
 
 
-def stream_json_export(
+async def stream_json_export(
     source: str,
     filters: Dict[str, Any],
     limit: int,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     """
     Generate JSON export as a streaming generator.
 

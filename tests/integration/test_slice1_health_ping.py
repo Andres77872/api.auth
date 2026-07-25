@@ -1,7 +1,8 @@
 """
-Slice 1 — Health & Ping Endpoints (System Routes, No Auth)
+Slice 1 — Health & Ping Endpoints
 
-Tests: GET /ping (204), GET /system/ping (200), GET /system/health (200), GET /system/info (200)
+The ping endpoints are public. Detailed health and aggregate system information
+require a valid session because they expose tenant and infrastructure state.
 
 CRITICAL: system.py imports count_users etc. from src.Util.db at module load time.
 We must patch at src.routes.system.count_users (usage location), not src.Util.db.count_users.
@@ -9,6 +10,12 @@ We must patch at src.routes.system.count_users (usage location), not src.Util.db
 
 import pytest
 from unittest.mock import patch
+
+
+AUTH_HEADERS = {
+    "Authorization": "Bearer test-system-session",
+    "User-Agent": "test",
+}
 
 
 @pytest.mark.asyncio
@@ -30,14 +37,24 @@ async def test_system_ping_returns_200(client, fake_redis):
     assert "timestamp" in data
 
 
+@pytest.mark.parametrize("path", ["/system/health", "/system/info"])
+@pytest.mark.asyncio
+async def test_system_details_require_a_session(client, path):
+    """Detailed tenant and infrastructure state is not public."""
+    response = await client.get(path, headers={"User-Agent": "test"})
+
+    assert response.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_system_health_returns_200(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
-    """GET /system/health returns 200 with component statuses."""
+    """An authenticated GET /system/health returns component statuses."""
     # Patch at USAGE location in system.py (where names are bound at import time)
-    with patch("src.routes.system.count_users", return_value=42), \
+    with patch("src.routes.system.validate_session", return_value=object()), \
+         patch("src.routes.system.count_users", return_value=42), \
          patch("src.routes.system.count_user_groups", return_value=5), \
          patch("src.routes.system.count_project_permission_groups", return_value=3):
-        response = await client.get("/system/health")
+        response = await client.get("/system/health", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     data = response.json()
@@ -50,12 +67,13 @@ async def test_system_health_returns_200(client, fake_redis, patched_cache_manag
 
 @pytest.mark.asyncio
 async def test_system_info_returns_200(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
-    """GET /system/info returns 200 with system statistics."""
-    with patch("src.routes.system.count_users", return_value=100), \
+    """An authenticated GET /system/info returns aggregate statistics."""
+    with patch("src.routes.system.validate_session", return_value=object()), \
+         patch("src.routes.system.count_users", return_value=100), \
          patch("src.routes.system.count_projects", return_value=25), \
          patch("src.routes.system.count_user_groups", return_value=10), \
          patch("src.routes.system.count_project_permission_groups", return_value=8):
-        response = await client.get("/system/info")
+        response = await client.get("/system/info", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     data = response.json()
@@ -67,11 +85,12 @@ async def test_system_info_returns_200(client, fake_redis, patched_cache_manager
 
 @pytest.mark.asyncio
 async def test_health_degraded_when_db_fails(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
-    """GET /system/health returns degraded when DB is unreachable."""
-    with patch("src.routes.system.count_users", return_value=None), \
+    """Authenticated health reports degraded when the DB is unreachable."""
+    with patch("src.routes.system.validate_session", return_value=object()), \
+         patch("src.routes.system.count_users", return_value=None), \
          patch("src.routes.system.count_user_groups", return_value=5), \
          patch("src.routes.system.count_project_permission_groups", return_value=3):
-        response = await client.get("/system/health")
+        response = await client.get("/system/health", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     data = response.json()
@@ -90,7 +109,8 @@ async def test_health_degraded_when_email_delivery_enabled_but_worker_missing(cl
         "sync": {"status": "disabled"},
     }
 
-    with patch("src.routes.system.count_users", return_value=42), \
+    with patch("src.routes.system.validate_session", return_value=object()), \
+         patch("src.routes.system.count_users", return_value=42), \
          patch("src.routes.system.count_user_groups", return_value=5), \
          patch("src.routes.system.count_project_permission_groups", return_value=3), \
          patch("src.routes.system.SystemMetrics.get_email_provider_health", return_value={"status": "ready", "ready": True, "delivery_enabled": True}), \
@@ -98,7 +118,7 @@ async def test_health_degraded_when_email_delivery_enabled_but_worker_missing(cl
          patch("src.routes.system.SystemMetrics.get_email_worker_metrics", return_value={"status": "unknown", "delivery_enabled": True, "heartbeat_count": 0}), \
          patch("src.routes.system.SystemMetrics.get_patreon_metrics", return_value={"status": "disabled"}), \
          patch("src.routes.system.SystemMetrics.get_billing_metrics", return_value=billing_disabled):
-        response = await client.get("/system/health")
+        response = await client.get("/system/health", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     data = response.json()

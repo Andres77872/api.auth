@@ -1,0 +1,48 @@
+{
+  "fixture_set": "provider-agnostic-billing-stripe.phase1.v1",
+  "synthetic_only": true,
+  "stripe_api_version": "2026-05-27.dahlia",
+  "webhook_signature_header": "Stripe-Signature",
+  "webhook_signature_algorithm": "hmac-sha256",
+  "webhook_signature_secret": "whsec_test_stripe_fixture_secret_do_not_use",
+  "webhook_raw_body_includes_trailing_lf": true,
+  "signature_headers": "signature_headers.json",
+  "approved_webhook_events": [
+    "checkout.session.completed",
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+    "invoice.paid",
+    "invoice.payment_failed",
+    "charge.refunded",
+    "charge.dispute.created",
+    "charge.dispute.closed"
+  ],
+  "webhook_fixtures": {
+    "checkout_session_completed_subscription": "checkout_session_completed_subscription.json",
+    "checkout_session_completed_payment": "checkout_session_completed_payment.json",
+    "customer_subscription_created": "customer_subscription_created.json",
+    "customer_subscription_updated": "customer_subscription_updated.json",
+    "customer_subscription_deleted": "customer_subscription_deleted.json",
+    "invoice_paid": "invoice_paid.json",
+    "invoice_payment_failed": "invoice_payment_failed.json",
+    "charge_refunded": "charge_refunded.json",
+    "charge_dispute_created": "charge_dispute_created.json",
+    "charge_dispute_closed": "charge_dispute_closed.json",
+    "unsupported_customer_updated": "unsupported_customer_updated.json",
+    "malformed_payload": "malformed_payload.json",
+    "tampered_body": "tampered_body.json"
+  },
+  "negative_controls": {
+    "malformed_payload": "validly signed bytes that are intentionally not valid JSON",
+    "tampered_body": "payload bytes intentionally paired with checkout_session_completed_subscription signature"
+  },
+  "forbidden_fixture_sources": [
+    "live Stripe dashboard payloads",
+    "real Stripe CLI captures without synthetic rewrite",
+    "real API keys",
+    "real webhook signing secrets",
+    "card or payment-method data",
+    "receipt URLs"
+  ]
+}

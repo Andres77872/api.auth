@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import socketserver
 import threading
 import uuid
@@ -371,15 +372,46 @@ class LocalMailpitServer:
         return f"http://127.0.0.1:{self.http_server.server_address[1]}"
 
 
+class ComposeMailpitServer:
+    """Adapter for the real disposable Mailpit Compose service."""
+
+    def start(self) -> "ComposeMailpitServer":
+        return self
+
+    def stop(self) -> None:
+        # The outer Docker wrapper owns lifecycle and removes the container.
+        return None
+
+    @property
+    def smtp_host(self) -> str:
+        return os.environ.get("MAILPIT_SMTP_HOST", "mailpit-test")
+
+    @property
+    def smtp_port(self) -> int:
+        return int(os.environ.get("MAILPIT_SMTP_PORT", "1025"))
+
+    @property
+    def api_base_url(self) -> str:
+        return os.environ.get("MAILPIT_API_BASE_URL", "http://mailpit-test:8025")
+
+
+def mailpit_server() -> LocalMailpitServer | ComposeMailpitServer:
+    """Use real Compose Mailpit in the official gate, local capture otherwise."""
+    use_compose = os.environ.get("E2E_USE_COMPOSE_MAILPIT", "").strip().lower()
+    if use_compose in {"1", "true", "yes", "on"}:
+        return ComposeMailpitServer()
+    return LocalMailpitServer()
+
+
 @pytest.mark.asyncio
 async def test_mailpit_activation_chain_register_add_deliver_verify_login(client, e2e_env, monkeypatch, request):
     """Proves route → outbox → worker → Mailpit → verify → activated-email login."""
     from src.Util.email.mailpit import MailpitClient
     from src.workers.email_worker import DrainResult, EmailWorker
 
-    # tests/conftest.py intentionally loads `.env.test` with delivery disabled;
-    # gate 8.9 is the explicit local-Mailpit opt-in.
-    local_mailpit = LocalMailpitServer().start()
+    # Docker uses the real disposable Mailpit service. Host-only focused runs keep
+    # the hermetic in-process compatible server.
+    local_mailpit = mailpit_server().start()
     request.addfinalizer(local_mailpit.stop)
     monkeypatch.setenv("EMAIL_DELIVERY_ENABLED", "true")
     monkeypatch.setenv("EMAIL_PROVIDER", "mailpit")

@@ -1,0 +1,1 @@
+{"data":{"id":"member-webhook-partial-001","type":"member","attributes":{"patron_status":"former_patron"},"relationships":{"user":{"data":{"type":"user","id":"user-fixture-linked-001"}}}}}

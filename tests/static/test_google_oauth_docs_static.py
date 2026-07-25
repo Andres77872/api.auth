@@ -58,9 +58,17 @@ def test_docs_state_scope_is_openid_email_only_and_no_google_token_persistence()
         ],
     )
     assert re.search(r"scope\s*=\s*`?openid email`?", text, re.IGNORECASE) or "openid email only" in text.lower()
-    assert "offline_access" not in text or "no offline_access" in text.lower() or "must not" in text.lower()
-    assert "access_type=offline" not in text or "no access_type=offline" in text.lower() or "must not" in text.lower()
-    assert "profile" not in text or "no profile" in text.lower() or "must not" in text.lower()
+
+    # The docs must explicitly forbid each scope/param that would widen consent or pull
+    # a Google refresh token.  Asserting `token not in text` would be wrong — the docs
+    # name these precisely in order to prohibit them — so require the prohibition itself.
+    # (The previous form of these three assertions ended in `or "must not" in text`,
+    #  which is true of every one of these docs, so they could never fail.)
+    lowered = text.lower()
+    for forbidden in ("profile", "offline_access", "access_type=offline"):
+        assert re.search(rf"must not[^.\n]*{re.escape(forbidden)}", lowered), (
+            f"docs must explicitly forbid {forbidden!r} in the Google OAuth scope"
+        )
 
 
 def test_docs_cover_provider_init_contract_and_strict_hash_secrecy_boundary():

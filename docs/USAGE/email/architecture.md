@@ -55,7 +55,7 @@ The worker is a **separate process** from the API (`src/main.py` has no lifespan
 
 > `scripts/run_email_worker.sh` is **not** for containers — it sources a `.env` file (excluded by `.dockerignore`) and uses `.venv/bin/python`. The container entrypoint reads config from the process environment instead.
 
-If the worker process is missing, `GET /system/health` reports `email_worker: unknown` (no Redis heartbeat) and, when delivery is enabled but provider config is absent, `email_provider: not_ready`. For both to go green the container must receive, via `--env-file`/compose `environment:` (never baked into the image): DB/Redis vars (`DB_HOST`, `DB_USER`, `DB_MYSQL_PASSWORD`, `DB_NAME`, `REDIS_HOST`, … — read at **import time**), `EMAIL_DELIVERY_ENABLED=true`, `EMAIL_PROVIDER=resend`, `EMAIL_FROM_ADDRESS`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_SENDER_DOMAIN_VERIFIED=true` (prod), plus the operational peppers/keys (`EMAIL_TOKEN_PEPPER`, `EMAIL_HASH_PEPPER`, `EMAIL_IDEMPOTENCY_PEPPER`, `EMAIL_PAYLOAD_KEY`). Each container replica runs its own worker with a distinct `--worker-id` (derived from `HOSTNAME`); leased claims keep concurrent workers safe.
+With a valid access session, `GET /system/health` reports `email_worker: unknown` when the worker process is missing (no Redis heartbeat) and, when delivery is enabled but provider config is absent, `email_provider: not_ready`. For both to go green the container must receive, via `--env-file`/compose `environment:` (never baked into the image): DB/Redis vars (`DB_HOST`, `DB_USER`, `DB_MYSQL_PASSWORD`, `DB_NAME`, `REDIS_HOST`, … — read at **import time**), `EMAIL_DELIVERY_ENABLED=true`, `EMAIL_PROVIDER=resend`, `EMAIL_FROM_ADDRESS`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_SENDER_DOMAIN_VERIFIED=true` (prod), plus the operational peppers/keys (`EMAIL_TOKEN_PEPPER`, `EMAIL_HASH_PEPPER`, `EMAIL_IDEMPOTENCY_PEPPER`, `EMAIL_PAYLOAD_KEY`). Each container replica runs its own worker with a distinct `--worker-id` (derived from `HOSTNAME`); leased claims keep concurrent workers safe.
 
 ---
 
@@ -186,5 +186,4 @@ The limiter **fails closed** on a Redis error (`fail_closed_on_redis_error=True`
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

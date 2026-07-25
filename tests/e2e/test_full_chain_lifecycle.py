@@ -25,6 +25,7 @@ import redis
 
 from src.Util.JWT_Security import JWTTokenHandler
 from tests.integration.conftest import _REAL_DB_CONFIG
+from tests.support import ALL_DB_CONNECTION_PATCH_LOCATIONS
 
 
 # ─── Live Redis Config ──────────────────────────────────────────────────────
@@ -55,13 +56,10 @@ def _get_tuple_connection():
     return pymysql.connect(**cfg)
 
 
-# Patch locations — each module that imports get_connection
-_DB_PATCHES = {
-    "src.Util.db_config.get_connection": _get_tuple_connection,
-    "src.Util.db.db_projects.get_connection": _get_tuple_connection,
-    "src.Util.db.db_users.get_connection": _get_tuple_connection,
-    "src.Util.db.db_user_groups.get_connection": _get_tuple_connection,
-}
+# Patch locations — every module that imports get_connection.  Leaving one out means
+# it keeps the cursor double bound by `patched_db_connection`, which real code then
+# drains with `while cur.nextset():` — a loop that does not terminate against a mock.
+_DB_PATCHES = {loc: _get_tuple_connection for loc in ALL_DB_CONNECTION_PATCH_LOCATIONS}
 
 # Patch locations — each module that uses redis_client
 # Note: We use lambda to create fresh instances since some modules expect the

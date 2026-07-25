@@ -1,0 +1,42 @@
+{
+  "fixture_secret": "patreon_webhook_secret_fixture_do_not_use",
+  "signature_header": "X-Patreon-Signature",
+  "algorithm": "hmac-md5",
+  "signing_input": "exact file bytes including final LF",
+  "fixtures": {
+    "member_update_active.raw.json": {
+      "event": "members:update",
+      "signature": "49ded42999df38ed9db24d476fccab17",
+      "raw_body_sha256": "568d18e13359af1d37fbf39c63aded6c0b3c37524625444bef309c1599c16048",
+      "byte_length": 740
+    },
+    "member_update_active_nbsp.raw.json": {
+      "event": "members:update",
+      "signature": "36c5cc386f79205a87d2d351072ab53a",
+      "raw_body_sha256": "af6cce8a4f9af22fd4935231b50debab17cd0bb06474a93c7e156f28e667d8ed",
+      "byte_length": 735,
+      "contains_literal_nbsp": true
+    },
+    "member_update_active_nbsp_normalized.raw.json": {
+      "event": "members:update",
+      "signature": "676dcaf2326a2ebc02192d8af52f9bee",
+      "raw_body_sha256": "0e917b71c4254173dac9ff96c29c89fc284fb6eee91be885f7e6f1d2294191d4",
+      "byte_length": 733,
+      "body_preservation_negative_control_for": "member_update_active_nbsp.raw.json"
+    },
+    "member_delete_partial.raw.json": {
+      "event": "members:delete",
+      "signature": "807d5b970b40461a12093860335a7522",
+      "raw_body_sha256": "d107609a0ec9df63753b72264431ca337b91330d1f91f202b66900070e130f44",
+      "byte_length": 189,
+      "expected_processing": "enqueue_resync_or_mark_stale_no_destructive_downgrade"
+    },
+    "pledge_update_unknown_tier.raw.json": {
+      "event": "members:pledge:update",
+      "signature": "4f003c9981d07043d5662e6451f7a769",
+      "raw_body_sha256": "c53be1f935f701aa9032f6347d5e77aa2d58c53f435093074b209816bccfd69b",
+      "byte_length": 545,
+      "expected_processing": "tier_map_miss_no_paid_grant"
+    }
+  }
+}

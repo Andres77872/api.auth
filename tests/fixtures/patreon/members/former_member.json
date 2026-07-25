@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "id": "member-former-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-former@example.test",
+        "full_name": "Fixture Former Patron",
+        "patron_status": "former_patron",
+        "last_charge_status": "Declined",
+        "last_charge_date": "2026-05-01T00:00:00+00:00",
+        "next_charge_date": null
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": []
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-former-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "user-fixture-former-001",
+      "type": "user",
+      "attributes": {
+        "email": "patron-former@example.test"
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "former/declined patron maps to non-paid entitlement after complete source-of-truth read",
+      "expected_plan_code": "free",
+      "synthetic_only": true
+    }
+  }
+}

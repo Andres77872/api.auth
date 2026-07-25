@@ -141,10 +141,11 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
                             # Body is not JSON, skip logging it
                             request_body = {"_note": "Non-JSON body"}
 
-                        # Re-populate request body for downstream handlers
-                        async def receive():
-                            return {"type": "http.request", "body": body_bytes}
-                        request._receive = receive
+                        # BaseHTTPMiddleware supplies a _CachedRequest whose
+                        # wrapped_receive() replays this cached body downstream.
+                        # Replacing request._receive here breaks the ASGI
+                        # disconnect lifecycle and can hang POST endpoints that
+                        # return StreamingResponse.
                     
             except Exception as e:
                 logger.warning(f"Failed to read request body: {e}")

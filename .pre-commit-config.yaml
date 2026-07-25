@@ -1,0 +1,18 @@
+# Secret scanning. The repo's "no real secrets in git" rule was previously
+# enforced by convention and review alone; this makes it mechanical.
+#
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Backstop for the failure this repo actually had: a real .env reaching git.
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]

@@ -412,16 +412,20 @@ async def test_login_admin_with_project_succeeds(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Admin user login with valid project_hash returns 200 + session_token."""
+    """Admin assigned to the requested project receives a project-scoped session."""
     admin_user = _make_user(user_type="admin", user_id="2", user_hash="usr-admin-001",
                             username="adminuser", email="admin@example.com")
     project = _make_project()
-    group = _make_group()
+    assignment = {
+        "project_hash": project.project_hash,
+        "project_name": project.project_name,
+        "project_description": project.project_description,
+    }
 
     with patch("src.routes.auth.get_user_by_credentials", return_value=admin_user), \
-         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
          patch("src.routes.auth.get_project_by_hash", return_value=project), \
-         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+         patch("src.routes.auth.check_admin_multi_project_access", return_value=True) as check_access, \
+         patch("src.routes.auth.get_admin_project_assignments_with_details", return_value=[assignment]):
         response = await client.post(
             "/auth/login",
             data={
@@ -433,14 +437,15 @@ async def test_login_admin_with_project_succeeds(
         )
 
     assert response.status_code == 200
+    check_access.assert_called_once_with("2", "1")
     data = response.json()
     assert data["success"] is True
     assert "session_token" in data
     assert data["user"]["username"] == "adminuser"
     assert data["user"]["user_type"] == "admin"
     assert data["project"]["project_hash"] == "prj-test-001"
-    assert len(data["accessible_projects"]) >= 1
-    assert len(data["user_groups"]) >= 1
+    assert [item["project_hash"] for item in data["accessible_projects"]] == ["prj-test-001"]
+    assert data["user_groups"] == []
 
 
 @pytest.mark.asyncio
@@ -449,13 +454,18 @@ async def test_login_admin_denied_project(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Admin denied access to project they don't have access to."""
+    """Admin without a direct assignment to the requested project is denied."""
     admin_user = _make_user(user_type="admin", user_id="2", user_hash="usr-admin-001",
                             username="adminuser", email="admin@example.com")
-    project = _make_project()
+    requested_project = _make_project(
+        project_id="9",
+        project_hash="prj-other-project",
+        project_name="Other Project",
+    )
 
     with patch("src.routes.auth.get_user_by_credentials", return_value=admin_user), \
-         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]):
+         patch("src.routes.auth.get_project_by_hash", return_value=requested_project), \
+         patch("src.routes.auth.check_admin_multi_project_access", return_value=False) as check_access:
         response = await client.post(
             "/auth/login",
             data={
@@ -467,6 +477,7 @@ async def test_login_admin_denied_project(
         )
 
     assert response.status_code == 403
+    check_access.assert_called_once_with("2", "9")
     data = response.json()
     assert data["status"] == "error"
 

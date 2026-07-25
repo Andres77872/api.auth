@@ -174,9 +174,9 @@ class TestCreateAdminUserRequest:
         req = CreateAdminUserRequest(username="admin", password="secret", email="admin@example.com")
         assert req.username == "admin"
 
-    def test_missing_email_fails(self):
-        with pytest.raises(ValidationError):
-            CreateAdminUserRequest(username="admin", password="secret")  # type: ignore
+    def test_missing_email_defaults_to_none(self):
+        req = CreateAdminUserRequest(username="admin", password="secret")
+        assert req.email is None
 
 
 # ─── UserLogin (legacy) ─────────────────────────────────────────────────────

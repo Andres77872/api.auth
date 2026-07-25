@@ -1,0 +1,118 @@
+{
+  "data": [
+    {
+      "id": "member-multi-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-multi@example.test",
+        "full_name": "Fixture Multi Campaign Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-02T00:00:00+00:00",
+        "next_charge_date": "2026-07-02T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-alpha-artisan",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-multi-001",
+            "type": "user"
+          }
+        }
+      }
+    },
+    {
+      "id": "member-multi-beta-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-multi@example.test",
+        "full_name": "Fixture Multi Campaign Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-03T00:00:00+00:00",
+        "next_charge_date": "2026-07-03T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-beta",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-beta-architect",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-multi-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "campaign-mw-alpha",
+      "type": "campaign",
+      "attributes": {
+        "creation_name": "Magic Worlds Alpha Fixture"
+      }
+    },
+    {
+      "id": "campaign-mw-beta",
+      "type": "campaign",
+      "attributes": {
+        "creation_name": "Magic Worlds Beta Fixture"
+      }
+    },
+    {
+      "id": "tier-mw-alpha-artisan",
+      "type": "tier",
+      "attributes": {
+        "title": "Artisan",
+        "amount_cents": 500
+      }
+    },
+    {
+      "id": "tier-mw-beta-architect",
+      "type": "tier",
+      "attributes": {
+        "title": "Architect",
+        "amount_cents": 1500
+      }
+    },
+    {
+      "id": "user-fixture-multi-001",
+      "type": "user",
+      "attributes": {
+        "email": "patron-multi@example.test"
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "same Patreon user active in multiple configured campaigns",
+      "expected_highest_priority_tier_code": "architect",
+      "synthetic_only": true
+    }
+  }
+}

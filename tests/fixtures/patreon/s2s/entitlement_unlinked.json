@@ -1,0 +1,18 @@
+{
+  "success": true,
+  "message": null,
+  "user_hash": "usr_contract_unlinked_001",
+  "entitlement": {
+    "external_source": null,
+    "status": "free",
+    "plan_code": "free",
+    "tier_code": null,
+    "tier_name": null,
+    "link_status": "unlinked",
+    "next_renewal_at": null,
+    "grace_period_until": null,
+    "last_synced_at": "2026-06-10T12:00:00+00:00",
+    "stale_after": null,
+    "classification_version": 1
+  }
+}

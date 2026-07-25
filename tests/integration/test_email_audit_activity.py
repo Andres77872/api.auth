@@ -5,6 +5,7 @@ Trace: `.dev/sdd/changes/email-activation/tasks.md` task 1.6.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -61,7 +62,20 @@ def test_api_audit_redacts_email_sensitive_headers():
 def test_api_audit_auth_method_enum_allows_anonymous_email_link_and_webhook():
     sql = (ROOT / "schemas/tables/02_create_tables.sql").read_text()
 
-    assert "auth_method ENUM('session', 'api_key', 'anonymous', 'email_link', 'webhook')" in sql
+    match = re.search(r"auth_method\s+ENUM\(([^)]+)\)", sql)
+    assert match is not None
+    values = {
+        value.strip().strip("'\"")
+        for value in match.group(1).split(",")
+    }
+    assert {
+        "session",
+        "api_key",
+        "anonymous",
+        "email_link",
+        "webhook",
+        "oauth",
+    } <= values
 
 
 def test_activity_type_enum_contains_email_reset_delivery_range():

@@ -148,6 +148,13 @@ This release uses a **two-token model**:
 
 Access JWT signature, `exp`, `type`, `jti`, `session_id`, `family_id`, and server-side Redis session/family state are enforced before a request is trusted.
 
+Project-scoped consumer login, `GET /auth/validate`, and consumer
+`POST /auth/validate-api-key` may also return a provider-neutral subscription
+`plan`. It is resolved at response time from project → billing group and is not
+stored in JWT claims, cookies, or Redis auth state. The current refresh and
+switch-project response bodies do not include it; validate the newly issued
+access token when the client needs a refreshed plan projection.
+
 ### Authentication
 
 ```bash
@@ -244,14 +251,81 @@ docker run --env-file .env -p 8000:8000 api-auth
 
 The container entrypoint starts the API server, the email outbox worker, and the Patreon sync worker. Set `PATREON_SYNC_WORKER_ENABLED=0` if the Patreon worker should not start in that container.
 
+For routine host-side tests, use the serial batch runner:
+
+```bash
+bash scripts/run-test-batches.sh
+bash scripts/run-test-batches.sh --layer unit
+bash scripts/run-test-batches.sh --target tests/integration/test_slice2_auth_login.py
+```
+
+It runs each `unit`, `integration`, and `static` file in a separate pytest
+process, excluding E2E, `real_db`, and live-provider tests. Defaults enforce a
+1,536 MiB address-space cap, a 60-second per-test timeout, and a 180-second
+per-file timeout. These limits may be lowered with `PYTEST_MEM_LIMIT_MB`,
+`PYTEST_TIMEOUT_SECONDS`, and `TEST_BATCH_TIMEOUT_SECONDS`; certified runs reject
+zero, malformed, or larger values. Coverage aggregation has its own 1,536 MiB
+and 300-second ceilings, configurable downward with `COVERAGE_MEM_LIMIT_MB` and
+`COVERAGE_TIMEOUT_SECONDS`. Coverage shards are unique per file and combined
+into reports under `test-results/host/`. Unexpected skips and empty
+non-`real_db` files fail closed. A repository-wide workflow lock prevents
+overlapping host, Docker, or coverage-merge runs from defeating the memory limit
+or replacing one another's artifacts.
+
 For isolated e2e tests with MySQL, Redis, and Mailpit:
 
 ```bash
-pip install -r requirements-test.txt
 bash scripts/run-e2e.sh
 ```
 
-`scripts/run-e2e.sh` requires `.env.test` and Docker access. It uses [docker-compose.test.yml](docker-compose.test.yml), not a production compose file.
+`scripts/run-e2e.sh` requires `.env.test` and Docker access. It uses
+[docker-compose.test.yml](docker-compose.test.yml), not a production compose
+file. Every invocation:
+
+- removes the previous test project and database volume;
+- builds the test image before starting services;
+- starts resource-limited MySQL, Redis, and Mailpit containers;
+- runs each E2E file and each `real_db` integration file serially in one
+  disposable runner container;
+- writes cumulative branch-coverage reports under `test-results/e2e/`; and
+- removes containers, networks, and volumes on both success and failure,
+  propagating a teardown failure even when the tests themselves passed.
+
+For a focused workflow check against the same fresh Docker stack:
+
+```bash
+bash scripts/run-e2e.sh \
+  --target tests/e2e/test_full_chain_lifecycle.py \
+  -- -k test_full_register_login_access_chain_live_redis
+```
+
+The official Docker run disables all live Patreon and Stripe flags. External
+provider smoke tests remain explicit manual opt-ins and are not part of the
+routine E2E gate.
+
+A certifiable full host or E2E run accepts no pytest filters from
+`PYTEST_ADDOPTS`; focused E2E filters must use the explicit `--target ... --`
+form above. Ambient pytest plugin injection and `PYTHONPATH` are disabled, while
+the exact pinned coverage, asyncio, and AnyIO plugins are loaded explicitly.
+Each workflow records exact batch/JUnit dispositions, enforced resource limits, a
+before/after fingerprint of source, tests, schemas, scripts, documentation,
+test configuration, and dependency inputs, an independently validated fingerprint
+of the installed exact dependency versions, plus the SHA-256 of its raw coverage
+database. The Docker result also records the resolved image IDs for the runner,
+MySQL, Redis, and Mailpit.
+
+After both complete full runs succeed against the same source state, combine
+their branch data without deleting either input:
+
+```bash
+bash scripts/combine-test-coverage.sh
+```
+
+The combined text, XML, JSON, and HTML reports are written under
+`test-results/combined/`. The merge refuses focused or failed workflow
+artifacts, duplicate or inconsistent summary fields, coverage hash mismatches,
+source changes during either run, stale results from a different current source
+state, and merges attempted while another test workflow holds the shared lock.
 
 ## 🔧 Configuration
 
@@ -306,8 +380,13 @@ Do not place real Google, Patreon, Stripe, Resend, provider-init, S2S bearer, en
 
 ### Quick Diagnostics
 
+Detailed system diagnostics require a valid access session; `/ping` and
+`/system/ping` remain public.
+
 ```bash
-curl -H "User-Agent: local-smoke/1.0" http://localhost:8000/system/health
+curl http://localhost:8000/system/health \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "User-Agent: local-smoke/1.0"
 python -c "from src.Util.db import get_connection; print('DB connected')"
 python -c "from src.Util.db_config import redis_client; redis_client.ping(); print('Redis OK')"
 ```

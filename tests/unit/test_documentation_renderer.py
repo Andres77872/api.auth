@@ -96,10 +96,10 @@ class TestEdgeCases:
     """Tests for edge cases in markdown rendering."""
 
     def test_empty_blockquote_line(self):
-        """Empty blockquote lines should handle gracefully."""
+        """An empty blockquote still renders as a blockquote, not a crash or a stray '>'."""
         renderer = DocumentationRenderer()
         html, _ = renderer.render_markdown("> ")
-        assert html is not None
+        assert "blockquote" in html
 
     def test_blockquote_with_link(self):
         """Blockquotes with links should render links correctly."""

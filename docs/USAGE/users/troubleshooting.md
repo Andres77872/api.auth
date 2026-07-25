@@ -57,7 +57,7 @@ The route:
 - returns accepted metadata only
 - never returns a plaintext password, reset token, reset link, full email, subject/body, or provider payload
 
-If delivery is suspected to be stuck, check `/system/health` email components and `/admin/email/logs`. Do not ask the API for a temporary secret — that path is gone by design.
+If delivery is suspected to be stuck, use a valid access session to check `/system/health` email components and `/admin/email/logs`. Do not ask the API for a temporary secret — that path is gone by design.
 
 ---
 
@@ -167,5 +167,4 @@ Especially `bulk-update`. Large user changes deserve proof, not vibes.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

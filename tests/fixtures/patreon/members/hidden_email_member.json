@@ -1,0 +1,62 @@
+{
+  "data": [
+    {
+      "id": "member-hidden-email-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": null,
+        "full_name": "Fixture Hidden Email Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-05T00:00:00+00:00",
+        "next_charge_date": "2026-07-05T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-alpha-artisan",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-hidden-email-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "tier-mw-alpha-artisan",
+      "type": "tier",
+      "attributes": {
+        "title": "Artisan",
+        "amount_cents": 500
+      }
+    },
+    {
+      "id": "user-fixture-hidden-email-001",
+      "type": "user",
+      "attributes": {
+        "email": null
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "Patreon email hidden/null; v1 automated link activation stays blocked-safe",
+      "expected_link_status": "blocked",
+      "synthetic_only": true
+    }
+  }
+}

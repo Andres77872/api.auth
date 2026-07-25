@@ -16,13 +16,14 @@ import uuid
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pymysql
 import pytest
 import redis
 
 from src.Util.auth_lifecycle import issue_project_token_pair
+from tests.support import ALL_DB_CONNECTION_PATCH_LOCATIONS
 
 # ─── Real DB Config ─────────────────────────────────────────────────────────
 
@@ -61,16 +62,12 @@ def _get_live_redis():
 
 # ─── Patch locations ────────────────────────────────────────────────────────
 
-# DB connection patches — point to real MySQL
-# Must patch at USAGE locations (where functions are imported), not source
-_DB_PATCH_LOCATIONS = [
-    "src.Util.db_config.get_connection",
-    "src.Util.db.db_api_keys.get_connection",
-    "src.Util.db.db_projects.get_connection",
-    "src.Util.db.db_users.get_connection",
-    "src.Util.db.db_user_groups.get_connection",
-    "src.Util.db.db_global_roles.get_connection",
-]
+# DB connection patches — point to real MySQL.
+# Must patch at USAGE locations (where functions are imported), not just the source.
+# Redirect EVERY module: the `patched_db_connection` fixture has already bound them
+# all to a cursor double, so any module left out here keeps that double while real
+# code drains it with `while cur.nextset():`.
+_DB_PATCH_LOCATIONS = list(ALL_DB_CONNECTION_PATCH_LOCATIONS)
 
 # Redis patches — point to live Redis
 _REDIS_PATCH_LOCATIONS = [
@@ -282,7 +279,27 @@ async def test_api_key_full_lifecycle(
     assert full_token.startswith("sk_"), f"Token must start with sk_, got: {full_token[:5]}"
     key_public_id = data["data"]["public_id"]
 
-    # Step 4: Verify full token is NOT in subsequent responses
+    # Step 4: Authenticate through the enforcing API-key adapter. This exercises
+    # the real lookup stored procedure, HMAC verification, live group-chain
+    # authorization, and Redis cache population.
+    with _patch_all_infra():
+        auth_resp = await client.post(
+            "/auth/validate-api-key",
+            headers={"X-API-Key": full_token},
+        )
+    assert auth_resp.status_code == 200, f"API-key authentication failed: {auth_resp.text}"
+    auth_data = auth_resp.json()
+    assert auth_data["success"] is True
+    assert auth_data["valid"] is True
+    assert auth_data["auth_method"] == "api_key"
+    assert auth_data["user"]["user_hash"] == user["user_hash"]
+    assert auth_data["project"]["project_hash"] == proj["project_hash"]
+    assert auth_data["api_key"]["public_id"] == key_public_id
+    assert full_token not in auth_resp.text, "Validation response must never echo the API-key token"
+    cache_key = f"apikey:{key_public_id}"
+    assert live_redis.get(cache_key) is not None, "Successful API-key auth should populate Redis"
+
+    # Step 5: Verify full token is NOT in subsequent management responses
     with _patch_all_infra():
         list_resp = await client.get(
             "/users/api-keys",
@@ -296,7 +313,7 @@ async def test_api_key_full_lifecycle(
         assert "api_key" not in k, "List response must NOT include full token"
         assert "secret_hash" not in k, "List response must NOT include secret_hash"
 
-    # Step 5: Verify the key was created in the database
+    # Step 6: Verify the key was created in the database
     with _patch_all_infra():
         from src.Util.db.db_api_keys import get_api_key_by_public_id
         key_lookup = get_api_key_by_public_id(key_public_id)
@@ -304,7 +321,7 @@ async def test_api_key_full_lifecycle(
     assert key_lookup.get("public_id") == key_public_id
     assert key_lookup.get("is_active") == 1 or key_lookup.get("is_active") is True
 
-    # Step 6: Revoke the key
+    # Step 7: Revoke the key
     with _patch_all_infra():
         revoke_resp = await client.delete(
             f"/users/api-keys/{key_public_id}",
@@ -314,8 +331,24 @@ async def test_api_key_full_lifecycle(
     assert revoke_resp.status_code == 200, f"Key revocation failed: {revoke_resp.text}"
     revoke_data = revoke_resp.json()
     assert revoke_data["success"] is True
+    assert live_redis.get(cache_key) is None, "Revocation must immediately invalidate cached auth"
 
-    # Step 7: Verify revoked key is marked inactive in DB
+    # Step 8: Prove the same credential is rejected after revocation. The prior
+    # successful authentication populated Redis, so this also proves revocation
+    # invalidated the cached valid context before the DB-backed rejection.
+    with _patch_all_infra():
+        rejected_resp = await client.post(
+            "/auth/validate-api-key",
+            headers={"X-API-Key": full_token},
+        )
+    assert rejected_resp.status_code == 401, (
+        f"Revoked API key should be rejected, got: {rejected_resp.status_code} "
+        f"{rejected_resp.text}"
+    )
+    assert "revoked" in rejected_resp.text.lower()
+    assert full_token not in rejected_resp.text, "Rejection must not echo the API-key token"
+
+    # Step 9: Verify revoked key is marked inactive in DB
     with _patch_all_infra():
         from src.Util.db.db_api_keys import get_api_key_by_public_id
         revoked_lookup = get_api_key_by_public_id(key_public_id)
@@ -323,8 +356,7 @@ async def test_api_key_full_lifecycle(
     assert revoked_lookup.get("is_active") == 0 or revoked_lookup.get("is_active") is False, \
         f"Key should be inactive after revocation, got is_active={revoked_lookup.get('is_active')}"
 
-    # Step 8: Verify cache was invalidated
-    cache_key = f"apikey:{key_public_id}"
+    # Step 10: Verify cache remains invalidated after the rejected attempt
     cached = live_redis.get(cache_key)
     assert cached is None, f"Cache should be invalidated after revocation, but found: {cached}"
 
@@ -380,7 +412,7 @@ async def test_api_key_reactivation(
     patched_db_error_logger,
 ):
     """
-    Create an API key, let it expire, then reactivate it by updating expires_at.
+    Create an API key, deterministically expire it, then reactivate and authenticate.
     """
     unique = uuid.uuid4().hex[:8]
     password = "E2EP@ss123!"
@@ -397,38 +429,77 @@ async def test_api_key_reactivation(
 
     session_token = _create_session_in_redis(live_redis, user, proj)
 
-    # Create API key with near-future expiration (2 seconds from now)
-    near_future = (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat()
+    # Start with a comfortably valid expiration. The test moves it into the past
+    # directly instead of depending on scheduling or wall-clock sleeps.
+    initial_future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     with _patch_all_infra():
         response = await client.post(
             "/users/api-keys",
             data={
                 "project_hash": proj["project_hash"],
                 "name": f"E2E Reactivate Key {unique}",
-                "expires_at": near_future,
+                "expires_at": initial_future,
             },
             headers={"Authorization": f"Bearer {session_token}"},
         )
 
     assert response.status_code == 200, f"Key creation failed: {response.text}"
     data = response.json()
-    full_token = data["data"]["api_key"]
     key_public_id = data["data"]["public_id"]
+    full_token = data["data"]["api_key"]
 
-    # Wait for expiration
-    import asyncio
-    await asyncio.sleep(3)
+    # Move the key one full day into the past while it is still active. That
+    # lets the real validation stored procedure classify it specifically as
+    # expired before the maintenance-style transition to inactive.
+    with real_db_conn.cursor() as cur:
+        cur.execute(
+            """UPDATE user_project_api_keys
+               SET expires_at = NOW() - INTERVAL 1 DAY,
+                   is_active = TRUE,
+                   updated_at = NOW()
+               WHERE public_id = %s""",
+            (key_public_id,),
+        )
+        assert cur.rowcount == 1, "Exactly one API key should be moved into the expired state"
+    real_db_conn.commit()
 
-    # Verify key is rejected (expired) — check DB status
+    # A direct DB mutation intentionally bypasses application cache invalidation.
+    # Remove any stale entry so this assertion must consult real MySQL.
+    live_redis.delete(f"apikey:{key_public_id}")
     with _patch_all_infra():
-        from src.Util.db.db_api_keys import get_api_key_by_public_id
-        expired_lookup = get_api_key_by_public_id(key_public_id)
-    assert expired_lookup is not None
-    # Key should be inactive after expiration (sp_cleanup or SP check)
-    # Note: The stored procedure sp_validate_api_key checks expiration,
-    # but the key record itself may still show is_active=True until cleanup runs.
-    # We verify by checking expires_at is in the past
-    assert expired_lookup.get("expires_at") is not None
+        expired_resp = await client.post(
+            "/auth/validate-api-key",
+            headers={"X-API-Key": full_token},
+        )
+    assert expired_resp.status_code == 401, (
+        f"Expired API key should be rejected, got: {expired_resp.status_code} "
+        f"{expired_resp.text}"
+    )
+    assert "expired" in expired_resp.text.lower()
+    assert full_token not in expired_resp.text
+
+    # Mirror the maintenance transition for this key only. A scoped update keeps
+    # the test deterministic without deactivating unrelated keys if this file is
+    # run against a non-empty disposable database.
+    with real_db_conn.cursor() as cur:
+        cur.execute(
+            """UPDATE user_project_api_keys
+               SET is_active = FALSE, updated_at = NOW()
+               WHERE public_id = %s AND expires_at < NOW()""",
+            (key_public_id,),
+        )
+        assert cur.rowcount == 1, "Expired test key should transition to inactive"
+        cur.execute(
+            """SELECT is_active, expires_at, expires_at < NOW() AS is_expired
+               FROM user_project_api_keys
+               WHERE public_id = %s""",
+            (key_public_id,),
+        )
+        expired_row = cur.fetchone()
+    real_db_conn.commit()
+    assert expired_row is not None
+    assert expired_row["is_active"] == 0 or expired_row["is_active"] is False
+    assert expired_row["is_expired"] == 1 or expired_row["is_expired"] is True
 
     # Reactivate by updating expires_at to future
     future_expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
@@ -446,13 +517,31 @@ async def test_api_key_reactivation(
     assert update_data["success"] is True
     assert update_data["data"]["is_active"] is True, "Key should be active after reactivation"
 
-    # Verify key works again — check DB status
+    # Verify the real update stored procedure reactivated the database row
     with _patch_all_infra():
         from src.Util.db.db_api_keys import get_api_key_by_public_id
         reactivated_lookup = get_api_key_by_public_id(key_public_id)
     assert reactivated_lookup is not None
     assert reactivated_lookup.get("is_active") == 1 or reactivated_lookup.get("is_active") is True, \
         f"Key should be active after reactivation, got is_active={reactivated_lookup.get('is_active')}"
+
+    # Prove reactivation restores the actual credential, not merely a metadata
+    # flag in the management response.
+    with _patch_all_infra():
+        reactivated_resp = await client.post(
+            "/auth/validate-api-key",
+            headers={"X-API-Key": full_token},
+        )
+    assert reactivated_resp.status_code == 200, (
+        f"Reactivated API key should authenticate: {reactivated_resp.text}"
+    )
+    reactivated_data = reactivated_resp.json()
+    assert reactivated_data["valid"] is True
+    assert reactivated_data["auth_method"] == "api_key"
+    assert reactivated_data["user"]["user_hash"] == user["user_hash"]
+    assert reactivated_data["project"]["project_hash"] == proj["project_hash"]
+    assert reactivated_data["api_key"]["public_id"] == key_public_id
+    assert full_token not in reactivated_resp.text
 
 
 @pytest.mark.real_db

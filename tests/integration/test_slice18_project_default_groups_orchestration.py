@@ -16,6 +16,8 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
+from tests.support import make_db_connection_mock
+
 
 def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
                         session_token="test-admin-token"):
@@ -224,26 +226,18 @@ async def test_create_project_calls_create_default_groups(
     from src.Util.db.db_projects import create_project
     from unittest.mock import MagicMock, patch as mock_patch
 
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-    mock_cursor.__exit__ = MagicMock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
-    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_conn = make_db_connection_mock()
 
-    call_sequence = []
-
-    def track_default_groups(project_id):
-        call_sequence.append("create_default_groups")
-
+    create_groups = MagicMock()
     with mock_patch("src.Util.db.db_projects.get_connection", return_value=mock_conn), \
-         mock_patch("src.Util.db.db_projects.create_default_groups", side_effect=track_default_groups):
-        try:
-            create_project("Test Project", "Test desc", created_by="admin-1", owner_id="admin-1")
-        except Exception:
-            pass  # Expected to fail due to mock, but we just want to verify the call sequence
+         mock_patch("src.Util.db.db_projects.create_default_groups", create_groups):
+        project = create_project(
+            "Test Project",
+            "Test desc",
+            created_by="admin-1",
+            owner_id="admin-1",
+        )
 
-    assert "create_default_groups" in call_sequence, (
-        "create_project should call create_default_groups"
-    )
+    assert project.project_name == "Test Project"
+    create_groups.assert_called_once_with(project.id)
+    mock_conn.commit.assert_called_once_with()

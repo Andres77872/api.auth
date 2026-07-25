@@ -12,18 +12,24 @@ import copy
 import hashlib
 import importlib
 import json
+import os
+import secrets
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, Iterable, Mapping, Optional
 from unittest.mock import patch, MagicMock
 from urllib.parse import urlsplit, urlunsplit
 
 import fakeredis
 import httpx
+import pymysql
 import pytest
+import redis
 
 from src.main import app as fastapi_app
+from tests.support import make_db_connection_mock, patch_db_connections
 
 
 # ─── App & Client Fixtures ───────────────────────────────────────────────────
@@ -167,70 +173,35 @@ def fake_redis():
 
 # ─── DB Connection — patch at usage locations ────────────────────────────────
 
-def _mock_db_connection():
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.description = None
-    mock_cursor.fetchone.return_value = None
-    mock_cursor.fetchall.return_value = []
-    mock_cursor.nextset.return_value = None
-    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-    mock_cursor.__exit__ = MagicMock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
-    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-    mock_conn.__exit__ = MagicMock(return_value=False)
-    return mock_conn
+@pytest.fixture
+def patched_db_connection():
+    """Patch get_connection at the source and at every usage location.
 
-
-# Modules confirmed to import `from src.Util.db_config import get_connection`:
-_DB_CONN_PATCH_LOCATIONS = [
-    "src.Util.api_audit_logger.get_connection",
-    "src.Util.activity_logger.get_connection",
-    "src.Util.db.db_error_logger.get_connection",
-    "src.Util.db.db_users.get_connection",
-    "src.Util.db.db_projects.get_connection",
-    "src.Util.db.db_user_groups.get_connection",
-    "src.Util.db.db_project_groups.get_connection",
-    "src.Util.db.db_global_roles.get_connection",
-    "src.Util.db.db_permission_assignments.get_connection",
-    "src.Util.db.db_session_analytics.get_connection",
-    "src.Util.db.db_audit_analytics.get_connection",
-    "src.Util.db.db_api_keys.get_connection",
-    "src.Util.db.db_email.get_connection",
-    "src.Util.system_metrics.get_connection",
-    "src.Util.bulk_operations.get_connection",
-]
-
-
-@contextmanager
-def _patch_all_db_connections(mock_conn):
-    """Patch get_connection at source AND all usage locations."""
-    patches = []
-    # Source
-    patches.append(patch("src.Util.db_config.get_connection", return_value=mock_conn))
-    # Usage locations
-    for loc in _DB_CONN_PATCH_LOCATIONS:
-        patches.append(patch(loc, return_value=mock_conn))
-    for p in patches:
-        p.start()
+    The cursor double comes from tests.support so that the `while cur.nextset():`
+    drains in src/Util/db terminate; see that module for why a bare MagicMock here is
+    a memory bomb rather than merely wrong.
+    """
+    mock_conn = make_db_connection_mock()
+    patchers = patch_db_connections(mock_conn)
     try:
         yield mock_conn
     finally:
-        for p in patches:
-            p.stop()
-
-
-@pytest.fixture
-def patched_db_connection():
-    mock_conn = _mock_db_connection()
-    with _patch_all_db_connections(mock_conn) as conn:
-        yield conn
+        for patcher in patchers:
+            patcher.stop()
 
 
 # ─── Audit Logger — patch at middleware usage location ───────────────────────
 
 @pytest.fixture
 def patched_audit_logger():
+    from src.Util.api_audit_logger import APIAuditLogger as real_logger_cls
+    from src.Util.auth_constants import (
+        BILLING_INTERNAL_PROJECT_ROUTE_PREFIX,
+        BILLING_INTERNAL_ROUTE_PREFIX,
+        PATREON_WEBHOOK_ROUTE,
+        STRIPE_WEBHOOK_ROUTE,
+    )
+
     mock_cls = MagicMock()
     excluded_paths = (
         "/ping",
@@ -258,6 +229,35 @@ def patched_audit_logger():
     mock_cls.is_security_event.return_value = False
     mock_cls.generate_tags.return_value = []
     mock_cls.filter_sensitive_data = lambda d: d
+    # Preserve route classification while isolating the database writes.  A
+    # bare MagicMock is truthy, which otherwise classifies every request as a
+    # Google OAuth request and makes auth-method assertions meaningless.
+    def normalized_path(path):
+        return (path or "").split("?", 1)[0]
+
+    def is_route_family(path, route):
+        normalized = normalized_path(path)
+        return normalized == route or normalized.startswith(route + "/")
+
+    def is_billing_internal_path(path):
+        normalized = normalized_path(path)
+        parts = [part for part in normalized.strip("/").split("/") if part]
+        if normalized.startswith(BILLING_INTERNAL_ROUTE_PREFIX):
+            return len(parts) >= 4 and parts[:2] == ["internal", "users"] and parts[3] == "billing"
+        if normalized.startswith(BILLING_INTERNAL_PROJECT_ROUTE_PREFIX):
+            return len(parts) >= 4 and parts[:2] == ["internal", "projects"] and parts[3] == "billing"
+        return False
+
+    raw_body_excluded_paths = tuple(real_logger_cls.RAW_BODY_AUDIT_EXCLUDED_PATHS)
+    mock_cls.is_google_oauth_path.side_effect = real_logger_cls.is_google_oauth_path
+    mock_cls.is_patreon_webhook_path.side_effect = lambda path: is_route_family(path, PATREON_WEBHOOK_ROUTE)
+    mock_cls.is_raw_body_audit_excluded.side_effect = lambda path: any(
+        is_route_family(path, excluded) for excluded in raw_body_excluded_paths
+    )
+    mock_cls.is_stripe_webhook_path.side_effect = lambda path: is_route_family(path, STRIPE_WEBHOOK_ROUTE)
+    mock_cls.is_billing_internal_path.side_effect = is_billing_internal_path
+    mock_cls.is_session_auth_security_path.side_effect = real_logger_cls.is_session_auth_security_path
+    mock_cls.sanitize_sensitive_text.side_effect = lambda value: value
     with patch("src.Util.api_audit_logger.APIAuditLogger", mock_cls), \
          patch("src.middleware.api_audit.APIAuditLogger", mock_cls):
         yield mock_cls
@@ -793,31 +793,13 @@ def oauth_activity_capture():
 @pytest.fixture
 def oauth_assert_no_leaks():
     return assert_no_oauth_sensitive_leaks
-"""
-Real-DB conftest — registers real_db marker and provides fixtures.
 
-This file is loaded alongside the main integration conftest.py.
-It provides fixtures for tests that require a real MySQL 8.0 instance.
-"""
 
-import os
-import secrets
-import uuid
-from typing import Optional
+# ═══════════════════════════════════════════════════════════════════════════════
+# Real-DB fixtures — for tests marked `real_db`, which need a live MySQL 8.0.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-import pymysql
-import pytest
-import redis
-
-# ─── Register the real_db marker ─────────────────────────────────────────────
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "real_db: marks tests that require a real MySQL 8.0 instance "
-        "(deselect with '-m \"not real_db\"')"
-    )
-
+# The `real_db` marker is registered in pytest.ini.
 
 # ─── Real MySQL Connection ───────────────────────────────────────────────────
 
@@ -829,6 +811,9 @@ _REAL_DB_CONFIG = {
     "database": os.environ.get("REAL_DB_NAME", "magic_auth"),
     "charset": "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
+    "connect_timeout": 5,
+    "read_timeout": 10,
+    "write_timeout": 10,
 }
 
 
@@ -837,8 +822,9 @@ def _get_real_connection():
     return pymysql.connect(**_REAL_DB_CONFIG)
 
 
+@lru_cache(maxsize=1)
 def _check_mysql_available():
-    """Check if real MySQL is available."""
+    """Is a real MySQL reachable?  Probed once per session, not once per test."""
     try:
         conn = _get_real_connection()
         conn.close()
@@ -854,6 +840,16 @@ def pytest_runtest_setup(item):
     """Skip real_db tests if MySQL is not available."""
     if item.get_closest_marker("real_db"):
         if not _check_mysql_available():
+            if os.environ.get("E2E_REQUIRE_REAL_INFRA", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                pytest.fail(
+                    "Docker E2E requires real MySQL, but the isolated service is unavailable",
+                    pytrace=False,
+                )
             pytest.skip("Real MySQL not available (docker compose -f docker-compose.test.yml up -d)")
 
 
@@ -881,23 +877,16 @@ _REAL_REDIS_CONFIG = {
     "host": os.environ.get("REAL_REDIS_HOST", "127.0.0.1"),
     "port": int(os.environ.get("REAL_REDIS_PORT", "6380")),
     "db": 0,
+    "password": os.environ.get("DB_REDIS_PASSWORD") or None,
     "decode_responses": True,
+    "socket_connect_timeout": 5,
+    "socket_timeout": 5,
 }
 
 
 def _get_live_redis():
     """Get a live Redis client for tests."""
     return redis.StrictRedis(**_REAL_REDIS_CONFIG)
-
-
-def _check_redis_available():
-    """Check if live Redis is available."""
-    try:
-        r = _get_live_redis()
-        r.ping()
-        return True
-    except Exception:
-        return False
 
 
 @pytest.fixture
@@ -909,11 +898,6 @@ def live_redis():
         yield r
     finally:
         r.flushdb()
-
-
-def _check_full_infra_available():
-    """Check if both MySQL and Redis are available."""
-    return _check_mysql_available() and _check_redis_available()
 
 
 # ─── Entity Factories for Real-DB Tests ──────────────────────────────────────

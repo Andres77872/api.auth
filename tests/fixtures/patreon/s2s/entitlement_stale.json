@@ -1,0 +1,18 @@
+{
+  "success": true,
+  "message": null,
+  "user_hash": "usr_contract_stale_001",
+  "entitlement": {
+    "external_source": "patreon",
+    "status": "stale",
+    "plan_code": "magic_worlds_plus",
+    "tier_code": "artisan",
+    "tier_name": "Artisan",
+    "link_status": "linked",
+    "next_renewal_at": "2026-07-01T00:00:00+00:00",
+    "grace_period_until": null,
+    "last_synced_at": "2026-06-10T12:00:00+00:00",
+    "stale_after": "2026-06-11T12:00:00+00:00",
+    "classification_version": 1
+  }
+}

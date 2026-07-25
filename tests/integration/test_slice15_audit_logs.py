@@ -13,6 +13,11 @@ def _admin_headers(token: str = "test-admin-token"):
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _stream_chunks(*chunks):
+    for chunk in chunks:
+        yield chunk
+
+
 def _patch_audit(**extra_mocks):
     """Patch all dependencies at the audit_logs route module level.
     
@@ -292,14 +297,51 @@ class TestAuditStatistics:
 
 class TestAuditExport:
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="StreamingResponse + httpx ASGI + middleware incompatibility; validated by unit tests")
     async def test_json_export(self, client, integration_env):
-        pass
+        stream = MagicMock(return_value=_stream_chunks('[{"id":"audit-1"}]'))
+        with _patch_audit(
+            _check_export_count=MagicMock(return_value=1),
+            stream_json_export=stream,
+        ):
+            response = await client.post(
+                "/admin/audit/export",
+                json={"source": "audit", "format": "json", "limit": 25},
+                headers=_admin_headers(),
+            )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.headers["content-disposition"].startswith(
+            "attachment; filename=audit_export_audit_"
+        )
+        assert response.json() == [{"id": "audit-1"}]
+        stream.assert_called_once_with("audit", {}, 25)
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="StreamingResponse + httpx ASGI + middleware incompatibility; validated by unit tests")
     async def test_csv_export(self, client, integration_env):
-        pass
+        stream = MagicMock(return_value=_stream_chunks("id,http_method\r\n", "audit-1,GET\r\n"))
+        with _patch_audit(
+            _check_export_count=MagicMock(return_value=1),
+            stream_csv_export=stream,
+        ):
+            response = await client.post(
+                "/admin/audit/export",
+                json={
+                    "source": "activity",
+                    "format": "csv",
+                    "limit": 10,
+                    "filters": {"days": 7},
+                },
+                headers=_admin_headers(),
+            )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert response.headers["content-disposition"].startswith(
+            "attachment; filename=audit_export_activity_"
+        )
+        assert response.text == "id,http_method\r\naudit-1,GET\r\n"
+        stream.assert_called_once_with("activity", {"days": 7}, 10)
 
     @pytest.mark.asyncio
     async def test_limit_exceeds_hard_limit(self, client, integration_env):
@@ -320,19 +362,22 @@ class TestAuditExport:
             assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="POST StreamingResponse + httpx ASGI + middleware incompatibility; validated by unit tests")
     async def test_export_source_api_audit_accepted(self, client, integration_env):
         """Regression: spec requires source='api_audit' to be accepted (verify issue 2.1)."""
+        stream = MagicMock(return_value=_stream_chunks("[]"))
         with _patch_audit(
-            get_audit_logs=MagicMock(return_value=[]),
             _check_export_count=MagicMock(return_value=0),
+            stream_json_export=stream,
         ):
             response = await client.post(
                 "/admin/audit/export",
                 json={"source": "api_audit", "format": "json", "filters": {"days": 7}},
                 headers=_admin_headers(),
             )
-            assert response.status_code == 200
+
+        assert response.status_code == 200
+        assert response.json() == []
+        stream.assert_called_once_with("api_audit", {"days": 7}, 1000)
 
 
 # ─── GET /admin/activity (search enhancement) ───────────────────────────────

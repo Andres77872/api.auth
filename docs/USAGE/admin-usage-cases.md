@@ -261,12 +261,14 @@ The detail response wraps the entry under `activity` and includes enriched field
 
 ## System Health & Metrics
 
-### Public System Info
+### Authenticated System Info
 
-**Scenario**: Check basic system information (no auth required).
+**Scenario**: Check aggregate system information with any valid access session.
 
 ```bash
-curl -X GET "http://localhost:8000/system/info"
+curl -X GET "http://localhost:8000/system/info" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 **Response:**
@@ -304,10 +306,12 @@ curl -X GET "http://localhost:8000/system/info"
 
 ### System Health Check
 
-**Scenario**: Check detailed system health status (no auth required).
+**Scenario**: Check detailed system health with any valid access session.
 
 ```bash
-curl -X GET "http://localhost:8000/system/health"
+curl -X GET "http://localhost:8000/system/health" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 **Response:**
@@ -349,7 +353,7 @@ curl -X GET "http://localhost:8000/system/health"
 }
 ```
 
-**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails. This endpoint never returns `"unhealthy"` — the worst public status is `"degraded"`. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
+**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails. This endpoint never returns `"unhealthy"` — its worst top-level status is `"degraded"`. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
 
 ### Admin Email Operations
 
@@ -434,7 +438,7 @@ curl -X GET "http://localhost:8000/admin/health" \
 | `>= 70` | `degraded` |
 | otherwise | `unhealthy` |
 
-> **Note**: the `components.database` / `components.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` field shown above is **illustrative** — the exact keys depend on those helpers and are not guaranteed. Unlike `/system/health`, this endpoint requires **Admin/Root** auth and can return `"unhealthy"`.
+> **Note**: the `components.database` / `components.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` field shown above is **illustrative** — the exact keys depend on those helpers and are not guaranteed. `/system/health` accepts any valid access session; this endpoint requires **Admin/Root** auth and can return `"unhealthy"`.
 
 ---
 
@@ -599,7 +603,8 @@ Start here:
 
 ```bash
 # Step 1: Check overall system health
-curl -X GET "http://localhost:8000/system/health"
+curl -X GET "http://localhost:8000/system/health" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Step 2: Get dashboard stats
 curl -X GET "http://localhost:8000/admin/dashboard/stats" \
@@ -777,8 +782,8 @@ curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
 
 | Operation | Endpoint | Method | Auth Required |
 |-----------|----------|--------|---------------|
-| System info | `/system/info` | GET | No |
-| Health check | `/system/health` | GET | No |
+| System info | `/system/info` | GET | Valid session |
+| Health check | `/system/health` | GET | Valid session |
 | Ping | `/system/ping` | GET | No |
 | Cache stats | `/system/cache/stats` | GET | Yes |
 | Clear cache | `/system/cache/clear` | POST | Admin/Root |
@@ -829,5 +834,4 @@ See detailed behavior in **[Users - Bulk Operations](users/bulk-operations.md)**
 
 ---
 
-**Last Updated**: June 2026
 **API Version**: 2.2.0

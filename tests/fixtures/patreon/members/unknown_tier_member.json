@@ -1,0 +1,63 @@
+{
+  "data": [
+    {
+      "id": "member-unknown-tier-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-unknown-tier@example.test",
+        "full_name": "Fixture Unknown Tier Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-06T00:00:00+00:00",
+        "next_charge_date": "2026-07-06T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-alpha-unknown",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-unknown-tier-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "tier-mw-alpha-unknown",
+      "type": "tier",
+      "attributes": {
+        "title": "Unmapped Synthetic Tier",
+        "amount_cents": 999
+      }
+    },
+    {
+      "id": "user-fixture-unknown-tier-001",
+      "type": "user",
+      "attributes": {
+        "email": "patron-unknown-tier@example.test"
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "active patron has only unmapped tiers; fail safe and record tier-map miss",
+      "expected_plan_code": "free",
+      "expected_status": "pending",
+      "synthetic_only": true
+    }
+  }
+}

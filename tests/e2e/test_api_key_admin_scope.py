@@ -23,6 +23,7 @@ import pytest
 import redis
 
 from src.Util.auth_lifecycle import issue_project_token_pair
+from tests.support import ALL_DB_CONNECTION_PATCH_LOCATIONS
 
 # ─── Real DB Config ─────────────────────────────────────────────────────────
 
@@ -61,14 +62,10 @@ def _get_live_redis():
 
 # ─── Patch locations ────────────────────────────────────────────────────────
 
-_DB_PATCH_LOCATIONS = [
-    "src.Util.db_config.get_connection",
-    "src.Util.db.db_api_keys.get_connection",
-    "src.Util.db.db_projects.get_connection",
-    "src.Util.db.db_users.get_connection",
-    "src.Util.db.db_user_groups.get_connection",
-    "src.Util.db.db_global_roles.get_connection",
-]
+# Redirect EVERY module to real MySQL: the `patched_db_connection` fixture has bound
+# them all to a cursor double, and any module left out here keeps that double while
+# real code drains it with `while cur.nextset():`.
+_DB_PATCH_LOCATIONS = list(ALL_DB_CONNECTION_PATCH_LOCATIONS)
 
 _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
@@ -128,6 +125,21 @@ def _create_user_group_in_test_db(conn, group_name, description="Test group"):
         )
     conn.commit()
     return {"id": group_id, "group_hash": group_hash, "group_name": group_name}
+
+
+def _create_admin_group_in_test_db(conn, project):
+    """Create the canonical user group that grants an admin access to a project.
+
+    The real admin-access stored procedures intentionally recognize only
+    ``admin_<project_id>`` user groups.  Using an arbitrary test-only group name
+    makes lifecycle validation fail closed and revoke the issued refresh family
+    before the API-key route is reached.
+    """
+    return _create_user_group_in_test_db(
+        conn,
+        f"admin_{project['id']}",
+        description=f"Admin access for {project['project_name']}",
+    )
 
 
 def _create_project_in_test_db(conn, project_name, description="Test project"):
@@ -351,7 +363,7 @@ async def test_admin_creates_key_within_scope(
         admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin_{unique}", f"e2e_admin_{unique}@test.com", password, user_type="admin")
         target_user = _create_user_in_test_db(real_db_conn, f"e2e_target2_{unique}", f"e2e_target2_{unique}@test.com", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin Project {unique}")
-        admin_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_admin_ug_{unique}")
+        admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         target_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_target_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg_{unique}")
 
@@ -398,7 +410,7 @@ async def test_admin_cannot_create_key_outside_scope(
         admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin2_{unique}", f"e2e_admin2_{unique}@test.com", password, user_type="admin")
         proj_a = _create_project_in_test_db(real_db_conn, f"E2E Admin A {unique}")
         proj_b = _create_project_in_test_db(real_db_conn, f"E2E Admin B {unique}")
-        admin_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_admin_ug2_{unique}")
+        admin_ug = _create_admin_group_in_test_db(real_db_conn, proj_a)
         pg_a = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg_a_{unique}")
 
         _link_user_to_group(real_db_conn, admin_user["id"], admin_ug["id"])
@@ -436,7 +448,7 @@ async def test_admin_cannot_create_key_for_user_without_project_access(
         admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin3_{unique}", f"e2e_admin3_{unique}@test.com", password, user_type="admin")
         target_user = _create_user_in_test_db(real_db_conn, f"e2e_target3_{unique}", f"e2e_target3_{unique}@test.com", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin Target Project {unique}")
-        admin_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_admin_ug3_{unique}")
+        admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg3_{unique}")
 
         _link_user_to_group(real_db_conn, admin_user["id"], admin_ug["id"])
@@ -473,7 +485,7 @@ async def test_admin_list_keys_within_scope(
     with _patch_all_infra():
         admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin4_{unique}", f"e2e_admin4_{unique}@test.com", password, user_type="admin")
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin List Project {unique}")
-        admin_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_admin_ug4_{unique}")
+        admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg4_{unique}")
 
         _link_user_to_group(real_db_conn, admin_user["id"], admin_ug["id"])

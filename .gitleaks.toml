@@ -1,0 +1,48 @@
+title = "api.auth secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+Synthetic test credentials. This repo's test suite deliberately contains
+credential-shaped strings: fixture secrets, and negative assertions that prove a
+secret gets redacted (e.g. raising RuntimeError("boom sk_live_should_not_leak")
+and asserting it is absent from the surfaced error). Those must not trip the
+scanner. Real secrets live only in .env / .env.test / .env.prod, which are
+gitignored and never committed.
+
+Keep this allowlist keyed to the naming convention, not to file paths, so a real
+key pasted into a test file is still caught.
+"""
+
+regexes = [
+  # Negative assertions: tests proving a secret is redacted.
+  '''should_not_leak''',
+  '''should_not_appear''',
+
+  # Self-documenting synthetic-credential convention used across the suite.
+  '''_do_not_use''',
+  '''_do_not_log''',
+  '''-not-real''',
+  '''_not_real''',
+  '''for_testing_only''',
+  '''fake-[a-z0-9-]*-for-tests''',
+  '''test[-_](jwt|log|pepper|token|patreon|google|oauth|stripe|billing)[-_a-z0-9]*''',
+
+  # .env.example placeholders.
+  '''change-me-[a-z0-9-]*''',
+  '''<[a-z0-9-]+>''',
+]
+
+paths = [
+  # Sanitized provider payloads. tests/fixtures/stripe/README.md explicitly
+  # forbids pasting live captures, keys, webhook secrets, or customer PII here.
+  '''^tests/fixtures/''',
+
+  # Documented configuration template; every value is blank or a placeholder.
+  '''^\.env\.example$''',
+
+  # Isolated throwaway credentials for the local test containers.
+  '''^docker-compose\.test\.yml$''',
+]

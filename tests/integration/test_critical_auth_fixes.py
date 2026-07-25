@@ -40,33 +40,6 @@ def mock_fakeredis():
         fake.flushall()
 
 
-@pytest.fixture
-def patched_db_connections():
-    """Patch get_connection at all relevant locations with a shared mock conn."""
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
-    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
-    mock_cursor.fetchone.return_value = None
-    mock_cursor.fetchall.return_value = []
-    targets = [
-        "src.Util.db_config.get_connection",
-        "src.Util.db.db_users.get_connection",
-        "src.Util.db.db_enhanced.get_connection",
-        "src.Util.db.db_user_groups.get_connection",
-        "src.Util.db.db_global_roles.get_connection",
-        "src.Util.db.db_projects.get_connection",
-    ]
-    patchers = [patch(t, return_value=mock_conn) for t in targets]
-    for p in patchers:
-        p.start()
-    try:
-        yield mock_conn
-    finally:
-        for p in patchers:
-            p.stop()
-
-
 # =============================================================================
 # G5 — Old Redis session (no 'groups' key) still returns valid EnhancedUserLogin
 # =============================================================================
@@ -247,17 +220,18 @@ async def test_optional_auth_redis_failure_returns_500():
             f"got '{exc_info.value.detail}'"
         )
 
-        # Verify logger.warning was called with truncated token
+        # Infrastructure failures are observable, but credential material must
+        # never be copied into log messages, even in truncated form.
         mock_logger.warning.assert_called_once()
-        log_msg = mock_logger.warning.call_args[0][0]
-        assert "test-tok" in log_msg, (
-            f"G2 FAIL: Logger warning should contain truncated token, "
-            f"got: {log_msg}"
-        )
+        args, kwargs = mock_logger.warning.call_args
+        log_msg = args[0]
+        assert creds.credentials not in str(mock_logger.warning.call_args)
+        assert creds.credentials[:8] not in str(mock_logger.warning.call_args)
         assert "optional_auth" in log_msg, (
             f"G2 FAIL: Logger warning should contain 'optional_auth', "
             f"got: {log_msg}"
         )
+        assert kwargs == {"exc_info": True}
 
 
 # =============================================================================
@@ -293,10 +267,10 @@ async def test_optional_auth_malformed_jwt_returns_none(mock_fakeredis):
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_optional_auth_logs_warning_on_failure():
+async def test_optional_auth_logs_warning_without_token_material_on_failure():
     """
-    G2 (logger variant): Verify logger.warning is called with truncated
-    session token (first 8 chars) when validate_session raises.
+    G2 (logger variant): Verify logger.warning records the failed subsystem
+    without copying raw or truncated session credentials.
     """
     from src.middleware.authentication import optional_auth
     from fastapi import HTTPException
@@ -314,10 +288,11 @@ async def test_optional_auth_logs_warning_on_failure():
         mock_logger.warning.assert_called_once()
         args, kwargs = mock_logger.warning.call_args
         log_msg = args[0]
-        assert "abcdef12" in log_msg, (
-            f"G2 LOG: Expected truncated token 'abcdef12' in warning, "
-            f"got: {log_msg}"
-        )
+        rendered_call = str(mock_logger.warning.call_args)
+        assert "optional_auth" in log_msg
+        assert creds.credentials not in rendered_call
+        assert creds.credentials[:8] not in rendered_call
+        assert kwargs == {"exc_info": True}
 
 
 # =============================================================================

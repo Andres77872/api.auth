@@ -240,7 +240,7 @@ async def test_registration_passes_correct_params_to_enhanced_register(
             "/auth/register",
             data={
                 "username": "orchuser",
-                "password": "OrchP@ss123",
+                "password": "SecureP@ss123",
                 "email": "orch@example.com",
                 "user_group_hash": "grp-ug-001",
             },
@@ -250,7 +250,7 @@ async def test_registration_passes_correct_params_to_enhanced_register(
     assert response.status_code == 200
     assert captured_args is not None
     assert captured_args[0] == "orchuser"       # username
-    assert captured_args[1] == "OrchP@ss123"    # password
+    assert captured_args[1] == "SecureP@ss123"  # password
     assert captured_args[2] == "orch@example.com"  # email
     assert captured_args[3] == "grp-ug-001"     # user_group_hash
 

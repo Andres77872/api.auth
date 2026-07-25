@@ -102,7 +102,6 @@ async def test_grant_ug_pg_valid_response_shape(
     assert data["project_group"]["group_name"] == "Contract PG"
 
 
-@pytest.mark.skip(reason="FastAPI Form validation for missing required fields returns 500 due to DB layer interaction; covered by regression tests for 404 path")
 @pytest.mark.asyncio
 async def test_grant_ug_pg_missing_project_group_hash_422(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
@@ -114,11 +113,12 @@ async def test_grant_ug_pg_missing_project_group_hash_422(
     admin_session = _make_admin_session(session_token=token)
     create_test_session(fake_redis, token, make_session_payload(session_token=token))
 
-    response = await client.post(
-        "/admin/user-groups/grp-ug-contract-001/project-groups",
-        data={},  # No project_group_hash
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session):
+        response = await client.post(
+            "/admin/user-groups/grp-ug-contract-001/project-groups",
+            data={},  # No project_group_hash
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
     assert response.status_code in (422, 400), (
         f"Expected 422 or 400 for missing required field, got {response.status_code}"

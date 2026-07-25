@@ -1,108 +1,20 @@
 """
 Slice 12 — Middleware: API Audit
 
-Tests: Verify audit logging at TWO levels:
-1. Unit-level: APIAuditLogger utility logic (path filtering, sensitive data filtering, etc.)
-2. Request-level: APIAuditMiddleware calls log_request during real HTTP requests through
-   the full middleware stack.
+Proves APIAuditMiddleware invokes the audit logger with the right parameters during
+real ASGI request processing, through the full middleware stack.  Response logging
+runs in a background task and is not awaited here; the synchronous request-logging
+path is what these assert.
 
-The request-level tests verify that the middleware actually invokes the audit logger
-with correct parameters during real ASGI request processing. Response logging runs
-in background tasks and is not awaited in tests (to avoid hangs), but the synchronous
-request logging path is fully proven.
-
-Note: Excluded-path filtering (e.g., /ping, /docs not logged) is proven at the unit
-level via test_should_log_request_excludes_health_paths. The request-level proof focuses
-on verifying log_request IS called for non-excluded paths.
+The pure-logic surface of APIAuditLogger — should_log_request path/method filtering,
+filter_sensitive_data masking, generate_tags — is covered (more thoroughly) by
+tests/unit/test_api_audit_logger.py and is deliberately not re-tested here.
 """
 
 import pytest
 from unittest.mock import patch, MagicMock, call
 
 from src.Util.api_audit_logger import APIAuditLogger
-
-
-# ─── Unit-Level: APIAuditLogger Utility Tests ────────────────────────────────
-
-def test_should_log_request_excludes_health_paths():
-    """APIAuditLogger.should_log_request excludes /ping, /health, /docs."""
-    assert APIAuditLogger.should_log_request("/ping", "GET") is False
-    # Note: /system/health is NOT in excluded paths, only /health is
-    assert APIAuditLogger.should_log_request("/docs", "GET") is False
-    assert APIAuditLogger.should_log_request("/docs/openapi.json", "GET") is False
-    assert APIAuditLogger.should_log_request("/redoc", "GET") is False
-
-
-def test_should_log_request_excludes_options():
-    """APIAuditLogger.should_log_request excludes OPTIONS (CORS preflight)."""
-    assert APIAuditLogger.should_log_request("/auth/login", "OPTIONS") is False
-
-
-def test_should_log_request_includes_protected_endpoints():
-    """APIAuditLogger.should_log_request includes protected endpoints."""
-    assert APIAuditLogger.should_log_request("/auth/login", "POST") is True
-    assert APIAuditLogger.should_log_request("/users/profile", "GET") is True
-    assert APIAuditLogger.should_log_request("/projects", "GET") is True
-    assert APIAuditLogger.should_log_request("/users/list", "GET") is True
-
-
-def test_filter_sensitive_data_removes_passwords():
-    """APIAuditLogger.filter_sensitive_data masks password fields."""
-    data = {
-        "username": "testuser",
-        "password": "secret123",
-        "password_hash": "$argon2id$fake",
-        "email": "test@example.com",
-    }
-    filtered = APIAuditLogger.filter_sensitive_data(data)
-    # Sensitive fields are masked, not removed
-    assert filtered["password"] == "***FILTERED***"
-    assert filtered["password_hash"] == "***FILTERED***"
-    assert filtered["username"] == "testuser"
-    assert filtered["email"] == "test@example.com"
-
-
-def test_filter_sensitive_data_removes_tokens():
-    """APIAuditLogger.filter_sensitive_data masks token fields."""
-    data = {
-        "session_token": "abc123",
-        "access_token": "jwt.here",
-        "refresh_token": "refresh.here",
-        "authorization": "Bearer token",
-        "user_id": "1",
-    }
-    filtered = APIAuditLogger.filter_sensitive_data(data)
-    # Token fields are masked, not removed
-    assert filtered["session_token"] == "***FILTERED***"
-    assert filtered["access_token"] == "***FILTERED***"
-    assert filtered["refresh_token"] == "***FILTERED***"
-    assert filtered["authorization"] == "***FILTERED***"
-    assert filtered["user_id"] == "1"
-
-
-def test_filter_sensitive_data_handles_none():
-    """APIAuditLogger.filter_sensitive_data handles None input."""
-    assert APIAuditLogger.filter_sensitive_data(None) is None
-
-
-def test_filter_sensitive_data_nested():
-    """APIAuditLogger.filter_sensitive_data handles nested dicts."""
-    data = {
-        "user": {"username": "test", "password": "secret"},
-        "token": "abc",
-    }
-    filtered = APIAuditLogger.filter_sensitive_data(data)
-    # Sensitive fields are masked
-    assert filtered["user"]["password"] == "***FILTERED***"
-    assert filtered["token"] == "***FILTERED***"
-    assert filtered["user"]["username"] == "test"
-
-
-def test_generate_tags_for_auth_endpoint():
-    """APIAuditLogger.generate_tags returns appropriate tags for auth endpoints."""
-    tags = APIAuditLogger.generate_tags("/auth/login", "POST", 200, None)
-    assert isinstance(tags, list)
-    assert len(tags) > 0
 
 
 def test_is_security_event_for_auth_failures():

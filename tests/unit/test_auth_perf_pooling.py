@@ -8,7 +8,21 @@ Verifies:
 """
 
 import pytest
+
+from tests.support import make_db_connection_mock
 from unittest.mock import patch, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def restore_db_pool_after_test():
+    """Keep each pool test from leaking a mock-backed global into later tests."""
+    import src.Util.db_config as db_config
+
+    original_pool = db_config._pool
+    try:
+        yield
+    finally:
+        db_config._pool = original_pool
 
 
 def test_pool_reuses_connection_after_first_borrow():
@@ -17,13 +31,10 @@ def test_pool_reuses_connection_after_first_borrow():
     calls pymysql.connect once. Second borrow reuses pooled connection —
     no new pymysql.connect call.
     """
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
+    mock_conn = make_db_connection_mock()
+    mock_cursor = mock_conn.cursor()
 
     with patch("src.Util.db_config.pymysql.connect", return_value=mock_conn) as mock_connect:
-        # Force reimport to clear module-level _pool
-        import importlib
         import src.Util.db_config as db_config
         db_config._pool = None
 
@@ -59,12 +70,10 @@ def test_pool_returns_usable_connection_object():
     Verify the connection returned from pool has the expected interface
     (cursor, close methods) matching a raw pymysql connection.
     """
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
+    mock_conn = make_db_connection_mock()
+    mock_cursor = mock_conn.cursor()
 
     with patch("src.Util.db_config.pymysql.connect", return_value=mock_conn):
-        import importlib
         import src.Util.db_config as db_config
         db_config._pool = None
 
@@ -100,16 +109,11 @@ def test_pool_env_vars_control_config():
 
 
 def test_pool_lazy_init_on_first_call():
-    """
-    Pool should be None before first get_connection() call.
-    After first call, pool should be initialized.
-    """
+    """The pool is built on the first get_connection(), not at import."""
     import src.Util.db_config as db_config
     db_config._pool = None
 
-    assert db_config._pool is None, "Pool should be None before first call"
-
     mock_conn = MagicMock()
     with patch("src.Util.db_config.pymysql.connect", return_value=mock_conn):
-        conn = db_config.get_connection()
+        db_config.get_connection()
         assert db_config._pool is not None, "Pool should be initialized after first call"

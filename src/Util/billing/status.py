@@ -464,6 +464,8 @@ def safe_status_from_provider_failure(current_snapshot: Mapping[str, Any] | None
         {
             "status": stale_status,
             "plan_code": terminal_no_paid_plan_code(stale_status, snapshot.plan_code),
+            "tier_code": None,
+            "tier_name": None,
         }
     )
     return SafeBillingStatus(**payload)

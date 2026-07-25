@@ -18,13 +18,37 @@ from unittest.mock import patch, MagicMock
 
 # ─── Step 1: Load .env.test BEFORE any src.* import ─────────────────────────
 ENV_TEST_PATH = Path(__file__).parent.parent / ".env.test"
+_RUNNER_SAFETY_ENV = {
+    name: os.environ.get(name)
+    for name in (
+        "PYTEST_MEM_LIMIT_MB",
+        "PYTEST_TIMEOUT_SECONDS",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+    )
+}
 if ENV_TEST_PATH.exists():
     try:
         from dotenv import load_dotenv
-        load_dotenv(ENV_TEST_PATH, override=True)
+
+        # Host-side tests deliberately let the synthetic test file replace an
+        # inherited developer shell environment.  The Docker E2E runner sets this
+        # to false because Compose has already replaced loopback hosts with service
+        # DNS names (mysql-test, redis-test, and mailpit-test).
+        _dotenv_override = os.environ.get("PYTEST_DOTENV_OVERRIDE", "true").strip().lower()
+        load_dotenv(
+            ENV_TEST_PATH,
+            override=_dotenv_override not in {"0", "false", "no", "off"},
+        )
     except ImportError:
         # python-dotenv not installed — set env vars manually
         pass
+
+# Host tests intentionally let .env.test replace application configuration, but
+# the certified runner's process-safety controls are not application settings.
+# Restore those exported values before installing the address-space/timer rails.
+for _safety_name, _safety_value in _RUNNER_SAFETY_ENV.items():
+    if _safety_value is not None:
+        os.environ[_safety_name] = _safety_value
 
 # ─── Step 2: Ensure critical env vars are set ────────────────────────────────
 os.environ.setdefault(
@@ -194,6 +218,154 @@ for _patreon_env_key, _patreon_env_value in _PATREON_TEST_ENV_DEFAULTS.items():
 
 # ─── Step 3: Now import test dependencies ────────────────────────────────────
 import pytest
+
+from tests.support import make_db_connection_mock
+
+# ─── Step 3b: Safety rails ───────────────────────────────────────────────────
+# These tests drive real `src.Util.db` code against mock cursors.  That code drains
+# result sets with `while cur.nextset():`, which never terminates against a cursor
+# double that has not stubbed `nextset` — and MagicMock records every call it gets,
+# so the loop allocates until the box swaps itself to death.  tests/support.py stops
+# that at the source; these two rails make sure the *next* such bug fails a test
+# instead of taking the machine down with it.
+#
+#   PYTEST_MEM_LIMIT_MB=0     leaves any inherited address-space cap unchanged
+#   PYTEST_TIMEOUT_SECONDS=0  disables the per-test wall-clock limit
+_MEM_LIMIT_MB = int(os.environ.get("PYTEST_MEM_LIMIT_MB", "1536"))
+_TIMEOUT_SECONDS = int(os.environ.get("PYTEST_TIMEOUT_SECONDS", "60"))
+
+
+def _install_address_space_cap(limit_mb: int) -> int | None:
+    """Install a non-weakening process cap and return its byte value.
+
+    A parent shell or container may already impose a stricter limit.  Never raise
+    that soft limit: doing so would turn a safety rail into a safety regression.
+    """
+    if limit_mb <= 0:
+        return None
+    try:
+        import resource
+    except ImportError:  # non-POSIX
+        return None
+
+    requested = limit_mb * 1024 * 1024
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+
+    candidates = [requested]
+    if soft != resource.RLIM_INFINITY:
+        candidates.append(soft)
+    if hard != resource.RLIM_INFINITY:
+        candidates.append(hard)
+    limit = min(candidates)
+
+    if soft == limit:
+        return limit
+
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
+    except (ValueError, OSError) as exc:
+        raise RuntimeError(
+            f"could not install pytest address-space cap of {limit_mb} MiB"
+        ) from exc
+
+    installed_soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+    if installed_soft == resource.RLIM_INFINITY or installed_soft > limit:
+        raise RuntimeError(
+            f"pytest address-space cap was not enforced (requested {limit_mb} MiB)"
+        )
+    return installed_soft
+
+
+_install_address_space_cap(_MEM_LIMIT_MB)
+
+
+def pytest_collection_modifyitems(items):
+    """Attach layer markers by directory so resource-safe selection is reliable."""
+    root = Path(__file__).resolve().parent.parent
+    for item in items:
+        try:
+            relative = item.path.resolve().relative_to(root)
+        except (AttributeError, ValueError):
+            continue
+
+        parts = relative.parts
+        if len(parts) < 2 or parts[0] != "tests":
+            continue
+
+        layer = parts[1]
+        if layer in {"unit", "integration", "e2e", "static"}:
+            item.add_marker(getattr(pytest.mark, layer))
+
+        if item.path.name in {
+            "test_patreon_live_opt_in.py",
+            "test_stripe_live_opt_in.py",
+        }:
+            item.add_marker(pytest.mark.live_provider)
+
+        if (
+            item.path.name == "test_slice11_request_validation.py"
+            and item.name == "test_oversized_post_rejected"
+        ):
+            item.add_marker(pytest.mark.large_payload)
+
+
+@pytest.fixture(autouse=True)
+def _per_test_timeout():
+    """Turn a hung test into a failing test.
+
+    SIGALRM only interrupts Python bytecode, which is exactly what a runaway
+    `while cur.nextset():` loop is made of.
+    """
+    import signal
+
+    if _TIMEOUT_SECONDS <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _timed_out(_signum, _frame):
+        raise TimeoutError(
+            f"test exceeded {_TIMEOUT_SECONDS}s — suspect a non-terminating loop "
+            f"(a cursor double that does not stub nextset() will do this)"
+        )
+
+    previous = signal.signal(signal.SIGALRM, _timed_out)
+    signal.setitimer(signal.ITIMER_REAL, _TIMEOUT_SECONDS)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cheap_argon2_for_tests():
+    """Run Argon2id at a throwaway cost for the whole session.
+
+    Production is tuned to 64 MiB per hash.  The suite hashes and verifies on every
+    login, register, and API-key path — including the dummy-hash verification that
+    equalizes timing on *failed* logins — so at production cost the suite burns a
+    64 MiB spike and ~100 ms of CPU per request.  The code path under test is
+    identical; only the work factor changes.
+    """
+    from argon2 import PasswordHasher
+
+    import src.Util.db.db_users as db_users
+    import src.Util.password_security as password_security
+
+    cheap = PasswordHasher(
+        time_cost=1, memory_cost=64, parallelism=1, hash_len=32, salt_len=16
+    )
+    original_hasher = password_security.password_manager.hasher
+    original_dummy = db_users._DUMMY_LOGIN_PASSWORD_HASH
+
+    password_security.password_manager.hasher = cheap
+    db_users._DUMMY_LOGIN_PASSWORD_HASH = cheap.hash("dummy-login-password-not-real")
+    try:
+        yield
+    finally:
+        password_security.password_manager.hasher = original_hasher
+        db_users._DUMMY_LOGIN_PASSWORD_HASH = original_dummy
+
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 TEST_JWT_SECRET = os.environ["JWT_SECRET_KEY"]
@@ -552,15 +724,7 @@ def patreon_no_secret_log_guard(caplog):
 @pytest.fixture
 def mock_db_connection():
     """Mock get_connection to return a fake MySQL connection."""
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.description = None
-    mock_cursor.fetchone.return_value = None
-    mock_cursor.fetchall.return_value = []
-    mock_cursor.nextset.return_value = None
-    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
-    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    mock_conn.close = MagicMock()
+    mock_conn = make_db_connection_mock()
     with patch("src.Util.db_config.get_connection", return_value=mock_conn):
         yield mock_conn
 

@@ -1,0 +1,51 @@
+{
+  "fixture_set": "patreon-account-link.v1",
+  "synthetic_only": true,
+  "webhook_signature_header": "X-Patreon-Signature",
+  "webhook_signature_algorithm": "hmac-md5",
+  "webhook_signature_secret": "patreon_webhook_secret_fixture_do_not_use",
+  "webhook_raw_body_includes_trailing_lf": true,
+  "member_fixtures": {
+    "active_mapped": "members/active_mapped_member.json",
+    "multi_campaign": "members/multi_campaign_members.json",
+    "mismatched_email": "members/mismatched_email_member.json",
+    "hidden_email": "members/hidden_email_member.json",
+    "former": "members/former_member.json",
+    "unknown_tier": "members/unknown_tier_member.json"
+  },
+  "webhook_fixtures": {
+    "member_update_active": "webhooks/member_update_active.raw.json",
+    "member_update_active_nbsp": "webhooks/member_update_active_nbsp.raw.json",
+    "member_update_active_nbsp_normalized": "webhooks/member_update_active_nbsp_normalized.raw.json",
+    "member_delete_partial": "webhooks/member_delete_partial.raw.json",
+    "pledge_update_unknown_tier": "webhooks/pledge_update_unknown_tier.raw.json"
+  },
+  "s2s_contract_fixtures": {
+    "linked": "s2s/entitlement_linked.json",
+    "unlinked": "s2s/entitlement_unlinked.json",
+    "stale": "s2s/entitlement_stale.json",
+    "unknown_tier": "s2s/entitlement_unknown_tier.json",
+    "revoked": "s2s/entitlement_revoked.json"
+  },
+  "forbidden_s2s_and_client_fields": [
+    "access_token",
+    "refresh_token",
+    "session_token",
+    "api_key",
+    "patreon_user_id",
+    "patreon_member_id",
+    "patreon_campaign_id",
+    "patreon_tier_id",
+    "raw_patreon_email",
+    "masked_patreon_email",
+    "provider_sub_hash",
+    "provider_sub_fingerprint",
+    "hash_prefix",
+    "x-patreon-signature",
+    "webhook_secret",
+    "creator_access_token",
+    "creator_refresh_token",
+    "patreon_payload",
+    "audit_rows"
+  ]
+}

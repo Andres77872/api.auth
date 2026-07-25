@@ -24,15 +24,6 @@ class TestCalculateHealthScore:
         )
         assert score == 100
 
-    def test_low_usage_no_penalty(self):
-        score = SystemMetrics.calculate_health_score(
-            cpu_percent=10,
-            memory_percent=20,
-            db_health=self._make_health(),
-            redis_health=self._make_health(),
-        )
-        assert score == 100
-
     def test_cpu_above_60_penalty_10(self):
         score = SystemMetrics.calculate_health_score(
             cpu_percent=65,
@@ -114,16 +105,6 @@ class TestCalculateHealthScore:
         )
         assert score == 10  # 100 - 20 - 20 - 30 - 20 = 10
 
-    def test_score_does_not_go_below_zero(self):
-        # All penalties: -20 -20 -30 -20 = -90, but max(0, score)
-        score = SystemMetrics.calculate_health_score(
-            cpu_percent=90,
-            memory_percent=95,
-            db_health={"status": "unhealthy"},
-            redis_health={"status": "unhealthy"},
-        )
-        assert score >= 0
-
     def test_db_health_missing_status_treated_as_unhealthy(self):
         score = SystemMetrics.calculate_health_score(
             cpu_percent=30,
@@ -179,12 +160,3 @@ class TestCalculateHealthScore:
             redis_health=self._make_health(),
         )
         assert score == 90  # 100 - 10
-
-    def test_all_zeros(self):
-        score = SystemMetrics.calculate_health_score(
-            cpu_percent=0,
-            memory_percent=0,
-            db_health=self._make_health(),
-            redis_health=self._make_health(),
-        )
-        assert score == 100

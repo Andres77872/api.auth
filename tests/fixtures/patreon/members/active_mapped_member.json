@@ -1,0 +1,70 @@
+{
+  "data": [
+    {
+      "id": "member-active-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-linked@example.test",
+        "full_name": "Fixture Linked Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-01T00:00:00+00:00",
+        "next_charge_date": "2026-07-01T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-alpha-artisan",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-linked-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "campaign-mw-alpha",
+      "type": "campaign",
+      "attributes": {
+        "creation_name": "Magic Worlds Alpha Fixture"
+      }
+    },
+    {
+      "id": "tier-mw-alpha-artisan",
+      "type": "tier",
+      "attributes": {
+        "title": "Artisan",
+        "amount_cents": 500
+      }
+    },
+    {
+      "id": "user-fixture-linked-001",
+      "type": "user",
+      "attributes": {
+        "email": "patron-linked@example.test"
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "active mapped tier grants normalized entitlement",
+      "expected_plan_code": "magic_worlds_plus",
+      "expected_tier_code": "artisan",
+      "synthetic_only": true
+    }
+  }
+}

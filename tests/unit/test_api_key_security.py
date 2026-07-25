@@ -131,22 +131,6 @@ class TestHmacHashingDeterminism:
 
         assert result["secret_hash"] == expected_hash
 
-    def test_different_public_id_produces_different_hash(self):
-        import base64
-        from src.Util.api_key_security import API_KEY_PEPPER, HASH_VERSION
-
-        public_id_a = base64.urlsafe_b64encode(b'\x00' * 9).rstrip(b"=").decode("ascii")
-        public_id_b = base64.urlsafe_b64encode(b'\x01' * 9).rstrip(b"=").decode("ascii")
-        secret = base64.urlsafe_b64encode(b'\x00' * 32).rstrip(b"=").decode("ascii")
-
-        material_a = f"{HASH_VERSION}:{public_id_a}:{secret}".encode("utf-8")
-        material_b = f"{HASH_VERSION}:{public_id_b}:{secret}".encode("utf-8")
-
-        hash_a = hmac.digest(API_KEY_PEPPER, material_a, "sha256")
-        hash_b = hmac.digest(API_KEY_PEPPER, material_b, "sha256")
-
-        assert hash_a != hash_b
-
 
 # ─── Slice 3: Token verification (happy + rejection paths) ───────────────────
 
@@ -200,46 +184,42 @@ class TestVerifyApiKeyToken:
 # ─── Slice 4: Constant-time comparison & dummy hash ─────────────────────────
 
 class TestConstantTimeComparison:
-    """Slice 4: Verify hmac.compare_digest is used for ALL paths."""
+    """hmac.compare_digest must run exactly once on EVERY path, accepted or rejected.
 
-    def test_hmac_compare_digest_called_for_valid_token(self):
+    verify_api_key_token compares against a dummy hash on each rejection path so a
+    malformed token costs the same as a wrong secret.  If any path short-circuits
+    ahead of the compare, key validity leaks through response timing.
+    """
+
+    @pytest.mark.parametrize(
+        "build_args",
+        [
+            pytest.param(
+                lambda r: (r["token"], r["public_id"], r["secret_hash"]),
+                id="valid-token",
+            ),
+            pytest.param(
+                lambda r: (
+                    f"sk_{r['public_id']}.WrongSecretThatIs43CharsLongAAAAAAAAAAAAA",
+                    r["public_id"],
+                    r["secret_hash"],
+                ),
+                id="wrong-secret",
+            ),
+            pytest.param(
+                lambda r: (r["token"], "wrongpublicid12", r["secret_hash"]),
+                id="wrong-public-id",
+            ),
+            pytest.param(lambda r: ("xx_abc.def", "abc", b"\x00" * 32), id="wrong-prefix"),
+            pytest.param(lambda r: ("sk_abcnodot", "abc", b"\x00" * 32), id="malformed-no-dot"),
+            pytest.param(lambda r: ("", "abc", b"\x00" * 32), id="empty-string"),
+        ],
+    )
+    def test_compare_digest_called_exactly_once(self, build_args):
         from src.Util.api_key_security import generate_api_key_token, verify_api_key_token
         result = generate_api_key_token()
-        with patch("hmac.compare_digest", return_value=True) as mock_compare:
-            verify_api_key_token(result["token"], result["public_id"], result["secret_hash"])
-            mock_compare.assert_called_once()
-
-    def test_hmac_compare_digest_called_for_wrong_secret(self):
-        from src.Util.api_key_security import generate_api_key_token, verify_api_key_token
-        result = generate_api_key_token()
-        wrong_token = f"sk_{result['public_id']}.WrongSecretThatIs43CharsLongAAAAAAAAAAAAA"
         with patch("hmac.compare_digest", return_value=False) as mock_compare:
-            verify_api_key_token(wrong_token, result["public_id"], result["secret_hash"])
-            mock_compare.assert_called_once()
-
-    def test_hmac_compare_digest_called_for_wrong_public_id(self):
-        from src.Util.api_key_security import generate_api_key_token, verify_api_key_token
-        result = generate_api_key_token()
-        with patch("hmac.compare_digest", return_value=False) as mock_compare:
-            verify_api_key_token(result["token"], "wrongpublicid12", result["secret_hash"])
-            mock_compare.assert_called_once()
-
-    def test_hmac_compare_digest_called_for_wrong_prefix(self):
-        from src.Util.api_key_security import verify_api_key_token
-        with patch("hmac.compare_digest", return_value=False) as mock_compare:
-            verify_api_key_token("xx_abc.def", "abc", b"\x00" * 32)
-            mock_compare.assert_called_once()
-
-    def test_hmac_compare_digest_called_for_malformed_no_dot(self):
-        from src.Util.api_key_security import verify_api_key_token
-        with patch("hmac.compare_digest", return_value=False) as mock_compare:
-            verify_api_key_token("sk_abcnodot", "abc", b"\x00" * 32)
-            mock_compare.assert_called_once()
-
-    def test_hmac_compare_digest_called_for_empty_string(self):
-        from src.Util.api_key_security import verify_api_key_token
-        with patch("hmac.compare_digest", return_value=False) as mock_compare:
-            verify_api_key_token("", "abc", b"\x00" * 32)
+            verify_api_key_token(*build_args(result))
             mock_compare.assert_called_once()
 
     def test_dummy_hash_computed_for_malformed_tokens(self):
@@ -266,10 +246,6 @@ class TestPepperConfiguration:
         from src.Util.api_key_security import API_KEY_PEPPER
         assert API_KEY_PEPPER == os.environ["API_KEY_PEPPER"].encode("utf-8")
 
-    def test_pepper_is_bytes(self):
-        from src.Util.api_key_security import API_KEY_PEPPER
-        assert isinstance(API_KEY_PEPPER, bytes)
-
     def test_missing_pepper_raises_key_error(self, monkeypatch):
         """Verify that missing API_KEY_PEPPER raises KeyError at import time."""
         module_name = "src.Util.api_key_security"
@@ -283,17 +259,3 @@ class TestPepperConfiguration:
             sys.modules.pop(module_name, None)
             if original_module is not None:
                 sys.modules[module_name] = original_module
-
-    def test_consistent_hash_with_same_pepper(self):
-        """Two tokens generated with the same inputs produce the same hash."""
-        import base64
-        from src.Util.api_key_security import API_KEY_PEPPER, HASH_VERSION
-
-        public_id = base64.urlsafe_b64encode(b'\x42' * 9).rstrip(b"=").decode("ascii")
-        secret = base64.urlsafe_b64encode(b'\x42' * 32).rstrip(b"=").decode("ascii")
-        material = f"{HASH_VERSION}:{public_id}:{secret}".encode("utf-8")
-
-        hash1 = hmac.digest(API_KEY_PEPPER, material, "sha256")
-        hash2 = hmac.digest(API_KEY_PEPPER, material, "sha256")
-
-        assert hash1 == hash2

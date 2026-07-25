@@ -1,21 +1,25 @@
-# docker-compose.test.yml — isolated e2e runner + MySQL 8.0 + Redis
+# docker-compose.test.yml — disposable E2E runner + MySQL 8.0 + Redis + Mailpit
 #
 # Usage:
 #   bash scripts/run-e2e.sh
-#   docker compose -f docker-compose.test.yml down -v
+#
+# The wrapper is the supported entry point: it creates a fresh volume, runs one
+# serial test container, captures coverage, and always tears the project down.
 
 services:
   mysql-test:
-    image: mysql:8.0
-    container_name: api-auth-mysql-test
+    image: mysql:8.0.46-oraclelinux9
+    mem_limit: ${E2E_MYSQL_MEMORY_LIMIT:-1g}
+    memswap_limit: ${E2E_MYSQL_MEMORY_LIMIT:-1g}
+    cpus: ${E2E_MYSQL_CPU_LIMIT:-2.0}
+    pids_limit: 256
     environment:
       MYSQL_ROOT_PASSWORD: test_root
       MYSQL_DATABASE: magic_auth
       MYSQL_USER: test_user
       MYSQL_PASSWORD: test_mysql_password
-    ports:
-      - "3307:3306"
     volumes:
+      - mysql-e2e-data:/var/lib/mysql
       - ./schemas/tables/01_create_database.sql:/docker-entrypoint-initdb.d/01_create_database.sql
       - ./schemas/tables/02_create_tables.sql:/docker-entrypoint-initdb.d/02_create_tables.sql
       - ./schemas/tables/03_create_indexes.sql:/docker-entrypoint-initdb.d/03_create_indexes.sql
@@ -49,6 +53,10 @@ services:
       - ./schemas/triggers/04_email_activation_triggers.sql:/docker-entrypoint-initdb.d/33_tr_04_email_activation.sql
       - ./schemas/triggers/05_external_accounts_triggers.sql:/docker-entrypoint-initdb.d/34_tr_05_external_accounts.sql
       - ./schemas/triggers/06_patreon_entitlements_triggers.sql:/docker-entrypoint-initdb.d/35_tr_06_patreon_entitlements.sql
+      - ./schemas/tables/12_billing_provider_facts.sql:/docker-entrypoint-initdb.d/40_tb_12_billing_provider_facts.sql
+      - ./schemas/stored_procedures/17_billing_provider_facts.sql:/docker-entrypoint-initdb.d/41_sp_17_billing_provider_facts.sql
+      - ./schemas/stored_procedures/18_billing_groups.sql:/docker-entrypoint-initdb.d/42_sp_18_billing_groups.sql
+      - ./schemas/triggers/07_billing_provider_facts_triggers.sql:/docker-entrypoint-initdb.d/43_tr_07_billing_provider_facts.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -57,11 +65,12 @@ services:
       start_period: 30s
 
   redis-test:
-    image: redis:7-alpine
-    container_name: api-auth-redis-test
-    ports:
-      - "6380:6379"
-    command: redis-server --appendonly yes
+    image: redis:7.4.9-alpine3.21
+    mem_limit: ${E2E_REDIS_MEMORY_LIMIT:-128m}
+    memswap_limit: ${E2E_REDIS_MEMORY_LIMIT:-128m}
+    cpus: ${E2E_REDIS_CPU_LIMIT:-0.5}
+    pids_limit: 64
+    command: redis-server --save "" --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -70,11 +79,11 @@ services:
       start_period: 5s
 
   mailpit-test:
-    image: axllent/mailpit:latest
-    container_name: api-auth-mailpit-test
-    ports:
-      - "1025:1025"
-      - "8025:8025"
+    image: axllent/mailpit:v1.30.5
+    mem_limit: ${E2E_MAILPIT_MEMORY_LIMIT:-128m}
+    memswap_limit: ${E2E_MAILPIT_MEMORY_LIMIT:-128m}
+    cpus: ${E2E_MAILPIT_CPU_LIMIT:-0.5}
+    pids_limit: 128
     environment:
       MP_SMTP_BIND_ADDR: "0.0.0.0:1025"
       MP_UI_BIND_ADDR: "0.0.0.0:8025"
@@ -84,6 +93,11 @@ services:
       context: .
       dockerfile: Dockerfile.e2e
     image: api-auth-e2e:py312
+    init: true
+    mem_limit: ${E2E_RUNNER_MEMORY_LIMIT:-2g}
+    memswap_limit: ${E2E_RUNNER_MEMORY_LIMIT:-2g}
+    cpus: ${E2E_RUNNER_CPU_LIMIT:-2.0}
+    pids_limit: 256
     depends_on:
       mysql-test:
         condition: service_healthy
@@ -106,6 +120,12 @@ services:
       REAL_REDIS_HOST: redis-test
       REAL_REDIS_PORT: "6379"
       E2E_SERVICE_WAIT_SECONDS: "120"
+      E2E_REQUIRE_REAL_INFRA: "true"
+      E2E_USE_COMPOSE_MAILPIT: "true"
+      PYTEST_DOTENV_OVERRIDE: "false"
+      PYTEST_MEM_LIMIT_MB: ${PYTEST_MEM_LIMIT_MB:-1536}
+      PYTEST_TIMEOUT_SECONDS: ${PYTEST_TIMEOUT_SECONDS:-60}
+      COVERAGE_FILE: /test-results/e2e/.coverage
       EMAIL_DELIVERY_ENABLED: "true"
       EMAIL_PROVIDER: mailpit
       EMAIL_ALLOW_REAL_SEND_IN_TESTS: "false"
@@ -131,7 +151,25 @@ services:
       PATREON_TIER_MAP_JSON: "[]"
       RUN_PATREON_LOCAL_E2E: "false"
       RUN_PATREON_E2E: "false"
+      BILLING_ENABLED: "false"
+      BILLING_S2S_ENABLED: "false"
+      BILLING_CHECKOUT_ENABLED: "false"
+      BILLING_PORTAL_ENABLED: "false"
+      BILLING_SYNC_ENABLED: "false"
+      STRIPE_BILLING_ENABLED: "false"
+      STRIPE_WEBHOOKS_ENABLED: "false"
+      STRIPE_CHECKOUT_ENABLED: "false"
+      STRIPE_PORTAL_ENABLED: "false"
+      STRIPE_SYNC_ENABLED: "false"
+      STRIPE_SECRET_KEY: ""
+      STRIPE_WEBHOOK_SECRET: ""
+      RUN_STRIPE_E2E: "false"
+      RUN_STRIPE_LOCAL_E2E: "false"
     working_dir: /workspace
     volumes:
-      - .:/workspace
-    command: ["python", "-m", "pytest", "tests/e2e"]
+      - .:/workspace:ro
+      - ./test-results:/test-results
+    command: ["bash", "scripts/run-e2e-batches.sh"]
+
+volumes:
+  mysql-e2e-data:

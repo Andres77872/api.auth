@@ -549,8 +549,12 @@ curl -X GET "{BASE_URL}/admin/project-groups/$PG_HASH/projects" \
 
 ### Step 4: Check system health
 
+Use any valid access session:
+
 ```bash
-curl -X GET "{BASE_URL}/system/health" -H "User-Agent: my-client/1.0"
+curl -X GET "{BASE_URL}/system/health" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "User-Agent: my-client/1.0"
 ```
 
 Verify both `database` and `redis` components report `healthy`.
@@ -587,5 +591,4 @@ curl -X POST "{BASE_URL}/system/cache/invalidate/user/$USER_HASH" \
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

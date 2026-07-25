@@ -8,15 +8,21 @@ from this test module.
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import ExitStack, contextmanager
 from importlib import import_module
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pymysql
 import pytest
 import redis
+
+from src.Util.JWT_Security import JWTTokenHandler
+from src.Util.oauth_state import build_pkce_s256_challenge, fingerprint_oauth_value
 
 
 START_PATH = "/auth/google/start"
@@ -32,6 +38,9 @@ def _mysql_available() -> bool:
             password=os.environ.get("REAL_DB_PASSWORD", "test_mysql_password"),
             database=os.environ.get("REAL_DB_NAME", "magic_auth"),
             charset="utf8mb4",
+            connect_timeout=5,
+            read_timeout=10,
+            write_timeout=10,
         )
         conn.close()
         return True
@@ -46,6 +55,8 @@ def _redis_available() -> bool:
             port=int(os.environ.get("REAL_REDIS_PORT", "6380")),
             db=0,
             decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
         )
         return bool(client.ping())
     except Exception:
@@ -55,10 +66,26 @@ def _redis_available() -> bool:
 @pytest.fixture
 def google_oauth_full_stack_available():
     if not (_mysql_available() and _redis_available()):
+        if os.environ.get("E2E_REQUIRE_REAL_INFRA", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            pytest.fail(
+                "Docker E2E requires MySQL and Redis for the Google OAuth lifecycle",
+                pytrace=False,
+            )
         pytest.skip(
             "full Google OAuth lifecycle stack not provisioned for Phase 3 RED "
             "(needs local test MySQL, Redis, ASGI app, and fake Google seams)"
         )
+
+
+@pytest.fixture
+def isolated_google_oauth_redis(google_oauth_full_stack_available, live_redis):
+    """Give each synthetic OAuth lifecycle a clean live-Redis namespace."""
+    return live_redis
 
 
 def _is_unimplemented_route(response) -> bool:
@@ -73,6 +100,20 @@ def _assert_oauth_route_exists(response, path: str) -> None:
             "until Phase 8 registers auth_google.router",
             pytrace=False,
         )
+
+
+def _authorization_params_from_start(response) -> dict[str, str]:
+    """Extract the one real state/nonce/PKCE tuple emitted by the start route."""
+    assert response.status_code == 303
+    location = response.headers.get("location")
+    assert location, "OAuth start must redirect to the provider authorization URL"
+    query = parse_qs(urlparse(location).query, keep_blank_values=True)
+    values: dict[str, str] = {}
+    for name in ("state", "nonce", "code_challenge", "code_challenge_method"):
+        assert len(query.get(name, [])) == 1, f"OAuth start must emit exactly one {name}"
+        values[name] = query[name][0]
+    assert values["code_challenge_method"] == "S256"
+    return values
 
 
 @contextmanager
@@ -93,6 +134,20 @@ def _fake_google_e2e_seams(fake_google_token_response):
     fake_token_client = MagicMock()
     fake_token_client.authorize_access_token.return_value = fake_google_token_response
     fake_token_client.exchange_authorization_code.return_value = fake_google_token_response
+    fake_id_token_verifier = MagicMock(
+        side_effect=lambda _token, *, expected_nonce, **_kwargs: {
+            "provider": "google",
+            "sub": "google-sub-test-001",
+            "email": "oauth-user@example.test",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+            "aud": os.environ.get(
+                "GOOGLE_OAUTH_CLIENT_ID",
+                "test-google-client-id.apps.googleusercontent.com",
+            ),
+            "nonce": expected_nonce,
+        }
+    )
     with _optional_patch_targets(
         (
             "src.routes.auth_google.google_oauth_client",
@@ -100,8 +155,14 @@ def _fake_google_e2e_seams(fake_google_token_response):
             "src.Util.oauth_clients.google_oauth_client",
         ),
         fake_token_client,
+    ), _optional_patch_targets(
+        ("src.routes.auth_google.verify_google_id_token",),
+        fake_id_token_verifier,
     ):
-        yield fake_token_client
+        yield SimpleNamespace(
+            token_client=fake_token_client,
+            id_token_verifier=fake_id_token_verifier,
+        )
 
 
 class _E2EProviderInitRedeemer:
@@ -140,16 +201,63 @@ def _fake_provider_init_e2e_seams(*tokens: str):
         yield fake_provider_init_redeemer
 
 
+@contextmanager
+def _linked_google_identity_db_seams():
+    """Resolve one fake linked identity consistently through callback and session use."""
+    user = SimpleNamespace(
+        id="1",
+        user_hash="usr-oauth-linked-001",
+        username="oauthuser",
+        email="oauth-user@example.test",
+        user_type="consumer",
+        is_active=True,
+        assigned_project_id=None,
+    )
+    project = SimpleNamespace(
+        id="1",
+        project_hash="project-hash-redacted-by-contract",
+        project_name="OAuth Project",
+        project_description="OAuth project",
+        is_active=True,
+        archived=False,
+    )
+    group = SimpleNamespace(
+        id="1",
+        group_hash="group-hash-redacted-by-contract",
+        group_name="OAuth Consumers",
+    )
+
+    with ExitStack() as stack:
+        for target, value in (
+            ("src.Util.db.db_enhanced.get_user_by_hash", user),
+            ("src.Util.db.db_enhanced.get_project_by_hash", project),
+            ("src.Util.db.db_enhanced.get_user_groups_in_project_by_hash", [group]),
+            ("src.Util.db.db_enhanced.get_user_accessible_projects", [project]),
+            ("src.routes.auth.get_user_by_hash", user),
+            ("src.routes.auth.get_project_by_hash", project),
+            ("src.routes.auth._route_refresh_groups", [group]),
+            ("src.routes.auth.get_user_accessible_projects", [project]),
+            ("src.Util.db.db_global_roles.get_user_permissions", []),
+            ("src.routes.auth_google.db.get_user_by_external_account", user),
+            ("src.routes.auth_google.db.touch_external_account_last_seen", True),
+            ("src.routes.auth_google.db.get_user_accessible_projects", [project]),
+            ("src.routes.auth_google.db.get_project_by_hash", project),
+            ("src.routes.auth_google.db.get_user_groups_for_user", [group]),
+        ):
+            stack.enter_context(patch(target, return_value=value))
+        yield
+
+
 @pytest.mark.asyncio
 async def test_google_oauth_start_callback_validate_refresh_logout_lifecycle(
     client,
-    google_oauth_full_stack_available,
+    isolated_google_oauth_redis,
     fake_google_token_response,
     monkeypatch,
 ):
     monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
 
-    with _fake_google_e2e_seams(fake_google_token_response), _fake_provider_init_e2e_seams("fake-provider-init-e2e-token-not-real"):
+    with _fake_google_e2e_seams(fake_google_token_response) as google_seams, _fake_provider_init_e2e_seams("fake-provider-init-e2e-token-not-real"):
         start = await client.post(
             START_PATH,
             json={
@@ -161,44 +269,77 @@ async def test_google_oauth_start_callback_validate_refresh_logout_lifecycle(
             follow_redirects=False,
         )
         _assert_oauth_route_exists(start, START_PATH)
-        assert start.status_code in {200, 302, 303}
+        authorization_params = _authorization_params_from_start(start)
+        emitted_state = authorization_params["state"]
+        assert start.cookies.get("oauth_state") == fingerprint_oauth_value(emitted_state)
+        pending_state_keys = set(isolated_google_oauth_redis.scan_iter("google_oauth_state:*"))
+        assert len(pending_state_keys) == 1
 
-        callback = await client.get(
-            CALLBACK_PATH,
-            params={"code": "fake-google-auth-code-not-real", "state": "e2e-valid-state"},
-            headers={"User-Agent": "phase3-google-oauth-e2e-test"},
-            follow_redirects=False,
-        )
-        _assert_oauth_route_exists(callback, CALLBACK_PATH)
-        assert callback.status_code == 200
-        data = callback.json()
+        with _linked_google_identity_db_seams():
+            callback = await client.get(
+                CALLBACK_PATH,
+                params={"code": "fake-google-auth-code-not-real", "state": emitted_state},
+                headers={"User-Agent": "phase3-google-oauth-e2e-test"},
+                follow_redirects=False,
+            )
+            _assert_oauth_route_exists(callback, CALLBACK_PATH)
+            assert callback.status_code == 200
+            data = callback.json()
+            assert not pending_state_keys.intersection(
+                isolated_google_oauth_redis.scan_iter("google_oauth_state:*")
+            )
+            assert len(
+                set(isolated_google_oauth_redis.scan_iter("google_oauth_state_consumed:*"))
+            ) == 1
+            google_seams.token_client.exchange_authorization_code.assert_called_once()
+            exchange_kwargs = (
+                google_seams.token_client.exchange_authorization_code.call_args.kwargs
+            )
+            assert (
+                build_pkce_s256_challenge(exchange_kwargs["code_verifier"])
+                == authorization_params["code_challenge"]
+            )
+            assert (
+                exchange_kwargs["redirect_uri"]
+                == "http://localhost:8000/auth/google/callback"
+            )
+            assert (
+                google_seams.id_token_verifier.call_args.kwargs["expected_nonce"]
+                == authorization_params["nonce"]
+            )
 
-        validate = await client.get(
-            "/auth/validate",
-            headers={"Authorization": f"Bearer {data['access_token']}", "User-Agent": "phase3-google-oauth-e2e-test"},
-        )
-        assert validate.status_code == 200
+            access_claims = JWTTokenHandler.decode_access_token(data["access_token"])
+            family_id = str(access_claims["family_id"])
+            family = json.loads(isolated_google_oauth_redis.get(f"refresh_family:{family_id}"))
+            assert family["status"] == "active"
+            assert isolated_google_oauth_redis.get(f"revoked_family:{family_id}") is None
 
-        refresh = await client.post(
-            "/auth/refresh",
-            data={"refresh_token": data["refresh_token"]},
-            cookies={"refresh_token": data["refresh_token"]},
-            headers={"User-Agent": "phase3-google-oauth-e2e-test"},
-        )
-        assert refresh.status_code == 200
-        assert refresh.json()["access_token"] != data["access_token"]
+            validate = await client.get(
+                "/auth/validate",
+                headers={"Authorization": f"Bearer {data['access_token']}", "User-Agent": "phase3-google-oauth-e2e-test"},
+            )
+            assert validate.status_code == 200
 
-        logout = await client.post(
-            "/auth/logout",
-            headers={"Authorization": f"Bearer {refresh.json()['access_token']}", "User-Agent": "phase3-google-oauth-e2e-test"},
-        )
-        assert logout.status_code in {200, 204}
+            refresh = await client.post(
+                "/auth/refresh",
+                data={"refresh_token": data["refresh_token"]},
+                cookies={"refresh_token": data["refresh_token"]},
+                headers={"User-Agent": "phase3-google-oauth-e2e-test"},
+            )
+            assert refresh.status_code == 200
+            assert refresh.json()["access_token"] != data["access_token"]
+
+            logout = await client.post(
+                "/auth/logout",
+                headers={"Authorization": f"Bearer {refresh.json()['access_token']}", "User-Agent": "phase3-google-oauth-e2e-test"},
+            )
+            assert logout.status_code in {200, 204}
 
 
 @pytest.mark.asyncio
 async def test_google_oauth_link_unlink_middleware_skiplist_and_existing_flows_remain_compatible(
     client,
-    google_oauth_full_stack_available,
+    isolated_google_oauth_redis,
     fake_google_token_response,
     monkeypatch,
 ):

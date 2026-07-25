@@ -11,9 +11,12 @@ __pycache__
 .coverage-*
 coverage.xml
 htmlcov
+test-results
 .mypy_cache
 .ruff_cache
 .env
+.env.test
+.env.prod
 *.log
 tmp
 dist

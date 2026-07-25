@@ -387,6 +387,7 @@ class TestLoginProjectGroupCrossLoginHardening:
 
         with patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"family_id": "fam-switch"}), \
              patch("src.routes.auth.validate_access_session", return_value=current_session), \
+             patch("src.routes.auth.require_recent_reauthentication", return_value=True), \
              patch("src.routes.auth.get_project_by_hash", return_value=archived_project), \
              patch("src.routes.auth.get_user_accessible_projects", return_value=[archived_project]):
             response = await client.post(

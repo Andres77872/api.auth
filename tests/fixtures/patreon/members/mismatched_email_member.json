@@ -1,0 +1,62 @@
+{
+  "data": [
+    {
+      "id": "member-mismatch-alpha-001",
+      "type": "member",
+      "attributes": {
+        "email": "patron-different@example.test",
+        "full_name": "Fixture Mismatched Email Patron",
+        "patron_status": "active_patron",
+        "last_charge_status": "Paid",
+        "last_charge_date": "2026-06-04T00:00:00+00:00",
+        "next_charge_date": "2026-07-04T00:00:00+00:00"
+      },
+      "relationships": {
+        "campaign": {
+          "data": {
+            "id": "campaign-mw-alpha",
+            "type": "campaign"
+          }
+        },
+        "currently_entitled_tiers": {
+          "data": [
+            {
+              "id": "tier-mw-alpha-artisan",
+              "type": "tier"
+            }
+          ]
+        },
+        "user": {
+          "data": {
+            "id": "user-fixture-mismatch-001",
+            "type": "user"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "tier-mw-alpha-artisan",
+      "type": "tier",
+      "attributes": {
+        "title": "Artisan",
+        "amount_cents": 500
+      }
+    },
+    {
+      "id": "user-fixture-mismatch-001",
+      "type": "user",
+      "attributes": {
+        "email": "patron-different@example.test"
+      }
+    }
+  ],
+  "meta": {
+    "fixture": {
+      "case": "local email differs from Patreon member email; email-loop proof required",
+      "local_email_hint": "local-owner@example.test",
+      "synthetic_only": true
+    }
+  }
+}

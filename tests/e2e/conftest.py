@@ -1,35 +1,21 @@
-"""
-High-Fidelity ASGI Integration Test Infrastructure
+"""E2E and high-fidelity ASGI test infrastructure.
 
-These tests run against the REAL FastAPI app with ALL middleware active.
-They are labeled "e2e" for historical reasons but are more accurately described as
-**high-fidelity ASGI integration tests** — they exercise the full application stack
-(HTTP layer, middleware, routing, dependency injection, exception handlers, JWT/session
-logic) while isolating infrastructure boundaries:
+The directory intentionally contains two explicit layers:
 
-- DB: patched at module boundary (MySQL stored procedures not available in test env)
-- Redis: fakeredis (API-compatible in-memory replacement, not a mock)
-- Audit logger: mocked (writes to DB in production)
+* tests marked ``real_db`` redirect application DB/Redis aliases to the disposable
+  Docker MySQL and Redis services;
+* hermetic lifecycle tests use the real FastAPI middleware/router stack while
+  replacing infrastructure boundaries with loop-safe DB doubles and fakeredis.
 
-What is truly integration-tested:
-- Full middleware stack (CORS, RequestValidation, APIAudit, AuthContext)
-- Real FastAPI routing and dependency injection
-- Real JWT/session logic and cookie handling
-- Real exception handlers producing standardized error responses
-- Real response serialization through Pydantic models
-
-What uses test doubles (infrastructure boundaries only):
-- DB calls patched at src.Util.db boundary (stored procedures require MySQL 8.0)
-- Redis replaced with fakeredis (full API-compatible in-memory implementation)
-- Audit logger methods mocked (writes to api_audit_log table in production)
-
-Full MySQL+Redis end-to-end tests would require docker-compose with MySQL 8.0
-and all stored procedures deployed. This is a future phase investment.
+The official Docker gate runs both layers serially and sets
+``E2E_REQUIRE_REAL_INFRA=true`` so an unavailable database is a hard failure rather
+than a skipped green build.
 """
 
 import json
 import os
 import uuid
+from functools import lru_cache
 from typing import Any, Dict, Optional
 from unittest.mock import patch, MagicMock
 
@@ -40,17 +26,10 @@ import pytest
 import redis
 
 from src.main import app as fastapi_app
+from tests.support import make_db_connection_mock, patch_db_connections
 
 
-# ─── Register real_db marker ─────────────────────────────────────────────────
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "real_db: marks tests that require a real MySQL 8.0 instance "
-        "(deselect with '-m \"not real_db\"')"
-    )
-
+# The `real_db` marker is registered in pytest.ini.
 
 # ─── App Fixture (REAL app with all middleware) ──────────────────────────────
 
@@ -80,11 +59,19 @@ _REAL_DB_CONFIG = {
     "database": os.environ.get("REAL_DB_NAME", "magic_auth"),
     "charset": "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
+    "connect_timeout": 5,
+    "read_timeout": 10,
+    "write_timeout": 10,
 }
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+@lru_cache(maxsize=1)
 def _check_mysql_available():
-    """Check if real MySQL is available."""
+    """Is a real MySQL reachable?  Probed once per session, not once per test."""
     try:
         conn = pymysql.connect(**_REAL_DB_CONFIG)
         conn.close()
@@ -98,6 +85,11 @@ def pytest_runtest_setup(item):
     """Skip real_db tests if MySQL is not available."""
     if item.get_closest_marker("real_db"):
         if not _check_mysql_available():
+            if _env_truthy("E2E_REQUIRE_REAL_INFRA"):
+                pytest.fail(
+                    "Docker E2E requires real MySQL, but the isolated service is unavailable",
+                    pytrace=False,
+                )
             pytest.skip("Real MySQL not available (docker compose -f docker-compose.test.yml up -d)")
 
 
@@ -117,7 +109,10 @@ _REAL_REDIS_CONFIG = {
     "host": os.environ.get("REAL_REDIS_HOST", "127.0.0.1"),
     "port": int(os.environ.get("REAL_REDIS_PORT", "6380")),
     "db": 0,
+    "password": os.environ.get("DB_REDIS_PASSWORD") or None,
     "decode_responses": True,
+    "socket_connect_timeout": 5,
+    "socket_timeout": 5,
 }
 
 
@@ -191,47 +186,23 @@ def fake_redis():
 
 # ─── DB Connection Patching ──────────────────────────────────────────────────
 
-_DB_CONN_PATCH_LOCATIONS = [
-    "src.Util.api_audit_logger.get_connection",
-    "src.Util.activity_logger.get_connection",
-    "src.Util.db.db_error_logger.get_connection",
-    "src.Util.db.db_users.get_connection",
-    "src.Util.db.db_projects.get_connection",
-    "src.Util.db.db_user_groups.get_connection",
-    "src.Util.db.db_project_groups.get_connection",
-    "src.Util.db.db_global_roles.get_connection",
-    "src.Util.db.db_permission_assignments.get_connection",
-    "src.Util.db.db_session_analytics.get_connection",
-    "src.Util.system_metrics.get_connection",
-    "src.Util.bulk_operations.get_connection",
-]
-
-
-def _mock_db_connection():
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-    mock_cursor.__exit__ = MagicMock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
-    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-    mock_conn.__exit__ = MagicMock(return_value=False)
-    return mock_conn
-
-
 @pytest.fixture
 def patched_db_connection():
-    """Patch all DB connections."""
-    mock_conn = _mock_db_connection()
-    patches = [patch("src.Util.db_config.get_connection", return_value=mock_conn)]
-    for loc in _DB_CONN_PATCH_LOCATIONS:
-        patches.append(patch(loc, return_value=mock_conn))
-    for p in patches:
-        p.start()
+    """Patch get_connection everywhere, handing out a loop-safe cursor.
+
+    These tests reach real `src.Util.db` code (unlike tests/integration, nothing here
+    patches the db functions themselves), and that code drains result sets with
+    `while cur.nextset():`.  The cursor double therefore has to come from
+    tests.support — a bare MagicMock returns a truthy nextset() forever and hangs the
+    run while it allocates.
+    """
+    mock_conn = make_db_connection_mock()
+    patchers = patch_db_connections(mock_conn)
     try:
         yield mock_conn
     finally:
-        for p in patches:
-            p.stop()
+        for patcher in patchers:
+            patcher.stop()
 
 
 # ─── Audit Logger ────────────────────────────────────────────────────────────

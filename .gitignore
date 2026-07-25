@@ -1,0 +1,11 @@
+.env
+.env.test
+.env.prod
+.venv/
+**/*.pyc
+.idea
+.vscode
+.coverage
+.coverage.*
+.coverage-unit.json
+test-results/

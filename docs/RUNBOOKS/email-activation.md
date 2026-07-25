@@ -38,12 +38,16 @@ Before rollout, confirm:
 - Redis is reachable for rate limits, idempotency cache, webhook event fast-dedupe, and worker wake/heartbeat keys.
 - Sender domain SPF/DKIM/DMARC records are verified by the provider.
 - The worker process is deployed independently from the API: `python -m src.workers.email_worker`.
-- Operators can access `/system/health` and `/admin/email/logs` without exposing recipient PII.
+- Authenticated operators can access `/system/health` and `/admin/email/logs` without exposing recipient PII.
 
 ## Health Checks
 
+`/system/health` requires a valid access session, but it is not admin-only.
+
 ```bash
-curl -X GET "${BASE_URL}/system/health" -H "User-Agent: ops/1.0"
+curl -X GET "${BASE_URL}/system/health" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "User-Agent: ops/1.0"
 ```
 
 Check `email_provider`, `email_outbox`, and `email_worker`. Disabled email delivery should not make unrelated auth health fail.

@@ -1,0 +1,105 @@
+{
+  "fixture_secret": "whsec_test_stripe_fixture_secret_do_not_use",
+  "signature_header": "Stripe-Signature",
+  "algorithm": "hmac-sha256",
+  "stripe_api_version": "2026-05-27.dahlia",
+  "timestamp": 1893456000,
+  "tolerance_seconds": 300,
+  "signing_input": "{timestamp}.{exact raw fixture bytes including final LF}",
+  "headers": {
+    "checkout_session_completed_subscription.json": {
+      "event_type": "checkout.session.completed",
+      "stripe_signature": "t=1893456000,v1=4f3f0d6c508978fcbeb6f1eb4684fc47281ff716f6193d825df29039187d769b",
+      "raw_body_sha256": "fad2f9f695187e91445860a89ba92bc96813c377a9a041d821b43cbe1e0f2900",
+      "byte_length": 954,
+      "expected_signature_valid": true
+    },
+    "checkout_session_completed_payment.json": {
+      "event_type": "checkout.session.completed",
+      "stripe_signature": "t=1893456000,v1=5b47663fe61bf808e3b39cfd0f677f956f9e8de999503a8c177cfe4255207c9f",
+      "raw_body_sha256": "b64998aea763c290aa4d831d0b827107484db36091e2b731d663641bcf2ce5d9",
+      "byte_length": 905,
+      "expected_signature_valid": true
+    },
+    "customer_subscription_created.json": {
+      "event_type": "customer.subscription.created",
+      "stripe_signature": "t=1893456000,v1=dd40e839f2d5b8e43d77637b2ed6a1f0dc9577a69c123bdfd52951b006dd6b7c",
+      "raw_body_sha256": "ba76503f5877ee035d326ff9f147292fa27942fdf741053ba75d88f80fc9827a",
+      "byte_length": 1049,
+      "expected_signature_valid": true
+    },
+    "customer_subscription_updated.json": {
+      "event_type": "customer.subscription.updated",
+      "stripe_signature": "t=1893456000,v1=dd49e61eb6ae01f36be50b04af5a415c1f871267f193963e83091cb54b24a881",
+      "raw_body_sha256": "180b1a3d584a36f560a392332a24d7d9db85488651fb87e01bc4411d54690aec",
+      "byte_length": 1041,
+      "expected_signature_valid": true
+    },
+    "customer_subscription_deleted.json": {
+      "event_type": "customer.subscription.deleted",
+      "stripe_signature": "t=1893456000,v1=9ffbfd8b590d82028845953c3ff0af5ec331f3c617ff699cbb4b4685785c1ff0",
+      "raw_body_sha256": "d1efad3aa175c4bca20545ab5d71f2bf1709f1a99b5188f0e99d2e1f9c7545d3",
+      "byte_length": 1090,
+      "expected_signature_valid": true
+    },
+    "invoice_paid.json": {
+      "event_type": "invoice.paid",
+      "stripe_signature": "t=1893456000,v1=51f0e4524b9b71a53bcb01a4b92f50dad7363b2235c82278deab35d17ad02266",
+      "raw_body_sha256": "f610894888d7135408fe987aee9a6f5accc742eb554756b452ff79baa24d29e3",
+      "byte_length": 703,
+      "expected_signature_valid": true
+    },
+    "invoice_payment_failed.json": {
+      "event_type": "invoice.payment_failed",
+      "stripe_signature": "t=1893456000,v1=de68144230c825a06889350bd7064ef764a441a9fe97ba8c8e8cb3f5d0b5fe1a",
+      "raw_body_sha256": "39fb2761572ad4e66786f5dcfbcb9229bbc6fdef97baa86a3f7d4f16ed391cf5",
+      "byte_length": 757,
+      "expected_signature_valid": true
+    },
+    "charge_refunded.json": {
+      "event_type": "charge.refunded",
+      "stripe_signature": "t=1893456000,v1=1639057fe1529fee48abf7236c318ad93dc9c90cd4cab59874f813267169c5f8",
+      "raw_body_sha256": "9b5d17ec57de8c22bf5db60747749dbf00936964742e1e911247ff32bd2d354c",
+      "byte_length": 776,
+      "expected_signature_valid": true
+    },
+    "charge_dispute_created.json": {
+      "event_type": "charge.dispute.created",
+      "stripe_signature": "t=1893456000,v1=805de090f565b848418015d0653141a998a5141db216548a116366cb8c86a67e",
+      "raw_body_sha256": "c7d265c68ed6196ec059f8045818deac3342a43ab5009c75d7a0aff021d53a04",
+      "byte_length": 615,
+      "expected_signature_valid": true
+    },
+    "charge_dispute_closed.json": {
+      "event_type": "charge.dispute.closed",
+      "stripe_signature": "t=1893456000,v1=d6a7215e0f884a7fd29c1c57ccb28c4593c747d868e4ec413acb22967377c84d",
+      "raw_body_sha256": "9fb26d1a898e7f1ce07e12c4c0ec92af1cd9b419dd86dedfeb7162f26ec64743",
+      "byte_length": 602,
+      "expected_signature_valid": true
+    },
+    "unsupported_customer_updated.json": {
+      "event_type": "customer.updated",
+      "stripe_signature": "t=1893456000,v1=78af7a0bdd7152a84fbeaeb7d9d7d81b530d983a8aedef6d2f94399f8756d432",
+      "raw_body_sha256": "c239b6fab49fa9f407ca6b2e88fcedfbab59499776e4a89b1886cdb64eefce68",
+      "byte_length": 404,
+      "expected_signature_valid": true
+    },
+    "tampered_body.json": {
+      "event_type": "checkout.session.completed",
+      "stripe_signature": "t=1893456000,v1=4f3f0d6c508978fcbeb6f1eb4684fc47281ff716f6193d825df29039187d769b",
+      "signed_as": "checkout_session_completed_subscription.json",
+      "raw_body_sha256": "7ff92a661f1e4dabfe5ebe9546c67403717679c1e5e05dad7eae706fac7927ab",
+      "byte_length": 950,
+      "expected_signature_valid": false,
+      "expected_processing": "signature_rejected_for_body_mismatch"
+    },
+    "malformed_payload.json": {
+      "event_type": "checkout.session.completed",
+      "stripe_signature": "t=1893456000,v1=9448e86cf4a739a13f4411bfdec4a35f4a73fbb56ddd43e4ba21e8ef793a9d27",
+      "raw_body_sha256": "8ed70294eb00e24a72087a6efb60c04316d3b32c2af813744aaa14d2f4dee123",
+      "byte_length": 140,
+      "expected_signature_valid": true,
+      "expected_processing": "invalid_json_payload"
+    }
+  }
+}

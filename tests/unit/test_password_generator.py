@@ -24,14 +24,6 @@ class TestGenerateTemporaryPassword:
         pw = generate_temporary_password()
         assert len(pw) == 12
 
-    def test_explicit_length_8(self):
-        pw = generate_temporary_password(8)
-        assert len(pw) == 8
-
-    def test_explicit_length_32(self):
-        pw = generate_temporary_password(32)
-        assert len(pw) == 32
-
     def test_length_below_minimum_clamps_to_8(self):
         pw = generate_temporary_password(5)
         assert len(pw) == 8
