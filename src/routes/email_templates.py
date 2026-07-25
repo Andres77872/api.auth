@@ -2,8 +2,10 @@
 
 Endpoints (prefix ``/admin/email-templates``):
 - ``GET    ""``                      list every transactional code + active source/version
+- ``POST   ""``                      create a dynamic internal template + version 1
 - ``GET    /{code}``                 active subject/html/text + allowlist + version history
 - ``PUT    /{code}``                 validate + sanitize-check, save a new active version
+- ``DELETE /{code}``                 disable without deleting catalog/version history
 - ``POST   /{code}/preview``         render a draft (or the active version) with sample data
 - ``POST   /{code}/send-test``       send a rendered test to the ROOT user's OWN verified email
 - ``POST   /{code}/rollback``        re-activate a prior version
