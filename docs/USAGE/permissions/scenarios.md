@@ -199,5 +199,4 @@ If the self-query endpoints say the permission exists, but the target route stil
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

@@ -60,7 +60,7 @@ Typical causes:
 
 ### A group delete removed more access than expected
 
-That's not magic, that's the design.
+This is the expected cascade.
 
 Deleting a user group soft-deactivates:
 
@@ -136,5 +136,4 @@ If group changes affect login context, accessible projects, or cached group name
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

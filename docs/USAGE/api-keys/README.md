@@ -111,5 +111,4 @@ The token layout and cryptography are implemented in `src/Util/api_key_security.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

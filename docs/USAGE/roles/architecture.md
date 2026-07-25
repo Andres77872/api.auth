@@ -43,21 +43,21 @@ Technical architecture of the global roles system as it actually exists in `api.
 
 ## Route Organization
 
-All 28 role-related endpoints live in **one file**: `src/routes/global_roles.py` (1066 lines).
+All 28 role-related endpoints live in **one file**: `src/routes/global_roles.py`.
 
-| Section | Lines | Endpoints |
-|---------|-------|-----------|
-| Role CRUD | 100-234 | POST/GET/PUT/DELETE `/roles/roles` + `/roles/roles/{hash}` |
-| Role ↔ Permission Group | 241-348 | POST/GET/DELETE `/roles/roles/{hash}/permission-groups` |
-| Permission Group CRUD | 355-493 | Full CRUD on `/roles/permission-groups` + permissions sub-routes |
-| Permission CRUD | 614-746 | Full CRUD on `/roles/permissions` |
-| User Role Assignment | 754-905 | GET `/roles/users/me/role`, PUT/GET/DELETE `/roles/users/{hash}/role` |
-| Project Catalog | 912-1066 | POST/GET/DELETE `/roles/projects/{hash}/catalog/roles` |
+| Section | Endpoints |
+|---------|-----------|
+| Role CRUD | POST/GET/PUT/DELETE `/roles/roles` + `/roles/roles/{hash}` |
+| Role ↔ Permission Group | POST/GET/DELETE `/roles/roles/{hash}/permission-groups` |
+| Permission Group CRUD | Full CRUD on `/roles/permission-groups` + permissions sub-routes |
+| Permission CRUD | Full CRUD on `/roles/permissions` |
+| User Role Assignment | GET `/roles/users/me/role`, PUT/GET/DELETE `/roles/users/{hash}/role` |
+| Project Catalog | POST/GET/DELETE `/roles/projects/{hash}/catalog/roles` |
 
 Router prefix: `/roles`
 OpenAPI tag: "Global Role System"
 
-**Related module:** `src/routes/permission_assignments.py` (765 lines, prefix `/permissions`) handles the SECONDARY permission assignment model (permission groups → user groups/users directly). This is a separate authorization path.
+**Related module:** `src/routes/permission_assignments.py` (prefix `/permissions`) handles the SECONDARY permission assignment model (permission groups → user groups/users directly). This is a separate authorization path.
 
 ---
 
@@ -88,7 +88,7 @@ user_groups ──→ user_group_project_group_roles ──→ roles  (project-s
 
 ## Auth Guards
 
-### `require_admin` in `global_roles.py` (lines 47-82)
+### `require_admin` in `global_roles.py`
 
 ```
 require_admin(session_data)
@@ -100,17 +100,17 @@ require_admin(session_data)
 
 **Critical:** this uses the **role-only** permission check. A consumer with `manage_roles` granted via user-group assignment or direct assignment would be **DENIED** here, even though they have the permission.
 
-### `require_admin` in `permission_assignments.py` (lines 69-89)
+### `require_admin` in `permission_assignments.py`
 
 ```
 require_admin(session_data)
   ├─► allow if user_type in {root, admin}
   └─► if user_type == consumer:
         └─► check_user_has_permission_extended(user_id, "manage_roles")
-              └─► extended check (ROLE + USER-GROUP + DIRECT)
+              └─► intended extended check (ROLE + USER-GROUP + DIRECT)
 ```
 
-**This is an inconsistency.** The two modules use different permission check functions, leading to different behavior for consumer users with `manage_roles` via user groups.
+**This is an inconsistency and a current schema integration defect.** The extended DB helper calls `sp_check_user_has_permission`, while the canonical schema defines `sp_check_user_has_permission_extended`; the wrapper returns `False` on that database error. Root/admin users pass before this fallback, but the `/permissions` consumer fallback fails closed in a canonical fresh database.
 
 ### Read endpoints
 
@@ -172,12 +172,12 @@ The gap means permissions assigned via user groups or directly to users are visi
 
 `global_roles.py` references four `ErrorCode` members that are **absent from the `ErrorCode` enum** in `src/Util/error_handler.py`. Because the code reads the enum attribute while constructing the error, the missing attribute raises `AttributeError` and the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended status:
 
-| Missing member | Referenced at | Intended status |
-|----------------|---------------|-----------------|
-| `OPERATION_NOT_ALLOWED` | line 222 (system-role delete) | 403 |
-| `PERMISSION_GROUP_NOT_FOUND` | lines 260, 329, 419, 445, 478, 511, 557, 581 (permission-group not-found lookups) | 404 |
-| `ALREADY_EXISTS` | line 959 (duplicate project-catalog add) | 409 |
-| `NOT_FOUND` | lines 341, 600, 1051 (unlink / catalog-removal "not assigned" branches) | 404 |
+| Missing member | Affected branch | Intended status |
+|----------------|-----------------|-----------------|
+| `OPERATION_NOT_ALLOWED` | System-role delete | 403 |
+| `PERMISSION_GROUP_NOT_FOUND` | Permission-group not-found lookups | 404 |
+| `ALREADY_EXISTS` | Duplicate project-catalog add | 409 |
+| `NOT_FOUND` | Unlink/catalog-removal "not assigned" branches | 404 |
 
 Note that `ErrorCode.NOT_FOUND` must not be confused with `ErrorCategory.NOT_FOUND` (which does exist); only the `ErrorCode` member is missing. These are runtime defects, not documented behaviors — see [troubleshooting.md](troubleshooting.md) and [reference.md](reference.md#error-responses).
 
@@ -207,5 +207,4 @@ Note that `ErrorCode.NOT_FOUND` must not be confused with `ErrorCategory.NOT_FOU
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

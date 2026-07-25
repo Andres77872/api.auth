@@ -212,5 +212,4 @@ That means the admin-project lifecycle is really a controlled admin-group member
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

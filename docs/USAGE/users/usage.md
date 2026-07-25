@@ -214,7 +214,7 @@ What the code actually does:
 - returns accepted metadata and safe instructions
 - **does not return or generate a visible temporary password**; no reset token, reset URL, full email, subject/body, or provider payload is exposed
 
-So yeah, do not expect a temporary password in the JSON body. If an old client depends on that, the client is stale; update it instead of reintroducing credential leakage.
+Do not expect a temporary password in the JSON body. Clients that still depend on that legacy behavior must migrate to the reset-link flow.
 
 ### Soft-delete a user
 
@@ -230,6 +230,26 @@ Delete behavior in the repo:
 - the route invalidates Redis sessions and user cache after deletion
 - users cannot delete themselves
 - non-root users cannot delete root users
+
+### Permanently delete a user (ROOT only)
+
+```bash
+curl -X DELETE "http://localhost:8000/users/$USER_HASH/hard" \
+  -H "Authorization: Bearer $ROOT_TOKEN"
+```
+
+This is a destructive deep-clean operation, not the normal offboarding path:
+
+- only a root may call it, and a root cannot delete their own account;
+- inactive/soft-deleted users may still be targeted;
+- the user row and owned identity content are permanently removed through
+  foreign-key cascade;
+- the user's email rows are released for future registration;
+- shared projects and user groups are preserved with ownership cleared;
+- lingering sessions and cache state are revoked after the database deletion.
+
+Use status deactivation or soft delete for recoverable operational lockout.
+Reserve hard delete for an explicit permanent-removal requirement.
 
 ---
 
@@ -343,5 +363,4 @@ In other words: `/users/*` manages the user entity and its immediate lifecycle. 
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

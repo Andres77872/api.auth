@@ -78,7 +78,7 @@ Every send-side route runs `EmailRateLimiter().check_send_request(...)` keyed by
 purpose (`email_activation`), a recipient hash, the user id, and the client IP.
 When a bucket is exceeded the route returns:
 
-```json
+```http
 HTTP/1.1 429 Too Many Requests
 Retry-After: 60
 
@@ -306,7 +306,6 @@ returns a generic `202`. It does **not** read an `Idempotency-Key`.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0
 </content>
 </invoke>

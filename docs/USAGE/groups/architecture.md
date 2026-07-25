@@ -174,5 +174,4 @@ Some code paths still expose fields such as `accessible_projects`, but the real 
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

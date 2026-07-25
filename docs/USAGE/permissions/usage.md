@@ -424,5 +424,4 @@ The second route reports **direct assignments only**. It does not enumerate user
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

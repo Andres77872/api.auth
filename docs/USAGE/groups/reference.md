@@ -100,5 +100,4 @@ Adding members, granting access, and metadata updates do **not** trigger session
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

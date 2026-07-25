@@ -57,7 +57,7 @@ What matters operationally:
 
 ## Scope and Caveats
 
-- This suite documents the **active public route layer** under `src/routes/audit_logs.py` (618 lines, 6 endpoints) and `src/routes/admin_dashboard.py` (activity endpoints)
+- This suite documents the **active public route layer** under `src/routes/audit_logs.py` (6 endpoints) and `src/routes/admin_dashboard.py` (activity endpoints)
 - `src/routes/audit_logs.py` exposes 6 endpoints: `GET /admin/email/logs`, `GET /admin/audit/logs`, `GET /admin/audit/security-events`, `GET /admin/audit/statistics`, `POST /admin/audit/export`, and `GET /admin/users/{user_id}/activity`
 - The **middleware** that populates `api_audit_log` lives in `src/middleware/api_audit.py`
 - The **decorator** that populates `activity_logs` lives in `src/Util/activity_logger.py`
@@ -82,5 +82,4 @@ What matters operationally:
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

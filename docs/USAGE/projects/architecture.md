@@ -159,7 +159,7 @@ Archive is a separate concept in the schema (`archived`, `archived_at`, `archive
 - `PATCH /projects/{hash}/owner` → 501 (validates session/`admin`/project/`new_owner_hash`, then raises `FeatureNotImplementedError`)
 - `PATCH /projects/{hash}/archive` → 501 (validates session/`admin`/project, then raises `FeatureNotImplementedError`)
 
-Important nuance for the archive stub: commit `4e6e5de` added `sp_archive_project` / `sp_unarchive_project` (`schemas/stored_procedures/03_projects.sql`) and wired archived-project **exclusion** into the auth/DB layer (logins, API keys, project tokens, session validation, and `v_user_project_access` all skip archived projects). However that commit did **not** modify `src/routes/projects.py` — the `PATCH /archive` route still does **not** call those procedures and remains a `501` stub. So the database knows how to archive and enforces archive at auth time, but there is no live API route that flips the `archived` flag.
+Important nuance for the archive stub: `sp_archive_project` and `sp_unarchive_project` exist in `schemas/stored_procedures/03_projects.sql`, and the auth/DB layer excludes archived projects from logins, API keys, project tokens, session validation, and `v_user_project_access`. However, the `PATCH /archive` handler in `src/routes/projects.py` does **not** call those procedures and remains a `501` stub. The database can archive projects and enforces archive state at auth time, but there is no live API route that flips the `archived` flag.
 
 ### `access_level` uses honest path-based labels (fixed)
 
@@ -198,5 +198,4 @@ The SQL layer returns fields like `owner_id` and `archived`, but the Python `Pro
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

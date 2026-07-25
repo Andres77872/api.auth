@@ -6,7 +6,7 @@ Things that commonly confuse operators working with the global roles system in `
 
 ## Troubleshooting
 
-### User has permissions visible via `/permissions/me` but they don't work during auth
+### User has permissions visible via `/permissions/users/me/permissions` but they don't work during auth
 
 This is the most critical caveat in the system.
 
@@ -25,7 +25,9 @@ UNION of:
   3. direct user → permissions
 ```
 
-If a user has permissions from user-group or direct assignment, those show up in `/permissions/me` but are **NOT** recognized during login, session validation, or route authorization.
+If a user has permissions from user-group or direct assignment, those show up
+in `/permissions/users/me/permissions` but are **NOT** recognized during login,
+session validation, or route authorization.
 
 **Fix:** assign the needed permissions through the user's role instead. Or use the inspection endpoints for audit purposes only.
 
@@ -87,11 +89,11 @@ curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
 
 Three "removal" endpoints try to return a clean 404 when the thing you are unlinking is not actually linked, but the `ErrorCode.NOT_FOUND` member they reference is **absent from the `ErrorCode` enum** (`src/Util/error_handler.py`). Referencing the missing member raises `AttributeError`, so the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended **404**:
 
-| Endpoint | Handler line | "Not found" branch |
-|----------|--------------|--------------------|
-| `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | `global_roles.py:341` | Permission group is not assigned to this role |
-| `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | `global_roles.py:600` | Permission is not assigned to this group |
-| `DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}` | `global_roles.py:1051` | Role is not in the project catalog |
+| Endpoint | "Not found" branch |
+|----------|--------------------|
+| `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | Permission group is not assigned to this role |
+| `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | Permission is not assigned to this group |
+| `DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}` | Role is not in the project catalog |
 
 Note this only triggers when the **role/group/permission/project themselves DO exist** (those existence checks raise proper 404s with valid error codes) but the **link** does not. The duplicate-add counterpart (`POST /roles/projects/{hash}/catalog/roles/{role_hash}`) has the same class of defect via the missing `ErrorCode.ALREADY_EXISTS` — it returns 500 instead of the intended 409.
 
@@ -99,18 +101,21 @@ Note this only triggers when the **role/group/permission/project themselves DO e
 
 ---
 
-### Admin route works in `/permissions` but not in `/roles`
+### Consumer permission guards differ between `/permissions` and `/roles`
 
 The two modules use different permission check functions:
 
 - `/roles` uses `check_user_has_permission()` → role-only resolver
-- `/permissions` uses `check_user_has_permission_extended()` → three-source resolver
+- `/permissions` uses `check_user_has_permission_extended()` → intended three-source resolver
 
-If a consumer user has `manage_roles` via user-group assignment:
-- They **CAN** access `/permissions/admin/...` endpoints
-- They **CANNOT** access `/roles/roles` write endpoints
+In a canonical fresh database, the extended helper calls `sp_check_user_has_permission`, but the schema defines `sp_check_user_has_permission_extended`. The DB wrapper catches that failure and returns `False`. Consequently:
 
-**Fix:** ensure the consumer's assigned role (not user-group) includes `manage_roles` if they need to operate the `/roles` API.
+- root and admin users pass both route guards before the consumer fallback
+- consumers with role-derived `manage_roles` can pass `/roles` guards
+- the intended `/permissions` consumer fallback fails closed until the stored-procedure name mismatch is fixed
+- user-group/direct grants remain inspection-only for current authorization behavior
+
+**Workaround:** use a root/admin session for `/permissions/admin/...`; assign role-derived `manage_roles` for consumer access to `/roles`.
 
 ---
 
@@ -229,5 +234,4 @@ If it returns null but you know the user had a role, their role was likely soft-
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

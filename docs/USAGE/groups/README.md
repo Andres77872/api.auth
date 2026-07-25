@@ -79,7 +79,6 @@ The groups system is not just a generic RBAC concept. In this codebase:
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1
 
 > **Why version 3.1?** The groups suite was refactored across three major passes (initial docs → architecture corrections → scenario deduplication), then revised again to remove a non-existent project-list endpoint and document live session-revocation side effects. The version number reflects iteration count, not API versioning.

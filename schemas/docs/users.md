@@ -261,7 +261,7 @@ CALL sp_check_user_in_group('user-id', 'group-id');
 Password recovery is link-only and uses the existing email-activation link-token model. Live recovery state is stored in `user_email_link_tokens` with purpose separation, lifecycle state, expiry, lookup metadata, and a non-reversible verifier hash.
 
 ```sql
--- Conceptual shape only; see schemas/tables/14_email_activation.sql for the authoritative DDL.
+-- Conceptual shape only; see schemas/tables/09_email_activation_tables.sql for the authoritative DDL.
 user_email_link_tokens(
     id,
     user_id,

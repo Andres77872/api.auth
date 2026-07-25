@@ -88,7 +88,7 @@ The roles system is the **baseline authorization layer** for this API. What matt
 
 ## Scope and Caveats
 
-- This suite documents the **active public route layer** under `src/routes/global_roles.py` (1066 lines)
+- This suite documents the **active public route layer** under `src/routes/global_roles.py`
 - The **auth/session flow uses ROLE-ONLY permission resolution** — this is the most important caveat. See [permissions/resolution.md](../permissions/resolution.md) for the full explanation of the auth-vs-inspection gap
 - **Bulk role assignment is broken** — see [troubleshooting.md](troubleshooting.md)
 - **Pagination `total` is incorrect** — returns page count, not DB total
@@ -114,5 +114,4 @@ The roles system is the **baseline authorization layer** for this API. What matt
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

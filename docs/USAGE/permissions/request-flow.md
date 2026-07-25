@@ -29,25 +29,30 @@ If validation fails, the route usually returns an auth error before any permissi
 
 ## Flow 2: Extended Permission Check (`/permissions/users/me/permissions/check/{name}`)
 
-This is the clearest expression of the active three-source resolver.
+This endpoint is intended to check the three-source union, but its current DB
+wiring is incomplete in a fresh canonical deployment.
 
 ```
 GET /permissions/users/me/permissions/check/{permission_name}
   └─► permission_assignments.require_valid_session
         └─► check_user_has_permission_extended(user_id, permission_name)
-              └─► extended permission-check stored procedure
-                    ├─► role permission groups
-                    ├─► user-group permission groups
-                    └─► direct user permission groups
+              └─► calls sp_check_user_has_permission
+                    └─► procedure absent from canonical SQL
+                          └─► wrapper fails closed to false
 ```
 
 ### Why this matters
 
-- this route checks the **full union**
-- this is more complete than route guards that rely only on session permissions
-- when you need to prove what the DB currently resolves, use this path
+- the intended procedure is
+  `sp_check_user_has_permission_extended`, which resolves role, user-group, and
+  direct permission groups
+- the Python helper currently calls the different, undefined name
+  `sp_check_user_has_permission`
+- use `GET /permissions/users/me/permissions` or
+  `/permission-sources` to inspect what the DB union currently resolves
 
-Procedure-name caveat: the Python helper currently calls `sp_check_user_has_permission`, while the schema file defines `sp_check_user_has_permission_extended`. The route intent is clearly the extended three-source check, but the exact procedure wiring may depend on your deployed DB state.
+A separately evolved database could contain a compatibility alias, but the
+repository's bootstrap does not create one.
 
 ---
 
@@ -86,8 +91,8 @@ POST /permissions/admin/user-groups/{group_hash}/permission-groups
   └─► permission_assignments.require_admin
         ├─► valid session required
         ├─► allow if user_type in {root, admin}
-        └─► otherwise check `manage_roles` through extended resolver
-              └─► extended permission-check helper in `db_permission_assignments.py`
+        └─► otherwise call the intended extended `manage_roles` helper
+              └─► current procedure-name mismatch fails closed
 ```
 
 After the guard passes:
@@ -97,7 +102,7 @@ After the guard passes:
 3. call `assign_permission_group_to_user_group(...)`
 4. stored procedure writes to `user_group_permission_groups`
 
-This is the main team-scale assignment path.
+This is the main team-scale assignment path for root/admin callers.
 
 ---
 
@@ -193,5 +198,4 @@ So it changes **documentation metadata**, not authorization.
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

@@ -184,5 +184,4 @@ Note the distinction: even though the `PATCH /archive` **route** is a stub, arch
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

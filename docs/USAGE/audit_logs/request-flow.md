@@ -230,5 +230,4 @@ GET /admin/email/logs
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

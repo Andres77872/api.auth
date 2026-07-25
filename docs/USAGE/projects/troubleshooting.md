@@ -82,7 +82,7 @@ That misunderstanding burns people constantly.
 
 ### Project switch fails even though the user “should” have access
 
-Verify access through `get_user_accessible_projects()`-equivalent behavior, not through vibes.
+Verify access through `get_user_accessible_projects()`-equivalent behavior.
 
 If the user can’t see the project in their accessible list at login time, `/auth/switch-project` will reject it with `PROJECT_ACCESS_DENIED`.
 
@@ -97,7 +97,7 @@ Both public endpoints exist, validate some state, then return `501`:
 - `PATCH /projects/{hash}/owner` (form field `new_owner_hash`)
 - `PATCH /projects/{hash}/archive` (form field `archived`)
 
-Do not confuse the archive **endpoint** with archive **enforcement**. The `PATCH /archive` route is a `501` stub and there is no live API route that sets the `archived` flag. However, if a project's `archived` flag is already set in the database, that project is excluded from authorization workflows (logins, project tokens, API-key validation, session validation) as of commit `4e6e5de`. So you may see a project denied at auth time "for no reason" — check whether it is archived in the database, because no endpoint will surface or toggle that state for you.
+Do not confuse the archive **endpoint** with archive **enforcement**. The `PATCH /archive` route is a `501` stub and there is no live API route that sets the `archived` flag. However, if a project's `archived` flag is already set in the database, that project is excluded from authorization workflows (logins, project tokens, API-key validation, and session validation). If a project is unexpectedly denied at auth time, inspect its database archive state because no endpoint currently surfaces or toggles that state.
 
 ### `access_level` labels reflect access path, not granular permissions
 
@@ -163,5 +163,4 @@ Soft delete is still destructive enough to remove active visibility and invalida
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

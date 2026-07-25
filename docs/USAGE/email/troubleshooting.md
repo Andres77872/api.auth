@@ -72,5 +72,4 @@ Failure modes for the ROOT-only template API, the inbound Resend webhook, and th
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

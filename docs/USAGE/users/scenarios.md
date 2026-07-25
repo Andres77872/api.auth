@@ -187,5 +187,4 @@ Remember:
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

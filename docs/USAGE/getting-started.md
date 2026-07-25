@@ -9,7 +9,7 @@ Practical onboarding guide for new users, integrators, and platform administrato
 - [Who This Guide Is For](#who-this-guide-is-for)
 - [Prerequisites](#prerequisites)
 - [Environment & Configuration](#environment--configuration)
-- [First-Root Bootstrap (Manual DB Step)](#first-root-bootstrap-manual-db-step)
+- [First-Root Bootstrap and Current Seed Caveat](#first-root-bootstrap-and-current-seed-caveat)
 - [First Admin, User Group & Project Setup](#first-admin-user-group--project-setup)
 - [Registration & Login Quickstart](#registration--login-quickstart)
 - [Authentication Modes](#authentication-modes)
@@ -32,7 +32,7 @@ Practical onboarding guide for new users, integrators, and platform administrato
 
 - A running **MySQL** instance with the API schema applied (stored procedures, tables, views)
 - A running **Redis** instance (sessions are stored here)
-- Python 3.10+ with the project dependencies installed (`pip install -r requirements.txt`)
+- Python 3.12 (the version used by the project Docker images) with dependencies installed (`pip install -r requirements.txt`)
 - `curl` or any HTTP client for testing
 
 ---
@@ -55,7 +55,7 @@ The API reads configuration from environment variables. See [.env.example](../..
 | `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes. Refresh continuity is 72h sliding (`remember_me=false`) or a 30-day absolute, non-sliding window (`remember_me=true`). |
 | `API_KEY_PEPPER` | Yes | -- | HMAC pepper for API key hashing; required before API key utilities import |
-| `ALLOWED_ORIGINS` | No | local dev origins | Explicit CORS allow-list (comma-separated). The built-in default is a set of localhost dev ports plus the project's auth UI; **always set this explicitly in production**. See `src/main.py` / [.env.example](../../.env.example) for the current default list. |
+| `ALLOWED_ORIGINS` | No | source fallback | Explicit CORS allow-list (comma-separated). **Set it in every deployment.** Use [.env.example](../../.env.example) as the maintained template rather than relying on source fallbacks. |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 
 ### Critical: `JWT_SECRET_KEY`
@@ -78,34 +78,103 @@ The API has **no configurable base URL prefix**. All routes are mounted at `/`. 
 
 ---
 
-## First-Root Bootstrap (Manual DB Step)
+## First-Root Bootstrap and Current Seed Caveat
 
 **There is no API-based bootstrap flow for the very first root user.**
 
-The endpoint `POST /user-types/root` requires an existing root token to authenticate (`Depends(require_root_user)`). There is no CLI script, seed migration, or environment-variable-based bootstrap.
+The endpoint `POST /user-types/root` requires an existing root token to
+authenticate (`Depends(require_root_user)`). The repository does contain a SQL
+seed, but its current credential path is not compatible with current login:
 
-### What you must do
+- `scripts/create_database.py` and `scripts/recreate_database.py` execute
+  `schemas/tables/05_initialize_data.sql`;
+- that SQL inserts `root` with a legacy SHA-256 hash for plaintext
+  `1248163264`;
+- the active password verifier accepts Argon2id hashes only, so that seeded
+  credential cannot log in;
+- both Python scripts print `admin123`, which does not match the SQL seed and
+  also cannot log in.
 
-Create the first root user **directly in the database** by calling the stored procedure:
+Treat both exposed defaults as invalid development artifacts, not deployment
+credentials.
 
-```sql
-CALL sp_create_root_user('your_root_username', 'your_root_password', 'root@example.com', NULL);
+### After the canonical database script
+
+Rotate the seeded row to a policy-compliant Argon2id password before first
+login:
+
+```bash
+.venv/bin/python - <<'PY'
+from getpass import getpass
+from src.Util.db.db_config import get_connection
+from src.Util.password_security import assert_password_policy, hash_password
+
+password = getpass("Root password: ")
+assert_password_policy(password, username="root", email="root@system.local")
+
+with get_connection() as connection:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM users "
+            "WHERE username = %s AND user_type = 'root' AND is_active = TRUE "
+            "LIMIT 1",
+            ("root",),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise SystemExit("Seeded root row was not found")
+        cursor.callproc("sp_update_password_hash", [row["id"], hash_password(password)])
+    connection.commit()
+
+print("Seeded root password rotated to Argon2id")
+PY
 ```
 
-The `NULL` for `created_by` is acceptable for the very first user since there is no existing creator. After this, you can log in and use `POST /user-types/root` to create additional root users via the API.
+### If the SQL seed is deliberately omitted
 
-> **This is a known operational gap.** If you are deploying this platform, plan for this manual step.
+Create the first root through the application's DB helper. It generates IDs,
+hashes the password with Argon2id, and calls the six-argument stored procedure:
+
+```bash
+.venv/bin/python - <<'PY'
+from getpass import getpass
+from src.Util.db.db_users import create_root_user
+from src.Util.password_security import assert_password_policy
+
+username = input("Root username: ").strip()
+email = input("Root email (optional): ").strip() or None
+password = getpass("Root password: ")
+assert_password_policy(password, username=username, email=email)
+user = create_root_user(
+    username=username,
+    password=password,
+    email=email,
+    created_by=None,
+)
+print(f"Created {user.user_hash}")
+PY
+```
+
+Do not pass plaintext directly to `sp_create_root_user`; its database contract
+expects generated IDs and a password hash. `created_by=None` is acceptable only
+for this first user. After bootstrap, use `POST /user-types/root` to create
+additional root users through the API.
+
+> **Current operational gap:** the SQL seed, active verifier, and bootstrap
+> completion messages disagree. The documented rotation is required until the
+> source bootstrap is corrected.
 
 Once the root user exists, log in:
 
 ```bash
-curl -X POST "{BASE_URL}/auth/login" \
+curl -X POST "{BASE_URL}/auth/platform/login" \
   -H "User-Agent: my-client/1.0" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=your_root_username&password=your_root_password"
 ```
 
-Save the `session_token` from the response. You will use it as `$ROOT_TOKEN` for all subsequent admin operations.
+Save the `access_token` (the deprecated `session_token` alias has the same value)
+from the response. Use it as `$ROOT_TOKEN` for subsequent admin operations.
 
 ---
 
@@ -189,7 +258,12 @@ curl -X POST "{BASE_URL}/auth/register" \
   -d "username=new_user&password=MySecurePass123!&email=user@example.com&user_group_hash=$GROUP_HASH"
 ```
 
-**Password note:** The API has **no server-side password complexity enforcement**. A utility function exists (`validate_password_strength`) but it is only used in unit tests. Clients **must** implement their own password validation before sending credentials.
+**Password note:** Password-setting routes enforce the shared server-side policy:
+minimum length (default 8), common-password denial, username/email derivation
+checks, and repeated/sequential-value rejection. The policy intentionally does
+not require arbitrary character classes. A rejection uses `VAL_3007` with safe
+reason codes; clients should mirror the guidance, but the server remains
+authoritative.
 
 ### Login
 
@@ -293,13 +367,13 @@ Four different TTLs operate independently — don't confuse them:
 -H "User-Agent: my-client/1.0"
 ```
 
-### 2. Most write endpoints use `multipart/form-data`, NOT JSON
+### 2. Write endpoints use more than one content type
 
-Virtually **all** POST/PUT/PATCH endpoints use `Form(...)` parameters. Sending `application/json` will fail with `422`.
-
-**Exceptions** (these DO use JSON):
-- `POST /admin/user-groups/{hash}/members/bulk` — `application/json` with `List[str]` body
-- `POST /admin/audit/export` — `application/json`
+Login, registration, refresh, switching, and many older CRUD/admin mutations are
+form-encoded. Email-template, provider, internal S2S, audit-export, and selected
+bulk routes use JSON. Webhooks require their provider's signed raw body. Follow
+the request-body schema in OpenAPI or the relevant domain reference; do not
+assume one content type for every write.
 
 ### 3. POST body limit is 8MB
 
@@ -310,21 +384,31 @@ Requests exceeding 8MB return `413 Payload Too Large`.
 - `PATCH /projects/{hash}/owner` — reserved for future use
 - `PATCH /projects/{hash}/archive` — reserved for future use
 
-### 5. No rate limiting
+### 5. Rate limiting is route-specific
 
-There is **no rate limiting** on any endpoint, including login. Plan for brute-force protection at the infrastructure level (reverse proxy, WAF, etc.).
+Login-identifier, password/email, Google OAuth, Patreon, and billing flows have
+dedicated limits and may return `429` with `Retry-After`. The service does not
+provide one universal limit for every route, so keep infrastructure-level
+protection as an additional control.
 
-### 6. Legacy auth headers still work (deprecated)
+### 6. Use only the documented auth transports
 
-The API still accepts `X-token-user` and `X-token-collection` headers as a fallback. These are **deprecated** and should not be used in new integrations.
+Protected routes use `Authorization: Bearer <access_token>` or the
+`session_token` cookie. Legacy `X-token-user` / `X-token-collection` constants
+remain in compatibility code but are not wired into the active protected-route
+dependency.
 
-### 7. CORS defaults to an explicit allow-list
+### 7. CORS uses an explicit allow-list
 
-`ALLOWED_ORIGINS` falls back to a built-in set of localhost dev ports plus the project's auth UI (see `src/main.py` / [.env.example](../../.env.example) for the exact list). In production, you **must** set `ALLOWED_ORIGINS` to the exact browser clients that should call this API directly.
+Set `ALLOWED_ORIGINS` to the exact browser clients that should call the API.
+[`.env.example`](../../.env.example) is the maintained deployment template; do
+not depend on fallback lists embedded in source.
 
-### 8. Password complexity is NOT enforced
+### 8. Password policy is server-enforced
 
-The API accepts any password, including empty strings. Client-side validation is the only line of defense.
+Password-setting flows enforce the shared policy described in the registration
+section. Treat `VAL_3007` reason codes as the public contract and never log or
+echo the submitted password.
 
 ### 9. UUIDs are masked in error responses
 
@@ -354,5 +438,4 @@ Error messages mask UUIDs (e.g., `usr-[550e]...[0000]`). Clients cannot parse fu
 
 ---
 
-**Last Updated**: June 2026
 **API Version**: 2.2.0

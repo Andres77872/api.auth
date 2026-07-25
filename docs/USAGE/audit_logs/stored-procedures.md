@@ -254,5 +254,4 @@ The plaintext columns on `email_messages` (`recipient_email`, `last_error_messag
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

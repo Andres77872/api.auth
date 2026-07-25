@@ -115,8 +115,8 @@ rollback are documented in `docs/RUNBOOKS/email-activation.md`.
 
 ### User entity routes
 
-- Route file: `src/routes/users.py` (18 endpoints)
-- Covers profile, access summary, list/search, details, update, status, password reset, delete, one type-change route, and the per-user email-management group (`/users/me/emails*` and the root/admin `/users/{user_hash}/emails*` routes — see [email-management.md](email-management.md))
+- Route file: `src/routes/users.py` (19 endpoints)
+- Covers profile, access summary, list/search, details, update, status, password reset, soft/permanent delete, one type-change route, and the per-user email-management group (`/users/me/emails*` and the root/admin `/users/{user_hash}/emails*` routes — see [email-management.md](email-management.md))
 
 ### User type routes
 
@@ -277,5 +277,4 @@ If you try to use `/users/*` to model all access, you will create a quilombo bec
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

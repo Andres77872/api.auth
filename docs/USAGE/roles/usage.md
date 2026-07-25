@@ -315,5 +315,4 @@ curl -X DELETE "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROL
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

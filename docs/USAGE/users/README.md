@@ -19,7 +19,7 @@ What matters operationally:
 - **`root` users** are global operators — they bypass group-membership validation on `/auth/login` but **still require `project_hash`** to log in. Root/admin can use `/auth/platform/login` if they need login without project binding (consumer users are rejected from platform login)
 - **`admin` users** are still normal `users` rows, but their reach comes from assignment to project-specific admin groups
 - **`consumer` users** get project reach through user groups and project groups, not direct user-to-project links
-- **`/users/*`** (18 endpoints) covers profile, access summary, list/search, detail, status, reset, delete, one type-change endpoint, and per-user email management (multi-email, primary email, activation resend)
+- **`/users/*`** (19 endpoints) covers profile, access summary, list/search, detail, status, reset, soft delete, ROOT-only permanent delete, one type-change endpoint, and per-user email management (multi-email, primary email, activation resend)
 - **`/user-types/*`** covers root/admin creation, type inspection, admin-project assignment, and the stricter type-management path
 - **`/admin/users/bulk-*`** covers bulk update/delete for users only
 
@@ -81,10 +81,11 @@ Those live in the groups, roles, and permissions suites.
 
 ## ⚠️ Scope and Caveats
 
-- This suite documents the active route layer in `src/routes/users.py` (18 endpoints, including the per-user email-management group — see [email-management.md](email-management.md)), `src/routes/user_types_auth.py` (10 endpoints), and `src/routes/bulk_operations.py`
+- This suite documents the active route layer in `src/routes/users.py` (19 endpoints, including the per-user email-management group and ROOT-only hard delete — see [email-management.md](email-management.md)), `src/routes/user_types_auth.py` (10 endpoints), and `src/routes/bulk_operations.py`
 - There are **two type-change routes**: `/users/{hash}/type` and `/user-types/{hash}/type`. They overlap, but they do **not** enforce the same constraints
 - Admin scoping is **not perfectly uniform** across list, search, and some user-type endpoints; caveats are called out where the code diverges
 - Admin password reset queues a secure reset link when the target has a primary activated email; it does not return a temporary password, reset token, reset link, full email, or provider payload
+- `DELETE /users/{user_hash}/hard` is a destructive ROOT-only deep-clean route. It is not an offboarding shortcut; use deactivation/soft-delete unless permanent removal and email release are explicitly required
 - `PUT /users/profile` rejects password-equivalent fields; use `POST /auth/password/change` for self-service password changes
 - Role/group assignment is intentionally managed outside the `/users/*` routes
 
@@ -105,5 +106,4 @@ Those live in the groups, roles, and permissions suites.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

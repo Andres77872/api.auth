@@ -58,7 +58,7 @@ curl -X GET "http://localhost:8000/admin/activity?limit=50&offset=0&days=30" \
 
 **Response shape:**
 
-```json
+```jsonc
 {
   "activities": [...],
   "pagination": {
@@ -96,14 +96,17 @@ curl -X GET "http://localhost:8000/admin/activity?search=john_doe&days=7" \
 
 ### Get Activity Types
 
-Returns the full list of 30 activity types available for filtering:
+Returns the current runtime list of 91 `ActivityType` values available for
+filtering:
 
 ```bash
 curl -X GET "http://localhost:8000/admin/activity/types" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Response includes: `user_login`, `user_logout`, `user_registration`, `user_update`, `user_status_change`, `user_password_reset`, `user_type_changed`, `project_creation`, `project_update`, `project_delete`, `project_member_add`, `project_member_remove`, `project_member_removed`, `project_ownership_transferred`, `project_archived`, `project_unarchived`, `group_creation`, `group_update`, `group_delete`, `user_group_assign`, `user_group_remove`, `permission_grant`, `permission_revoke`, `role_removed`, `bulk_role_assignment`, `bulk_group_assignment`, `bulk_user_update`, `bulk_user_delete`, `admin_action`, `system_event`.
+The response spans core auth/admin, email, Google OAuth, Patreon, and billing
+events. Treat the endpoint as the authoritative filter list instead of
+hard-coding an older subset in a client.
 
 ---
 
@@ -156,7 +159,7 @@ curl -X GET "http://localhost:8000/admin/audit/logs?status_code=500&days=7" \
 
 **Response shape:**
 
-```json
+```jsonc
 {
   "logs": [...],
   "pagination": { "total": N, "limit": 50, "offset": 0, "has_more": true, "next_offset": 50 },
@@ -420,5 +423,4 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

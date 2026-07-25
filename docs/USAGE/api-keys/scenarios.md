@@ -145,5 +145,4 @@ Tip: instead of revoking immediately, you can set a short future `expires_at` on
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

@@ -42,7 +42,7 @@ Step 4: Attach permission group to role
           └─► INSERT INTO role_permission_groups (ON DUPLICATE KEY UPDATE — reactivates if soft-deleted)
 ```
 
-**Removal caveat:** `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` removes (soft-deletes) the junction row. If the group is **not currently assigned** to the role, the handler (`global_roles.py:339-343`) tries to raise `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so that "not assigned" branch surfaces as a **500** instead of a clean **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+**Removal caveat:** `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` removes (soft-deletes) the junction row. If the group is **not currently assigned** to the role, the handler in `src/routes/global_roles.py` tries to raise `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so that "not assigned" branch surfaces as a **500** instead of a clean **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
 
 The full chain after all four steps:
 
@@ -145,7 +145,7 @@ POST /roles/projects/{project_hash}/catalog/roles/{role_hash}
                     └─► duplicate → 500 (defect: see below)
 ```
 
-**Defect caveat:** the duplicate-add branch (`global_roles.py:957-961`) raises `ConflictError(error_code=ErrorCode.ALREADY_EXISTS)`, but `ALREADY_EXISTS` is **absent from the `ErrorCode` enum**. Referencing it raises `AttributeError` before the `ConflictError` is built, so the request surfaces as a generic **500 INTERNAL_ERROR** rather than the intended **409 ConflictError**. This will become a clean 409 only once the enum member (or the source line) is fixed. Mirrors the note in [usage.md](usage.md#project-role-catalog).
+**Defect caveat:** the duplicate-add branch in `src/routes/global_roles.py` raises `ConflictError(error_code=ErrorCode.ALREADY_EXISTS)`, but `ALREADY_EXISTS` is **absent from the `ErrorCode` enum**. Referencing it raises `AttributeError` before the `ConflictError` is built, so the request surfaces as a generic **500 INTERNAL_ERROR** rather than the intended **409 ConflictError**. This will become a clean 409 only once the enum member or handler is fixed. Mirrors the note in [usage.md](usage.md#project-role-catalog).
 
 ### List cataloged roles
 
@@ -164,7 +164,7 @@ DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}
               └─► not in catalog → 500 (defect: see below)
 ```
 
-**Removal caveat:** the "role is not in the project catalog" branch (`global_roles.py:1048-1053`) raises `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so removing a role that was never cataloged (or already removed) surfaces as a **500** rather than the intended **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+**Removal caveat:** the "role is not in the project catalog" branch in `src/routes/global_roles.py` raises `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so removing a role that was never cataloged (or already removed) surfaces as a **500** rather than the intended **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
 
 **None of these flows affect authorization.** They are purely organizational metadata. See also the parallel permission-group catalog flow in **[Flow 8: Catalog Metadata Flow](../permissions/request-flow.md#flow-8-catalog-metadata-flow)**.
 
@@ -198,5 +198,4 @@ Role assignment follows the same pattern: `GET /permissions/users/me/permissions
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

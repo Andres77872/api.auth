@@ -56,9 +56,11 @@ All 11 endpoints live in `src/routes/projects.py`.
 | `/admin/project-groups/{hash}` | GET | `admin` or `manage_roles` | - | Get project-group details |
 | `/admin/project-groups/{hash}` | PUT | `admin` or `manage_roles` | Form | Update project-group metadata |
 | `/admin/project-groups/{hash}` | DELETE | `admin` or `manage_roles` | - | Soft-delete project group and active links |
-| `/admin/project-groups/{hash}/projects` | GET | `admin` or `manage_roles` | Query params | List projects in the group |
 | `/admin/project-groups/{hash}/projects` | POST | `admin` or `manage_roles` | Form | Add project to group |
 | `/admin/project-groups/{hash}/projects/{project_hash}` | DELETE | `admin` or `manage_roles` | - | Remove project from group |
+
+There is no separate `GET /admin/project-groups/{hash}/projects` route. Read
+`assigned_projects` from `GET /admin/project-groups/{hash}`.
 
 ---
 
@@ -117,5 +119,4 @@ This surface returns the following error codes (see [errors.md](../errors.md) fo
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

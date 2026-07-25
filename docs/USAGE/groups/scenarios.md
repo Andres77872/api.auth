@@ -178,5 +178,4 @@ Remember: delete is a soft-delete, but it still deactivates memberships and user
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

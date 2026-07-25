@@ -25,9 +25,10 @@ Reference for the user-management API surface used in this repository.
 | `/users/{user_hash}/status` | PUT | Root or scoped admin | Query param `is_active` | Activate or deactivate a user |
 | `/users/{user_hash}/reset-password` | POST | Root or admin | - | Queue a hash-only admin password-reset link email (no temp password/token/URL returned); body-less POST |
 | `/users/{user_hash}` | DELETE | Root or scoped admin | - | Soft-delete a user and invalidate sessions/cache |
+| `/users/{user_hash}/hard` | DELETE | Root only | - | Permanently delete the user/owned identity content, release email rows, preserve shared resources with ownership cleared |
 | `/users/{user_hash}/type` | PATCH | Root only | Form | Change user type through the legacy/simple path |
 
-> The `/users/*` route file (`src/routes/users.py`) exposes **18 endpoints**,
+> The `/users/*` route file (`src/routes/users.py`) exposes **19 endpoints**,
 > including the per-user email-management group above. Full lifecycle behavior
 > for those email routes (generic `202`, `429 + Retry-After`, resend cooldown,
 > idempotency, session revocation, owner vs admin field views) is in
@@ -153,6 +154,7 @@ examples and the owner vs admin field views.
 ## Operational Notes
 
 - `PUT /users/{hash}/status` and `DELETE /users/{hash}` are the documented user-lifecycle paths that explicitly invalidate sessions and cache
+- `DELETE /users/{hash}/hard` is ROOT-only and permanent. It can purge an already inactive user, cannot target the caller, releases the target's email rows for re-registration, and relies on foreign-key cascade for owned/identity content. Shared projects/user groups are preserved with ownership cleared. Prefer soft delete for routine offboarding
 - `DELETE /users/me/emails/{email_id}` and `POST /users/me/emails/{email_id}/primary` also revoke the caller's other sessions (reasons `email_removed` / `email_primary_changed`) while preserving the current session when possible
 - `/users/search/query` is not a full substitute for `/users/list` because the scoping logic is simpler
 - `/users/{hash}/type` and `/user-types/{hash}/type` are not interchangeable in admin-promotion workflows
@@ -174,5 +176,4 @@ examples and the owner vs admin field views.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

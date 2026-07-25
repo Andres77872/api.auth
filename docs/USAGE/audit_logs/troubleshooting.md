@@ -344,5 +344,4 @@ curl -X GET "http://localhost:8000/admin/audit/logs?days=30&limit=1&offset=0" \
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

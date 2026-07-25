@@ -224,5 +224,4 @@ This removes the admin user from the matching admin group membership for that pr
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.0

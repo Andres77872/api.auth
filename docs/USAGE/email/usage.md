@@ -208,5 +208,4 @@ For secret rotation and bounce/complaint operations, see the [Email Activation R
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

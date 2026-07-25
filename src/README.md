@@ -37,10 +37,11 @@ strictly rotated refresh-token family: 72-hour sliding by default, or a 30-day
 absolute window with `remember_me=true`. `session_token` remains a deprecated
 response/cookie alias for the access token.
 
-Project-scoped login, validation, and API-key validation responses may include a
-provider-neutral subscription `plan` projection. It is resolved from the
-session project's billing group and is never stored in JWT claims, cookies, or
-Redis session payloads. Platform sessions without a project omit it.
+Project-scoped consumer login, validation, and consumer API-key validation
+responses may include a provider-neutral subscription `plan` projection. It is
+resolved from the session project's billing group and is never stored in JWT
+claims, cookies, or Redis session payloads. Platform sessions without a project
+omit it; current refresh and switch-project responses omit it as well.
 
 ## Current Route Modules
 

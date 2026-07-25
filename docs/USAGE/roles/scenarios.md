@@ -232,5 +232,4 @@ curl -X POST "http://localhost:8000/auth/login" \
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1

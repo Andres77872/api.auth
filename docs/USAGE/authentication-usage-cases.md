@@ -44,6 +44,7 @@ The authentication system uses **short-lived access JWTs** (default 15-minute ex
 - **Project Context**: All users (including root) operate within a project context on `/auth/login`
 - **Root Users**: Have global access (bypass group-membership validation) but still require `project_hash` on `/auth/login`. Use `/auth/platform/login` for login without project binding.
 - **User Groups**: Determine which projects a user can access (root bypasses this validation)
+- **Session Plan Projection**: Project-scoped consumer login, access-token validation, and consumer API-key validation may return a provider-neutral subscription `plan`. It is resolved at response time from the project's billing group and is not stored in JWTs, cookies, or Redis auth state.
 
 ### Authentication Flow
 
@@ -52,8 +53,9 @@ The authentication system uses **short-lived access JWTs** (default 15-minute ex
 2. System validates credentials
 3. System checks project access (via user groups)
 4. Access + refresh JWT pair is generated and server-side Redis state is written by token `jti`/`family_id`
-5. HTTP-only cookies are set: `session_token` for access, `refresh_token` for refresh
-6. User can access authorized endpoints with the access token and renew through `/auth/refresh` with the refresh token
+5. For a project-scoped consumer, the response-only subscription plan is resolved from project → billing group
+6. HTTP-only cookies are set: `session_token` for access, `refresh_token` for refresh
+7. User can access authorized endpoints with the access token and renew through `/auth/refresh` with the refresh token
 ```
 
 ### Supported Protected-Route Authentication
@@ -142,9 +144,25 @@ curl -X POST "http://localhost:8000/auth/login" \
       "group_name": "developers",
       "description": "Development team"
     }
-  ]
+  ],
+  "plan": {
+    "provider": "stripe",
+    "state": "active",
+    "active": true,
+    "plan_code": "pro",
+    "tier_code": "monthly",
+    "current_period_end": "2026-08-25T00:00:00Z",
+    "trial_end": null,
+    "cancel_at_period_end": false
+  }
 }
 ```
+
+`plan` is a subscription-only projection for the selected consumer project. Its
+state is one of `none`, `free`, `trial`, `active`, `past_due`, or `canceled`;
+plan and tier codes are opaque catalog labels. A missing billing group, disabled
+billing, or a failed lookup degrades to `state: "none"` without failing login.
+Project-less platform login leaves `plan` unset.
 
 ### Login with Specific Project
 
@@ -180,7 +198,7 @@ curl -X POST "http://localhost:8000/auth/login" \
 ```
 
 **Response:**
-```json
+```jsonc
 {
   "success": true,
   "message": "Root user login successful",
@@ -455,6 +473,7 @@ curl -X GET "http://localhost:8000/auth/validate" \
 {
   "success": true,
   "valid": true,
+  "auth_method": "session",
   "user": {
     "user_hash": "usr-abc123...",
     "username": "john_doe",
@@ -471,11 +490,21 @@ curl -X GET "http://localhost:8000/auth/validate" \
     "refresh_expires_at": "2026-06-17T12:00:00+00:00",
     "remember_me": false
   },
-  "user_groups": ["developers", "qa_team"]
+  "user_groups": ["developers", "qa_team"],
+  "plan": {
+    "provider": "stripe",
+    "state": "active",
+    "active": true,
+    "plan_code": "pro",
+    "tier_code": "monthly",
+    "current_period_end": "2026-08-25T00:00:00Z",
+    "trial_end": null,
+    "cancel_at_period_end": false
+  }
 }
 ```
 
-The `session` object reports the access token's `expires_at`, the refresh family's `refresh_expires_at` (the `absolute_expires_at` when `remember_me=true`, otherwise the sliding family expiry), and the `remember_me` flag for the active family. `/auth/validate` also sets an `X-Auth-Process-Time` response header (validation duration in milliseconds).
+The `session` object reports the access token's `expires_at`, the refresh family's `refresh_expires_at` (the `absolute_expires_at` when `remember_me=true`, otherwise the sliding family expiry), and the `remember_me` flag for the active family. For a project-scoped consumer, `plan` is resolved at validation time and is not authentication authority. `/auth/validate` also sets an `X-Auth-Process-Time` response header (validation duration in milliseconds).
 
 ### Refresh Token Rotation
 
@@ -489,7 +518,7 @@ curl -X POST "http://localhost:8000/auth/refresh" \
 ```
 
 **Response:**
-```json
+```jsonc
 {
   "success": true,
   "message": "Token refreshed successfully",
@@ -562,6 +591,16 @@ curl -X POST "http://localhost:8000/auth/validate-api-key" \
     "project_hash": "proj-xyz789...",
     "project_name": "Default Project"
   },
+  "plan": {
+    "provider": "stripe",
+    "state": "free",
+    "active": false,
+    "plan_code": null,
+    "tier_code": null,
+    "current_period_end": null,
+    "trial_end": null,
+    "cancel_at_period_end": false
+  },
   "api_key": {
     "key_id": "key-internal-id...",
     "public_id": "pubid123"
@@ -574,6 +613,7 @@ curl -X POST "http://localhost:8000/auth/validate-api-key" \
 Behavior contract:
 
 - Authenticates via `X-API-Key`; the key is always project-scoped, so `project` is populated.
+- Consumer keys also receive the response-only subscription `plan`; non-consumer keys leave it unset.
 - Sending **both** `Authorization` and `X-API-Key` returns `400` with `detail: "ambiguous_credentials"`. Send exactly one credential type.
 - Never returns the raw key or its secret component; only the secret-safe `api_key {key_id, public_id}` object.
 - An invalid, missing, revoked, or expired key returns `401`.
@@ -899,5 +939,4 @@ This auth change is intentionally breaking:
 
 ---
 
-**Last Updated**: June 2026
 **API Version**: 2.2.0

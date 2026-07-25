@@ -227,7 +227,7 @@ Deletion is a **soft delete**. In current stored-procedure behavior, it also dea
 - linked `user_group_members` rows
 - linked `user_group_project_groups` rows
 
-On top of that, the route calls `revoke_project_sessions_losing_access(..., reason="user_group_deleted")`, so the **live project sessions** of all affected members are revoked too. So yeah, deleting a group is not just cosmetic. It removes live memberships, access links, and active sessions in one move — affected users are forced to re-authenticate.
+The route also calls `revoke_project_sessions_losing_access(..., reason="user_group_deleted")`, so the **live project sessions** of all affected members are revoked. Deleting a group removes live memberships, access links, and active sessions in one operation; affected users must re-authenticate.
 
 The same active session-revocation applies to deleting a project group (`reason="project_group_deleted"`) and removing a project from a project group (`reason="project_removed_from_group"`).
 
@@ -244,5 +244,4 @@ The same active session-revocation applies to deleting a project group (`reason=
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

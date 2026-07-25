@@ -40,7 +40,7 @@ Admin password reset no longer returns or generates a visible temporary password
 Password-management compatibility rules:
 
 - Use `POST /auth/password/change` for authenticated self-service password changes; `PUT /users/profile` rejects password-equivalent fields with sanitized guidance.
-- Do not send `force_password_reset`; bulk/admin compatibility paths reject that dead field instead of pretending a forced login-gated workflow exists.
+- Do not send `force_password_reset`; bulk/admin compatibility paths reject that retired field because there is no forced login-gated workflow.
 - No `must_change_on_login` workflow exists in this change; admin reset remains reset-link based.
 
 Session side effects:
@@ -50,5 +50,4 @@ Session side effects:
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 2.0

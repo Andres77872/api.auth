@@ -36,7 +36,8 @@ Check the full chain, not just one table in your head.
      -H "Authorization: Bearer $ADMIN_TOKEN"
    ```
 
-If the permission is absent from all three sources, the API is correct and your assumption is wrong.
+If the permission is absent from all three sources, correct the assignment
+graph before investigating route guards.
 
 ---
 
@@ -73,18 +74,19 @@ Practical fix order:
 
 ---
 
-### Admin route works in `/permissions` but not in `/roles`
-
-That is possible in this repo.
+### Extended permission check returns false unexpectedly
 
 Why:
 
-- `/permissions` admin routes use **extended** `manage_roles`
-- `/roles` admin routes use **role-only** `manage_roles`
+- `check_user_has_permission_extended()` calls
+  `sp_check_user_has_permission`
+- the canonical schema defines
+  `sp_check_user_has_permission_extended` instead
+- the wrapper fails closed to `false` when that call fails
 
-So a consumer who gains `manage_roles` via user-group or direct assignment may pass one suite and fail the other.
-
-That is not a documentation bug. That's the current implementation.
+Use `/permissions/users/me/permissions` and `/permission-sources` to inspect the
+union. Do not rely on direct/user-group assignments to authorize the admin
+guards until the procedure wiring is fixed and verified.
 
 ---
 
@@ -102,8 +104,6 @@ If you need predictable access there, use an appropriate role baseline or an act
 ---
 
 ### Catalog entry exists but access did not change
-
-Good. That's exactly what the code says should happen.
 
 Catalog routes are metadata only. They organize recommendations; they do not touch the live authorization graph.
 
@@ -198,5 +198,4 @@ After role changes, team reassignment, or project-context changes, refresh or re
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

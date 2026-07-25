@@ -37,7 +37,7 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 |----------|--------|------|--------------|---------|
 | `/admin/activity` | GET | root/admin | Query params | Activity feed from `activity_logs` table |
 | `/admin/activity/{activity_id}` | GET | root/admin | — | Single activity log detail by ID |
-| `/admin/activity/types` | GET | root/admin | — | Enum of all 30 activity types |
+| `/admin/activity/types` | GET | root/admin | — | Current runtime `ActivityType` enum (91 values) |
 
 ---
 
@@ -253,5 +253,4 @@ Note: `GET /admin/email/logs` returns no body-validation errors of its own — i
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

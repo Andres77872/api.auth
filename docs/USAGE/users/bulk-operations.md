@@ -79,7 +79,7 @@ Bulk update is callable as documented. The route builds the utility contract dir
 - `user_updates` is a list of dictionaries shaped like `{"user_hash": "...", "updates": {...}}`
 - the utility accepts that list-of-dicts shape and applies the requested fields per user
 
-No boludez: still inspect the partial-success response, but do not treat this endpoint as broken because of the old 3-argument mismatch. That mismatch is gone.
+Always inspect the partial-success response. The old three-argument route/utility mismatch is resolved, so it is no longer a reason to treat this endpoint as broken.
 
 ---
 
@@ -174,5 +174,4 @@ Those belong to the groups/roles admin endpoints.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

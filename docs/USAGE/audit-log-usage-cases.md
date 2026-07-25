@@ -69,5 +69,4 @@ Redaction guarantees:
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 2.0 (Legacy)

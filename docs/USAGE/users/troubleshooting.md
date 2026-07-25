@@ -149,7 +149,7 @@ Trying to solve every access issue through `/users/*` is how teams create operat
 
 ### 5. Verify bulk workflows in staging
 
-Especially `bulk-update`. Large user changes deserve proof, not vibes.
+This is especially important for `bulk-update`; validate large user changes with staging evidence.
 
 ---
 

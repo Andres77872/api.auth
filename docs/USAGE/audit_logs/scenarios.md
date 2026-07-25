@@ -325,5 +325,4 @@ The `api_audit_summary` in the user activity response includes `total_requests` 
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

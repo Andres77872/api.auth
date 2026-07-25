@@ -32,9 +32,9 @@ The Magic Auth database implements a sophisticated **multi-project authenticatio
 - **Hierarchical Groups**: Both user groups and project groups support parent-child hierarchies
 - **Global Role System**: Roles with permission groups containing individual permissions
 - **Scoped Permissions**: Grant or deny permissions at project-group level with priority
-- **Comprehensive Auditing**: Full activity logging with 40+ predefined activity types
+- **Comprehensive Auditing**: Full activity logging with 90 activity types in the canonical SQL seed
 - **Error Tracking**: Dedicated error logging with statistics and alerting
-- **Performance Optimized**: 80+ indexes, permission caching, 16 optimized views
+- **Performance Optimized**: 83 explicit indexes, permission caching, and 18 SQL views
 
 ---
 
@@ -95,47 +95,17 @@ python scripts/create_database.py
 python scripts/recreate_database.py
 ```
 
-### Manual Setup (Execute in Order)
+### Manual Setup
 
-```bash
-# 1. TABLES - Create database structure
-mysql -u root -p < schemas/tables/01_create_database.sql
-mysql -u root -p < schemas/tables/02_create_tables.sql
-mysql -u root -p < schemas/tables/03_create_indexes.sql
-mysql -u root -p < schemas/tables/04_add_constraints.sql
-mysql -u root -p < schemas/tables/05_initialize_data.sql
-mysql -u root -p < schemas/tables/06_create_views.sql
-mysql -u root -p < schemas/tables/07_error_logs.sql
-mysql -u root -p < schemas/tables/08_activity_logging_tables.sql
-mysql -u root -p < schemas/tables/09_email_activation_tables.sql
+Use `scripts/create_database.py` as the source of truth for SQL file order. Its
+`TABLE_FILES`, `STORED_PROCEDURE_FILES`, `TRIGGER_FILES`, and
+`BILLING_PROVIDER_FACT_FILES` lists include the external-account, email,
+Patreon, and billing additions. If SQL must be applied manually, execute those
+exact lists in the order declared by the script instead of copying a second
+list into an operator runbook.
 
-# 2. STORED PROCEDURES - Create all procedures
-mysql -u root -p < schemas/stored_procedures/01_user_management.sql
-mysql -u root -p < schemas/stored_procedures/02_user_groups.sql
-mysql -u root -p < schemas/stored_procedures/03_projects.sql
-mysql -u root -p < schemas/stored_procedures/04_project_groups.sql
-mysql -u root -p < schemas/stored_procedures/05_global_roles.sql
-mysql -u root -p < schemas/stored_procedures/06_permission_assignments.sql
-mysql -u root -p < schemas/stored_procedures/07_sessions_analytics.sql
-mysql -u root -p < schemas/stored_procedures/08_admin_operations.sql
-mysql -u root -p < schemas/stored_procedures/09_system_maintenance.sql
-mysql -u root -p < schemas/stored_procedures/10_error_logging.sql
-mysql -u root -p < schemas/stored_procedures/11_activity_logging.sql
-mysql -u root -p < schemas/stored_procedures/12_activity_context.sql
-mysql -u root -p < schemas/stored_procedures/13_api_keys.sql
-mysql -u root -p < schemas/stored_procedures/14_email_activation.sql
-
-# 3. TRIGGERS - Create automatic activity logging triggers
-mysql -u root -p < schemas/triggers/01_activity_logging_triggers.sql
-mysql -u root -p < schemas/triggers/02_permission_activity_triggers.sql
-mysql -u root -p < schemas/triggers/03_api_key_activity_triggers.sql
-mysql -u root -p < schemas/triggers/04_email_activation_triggers.sql
-```
-
-> The Python bootstrap (`scripts/create_database.py` / `recreate_database.py`) is
-> the source of truth for file order and already applies every file above.
-> Password reset uses hash-only `user_email_link_tokens`; retired plaintext
-> recovery storage must not re-enter bootstrap.
+Password reset uses hash-only `user_email_link_tokens`; retired plaintext
+recovery storage must not re-enter bootstrap.
 
 ---
 
@@ -145,42 +115,15 @@ mysql -u root -p < schemas/triggers/04_email_activation_triggers.sql
 
 ```
 schemas/
-├── docs/                    # Documentation (this folder)
-│   └── README.md           # This file
-│
-├── tables/                  # All table definitions and initialization
-│   ├── 01_create_database.sql      # Database creation with UTF-8
-│   ├── 02_create_tables.sql        # 27 core tables definition
-│   ├── 03_create_indexes.sql       # 80+ performance indexes
-│   ├── 04_add_constraints.sql      # Foreign keys + 16 validation triggers
-│   ├── 05_initialize_data.sql      # Root user creation
-│   ├── 06_create_views.sql         # 12 optimization views
-│   ├── 07_error_logs.sql           # 3 error logging tables + 4 views
-│   ├── 08_activity_logging_tables.sql  # 3 activity tables + 40 types
-│   └── 09_email_activation_tables.sql  # 7 transactional-auth email tables
-│
-├── stored_procedures/
-│   ├── 01_user_management.sql      # 20 procedures
-│   ├── 02_user_groups.sql          # 25 procedures
-│   ├── 03_projects.sql             # 17 procedures
-│   ├── 04_project_groups.sql       # 15 procedures
-│   ├── 05_global_roles.sql         # 29 procedures
-│   ├── 06_permission_assignments.sql # 22 procedures
-│   ├── 07_sessions_analytics.sql   # 8 procedures
-│   ├── 08_admin_operations.sql     # 1 procedure
-│   ├── 09_system_maintenance.sql   # 5 procedures
-│   ├── 10_error_logging.sql        # 12 procedures
-│   ├── 11_activity_logging.sql     # 10 procedures
-│   ├── 12_activity_context.sql     # 3 procedures + 1 function
-│   ├── 13_api_keys.sql             # API key procedures
-│   └── 14_email_activation.sql     # 20 transactional-auth email procedures
-│
-└── triggers/
-    ├── 01_activity_logging_triggers.sql      # 21 core entity triggers
-    ├── 02_permission_activity_triggers.sql   # 25 permission/role triggers
-    ├── 03_api_key_activity_triggers.sql      # API key activity triggers
-    └── 04_email_activation_triggers.sql      # 6 email lifecycle triggers
+├── docs/                  # Human-readable schema guides
+├── tables/                # 12 ordered database/table/index/view/domain files
+├── stored_procedures/     # 18 ordered procedure families
+└── triggers/              # 7 ordered trigger families
 ```
+
+The numbered families progress from core users/groups/projects through API keys,
+email, external accounts, Patreon, and provider-agnostic billing. Do not infer
+bootstrap order from this compact tree; use `scripts/create_database.py`.
 
 ---
 
@@ -229,7 +172,7 @@ schemas/
 | `user_sessions` | Active user sessions per project |
 | `api_audit_log` | Complete API request/response logging |
 | `activity_logs` | User and system activity tracking |
-| `activity_catalog` | 40 predefined activity type definitions |
+| `activity_catalog` | 90 seeded activity type definitions |
 | `permission_audit_log` | Permission change audit trail |
 | `role_assignment_history` | Role/permission assignment history |
 
@@ -275,7 +218,7 @@ schemas/
 
 ## Stored Procedures Reference
 
-### User Management (`01_user_management.sql`) - 20 Procedures
+### User Management (`01_user_management.sql`) - 22 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -300,7 +243,7 @@ schemas/
 | `sp_set_user_status` | Set user active/inactive |
 | `sp_get_recent_users_count` | Count recently created users |
 
-### User Groups (`02_user_groups.sql`) - 25 Procedures
+### User Groups (`02_user_groups.sql`) - 27 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -330,7 +273,7 @@ schemas/
 | `sp_get_user_groups_for_project` | Get all user groups with project access |
 | `sp_get_projects_for_user_group` | Get all projects accessible by user group |
 
-### Projects (`03_projects.sql`) - 17 Procedures
+### Projects (`03_projects.sql`) - 19 Procedures
 
 | Procedure | Description |
 |-----------|-------------|
@@ -497,7 +440,7 @@ schemas/
 | `sp_get_activity_context` | Procedure | Get current context (debug) |
 | `fn_get_context_user_id` | Function | Helper function for context resolution |
 
-### Email Activation (`14_email_activation.sql`) - 20 Procedures
+### Email Activation (`14_email_activation.sql`) - 28 Procedures
 
 Stored procedures own all email lifecycle state transitions; Python `db_email`
 wrappers call them positionally. Procedures never accept or store token secrets —
@@ -521,6 +464,17 @@ callers pass `lookup_id` plus an app-computed `BINARY(32)` HMAC `token_hash`.
 | `sp_email_idempotency_begin` / `_complete` / `_get` | Durable idempotency lifecycle |
 | `sp_email_retention_purge` | Redact payloads + recipient PII, delete expired tokens, strip old attempts, expire idempotency keys (run by the worker on a cadence) |
 | `sp_anonymize_user_email_data` | GDPR erasure of a user's email PII while preserving non-PII evidence |
+
+The tables above are selected operational entries, not a duplicate of every SQL
+definition. Additional authoritative procedure families are:
+
+| File | Procedures | Domain |
+|------|-----------:|--------|
+| `13_api_keys.sql` | 8 | API-key lifecycle and validation |
+| `15_external_accounts.sql` | 5 | External identity linking |
+| `16_patreon_entitlements.sql` | 21 | Patreon link/entitlement facts |
+| `17_billing_provider_facts.sql` | 14 | Provider-neutral billing facts |
+| `18_billing_groups.sql` | 28 | Billing groups, catalog, credentials, and session-plan resolution |
 
 ---
 
@@ -748,28 +702,37 @@ WHERE trigger_schema = 'magic_auth';
 
 ## Initial Data & Credentials
 
-After running `05_initialize_data.sql`:
+`schemas/tables/05_initialize_data.sql` currently creates this development root
+row:
 
 ```
 Username: root
-Password: admin123
+Seeded plaintext: 1248163264
 Email: root@system.local
 Type: root
+Stored hash: legacy unsalted SHA-256
 ```
 
-**⚠️ IMPORTANT: Change this password immediately in production!**
+This is not a usable current login. `src/Util/password_security.py` verifies
+Argon2id hashes only. In addition, `scripts/create_database.py` and
+`scripts/recreate_database.py` incorrectly print `admin123` after applying the
+SQL; that value differs from the seed and also cannot authenticate.
+
+Do not deploy either known value. Follow the
+[first-root repair step](../../docs/USAGE/getting-started.md#first-root-bootstrap-and-current-seed-caveat)
+to replace the seeded hash with a policy-compliant Argon2id hash before login.
+If the initializer is omitted, create the first root through the application
+helper described in the same guide.
 
 ### Activity Catalog
 
-40 predefined activity types are created in categories:
-- **authentication**: login, logout, login_failed, session_created, session_expired
-- **user_management**: registration, update, status_change, password_reset, type_changed, deleted
-- **project_management**: creation, update, delete, archived, unarchived, ownership_transferred
-- **project_members**: member_add, member_remove
-- **group_management**: creation, update, delete, assign, remove, access_granted, access_revoked
-- **permission_management**: grant, revoke, role_assigned, role_removed, permission_group_assigned/revoked
-- **bulk_operations**: bulk_role_assignment, bulk_group_assignment, bulk_user_update, bulk_user_delete
-- **admin/system/security**: admin_action, system_event, security_alert
+`schemas/tables/08_activity_logging_tables.sql` currently seeds 90 catalog rows
+(`act-cat-001` through `act-cat-090`) across core authentication/administration,
+email, Google OAuth, and Patreon categories.
+
+Runtime code also reserves billing IDs `act-cat-091` through `act-cat-106`, but
+the canonical SQL bootstrap does not currently seed those 16 rows. Treat this
+as a known schema/runtime gap before enabling billing activity persistence.
 
 ---
 
@@ -778,15 +741,14 @@ Type: root
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 33
-- **Indexes**: 80+
-- **Stored Procedures**: 167
+- **Tables**: 69
+- **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
+- **Stored Procedures**: 277
 - **Functions**: 1
-- **Views**: 16
-- **Triggers**: 46 (activity logging)
-- **Activity Types**: 40
+- **Views**: 18
+- **Triggers**: 119 total (104 activity/domain triggers plus 15 validation triggers in table setup)
+- **Activity Types**: 90 seeded; 16 billing IDs reserved in runtime but not yet seeded
 
 ---
 
-**Last Updated**: January 2026  
 **Version**: 3.0 (Groups of Groups Architecture)

@@ -102,7 +102,7 @@ The `secret_hash` is never returned by any endpoint.
 
 `GET` list endpoints wrap items as:
 
-```json
+```jsonc
 { "keys": [ ... ], "total": 12, "limit": 50, "offset": 0 }
 ```
 
@@ -147,5 +147,4 @@ Implemented in `src/Util/api_key_security.py`.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

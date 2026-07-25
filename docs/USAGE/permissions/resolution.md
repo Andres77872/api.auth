@@ -132,11 +132,12 @@ User → Permission Groups → Permissions
   3. Direct user → user_permission_groups → permissions
   ```
 
-**This means**: The `/permissions/me` endpoint will show you permissions from all three sources, but the **auth flow only uses Source 1 (role)**.
+**This means**: `GET /permissions/users/me/permissions` will show permissions
+from all three sources, but the **auth flow only uses Source 1 (role)**.
 
 ### The Gap
 
-| Aspect | During Auth (Path A) | Via /permissions/me (Path B) |
+| Aspect | During Auth (Path A) | Via `/permissions/users/me/permissions` (Path B) |
 |--------|---------------------|----------------------------|
 | Role permissions | Yes | Yes |
 | User group permissions | **No** | Yes |
@@ -182,7 +183,10 @@ This table clarifies the disconnect:
 | `GET /roles/users/me/role` | Current user's assigned role | Role only |
 | **Auth during login/session** | **Only role permissions** | **Path A (role-only)** |
 
-**Practical implication**: A user may see permissions listed in `/permissions/me` that are **not actually effective** during authenticated API calls, because those permissions come from user-group or direct assignments that the auth flow does not evaluate.
+**Practical implication**: A user may see permissions listed by
+`GET /permissions/users/me/permissions` that are **not actually effective**
+during authenticated API calls, because those permissions come from user-group
+or direct assignments that the auth flow does not evaluate.
 
 ---
 
@@ -253,5 +257,4 @@ Direct assignment: "advanced_analytics" permission group
 
 ---
 
-**Last Updated**: April 2026
 **Document Version**: 1.0

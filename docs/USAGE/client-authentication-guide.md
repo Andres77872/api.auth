@@ -30,15 +30,16 @@ The API uses a **true access/refresh token model**:
 - **API keys** are validated through `POST /auth/validate-api-key` (`X-API-Key` header); see [API Keys](#api-keys).
 - **Cookies** (browsers, SPAs) can carry both tokens automatically.
 - **Bearer header** clients use the access token manually and must store/use the refresh token separately.
+- **Plan projection** is returned for project-scoped consumers by login, `/auth/validate`, and API-key validation. It is response data, not token or session authority.
 
 ### Key Integration Points
 
 | Concern | Detail |
 |---------|--------|
 | Content-Type (auth routes) | `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/switch-project` use `application/x-www-form-urlencoded` (form fields). The email/password JSON routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`, `/auth/password/change`) use `application/json`. `/auth/validate-api-key` carries no body (header auth). |
-| Content-Type (other routes) | Most other POST/PUT/PATCH use `multipart/form-data`; JSON exceptions include `POST /admin/user-groups/{hash}/members/bulk` and `POST /admin/audit/export`. |
+| Content-Type (other routes) | Older CRUD/admin mutations are mainly form-encoded. Email-template, provider, internal S2S, audit-export, and selected bulk routes use JSON; webhooks use signed raw bytes. Follow each route's OpenAPI request schema. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
-| CORS | Defaults to explicit local origins `http://localhost:3000,http://localhost:5173,http://localhost:4173,http://localhost:5177` plus dashboard origin `https://auth-ui.arz.ai`. Set `ALLOWED_ORIGINS` in production. |
+| CORS | Set `ALLOWED_ORIGINS` explicitly for every deployment. `.env.example` is the maintained template; do not depend on source-code fallback origins. |
 | Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
 
 ---
@@ -71,8 +72,13 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 | Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
 | Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family. Default rotation slides the 72h window; a `remember_me=true` family keeps its fixed `absolute_expires_at` and does not slide |
 | Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window. Successful login, refresh, and switch-project responses return the mode as top-level `remember_me`; `/auth/validate` returns it under `session.remember_me` |
+| Session Plan | A response-only, subscription-only object for project-scoped consumers: `provider`, six-state `state`, `active`, opaque plan/tier codes, expiry fields, and `cancel_at_period_end`. It is not embedded in auth tokens or Redis session state. |
 
 `POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
+
+The current refresh and switch-project response bodies do not expose `plan`.
+After either operation, call `GET /auth/validate` with the new access token when
+the client needs the current project plan projection.
 
 ---
 
@@ -863,5 +869,4 @@ The `session_token` cookie uses `SameSite=Strict`. Ensure your client is served 
 
 ---
 
-**Last Updated**: June 2026
 **API Version**: 2.2.0

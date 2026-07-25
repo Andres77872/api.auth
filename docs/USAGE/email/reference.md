@@ -23,6 +23,25 @@ All endpoints require ROOT. Auth is `HTTPBearerOrCookie` (session bearer/cookie)
 
 Built-in `{template_code}` values include `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`, `patreon_link_proof`, and `email_credit_grant_notification`. Dynamic codes must be created first with `POST /admin/email-templates`.
 
+## `/internal/email` Endpoints (ROOT session required)
+
+These JSON routes are companion-service primitives, but their current authority
+is a normal ROOT access session via `require_root_user`. They do not accept the
+billing or Patreon S2S bearer tokens. Never forward the root credential to a
+browser.
+
+| Endpoint | Method | Body | Success | Purpose |
+| --- | --- | --- | --- | --- |
+| `/internal/email/resolve-identity` | POST | `{ "email": "..." }` | `200` | Resolve an activated linked email to a safe local identity projection; unmatched email returns `matched=false` |
+| `/internal/email/send-template` | POST | `recipient_email`, `template_code`, `variables`, optional provider idempotency key/priority | `202` | Enqueue an enabled `delivery_operation` or `security_notification` template |
+| `/internal/email/message-status` | POST | `{ "email_message_id": "..." }` | `200` | Return redacted delivery state; unknown IDs return `404` |
+
+`send-template` filters variables through the selected template's allow-list,
+adds server-owned `app_name`/masked-recipient values, validates any
+`action_url`, encrypts the transient render payload, and returns only the local
+message id/lifecycle status/template code. It rejects auth/reset/Patreon
+purposes on this generic internal route.
+
 ### Request bodies
 
 ```jsonc
@@ -277,5 +296,4 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

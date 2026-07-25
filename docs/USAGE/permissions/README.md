@@ -108,5 +108,4 @@ If you treat catalogs as authorization, you are going to create a quilombo. They
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

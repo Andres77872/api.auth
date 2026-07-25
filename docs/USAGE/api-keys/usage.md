@@ -191,5 +191,4 @@ raw token in `X-API-Key` (not `Authorization: Bearer`). Sending **both** `Author
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

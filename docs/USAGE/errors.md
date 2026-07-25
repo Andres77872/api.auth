@@ -42,7 +42,7 @@ All errors follow this standardized shape:
 
 ### Success responses use a different shape:
 
-```json
+```jsonc
 {
   "success": true,
   "message": "Operation completed successfully",
@@ -56,7 +56,7 @@ All errors follow this standardized shape:
 
 When `DEBUG_MODE=true`, the error object includes two additional fields:
 
-```json
+```jsonc
 {
   "status": "error",
   "error": {

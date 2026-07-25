@@ -74,7 +74,7 @@ The middleware flags requests as security events when:
 
 ## Route Organization
 
-### Dedicated Audit Endpoints (`src/routes/audit_logs.py`, 618 lines, 6 endpoints)
+### Dedicated Audit Endpoints (`src/routes/audit_logs.py`, 6 endpoints)
 
 All routes use `APIRouter(prefix="/admin")` — they coexist with `admin_dashboard.py` under the same `/admin` prefix.
 
@@ -87,7 +87,7 @@ All routes use `APIRouter(prefix="/admin")` — they coexist with `admin_dashboa
 | POST | `/admin/audit/export` | `export_logs()` | CSV/JSON export, max 10,000 records |
 | GET | `/admin/users/{user_id}/activity` | `get_user_activity()` | Per-user combined activity summary + timeline |
 
-### Admin Dashboard Activity Endpoints (`src/routes/admin_dashboard.py`, 542 lines)
+### Admin Dashboard Activity Endpoints (`src/routes/admin_dashboard.py`)
 
 | Method | Path | Handler | Purpose |
 |--------|------|---------|---------|
@@ -209,5 +209,4 @@ def _check_admin_access(log_context: LogContext) -> None:
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.1

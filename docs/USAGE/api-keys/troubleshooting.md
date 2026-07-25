@@ -134,5 +134,4 @@ authenticating at once rather than waiting for a cache TTL.
 
 ---
 
-**Last Updated**: June 2026
 **Document Version**: 1.0

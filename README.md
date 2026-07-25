@@ -96,9 +96,16 @@ curl -H "User-Agent: local-smoke/1.0" http://localhost:8000/system/ping
 
 `src/__init__.py` loads the project `.env` before runtime imports. Use `scripts/recreate_database.py` only when you intentionally want to drop and rebuild `magic_auth`; it is destructive and asks for confirmation.
 
+The canonical database scripts currently seed a legacy root row whose SHA-256
+password hash is incompatible with the active Argon2id-only verifier. Their
+completion message also prints a different password. Before trying to log in,
+follow the
+[first-root repair step](docs/USAGE/getting-started.md#first-root-bootstrap-and-current-seed-caveat);
+neither printed/seeded default is a valid current login.
+
 ## 📡 API Surface
 
-The app currently registers **217 route-module endpoint methods across 25 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in `/docs`, `/redoc`, `/openapi.json`, root route, top-level `/ping`, and the two rendered documentation routes in `src/main.py`.
+The app currently registers **217 route-module endpoint methods across 25 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
 
 | Surface | Prefix | Module | Count | Contract |
 |---------|--------|--------|-------|----------|
@@ -373,7 +380,7 @@ Do not place real Google, Patreon, Stripe, Resend, provider-init, S2S bearer, en
 | Missing JWT secret | Set `JWT_SECRET_KEY`; non-test runtime fails fast without it |
 | API key import/startup error | Set `API_KEY_PEPPER` before importing API-key routes |
 | Access denied | Check user group membership, project group access, and project archive state |
-| Permission denied | Verify role, permission-group, and direct permission assignments |
+| Permission denied | Verify the active guard first. Session/route enforcement is role-derived; user-group/direct assignments are visible through inspection APIs but are not part of the auth-time permission set. |
 | Database errors | Verify MySQL connection, schema, stored procedures, and triggers |
 | Cache/session issues | Check Redis connectivity and use `/system/cache/clear` when appropriate |
 | Provider feature returns neutral/disabled response | Confirm the feature flag, provider credentials, S2S bearer, encryption/HMAC secrets, and per-group readiness |

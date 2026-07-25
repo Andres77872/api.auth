@@ -21,13 +21,15 @@ REQUEST
               │     ├─► root: broad allow path
               │     ├─► admin: project-scoped admin access checks
               │     └─► consumer: normal user path
-              └─► permission logic
-                    ├─► role-derived permissions
-                    ├─► user-group-derived permission groups
-                    └─► direct user permission groups
+              └─► session permission logic
+                    └─► role-derived permissions only
+
+Separate `/permissions/users/...` inspection endpoints
+  └─► extended union of role + user-group + direct assignments
 ```
 
-If you only document the RBAC half, you're missing the actual runtime behavior.
+User-type/project-access checks and permission checks must therefore be
+evaluated separately.
 
 ---
 
@@ -108,7 +110,7 @@ The effective permission set is the **union** of those three sources.
 
 ## Admin Guard Matrix
 
-The admin story is inconsistent across route files. That's not opinion; that's what the code does.
+Admin guards are not uniform across route files.
 
 | Area | Guard implementation | What it effectively checks |
 |------|----------------------|----------------------------|
@@ -120,26 +122,30 @@ The admin story is inconsistent across route files. That's not opinion; that's w
 ### Important consequence: permission source coverage is not identical
 
 - `/roles` uses the **role-only** checker from `db_global_roles.py`
-- `/permissions` uses the **extended** checker helper from `db_permission_assignments.py`
+- `/permissions` calls the helper named `check_user_has_permission_extended()`,
+  but that helper calls a procedure name absent from the canonical schema and
+  fails closed for a consumer
 - `/admin/user-groups` and `/admin/project-groups` read **session permissions** from `validate_session()`
 
 For consumer users, `validate_session()` currently rebuilds `permissions` with `db_global_roles.get_user_permissions()` — that is the **role-derived** path, not the extended three-source union.
 
-Operationally, that means:
-
-- a consumer with `manage_roles` only through a **direct** or **user-group** permission-group assignment can pass some `/permissions` admin routes
-- that same user is **not guaranteed** to pass `/roles`, `/admin/user-groups`, or `/admin/project-groups`
-
-That is a real guard mismatch. Document it, plan for it, and don't pretend all admin-ish routes mean the same thing.
+Operationally, a direct or user-group `manage_roles` assignment is visible in
+inspection results but does not authorize the active route guards in a fresh
+canonical deployment. Root/admin user types still pass the `/permissions`
+guard before its broken consumer fallback is needed.
 
 ### Procedure-name caveat in the extended checker
 
-There is an implementation ambiguity you should know about:
+There is a concrete fresh-bootstrap mismatch:
 
 - `db_permission_assignments.py` calls `sp_check_user_has_permission`
 - `06_permission_assignments.sql` defines `sp_check_user_has_permission_extended`
 
-This documentation describes the **intended extended behavior** because that is what the route module and surrounding code are clearly built around. But the exact deployed procedure name depends on your database state or compatibility aliases. Verify in your environment if you're debugging mismatches at that layer.
+No compatibility procedure named `sp_check_user_has_permission` exists in the
+canonical SQL tree. The wrapper uses `default_return=False`, so this path denies
+rather than granting access when the call fails. A separately evolved database
+could contain an alias, but that is not part of this repository's bootstrap
+contract.
 
 ---
 
@@ -185,7 +191,8 @@ For consumer sessions, `validate_session()` recalculates:
 - project group membership in the current project
 - role-derived permissions via `get_user_permissions()`
 
-But that's still not the same as the extended three-source query used by `/permissions/users/me/...`.
+This remains different from the extended three-source query used by
+`/permissions/users/me/...`.
 
 ---
 
@@ -197,15 +204,19 @@ Behavior:
 
 1. allow if the permission name is already in `current_user["permissions"]`
 2. allow if session permissions include `admin` or `global_admin`
-3. for `consumer` users only, fall back to `check_user_permission(user_id, project_id, permission)`
+3. for `consumer` users only, fall back to
+   `check_user_permission(user_id, project_id, permission)`
 4. otherwise return HTTP 403
 
 Two important caveats:
 
 - `require_permission()` is **currently not used by any route file found in this repo search**
-- its fallback is **project-aware**, while the active `/roles` and `/permissions` APIs are documented and implemented as **global** permission systems
+- despite accepting `project_id`, its current alias resolves global
+  role-derived permissions and does not evaluate the SQL project-scoped deny
+  model
 
-So yes, the middleware exists, but no, you should not assume it is the active enforcement pattern for the permissions suite.
+The middleware exists but is not the active enforcement pattern for the
+permissions suite.
 
 ---
 
@@ -288,5 +299,4 @@ In the permissions area, permission-guard failures usually map to `AUTHZ_2002`, 
 
 ---
 
-**Last Updated**: April 2026  
 **Document Version**: 1.0

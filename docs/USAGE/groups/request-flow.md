@@ -138,5 +138,4 @@ That is the real runtime data flow behind “user can access this project”.
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 3.1

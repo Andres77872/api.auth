@@ -135,7 +135,8 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/$OLD_TEAM_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Do the verification before deleting old groups, otherwise you create your own outage like an animal.
+Verify access before deleting the old groups; reversing that order can cause an
+avoidable authorization outage.
 
 ---
 
@@ -150,5 +151,4 @@ Do the verification before deleting old groups, otherwise you create your own ou
 
 ---
 
-**Last Updated**: June 2026  
 **Document Version**: 1.1
