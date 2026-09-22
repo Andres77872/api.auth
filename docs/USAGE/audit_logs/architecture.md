@@ -205,8 +205,4 @@ def _check_admin_access(log_context: LogContext) -> None:
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
 - **[Admin Usage Cases](../admin-usage-cases.md)** — Dashboard, activity feed quick reference
-- **[Database Schema](../../../schemas/)** — SQL tables, views, and stored procedures
-
----
-
-**Document Version**: 1.1
+- **Database schema** (`schemas/`) — SQL tables, views, and stored procedures

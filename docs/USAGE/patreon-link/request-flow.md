@@ -346,8 +346,3 @@ Indefinite history must not require indefinite raw provider payloads, raw emails
 - [Scenarios](scenarios.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/patreon-link.md)
-
----
-
-**Document Version**: 1.0

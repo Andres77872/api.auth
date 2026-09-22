@@ -164,7 +164,3 @@ This is especially important for `bulk-update`; validate large user changes with
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
-
----
-
-**Document Version**: 1.0

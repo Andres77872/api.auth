@@ -209,7 +209,3 @@ That means the admin-project lifecycle is really a controlled admin-group member
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

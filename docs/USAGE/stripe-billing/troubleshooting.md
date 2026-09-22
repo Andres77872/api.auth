@@ -309,8 +309,3 @@ Use this checklist for incidents:
 - [Request Flow](request-flow.md)
 - [Scenarios](scenarios.md)
 - [Reference](reference.md)
-- [Runbook](../../RUNBOOKS/stripe-billing.md)
-
----
-
-**Document Version**: 1.0

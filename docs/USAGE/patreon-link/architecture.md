@@ -352,8 +352,3 @@ Rollback must disable new behavior through flags, ingress controls, worker stop,
 - [Scenarios](scenarios.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/patreon-link.md)
-
----
-
-**Document Version**: 1.0

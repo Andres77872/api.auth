@@ -281,8 +281,3 @@ Stripe billing borrows the operational posture from Patreon: default-off flags, 
 - [Scenarios](scenarios.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/stripe-billing.md)
-
----
-
-**Document Version**: 1.0

@@ -4,7 +4,7 @@ Practical usage guide for operating the groups system in `api.auth`.
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [Authentication and Route Ownership](#authentication-and-route-ownership)
 - [Creating User Groups](#creating-user-groups)
@@ -241,7 +241,3 @@ The same active session-revocation applies to deleting a project group (`reason=
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 3.1

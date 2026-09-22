@@ -175,7 +175,3 @@ Remember: delete is a soft-delete, but it still deactivates memberships and user
 - **[Request & Data Flow](request-flow.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 3.1

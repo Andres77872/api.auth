@@ -227,7 +227,3 @@ GET /admin/email/logs
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

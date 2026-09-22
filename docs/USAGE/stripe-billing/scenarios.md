@@ -271,8 +271,3 @@ Activity details must stay redacted and must not include raw provider refs, sign
 - [Request Flow](request-flow.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/stripe-billing.md)
-
----
-
-**Document Version**: 1.0

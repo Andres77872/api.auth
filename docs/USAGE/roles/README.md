@@ -110,8 +110,4 @@ The roles system is the **baseline authorization layer** for this API. What matt
 - **[Users Documentation Suite](../users/README.md)** - User profile, access summary, and lifecycle operations
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, session management, project switching
 - **[Error Reference](../errors.md)** - Error codes, response shapes, and troubleshooting
-- **[Database Schema](../../../schemas/)** - SQL tables, views, and stored procedures
-
----
-
-**Document Version**: 1.1
+- **Database schema** (`schemas/`) - SQL tables, views, and stored procedures

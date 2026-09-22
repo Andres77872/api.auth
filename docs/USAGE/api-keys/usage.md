@@ -188,7 +188,3 @@ raw token in `X-API-Key` (not `Authorization: Bearer`). Sending **both** `Author
 `X-API-Key` returns `400 ambiguous_credentials`. This endpoint is part of the **auth suite** — see
 [Authentication Usage Cases](../authentication-usage-cases.md) and the example in
 [scenarios.md](scenarios.md).
-
----
-
-**Document Version**: 1.0

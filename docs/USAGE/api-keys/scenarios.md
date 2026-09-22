@@ -19,8 +19,8 @@ curl -X POST "http://localhost:8000/users/api-keys" \
   -H "User-Agent: my-app/1.0" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "project_hash=$PROJECT_HASH&name=ci-runner&expires_at=2026-12-31T00:00:00Z"
-# → data.api_key = "sk_<public_id>.<secret>"  ← SAVE THIS NOW; it cannot be retrieved again.
-# → data.public_id = "<public_id>"            ← use this as {key_id}
+# data.api_key = "sk_<public_id>.<secret>" SAVE THIS NOW; it cannot be retrieved again.
+# data.public_id = "<public_id>" use this as {key_id}
 
 # 2. List your keys (token is NOT included here)
 curl -X GET "http://localhost:8000/users/api-keys?active_only=true" \
@@ -54,7 +54,7 @@ This calls the **auth suite's** `POST /auth/validate-api-key`.
 curl -X POST "http://localhost:8000/auth/validate-api-key" \
   -H "X-API-Key: sk_<public_id>.<secret>" \
   -H "User-Agent: my-service/1.0"
-# → { "success": true, "valid": true, "auth_method": "api_key",
+# { "success": true, "valid": true, "auth_method": "api_key",
 #     "user": {...}, "project": {...},
 #     "api_key": { "key_id": "...", "public_id": "..." },
 #     "user_groups": [...], "permissions": [...] }
@@ -63,12 +63,12 @@ curl -X POST "http://localhost:8000/auth/validate-api-key" \
 Wrong way (do not send both credentials):
 
 ```bash
-# Sending BOTH Authorization and X-API-Key → 400 ambiguous_credentials
+# Sending BOTH Authorization and X-API-Key 400 ambiguous_credentials
 curl -X POST "http://localhost:8000/auth/validate-api-key" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-API-Key: sk_<public_id>.<secret>" \
   -H "User-Agent: my-service/1.0"
-# → 400 { "detail": "ambiguous_credentials" }
+# 400 { "detail": "ambiguous_credentials" }
 ```
 
 The raw key and secret are never echoed back. See
@@ -87,7 +87,7 @@ curl -X POST "http://localhost:8000/api-keys" \
   -H "User-Agent: ops/1.0" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "user_hash=$USER_HASH&project_hash=$PROJECT_HASH&name=service-key&expires_at=2027-01-01T00:00:00Z"
-# → data.api_key shown once; hand it to the user over a secure channel.
+# data.api_key shown once; hand it to the user over a secure channel.
 ```
 
 Failure cues:
@@ -112,7 +112,7 @@ curl -X GET "http://localhost:8000/api-keys/projects/$PROJECT_HASH?limit=100" \
 # Root-scoped flat list MUST include a filter (user_hash or project_hash):
 curl -X GET "http://localhost:8000/api-keys?user_hash=$USER_HASH" \
   -H "Authorization: Bearer $ROOT_TOKEN" -H "User-Agent: ops/1.0"
-# Omitting both as root → 400 INVALID_INPUT
+# Omitting both as root 400 INVALID_INPUT
 ```
 
 ---
@@ -128,7 +128,7 @@ curl -X POST "http://localhost:8000/users/api-keys" \
   -H "User-Agent: my-app/1.0" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "project_hash=$PROJECT_HASH&name=ci-runner-v2"
-# → save data.api_key (NEW token) and data.public_id (NEW public_id)
+# save data.api_key (NEW token) and data.public_id (NEW public_id)
 
 # 2. Validate the new key works before cutting over
 curl -X POST "http://localhost:8000/auth/validate-api-key" \
@@ -142,7 +142,3 @@ curl -X DELETE "http://localhost:8000/users/api-keys/$OLD_PUBLIC_ID" \
 
 Tip: instead of revoking immediately, you can set a short future `expires_at` on the old key with
 `PUT` to give consumers a grace window — then it deactivates automatically.
-
----
-
-**Document Version**: 1.0

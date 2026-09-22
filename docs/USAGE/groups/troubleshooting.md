@@ -133,7 +133,3 @@ If group changes affect login context, accessible projects, or cached group name
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
-
----
-
-**Document Version**: 3.1

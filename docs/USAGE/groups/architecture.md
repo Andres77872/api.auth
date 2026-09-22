@@ -171,7 +171,3 @@ Some code paths still expose fields such as `accessible_projects`, but the real 
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 3.1

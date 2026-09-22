@@ -10,6 +10,7 @@ Reference for the audit and activity logging API surface in `api.auth`.
 - [Dashboard Activity Endpoints](#dashboard-activity-endpoints)
 - [Filter Reference](#filter-reference)
 - [Export Reference](#export-reference)
+- [Activity Catalog](#activity-catalog)
 - [Operational Notes](#operational-notes)
 
 ---
@@ -139,7 +140,7 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 
 ### Request Body
 
-**Content-Type:** `application/json` — note this is unusual; most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the Google sign-in endpoints in `auth_google.py` (e.g. `POST /auth/google/start`, `/link/finish`, `/reauth/start`).
+**Content-Type:** `application/json` — note this is unusual; most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the OAuth sign-in endpoints in `auth_oauth.py` (e.g. `POST /auth/oauth/init`, `POST /auth/oauth/start`).
 
 ```json
 {
@@ -188,6 +189,70 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 | Default limit | 1,000 | Used when `limit` is not specified |
 | Hard limit | 10,000 | If filters match more records, export returns 400 `INVALID_RANGE` |
 | Pre-check | Yes | Count is checked before streaming begins |
+
+---
+
+## Activity Catalog
+
+`GET /admin/activity/types` returns the 112 runtime `ActivityType` values. The
+durable catalog in `schemas/tables/08_activity_logging_tables.sql` seeds 111
+`act-cat-NNN` rows; a further 16 billing IDs are reserved in runtime but not yet
+seeded, so a seeded catalog ID is not guaranteed for every runtime type.
+
+Email activation and delivery occupy `act-cat-046` … `act-cat-063`:
+
+| Catalog ID | Activity |
+|------------|----------|
+| `act-cat-046` | `user_email_added` |
+| `act-cat-047` | `user_email_activation_requested` |
+| `act-cat-048` | `user_email_activation_resent` |
+| `act-cat-049` | `user_email_activated` |
+| `act-cat-050` | `user_email_removed` |
+| `act-cat-051` | `user_email_primary_changed` |
+| `act-cat-052` | `auth_email_login` |
+| `act-cat-053` | `password_reset_requested` |
+| `act-cat-054` | `password_reset_consumed` |
+| `act-cat-055` | `admin_password_reset_requested` |
+| `act-cat-056` | `email_message_enqueued` |
+| `act-cat-057` | `email_message_sent` |
+| `act-cat-058` | `email_message_delivered` |
+| `act-cat-059` | `email_message_bounced` |
+| `act-cat-060` | `email_message_complained` |
+| `act-cat-061` | `email_message_dead_lettered` |
+| `act-cat-062` | `email_suppression_updated` |
+| `act-cat-063` | `password_changed` |
+
+`act-cat-056` … `act-cat-062` are the message-lifecycle entries. They appear in
+the activity feed and security events; `GET /admin/email/logs` shows the
+per-message ledger state instead.
+
+`password_changed` is the successful self-service `POST /auth/password/change`
+activity. It is distinct from the three reset entries: change-password is
+authenticated and re-authenticated with the current password; public reset
+consume is link-based and creates no session; admin reset only requests link
+delivery.
+
+OAuth sign-in occupies `act-cat-064` … `act-cat-074`, itemised in the
+[Google OAuth reference](../google-oauth/reference.md#activity-catalog-act-cat-064074).
+The deprecated `/auth/google/*` aliases and the provider-agnostic `/auth/oauth/*`
+routes emit the same entries.
+
+### Redaction Guarantees
+
+These hold for every audit, activity and delivery record, on every surface:
+
+- email audit and delivery responses expose a recipient hash plus a masked
+  address only;
+- records never carry tokens or token secrets;
+- records never carry full activation or reset links, and never a reset token;
+- records never carry plaintext addresses, subject or body text, or template variables;
+- records never carry a raw `Idempotency-Key`, provider credentials, or a provider payload;
+- password-change records never carry `current_password`, `new_password`, or password hashes;
+- password-change records never carry token secrets, full links, or a provider payload, though non-secret revocation counts are fine;
+- provider webhook-originated events use the webhook auth-method taxonomy and
+  must not record raw webhook bodies;
+- public email-link token consumes may use the email-link auth-method taxonomy
+  and still keep the generic public `202` posture.
 
 ---
 
@@ -250,7 +315,4 @@ Note: `GET /admin/email/logs` returns no body-validation errors of its own — i
 - **[Stored Procedures](stored-procedures.md)** — SQL procedures for direct DB queries
 - **[Troubleshooting](troubleshooting.md)**
 - **[Error Reference](../errors.md)** — All error codes and response shapes
-
----
-
-**Document Version**: 1.1
+- **[Email Suite](../email/README.md)** — template lifecycle, outbox worker, and provider webhook behind the email activity entries

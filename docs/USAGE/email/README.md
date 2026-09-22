@@ -4,7 +4,7 @@ Repo-specific documentation for the **transactional auth email** subsystem in `a
 
 ---
 
-## 📖 Overview
+## Overview
 
 This subsystem is **transactional auth email only** — activation links, password-reset links, admin-triggered reset links, security notifications, and delivery-status notices. It is **not** marketing, newsletters, broadcast notifications, or a preference center.
 
@@ -29,7 +29,7 @@ The built-in transactional template codes are:
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -40,7 +40,7 @@ The built-in transactional template codes are:
 
 ---
 
-## 🔐 Auth at a Glance
+## Auth at a Glance
 
 The eight `/admin/email-templates` endpoints are **ROOT only**. Auth is two-layered:
 
@@ -60,7 +60,7 @@ browser.
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with [usage.md](usage.md) to edit/preview/roll back a template.
 2. Read [reference.md](reference.md) for exact request/response shapes and config keys.
@@ -69,30 +69,24 @@ browser.
 
 ---
 
-## ⚠️ Scope and Out-of-Scope Cross-Links
+## Scope and Out-of-Scope Cross-Links
 
 This suite documents `src/routes/email_templates.py`,
 `src/routes/internal_email.py`, and `src/routes/email_webhooks.py`, plus the
 delivery internals in `src/Util/email/*` and `src/workers/email_worker.py`. The
 following email-related surfaces live **elsewhere** and are not redefined here:
 
-- **`GET /admin/email/logs`** — sanitized email activity/delivery logs live in the **audit suite** (`src/routes/audit_logs.py`). See [Audit Logs Usage Cases](../audit-log-usage-cases.md).
+- **`GET /admin/email/logs`** — sanitized email activity/delivery logs live in the **audit suite** (`src/routes/audit_logs.py`). See [Audit Logs Usage](../audit_logs/usage.md#email-delivery-logs).
 - **Per-user email management** — adding, listing, activating, resending, and removing a user's email addresses (`/users/me/emails*`, `/users/{user_hash}/emails*`) lives in the **users suite**. See [Users Documentation](../users/README.md).
 - **Public verify / forgot / reset flows** — `/auth/...` endpoints are documented in the authentication material. See [Authentication Usage Cases](../authentication-usage-cases.md).
-- **Deployment, rollout, rotation, DLQ redrive, retention, and rollback** — operational procedures live in the runbook. See [Email Activation & Transactional Auth Email Runbook](../../RUNBOOKS/email-activation.md) (reference only; this suite does not duplicate it).
+- **Deployment, rollout, rotation, DLQ redrive, retention, and rollback** — operational procedures that live with the runbooks under `docs/RUNBOOKS/`, outside this suite. This suite does not duplicate them.
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** — complete usage index
-- **[Audit Logs Usage Cases](../audit-log-usage-cases.md)** — where `GET /admin/email/logs` is documented
+- **[Audit Logs Suite](../audit_logs/README.md)** — where `GET /admin/email/logs` and the email activity catalog IDs are documented
 - **[Users Documentation Suite](../users/README.md)** — per-user email management endpoints
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** — public verify/forgot/reset flows
-- **[Email Activation Runbook](../../RUNBOOKS/email-activation.md)** — deployment/operations
 - **[Errors Reference](../errors.md)** — error envelope and codes
-
----
-
-**Document Version**: 1.0
-**API Version**: 2.2.0

@@ -202,7 +202,7 @@ curl -X GET "http://localhost:8000/admin/email/logs?limit=10" \
 
 **Issue:** Sending `multipart/form-data` to `POST /admin/audit/export` fails.
 
-**Cause:** The export endpoint accepts an `application/json` body, which is unusual — most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the Google sign-in endpoints in `auth_google.py` (e.g. `POST /auth/google/start`, `/link/finish`, `/reauth/start`).
+**Cause:** The export endpoint accepts an `application/json` body, which is unusual — most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the OAuth sign-in endpoints in `auth_oauth.py` (e.g. `POST /auth/oauth/init`, `POST /auth/oauth/start`).
 
 **Fix:** always use `Content-Type: application/json` for export requests:
 
@@ -341,7 +341,3 @@ curl -X GET "http://localhost:8000/admin/audit/logs?days=30&limit=1&offset=0" \
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Error Reference](../errors.md)** — All error codes and response shapes
-
----
-
-**Document Version**: 1.1

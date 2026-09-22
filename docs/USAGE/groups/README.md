@@ -4,7 +4,7 @@ Detailed, repo-specific documentation for the groups system used by `api.auth`.
 
 ---
 
-## 📖 Overview
+## Overview
 
 This documentation set covers the real groups model implemented in this repository:
 
@@ -25,7 +25,7 @@ The groups system is not just a generic RBAC concept. In this codebase:
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -38,7 +38,7 @@ The groups system is not just a generic RBAC concept. In this codebase:
 
 ---
 
-## 🧠 Core Model in This Repo
+## Core Model in This Repo
 
 ### User Groups
 - Managed under `/admin/user-groups`
@@ -58,7 +58,7 @@ The groups system is not just a generic RBAC concept. In this codebase:
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with [usage.md](usage.md)
 2. Then read [architecture.md](architecture.md)
@@ -68,17 +68,11 @@ The groups system is not just a generic RBAC concept. In this codebase:
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** - Complete usage index
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, refresh, project switching
 - **[Users Documentation Suite](../users/README.md)** - User profile, access summary, user types, and lifecycle operations
 - **[Projects Documentation Suite](../projects/README.md)** - Project creation, access flows, and operational caveats
 - **[Permissions Documentation Suite](../permissions/README.md)** - Permission groups, roles, assignments, and authorization caveats
-- **[Database Schema](../../../schemas/)** - SQL schema and stored procedures
-
----
-
-**Document Version**: 3.1
-
-> **Why version 3.1?** The groups suite was refactored across three major passes (initial docs → architecture corrections → scenario deduplication), then revised again to remove a non-existent project-list endpoint and document live session-revocation side effects. The version number reflects iteration count, not API versioning.
+- **Database schema** (`schemas/`) - SQL schema and stored procedures

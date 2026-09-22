@@ -424,8 +424,3 @@ Hosted Checkout/Portal URLs may be returned only to trusted S2S callers. Raw pro
 - [Request Flow](request-flow.md)
 - [Scenarios](scenarios.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/stripe-billing.md)
-
----
-
-**Document Version**: 1.0

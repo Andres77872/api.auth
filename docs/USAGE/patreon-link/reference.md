@@ -216,6 +216,72 @@ Redis rate-limit keys must use hashed bucket material only. Never use raw IPs, u
 | Safe response fields | `success`, `message`, `accepted`, `status`, `user_hash`, `retry_after_seconds`, `not_before`, `correlation_id`, `contract_version`. |
 | Forbidden | Raw member/campaign/tier selectors; do not expose provider payloads; hashes/fingerprints; secrets. |
 
+### Admin Dashboard Routes (`/admin/patreon`)
+
+Seven ROOT-only read/operate routes back the operator dashboard. Every response
+passes through the admin allow-list and a defensive redaction pass, so they carry
+fingerprints, codes and counts — never creator tokens, raw member/campaign
+selectors, plaintext member emails, or raw webhook payloads. All list routes take
+`limit` (1–500) and `offset` (>= 0) and return a `pagination` envelope.
+
+| Route | Method | Query | Returns |
+| --- | --- | --- | --- |
+| `/admin/patreon/status` | GET | — | Non-secret operational status: worker/sync health, coarse degraded reason, `generated_at`. |
+| `/admin/patreon/entitlements` | GET | `limit`, `offset`, `status`, `plan_code` | Sanitized current entitlements in the S2S safe shape. |
+| `/admin/patreon/entitlements/{user_hash}` | GET | — | One user's sanitized entitlement; `404` when no row exists. |
+| `/admin/patreon/tier-map` | GET | `limit`, `offset`, `active` | Campaign/tier **fingerprints** with `plan_code`, `tier_code`, `priority`, `active`, and the effective window. |
+| `/admin/patreon/sync-jobs` | GET | `limit`, `offset`, `status` | Resync job ledger state. |
+| `/admin/patreon/webhooks` | GET | `limit`, `offset`, `status` | Webhook deliveries: `delivery_id`, `event_type`, `status`, `signature_valid`, timestamps. No bodies. |
+| `/admin/patreon/resync` | POST | — | Enqueue a resync. JSON body `scope` (`user`\|`all`), `user_hash`, `reason`, `force`. |
+
+`POST /admin/patreon/resync` reuses the same enqueue path as the worker and S2S
+surface:
+
+- `scope="user"` requires `user_hash` and enqueues a per-user member resync;
+  a missing `user_hash` is `VAL_3001`.
+- `scope="all"` enqueues one full-campaign job that the worker drains as a sweep
+  over every configured campaign.
+- When sync is disabled the route still answers `200` with
+  `accepted: false, status: "disabled"` rather than an error.
+- The job is only processed while the Patreon sync worker is running; enqueue
+  success is not delivery.
+- Enqueue is rate limited (`EXT_8116` / `429` with `Retry-After`). The limiter
+  fails **open** on backend errors because the surface is already ROOT-only.
+
+A non-ROOT caller is refused by the shared authorization guard before any
+Patreon state is read.
+
+## Error Codes
+
+The Patreon family is `EXT_81xx`, category `external`. Public link surfaces stay
+non-enumerating, so these codes are for operators and S2S callers rather than
+end-user copy; see [Safe Error Posture](#safe-error-posture) for what each surface
+may say out loud.
+
+| Code | Enum Value | Typical surface |
+| --- | --- | --- |
+| `EXT_8100` | `PATREON_PROVIDER_NOT_CONFIGURED` | Creator credentials or campaign configuration missing |
+| `EXT_8101` | `PATREON_PROVIDER_DISABLED` | Integration disabled by kill switch |
+| `EXT_8102` | `PATREON_CONFIGURATION_INVALID` | Configuration present but internally inconsistent |
+| `EXT_8103` | `PATREON_CREATOR_API_UNAVAILABLE` | Creator API unreachable |
+| `EXT_8104` | `PATREON_CREATOR_API_TIMEOUT` | Creator API timed out |
+| `EXT_8105` | `PATREON_CREATOR_API_RATE_LIMITED` | Provider-side rate limit |
+| `EXT_8106` | `PATREON_CREATOR_API_ERROR` | Creator API returned an error |
+| `EXT_8107` | `PATREON_LINK_ACTION_DENIED` | Link/unlink refused for this caller or state |
+| `EXT_8108` | `PATREON_LINK_CONFLICT` | Identity already linked elsewhere; the owner is never disclosed |
+| `EXT_8109` | `PATREON_PROOF_INVALID` | Proof token missing, expired, or already consumed |
+| `EXT_8110` | `PATREON_PROOF_RATE_LIMITED` | Proof request/confirm bucket exceeded |
+| `EXT_8111` | `PATREON_WEBHOOK_SIGNATURE_INVALID` | Signature rejected before any mutation |
+| `EXT_8112` | `PATREON_S2S_UNAUTHORIZED` | Dedicated S2S bearer missing or invalid |
+| `EXT_8113` | `PATREON_SYNC_DEGRADED` | Entitlement data is stale; coarse reason only |
+| `EXT_8114` | `PATREON_TIER_MAP_NOT_READY` | Campaign tier map unseeded or incomplete |
+| `EXT_8115` | `PATREON_SECURITY_EVENT` | Abuse/security posture tripped |
+| `EXT_8116` | `PATREON_RATE_LIMITED` | Surface rate limit; honor `Retry-After` |
+
+Rate-limited responses carry `Retry-After`. Degraded reads stay coarse: no raw
+provider payload, no credential state, and no membership disclosure ever reaches
+the caller.
+
 ## Forbidden and Absent Route Names
 
 The following Patreon routes are intentionally forbidden and absent:
@@ -348,8 +414,3 @@ Do not add Patreon fields to JWT claims, Redis session payloads, refresh-token s
 - [Request Flow](request-flow.md)
 - [Scenarios](scenarios.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/patreon-link.md)
-
----
-
-**Document Version**: 1.0

@@ -13,8 +13,6 @@ Patreon is **entitlement/link only** in this repository. It is not login authori
 | [Scenarios](scenarios.md) | Matching email, mismatched email, hidden email, conflict, relink, unknown tier, stale entitlement, token failure, webhook replay, partial webhook, and rollback behavior. |
 | [Reference](reference.md) | Env vars, route contracts, safe fields, activity codes, schema concepts, retention windows, kill switches, rate limits, and forbidden browser fields. |
 | [Troubleshooting](troubleshooting.md) | Hidden email, proof delivery, token expiry, webhook signature mismatch, webhook pause, tier-map miss, stale sync, rate limits, and companion S2S failures. |
-| [Runbook](../../RUNBOOKS/patreon-link.md) | Setup, creator-token handling, webhook registration, tier-map seeding, health checks, resync operations, incident response, retention, rollout, and rollback. |
-| [External Account Schema](../../../schemas/docs/external-accounts.md) | Provider identity HMAC authority, soft unlink, no per-user tokens, and history preservation. |
 
 ## What This Integration Does
 
@@ -151,7 +149,3 @@ Indefinite history does not mean indefinite raw payload or raw email retention. 
 - Google OAuth may login/link according to the Google OAuth suite; Patreon is entitlement/link only.
 - `api.auth` owns link, proof, webhook, sync, snapshot, history, classification, retention, and S2S contract enforcement.
 - Magic Worlds consumes normalized entitlement over S2S and decides its own product projection. Do not document or assume Magic Worlds internals from this repo.
-
----
-
-**Document Version**: 1.0

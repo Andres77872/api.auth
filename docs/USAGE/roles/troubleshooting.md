@@ -231,7 +231,3 @@ If it returns null but you know the user had a role, their role was likely soft-
 - **[Operational Reference](reference.md)**
 - **[Permission Resolution](../permissions/resolution.md)** — The critical auth-vs-inspection gap
 - **[Error Reference](../errors.md)** — All error codes and response shapes
-
----
-
-**Document Version**: 1.1

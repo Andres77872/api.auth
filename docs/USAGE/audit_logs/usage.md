@@ -359,7 +359,7 @@ curl -X GET "http://localhost:8000/admin/email/logs?status=dead&purpose=password
 
 **Pagination note:** unlike `/admin/audit/logs`, this endpoint does **not** run a count query. `has_more` is a page-fill heuristic — it is `true` only when the page is exactly full (`returned == limit`). On an exactly-full final page it can report `has_more: true` even though the next page is empty.
 
-> Email *lifecycle* activity (enqueue, sent, delivered, bounced, complained, dead-lettered) is also recorded as semantic `activity_logs` entries (`act-cat-056` … `act-cat-062`). Those appear in the activity feed and security events; `GET /admin/email/logs` shows the per-message ledger state instead. See [audit-log-usage-cases.md](../audit-log-usage-cases.md#email-activation--delivery-audit-quick-reference) for the catalog IDs.
+> Email *lifecycle* activity (enqueue, sent, delivered, bounced, complained, dead-lettered) is also recorded as semantic `activity_logs` entries (`act-cat-056` … `act-cat-062`). Those appear in the activity feed and security events; `GET /admin/email/logs` shows the per-message ledger state instead. See the [activity catalog](reference.md#activity-catalog) for the catalog IDs.
 
 ---
 
@@ -420,7 +420,3 @@ curl -X POST "http://localhost:8000/admin/audit/export" \
 - **[Troubleshooting](troubleshooting.md)**
 - **[Admin Usage Cases](../admin-usage-cases.md)** — Dashboard, activity feed quick reference
 - **[Error Reference](../errors.md)** — Error codes and response shapes
-
----
-
-**Document Version**: 1.1

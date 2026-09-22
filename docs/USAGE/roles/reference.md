@@ -16,7 +16,7 @@ Reference for the roles-related API surface in `api.auth`.
 
 ---
 
-## Role ↔ Permission Group
+## Role Permission Group
 
 | Endpoint | Method | Auth / Permission | Content Type | Purpose |
 |----------|--------|-------------------|--------------|---------|
@@ -38,7 +38,7 @@ Reference for the roles-related API surface in `api.auth`.
 
 ---
 
-## Permission Group ↔ Permission
+## Permission Group Permission
 
 | Endpoint | Method | Auth / Permission | Content Type | Purpose |
 |----------|--------|-------------------|--------------|---------|
@@ -145,7 +145,3 @@ See the canonical explanation in **[Permissions Reference → Guard differences]
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
 - **[Permissions Reference](../permissions/reference.md)** — Extended permission assignment endpoints
-
----
-
-**Document Version**: 1.1

@@ -116,7 +116,3 @@ This surface returns the following error codes (see [errors.md](../errors.md) fo
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

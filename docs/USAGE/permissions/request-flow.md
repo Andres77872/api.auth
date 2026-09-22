@@ -195,7 +195,3 @@ So it changes **documentation metadata**, not authorization.
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

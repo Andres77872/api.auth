@@ -173,7 +173,3 @@ examples and the owner vs admin field views.
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

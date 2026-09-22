@@ -195,7 +195,3 @@ The SQL layer returns fields like `owner_id` and `archived`, but the Python `Pro
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

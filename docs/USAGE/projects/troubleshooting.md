@@ -160,7 +160,3 @@ Soft delete is still destructive enough to remove active visibility and invalida
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
-
----
-
-**Document Version**: 1.1

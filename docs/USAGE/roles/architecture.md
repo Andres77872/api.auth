@@ -204,7 +204,3 @@ Note that `ErrorCode.NOT_FOUND` must not be confused with `ErrorCategory.NOT_FOU
 - **[Troubleshooting](troubleshooting.md)**
 - **[Permission Resolution](../permissions/resolution.md)** — The critical auth-vs-inspection gap
 - **[Permissions Suite](../permissions/README.md)** — Extended permission resolution and assignment paths
-
----
-
-**Document Version**: 1.1

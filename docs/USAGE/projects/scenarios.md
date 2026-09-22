@@ -148,7 +148,3 @@ avoidable authorization outage.
 - **[Request & Data Flow](request-flow.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

@@ -66,7 +66,7 @@ What matters operationally:
 - **User activity timeline has no pagination** — fixed-size merge (50 entries per source max)
 - **`audit` and `api_audit` are aliases in export** — both query the same `api_audit_log` data
 - **`GET /admin/email/logs` has its own pagination contract** — `has_more` is a page-fill heuristic (`len(logs) == limit`), not a real total count like `/admin/audit/logs`
-- The existing flat file `../audit-log-usage-cases.md` is a **legacy redirect** pointing here. SQL stored procedure documentation lives in [stored-procedures.md](stored-procedures.md).
+- SQL stored procedure documentation lives in [stored-procedures.md](stored-procedures.md).
 
 ---
 
@@ -78,8 +78,4 @@ What matters operationally:
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, session management, project switching
 - **[Projects Documentation Suite](../projects/README.md)** - Project access model
 - **[Users Documentation Suite](../users/README.md)** - User profile, access summary, and lifecycle operations
-- **[Database Schema](../../../schemas/)** - SQL tables, views, and stored procedures
-
----
-
-**Document Version**: 1.1
+- **Database schema** (`schemas/`) - SQL tables, views, and stored procedures

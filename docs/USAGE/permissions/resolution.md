@@ -254,7 +254,3 @@ Direct assignment: "advanced_analytics" permission group
 - [Error Reference](../errors.md) — Authorization error codes and troubleshooting
 - [Groups Documentation Suite](../groups/README.md) — User groups and project access chain
 - [Getting Started](../getting-started.md) — Initial setup and user onboarding
-
----
-
-**Document Version**: 1.0

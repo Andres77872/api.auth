@@ -163,7 +163,3 @@ Reference for the permissions-related API surface used in this repository.
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

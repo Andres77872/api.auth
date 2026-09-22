@@ -251,7 +251,3 @@ The plaintext columns on `email_messages` (`recipient_email`, `last_error_messag
 - **[Usage](usage.md)** — HTTP API workflows
 - **[Reference](reference.md)** — HTTP endpoint and filter reference
 - **[Error Reference](../errors.md)** — Error codes and troubleshooting
-
----
-
-**Document Version**: 1.1

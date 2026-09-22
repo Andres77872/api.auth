@@ -274,7 +274,3 @@ If you try to use `/users/*` to model all access, you will create a quilombo bec
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

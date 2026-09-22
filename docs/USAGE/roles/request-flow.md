@@ -195,7 +195,3 @@ Role assignment follows the same pattern: `GET /permissions/users/me/permissions
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
 - **[Permission Resolution](../permissions/resolution.md)** — Auth vs inspection resolution paths
-
----
-
-**Document Version**: 1.1

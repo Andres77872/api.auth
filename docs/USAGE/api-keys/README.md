@@ -4,7 +4,7 @@ Detailed, repo-specific documentation for the API key system implemented in `api
 
 ---
 
-## 📖 Overview
+## Overview
 
 API keys are long-lived, project-scoped credentials issued to a single user. They use a
 **split-token** design — `sk_{public_id}.{secret}` — where only the `public_id` is stored
@@ -34,7 +34,7 @@ Source files (authoritative): `src/routes/user_api_keys.py`, `src/routes/api_key
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -45,7 +45,7 @@ Source files (authoritative): `src/routes/user_api_keys.py`, `src/routes/api_key
 
 ---
 
-## 🔐 Key Format and Security
+## Key Format and Security
 
 The token layout and cryptography are implemented in `src/Util/api_key_security.py`.
 
@@ -69,7 +69,7 @@ The token layout and cryptography are implemented in `src/Util/api_key_security.
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with this README for the model and key format.
 2. Read [usage.md](usage.md) for the self-service then admin lifecycles.
@@ -79,7 +79,7 @@ The token layout and cryptography are implemented in `src/Util/api_key_security.
 
 ---
 
-## ⚠️ Scope and Caveats
+## Scope and Caveats
 
 - **API version `2.2.0`.** Every request must send a `User-Agent` header (missing → `422`).
 - **All write endpoints take form fields** (`application/x-www-form-urlencoded`), not JSON bodies.
@@ -98,7 +98,7 @@ The token layout and cryptography are implemented in `src/Util/api_key_security.
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** — complete usage index
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** — `POST /auth/validate-api-key`
@@ -107,8 +107,4 @@ The token layout and cryptography are implemented in `src/Util/api_key_security.
 - **[Projects Documentation Suite](../projects/README.md)** — project hashes and project reach
 - **[Permissions Documentation Suite](../permissions/README.md)** — effective permissions and `manage_users`
 - **[Errors Reference](../errors.md)** — global error envelope and codes
-- **[Database Schema](../../../schemas/)** — SQL tables and stored procedures
-
----
-
-**Document Version**: 1.0
+- **Database schema** (`schemas/`) — SQL tables and stored procedures

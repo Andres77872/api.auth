@@ -195,7 +195,3 @@ After role changes, team reassignment, or project-context changes, refresh or re
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
-
----
-
-**Document Version**: 1.0

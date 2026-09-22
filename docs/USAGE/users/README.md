@@ -4,7 +4,7 @@ Detailed, repo-specific documentation for the user-management system implemented
 
 ---
 
-## 📖 Overview
+## Overview
 
 The users domain in this repository is a **3-tier model** layered on top of the groups-of-groups access architecture:
 
@@ -25,7 +25,7 @@ What matters operationally:
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -41,7 +41,7 @@ What matters operationally:
 
 ---
 
-## 🧠 Core User Model in This Repo
+## Core User Model in This Repo
 
 ### User entity
 
@@ -67,7 +67,7 @@ Those live in the groups, roles, and permissions suites.
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with [usage.md](usage.md)
 2. Then read [architecture.md](architecture.md)
@@ -79,7 +79,7 @@ Those live in the groups, roles, and permissions suites.
 
 ---
 
-## ⚠️ Scope and Caveats
+## Scope and Caveats
 
 - This suite documents the active route layer in `src/routes/users.py` (19 endpoints, including the per-user email-management group and ROOT-only hard delete — see [email-management.md](email-management.md)), `src/routes/user_types_auth.py` (10 endpoints), and `src/routes/bulk_operations.py`
 - There are **two type-change routes**: `/users/{hash}/type` and `/user-types/{hash}/type`. They overlap, but they do **not** enforce the same constraints
@@ -91,19 +91,14 @@ Those live in the groups, roles, and permissions suites.
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** - Complete usage index
 - **[Email Management](email-management.md)** - Per-user email lifecycle endpoints and admin/root email inspection/resend
-- **[Email Activation Runbook](../../RUNBOOKS/email-activation.md)** - Tokens, durable outbox, worker, webhooks, suppression, retention, rollback
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, registration, refresh, logout, project switching
 - **[Groups Documentation Suite](../groups/README.md)** - User groups, project groups, and the access bridge
 - **[Projects Documentation Suite](../projects/README.md)** - Project reach and project-scoped context
 - **[Permissions Documentation Suite](../permissions/README.md)** - Permission sources, direct assignments, and authorization caveats
 - **[Roles Documentation Suite](../roles/README.md)** - Global role CRUD and user role assignment
 - **[Admin Usage Cases](../admin-usage-cases.md)** - Dashboard, health, cache management, and admin operations outside the users domain
-- **[Database Schema](../../../schemas/)** - SQL tables and stored procedures
-
----
-
-**Document Version**: 1.1
+- **Database schema** (`schemas/`) - SQL tables and stored procedures

@@ -41,7 +41,8 @@ Project reach and action permission are related but distinct:
 | Permissions | [permissions/README.md](permissions/README.md) | Assignment, resolution paths, self-inspection, project catalogs |
 | API keys | [api-keys/README.md](api-keys/README.md) | Self-service/admin lifecycle and split-token validation |
 | Email | [email/README.md](email/README.md) | Template lifecycle, internal delivery, outbox worker, provider webhook |
-| Google OAuth | [google-oauth/README.md](google-oauth/README.md) | Provider-init mediated OAuth/OIDC login/link/reauth |
+| OAuth | [oauth/README.md](oauth/README.md) | Provider-agnostic sign-in: connections, project bindings, readiness, admin API |
+| Google OAuth | [google-oauth/README.md](google-oauth/README.md) | Deprecated `/auth/google/*` aliases onto the OAuth pipeline; `GOOGLE_OAUTH_*` env configuration |
 | Patreon | [patreon-link/README.md](patreon-link/README.md) | Entitlement-only link proof, admin, S2S, webhook, sync |
 | Stripe billing | [stripe-billing/README.md](stripe-billing/README.md) | Billing groups, centralized catalog, per-account credentials, S2S, webhooks |
 | Audit logs | [audit_logs/README.md](audit_logs/README.md) | API audit, activity, security events, email logs, export |
@@ -50,10 +51,10 @@ Project reach and action permission are related but distinct:
 
 - [Admin Usage Cases](admin-usage-cases.md) — dashboard, statistics, activity,
   protected system health/info, cache operations, and bulk operations.
-- [Google OAuth Runbook](../RUNBOOKS/google-oauth.md)
-- [Email Activation Runbook](../RUNBOOKS/email-activation.md)
-- [Patreon Link Runbook](../RUNBOOKS/patreon-link.md)
-- [Stripe Billing Runbook](../RUNBOOKS/stripe-billing.md)
+
+Rollout, kill-switch, secret-rotation and incident procedures for the external
+integrations are operational rather than integration material and live with the
+runbooks under `docs/RUNBOOKS/`, outside this suite.
 
 ## API Surface
 
@@ -92,9 +93,9 @@ in `src/main.py`.
 | Bulk operations | `/admin` | `bulk_operations.py` | 4 | Admin/permission |
 | System | `/system` | `system.py` | 7 | Mixed session/admin/public ping |
 
-The root [README](../../README.md) explains the count boundary and test
-workflows. Endpoint-level contracts live in each domain suite and in the
-running OpenAPI document.
+The count excludes FastAPI's built-in `/docs`, `/redoc` and `/openapi.json`
+routes and anything declared directly in `src/main.py`. Endpoint-level contracts
+live in each domain suite and in the running OpenAPI document.
 
 ## Platform-Wide Contracts
 
@@ -121,6 +122,7 @@ running OpenAPI document.
 | Grant a team project access | [Groups usage](groups/usage.md) |
 | Check permission resolution | [Permission resolution](permissions/resolution.md) |
 | Manage billing groups/catalog | [Stripe billing reference](stripe-billing/reference.md) |
+| Enable a sign-in provider for a project | [OAuth reference](oauth/reference.md) |
 | Link Patreon entitlement | [Patreon scenarios](patreon-link/scenarios.md) |
 | Inspect or export audit events | [Audit logs usage](audit_logs/usage.md) |
 | Diagnose system health | [Admin usage](admin-usage-cases.md#system-health--metrics) |
@@ -136,6 +138,15 @@ Treat code and runtime configuration as authoritative:
 - operational commands: `scripts/`, Dockerfiles, and test configuration.
 
 When a route, model, feature flag, or workflow changes, update the relevant
-domain suite, the route inventory above, and the root/source READMEs in the same
-change. Documentation consistency checks live in
-`tests/static/test_documentation_consistency.py`.
+domain suite and the route inventory above in the same change. Documentation
+consistency checks live in `tests/static/test_documentation_consistency.py`;
+they verify the route counts, that every route table lists only registered
+operations, that local links and anchors resolve, and that referenced repository
+files exist.
+
+Two conventions this suite keeps deliberately:
+
+- no per-file version stamps or "last updated" dates — they drift silently and
+  the guard test rejects them;
+- cross-references stay inside `docs/USAGE/`, so a suite reads end to end without
+  depending on documents maintained elsewhere in the repository.

@@ -10,10 +10,11 @@ Complete practical guide for authentication, session management, and user regist
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [Authentication Overview](#authentication-overview)
 - [Supported Protected-Route Authentication](#supported-protected-route-authentication)
+- [OAuth Sign-in](#oauth-sign-in)
 - [API Key Lifecycle and Validation Status](#api-key-lifecycle-and-validation-status)
 - [Login](#login)
 - [Registration](#registration)
@@ -68,6 +69,18 @@ Protected endpoints currently authorize requests through the session auth depend
 | Access JWT cookie | `session_token=<access_token>` | Supported | Browser/SPA mode; `session_token` is a deprecated name but still carries the access JWT |
 | Refresh JWT | `refresh_token` cookie or `refresh_token` body/form field | Not accepted on protected routes | Only `/auth/refresh` accepts refresh tokens |
 | API key | `X-API-Key: sk_<public_id>.<secret>` | Accepted **only** by `POST /auth/validate-api-key` | This dedicated endpoint validates a user-created API key and returns the resolved user/project/permissions. Other protected routes (e.g. `/users/profile`) still require an access JWT or `session_token` cookie. |
+
+### OAuth Sign-in
+
+Signing in with an external identity provider is documented separately in the
+[OAuth suite](oauth/README.md). It is an additional way to obtain a session, not
+a separate session type: `GET /auth/oauth/callback` returns the same
+`LoginResponse` and the same access/refresh cookies as `POST /auth/login`.
+Everything in this document — validation, refresh rotation, project switching,
+logout — applies unchanged afterwards.
+
+The deprecated `/auth/google/*` aliases run on the same pipeline and are covered
+in the [Google OAuth suite](google-oauth/README.md).
 
 ### API Key Lifecycle and Validation Status
 
@@ -943,6 +956,3 @@ This auth change is intentionally breaking:
 - **[Groups Documentation Suite](groups/README.md)** - Understanding user groups and project access flow
 - **[Projects Documentation Suite](projects/README.md)** - Project access control and project switching context
 
----
-
-**API Version**: 2.2.0

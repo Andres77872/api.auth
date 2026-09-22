@@ -92,6 +92,11 @@ class ProjectBinding:
 
         return self.redirect_uris[0] if len(self.redirect_uris) == 1 else None
 
+    def sole_return_origin(self) -> str | None:
+        """The return origin when exactly one is configured; never "the first of many"."""
+
+        return self.return_origins[0] if len(self.return_origins) == 1 else None
+
 
 @dataclass(frozen=True)
 class LegacyRedeemConfig:

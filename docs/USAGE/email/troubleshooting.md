@@ -1,6 +1,6 @@
 # Email Subsystem — Troubleshooting
 
-Failure modes for the ROOT-only template API, the inbound Resend webhook, and the outbox worker. For deployment-side issues (queue growth, DLQ redrive, secret rotation, DNS/SPF/DKIM), see the [Email Activation Runbook](../../RUNBOOKS/email-activation.md).
+Failure modes for the ROOT-only template API, the inbound Resend webhook, and the outbox worker. Deployment-side issues (queue growth, DLQ redrive, secret rotation, DNS/SPF/DKIM) are operational and live with the runbooks under `docs/RUNBOOKS/`, outside this suite.
 
 ---
 
@@ -65,11 +65,7 @@ Failure modes for the ROOT-only template API, the inbound Resend webhook, and th
 
 ## Cross-references
 
-- Deployment, rotation, DLQ redrive, retention, rollback → [Email Activation Runbook](../../RUNBOOKS/email-activation.md).
-- Reading sanitized delivery logs (`GET /admin/email/logs`) → [Audit Logs Usage Cases](../audit-log-usage-cases.md).
+- Deployment, rotation, DLQ redrive, retention, rollback → the runbooks under `docs/RUNBOOKS/`, outside this suite.
+- Reading sanitized delivery logs (`GET /admin/email/logs`) → [Audit Logs Usage](../audit_logs/usage.md#email-delivery-logs).
 - Per-user email add/activate/resend/remove → [Users Documentation](../users/README.md).
 - Error envelope and codes → [Errors Reference](../errors.md).
-
----
-
-**Document Version**: 1.0

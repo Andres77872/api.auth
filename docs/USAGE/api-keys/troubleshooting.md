@@ -131,7 +131,3 @@ authenticating at once rather than waiting for a cache TTL.
 - **[Scenarios](scenarios.md)** — end-to-end curl workflows including rotation
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** — `POST /auth/validate-api-key`
 - **[Errors Reference](../errors.md)** — global error envelope and status mapping
-
----
-
-**Document Version**: 1.0

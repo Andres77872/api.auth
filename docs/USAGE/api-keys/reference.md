@@ -144,7 +144,3 @@ Implemented in `src/Util/api_key_security.py`.
 - **Verification**: splits on the last `.`, validates the `sk_` prefix and `public_id`, recomputes
   the HMAC, and compares with `hmac.compare_digest` (constant-time). Malformed tokens are compared
   against a dummy hash for timing-attack resistance.
-
----
-
-**Document Version**: 1.0

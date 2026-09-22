@@ -12,6 +12,7 @@ Practical guide for integrating with the `api.auth` authentication system from b
 - [Authentication Flow](#authentication-flow)
 - [Token & Cookie Details](#token--cookie-details)
 - [Supported Protected-Route Credentials](#supported-protected-route-credentials)
+- [OAuth Sign-in](#oauth-sign-in)
 - [Email Activation and Reset Links](#email-activation-and-reset-links)
 - [Password Changes](#password-changes)
 - [API Keys](#api-keys)
@@ -99,6 +100,19 @@ For protected endpoints, clients must use one of the currently wired session cre
 | API clients, scripts, mobile apps, server-to-server callers | `Authorization: Bearer <access_token>` |
 
 Do not send refresh tokens to protected endpoints. Refresh tokens are accepted only by `/auth/refresh`.
+
+---
+
+## OAuth Sign-in
+
+A client can also obtain a session through an external identity provider. The
+integration is a backend concern — your server mints a short-lived `init_token`
+with its project API key and the browser posts it to `/auth/oauth/start` — and it
+is documented in the [OAuth suite](oauth/README.md).
+
+For everything after the callback, this guide applies unchanged: the callback
+returns the same `LoginResponse` and sets the same cookies as a password login,
+so token storage, refresh handling, and logout are identical.
 
 ---
 
@@ -876,6 +890,3 @@ The `session_token` cookie uses `SameSite=Strict`. Ensure your client is served 
 - **[Error Reference](errors.md)** — Complete error code catalog and troubleshooting
 - **[Getting Started](getting-started.md)** — Platform setup and first steps
 
----
-
-**API Version**: 2.2.0

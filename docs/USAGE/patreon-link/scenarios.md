@@ -273,8 +273,3 @@ Activity details must remain redacted and must not include raw Patreon IDs, emai
 - [Request Flow](request-flow.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/patreon-link.md)
-
----
-
-**Document Version**: 1.0

@@ -124,7 +124,7 @@ This is a two-step lookup: role → permission groups → permissions.
 # Attempt to delete a system role (will fail)
 curl -X DELETE "http://localhost:8000/roles/roles/ROLE_ADMIN" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# → currently 500 INTERNAL_ERROR because ErrorCode.OPERATION_NOT_ALLOWED is missing
+# currently 500 INTERNAL_ERROR because ErrorCode.OPERATION_NOT_ALLOWED is missing
 #   (the intended behavior is a clean 403 block)
 
 # Delete a user-created role (succeeds)
@@ -139,7 +139,7 @@ curl -X GET "http://localhost:8000/roles/roles" \
 # Their role query returns null because the SP checks is_active
 curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# → role: null
+# role: null
 ```
 
 ---
@@ -160,7 +160,7 @@ curl -X GET "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles" \
 # Remove from catalog
 curl -X DELETE "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# → if the role was never cataloged (or already removed), this currently returns
+# if the role was never cataloged (or already removed), this currently returns
 #   500 INTERNAL_ERROR instead of 404, because ErrorCode.NOT_FOUND is missing.
 #   Treat such a 500 on this delete as an idempotent no-op.
 ```
@@ -229,7 +229,3 @@ curl -X POST "http://localhost:8000/auth/login" \
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
 - **[Permission Resolution](../permissions/resolution.md)** — Auth vs inspection gap
-
----
-
-**Document Version**: 1.1

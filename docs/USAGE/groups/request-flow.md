@@ -135,7 +135,3 @@ That is the real runtime data flow behind “user can access this project”.
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 3.1

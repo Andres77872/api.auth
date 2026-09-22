@@ -421,7 +421,3 @@ The second route reports **direct assignments only**. It does not enumerate user
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

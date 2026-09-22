@@ -1,6 +1,6 @@
 # Email Subsystem — Architecture
 
-How transactional auth email actually ships in `api.auth`: the durable outbox-worker delivery pipeline, the provider abstraction, template versioning/rendering, idempotency, rate limiting, and the no-real-send safety guard. This describes internals; for endpoint shapes see [reference.md](reference.md), and for ops/deploy specifics see the [Email Activation Runbook](../../RUNBOOKS/email-activation.md).
+How transactional auth email actually ships in `api.auth`: the durable outbox-worker delivery pipeline, the provider abstraction, template versioning/rendering, idempotency, rate limiting, and the no-real-send safety guard. This describes internals; for endpoint shapes see [reference.md](reference.md). Ops and deploy specifics are operational procedures and live with the runbooks under `docs/RUNBOOKS/`, outside this suite.
 
 ---
 
@@ -184,7 +184,3 @@ The limiter **fails closed** on a Redis error (`fail_closed_on_redis_error=True`
 | Rate limiter | `src/Util/email/rate_limit.py` |
 | DB template versioning | `src/Util/db/db_email_templates.py` |
 | Delivery/suppression DB | `src/Util/db/db_email.py` |
-
----
-
-**Document Version**: 1.0

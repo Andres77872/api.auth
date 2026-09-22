@@ -4,7 +4,7 @@ Practical usage guide for operating projects in `api.auth`.
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [Authentication and Route Ownership](#authentication-and-route-ownership)
 - [Creating Projects](#creating-projects)
@@ -226,7 +226,3 @@ In other words, **archive enforcement exists** (a project flagged `archived` in 
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

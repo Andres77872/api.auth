@@ -283,9 +283,10 @@ Beyond username/password login, the `/auth` suite exposes several additional flo
 | Flow | Entry endpoint(s) | Where to read |
 |------|-------------------|---------------|
 | **Email verification** (activation) | `POST /auth/email/verify` (+ per-user `/users/*/emails*` management) | [Authentication Usage Cases](authentication-usage-cases.md), [Email Suite](email/README.md), [Users → Email Management](users/email-management.md) |
-| **Password recovery** | `POST /auth/password/forgot`, `POST /auth/password/reset` | [Authentication Usage Cases](authentication-usage-cases.md), [Email Activation Runbook](../RUNBOOKS/email-activation.md) |
+| **Password recovery** | `POST /auth/password/forgot`, `POST /auth/password/reset` | [Authentication Usage Cases](authentication-usage-cases.md), [Email Suite](email/README.md) |
 | **Authenticated password change** | `POST /auth/password/change` | [Authentication Usage Cases](authentication-usage-cases.md) |
-| **Google sign-in (OAuth)** | `POST /auth/google/start`, `GET /auth/google/callback`, link/unlink/reauth | [Google OAuth Suite](google-oauth/README.md) |
+| **OAuth sign-in** | `POST /auth/oauth/init`, `POST /auth/oauth/start`, `GET /auth/oauth/callback`, link/unlink/reauth | [OAuth Suite](oauth/README.md) |
+| **Google sign-in (deprecated aliases)** | `POST /auth/google/start`, `GET /auth/google/callback`, link/unlink/reauth | [Google OAuth Suite](google-oauth/README.md) |
 | **Platform login** (project-agnostic) | `POST /auth/platform/login` | [Authentication Usage Cases](authentication-usage-cases.md) |
 | **API-key validation** | `POST /auth/validate-api-key` | [API Keys Suite](api-keys/README.md) |
 
@@ -440,6 +441,3 @@ Error messages mask UUIDs (e.g., `usr-[550e]...[0000]`). Clients cannot parse fu
 | Groups architecture | [Groups Documentation Suite](groups/README.md) |
 | Projects | [Projects Documentation Suite](projects/README.md) |
 
----
-
-**API Version**: 2.2.0

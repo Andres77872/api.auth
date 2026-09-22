@@ -312,7 +312,3 @@ curl -X DELETE "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROL
 - **[Troubleshooting](troubleshooting.md)**
 - **[Permission Resolution](../permissions/resolution.md)** — The critical auth-vs-inspection gap
 - **[Permissions Suite](../permissions/README.md)** — Permission groups, assignments, and extended resolution
-
----
-
-**Document Version**: 1.1

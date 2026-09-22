@@ -358,6 +358,7 @@ async def test_google_oauth_link_unlink_middleware_skiplist_and_existing_flows_r
         link_start = await client.post(
             "/auth/google/link/start",
             headers={"Authorization": "Bearer fake-local-session-token", "User-Agent": "phase3-google-oauth-e2e-test"},
+            json={"return_origin": "http://localhost:3000"},
             follow_redirects=False,
         )
         assert link_start.status_code in {200, 302, 303, 401, 403}

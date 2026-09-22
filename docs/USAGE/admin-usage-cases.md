@@ -9,7 +9,7 @@ Complete practical guide for admin dashboard operations, system monitoring, bulk
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [Admin Dashboard](#admin-dashboard)
 - [Activity Monitoring](#activity-monitoring)
@@ -832,6 +832,3 @@ See detailed behavior in **[Users - Bulk Operations](users/bulk-operations.md)**
 - **[Projects Documentation Suite](projects/README.md)** - Project management and access control
 - **[Permissions Documentation Suite](permissions/README.md)** - Permission management
 
----
-
-**API Version**: 2.2.0

@@ -275,8 +275,3 @@ sp_billing_retention_purge
 - [Scenarios](scenarios.md)
 - [Reference](reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Runbook](../../RUNBOOKS/stripe-billing.md)
-
----
-
-**Document Version**: 1.0

@@ -4,7 +4,7 @@ Detailed, repo-specific documentation for the permissions and authorization syst
 
 ---
 
-## 📖 Overview
+## Overview
 
 The permissions system in this repository is not a single RBAC layer. It is a **dual-path authorization model**:
 
@@ -28,7 +28,7 @@ What matters operationally:
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -42,7 +42,7 @@ What matters operationally:
 
 ---
 
-## 🧠 Core Model in This Repo
+## Core Model in This Repo
 
 ### Permission sources
 
@@ -76,7 +76,7 @@ If you treat catalogs as authorization, you are going to create a quilombo. They
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with [usage.md](usage.md)
 2. Then read [architecture.md](architecture.md)
@@ -87,7 +87,7 @@ If you treat catalogs as authorization, you are going to create a quilombo. They
 
 ---
 
-## ⚠️ Scope and Caveats
+## Scope and Caveats
 
 - This suite documents the **active public route layer** under `src/routes/global_roles.py` and `src/routes/permission_assignments.py`
 - The repo still contains **legacy/project-scoped permission artifacts** in models, schema, and views; those are covered as caveats in [architecture.md](architecture.md)
@@ -96,7 +96,7 @@ If you treat catalogs as authorization, you are going to create a quilombo. They
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** - Complete usage index
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, refresh, logout, project switching
@@ -104,8 +104,4 @@ If you treat catalogs as authorization, you are going to create a quilombo. They
 - **[Roles Documentation Suite](../roles/README.md)** - Global role CRUD, permission-group linking, user assignment, and role-specific caveats
 - **[Projects Documentation Suite](../projects/README.md)** - Project access model separate from capability management
 - **[Users Documentation Suite](../users/README.md)** - Profile, access summary, user types, and lifecycle operations
-- **[Database Schema](../../../schemas/)** - SQL tables, views, and stored procedures
-
----
-
-**Document Version**: 1.0
+- **Database schema** (`schemas/`) - SQL tables, views, and stored procedures

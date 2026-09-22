@@ -97,7 +97,3 @@ Adding members, granting access, and metadata updates do **not** trigger session
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 3.1

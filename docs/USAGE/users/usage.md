@@ -4,7 +4,7 @@ Practical usage guide for operating user-management endpoints in `api.auth`.
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [Route Ownership and Authentication](#route-ownership-and-authentication)
 - [Profile Operations](#profile-operations)
@@ -360,7 +360,3 @@ In other words: `/users/*` manages the user entity and its immediate lifecycle. 
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

@@ -9,3 +9,4 @@
 .coverage.*
 .coverage-unit.json
 test-results/
+.env.prod2

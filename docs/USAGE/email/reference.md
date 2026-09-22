@@ -311,7 +311,3 @@ derived from that bucket's remaining TTL.
 | `ready` | true | All required config present |
 
 `send-test` requires `ready=true`; otherwise it returns `400 INVALID_INPUT` with `Email delivery is not ready (status: ...)`.
-
----
-
-**Document Version**: 1.0

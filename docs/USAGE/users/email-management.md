@@ -9,7 +9,7 @@ user manage their own email addresses (add, list, resend activation, remove,
 choose primary), and let root/admin operators inspect or re-trigger activation
 for another user's emails. The data-model, token, and worker internals are in
 [architecture.md](architecture.md#email-identity-lifecycle) and the
-[Email Activation Runbook](../../RUNBOOKS/email-activation.md).
+[email suite](../email/README.md).
 
 ---
 
@@ -297,15 +297,9 @@ returns a generic `202`. It does **not** read an `Idempotency-Key`.
 - **[Usage](usage.md)**
 - **[Operational Reference](reference.md)**
 - **[Architecture — Email Identity Lifecycle](architecture.md#email-identity-lifecycle)**
-- **[Email Activation & Transactional Auth Email Runbook](../../RUNBOOKS/email-activation.md)**
 - **[User Types](user-types.md)**
 - **[Bulk Operations](bulk-operations.md)**
 - **[Request & Data Flow](request-flow.md)**
 - **[Scenarios](scenarios.md)**
 - **[Troubleshooting](troubleshooting.md)**
 
----
-
-**Document Version**: 1.0
-</content>
-</invoke>

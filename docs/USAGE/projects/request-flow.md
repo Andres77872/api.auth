@@ -181,7 +181,3 @@ Note the distinction: even though the `PATCH /archive` **route** is a stub, arch
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.1

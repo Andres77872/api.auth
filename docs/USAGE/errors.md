@@ -101,8 +101,8 @@ When `DEBUG_MODE=true`, the error object includes two additional fields:
 | `422` | Unprocessable Entity | Missing `User-Agent` header, malformed form data |
 | `500` | Internal Server Error | Server errors, database failures, generic external-service failures |
 | `501` | Not Implemented | `PATCH /projects/{hash}/owner`, `PATCH /projects/{hash}/archive` |
-| `502` | Bad Gateway | Google OAuth authorization-code exchange failed (`OAUTH_CODE_EXCHANGE_FAILED`) |
-| `503` | Service Unavailable | Google OAuth provider not configured/unhealthy (`OAUTH_PROVIDER_NOT_CONFIGURED`) |
+| `502` | Bad Gateway | OAuth authorization-code exchange with the provider failed (`OAUTH_CODE_EXCHANGE_FAILED`) |
+| `503` | Service Unavailable | OAuth provider not configured/unhealthy (`OAUTH_PROVIDER_NOT_CONFIGURED`) |
 
 ---
 
@@ -214,7 +214,10 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 
 ### External Service Errors (`EXT_8xxx`, category `external`)
 
-Generic third-party failures default to `500`; the Google OAuth / external-identity flows in this family carry their own HTTP status (see the status column).
+Generic third-party failures default to `500`; the OAuth / external-identity flows
+in this family carry their own HTTP status (see the status column). The family is
+split by provider surface: `EXT_80xx` for OAuth sign-in, `EXT_81xx` for Patreon
+entitlement linking, and `EXT_82xx` for billing.
 
 | Code | Enum Value | HTTP | Notes |
 |------|-----------|------|-------|
@@ -222,9 +225,15 @@ Generic third-party failures default to `500`; the Google OAuth / external-ident
 | `EXT_8002` | `EXTERNAL_API_ERROR` | 500 | Third-party API returned an error |
 | `EXT_8003` | `EXTERNAL_TIMEOUT` | 500 | Third-party service timed out |
 
-#### Google OAuth / External Identity (`EXT_80xx`)
+#### OAuth / External Identity (`EXT_80xx`)
 
-These power the `/auth/google/*` flows. Public messages are intentionally neutral (e.g. "OAuth authentication could not be completed.") and never reveal which check failed; the codes below are for operators/clients reading the `error.code`. Full per-endpoint behavior lives in the [Google OAuth Suite](google-oauth/README.md).
+These power the provider-agnostic `/auth/oauth/*` flows and the deprecated
+`/auth/google/*` aliases that run on the same pipeline. They are not Google-specific:
+the same codes are raised for GitHub, Discord, Microsoft and generic OIDC connections.
+Public messages are intentionally neutral (e.g. "OAuth authentication could not be
+completed.") and never reveal which check failed; the codes below are for
+operators/clients reading the `error.code`. Full per-endpoint behavior lives in the
+[OAuth Suite](oauth/README.md).
 
 | Code | Enum Value | HTTP | Meaning |
 |------|-----------|------|---------|
@@ -236,21 +245,52 @@ These power the `/auth/google/*` flows. Public messages are intentionally neutra
 | `EXT_8015` | `OAUTH_STATE_EXPIRED` | 401 | State token expired |
 | `EXT_8016` | `OAUTH_STATE_REUSED` | 401 | State token already consumed |
 | `EXT_8017` | `OAUTH_NONCE_MISMATCH` | 401 | ID-token nonce mismatch |
-| `EXT_8018` | `OAUTH_CODE_EXCHANGE_FAILED` | 502 | Authorization-code exchange with Google failed |
+| `EXT_8018` | `OAUTH_CODE_EXCHANGE_FAILED` | 502 | Authorization-code exchange with the provider failed |
 | `EXT_8019` | `OAUTH_ID_TOKEN_INVALID` | 401 | ID token missing/invalid/unverifiable claims |
 | `EXT_8020` | `OAUTH_ISSUER_MISMATCH` | 401 | ID-token issuer not allowed |
 | `EXT_8021` | `OAUTH_AUDIENCE_MISMATCH` | 401 | ID-token audience mismatch |
 | `EXT_8022` | `OAUTH_TOKEN_EXPIRED` | 401 | ID/access token expired |
-| `EXT_8023` | `OAUTH_WORKSPACE_DENIED` | 401 | Workspace/`hd` domain not permitted |
+| `EXT_8023` | `OAUTH_WORKSPACE_DENIED` | 401 | Hosted-domain restriction not satisfied (Google Workspace `hd`, Microsoft tenant) |
 | `EXT_8024` | `OAUTH_PROVISIONING_DENIED` | 401 | Provisioning mode forbids this action |
 | `EXT_8025` | `OAUTH_PROJECT_ACCESS_DENIED` | 403 | Resolved identity has no access to the project |
 | `EXT_8026` | `EXTERNAL_IDENTITY_ALREADY_LINKED` | 409 | Reserved/latent — defined but not currently emitted |
-| `EXT_8027` | `EXTERNAL_IDENTITY_SUB_CONFLICT` | 409 | Google `sub` already maps to a different account (broad link/finish failure) |
+| `EXT_8027` | `EXTERNAL_IDENTITY_SUB_CONFLICT` | 409 | The provider subject already maps to a different account; raised from the callback for both link and login |
 | `EXT_8028` | `EXTERNAL_IDENTITY_NOT_LINKED` | 404 | Unlink/reauth on an account with no linked identity |
 | `EXT_8029` | `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` | 409 | Cannot unlink the only credential without setting a password first |
 | `EXT_8030` | `OAUTH_RATE_LIMITED` | 429 | OAuth rate limit hit; honor `Retry-After` |
 | `EXT_8031` | `OAUTH_USER_CANCELLED` | 400 | The user cancelled or denied consent at the provider. A normal outcome: show "sign-in cancelled", not a failure. The state is consumed. |
 | `EXT_8032` | `OAUTH_ACCOUNT_LINK_REQUIRED` | 409 | An existing local account has this provider-verified e-mail. Accounts are never merged by e-mail: the user must sign in with their existing method and link the provider. |
+
+#### Patreon Entitlement Link (`EXT_81xx`)
+
+These power `/auth/patreon/*`, `/webhooks/patreon`, and the Patreon S2S reads.
+Patreon is entitlement/link only: none of these codes ever accompany a local
+login or session. Public link surfaces stay non-enumerating, so the code is for
+operators and S2S callers rather than end-user copy. Per-surface behavior lives
+in the [Patreon Suite](patreon-link/README.md).
+
+| Code | Enum Value | Meaning |
+|------|-----------|---------|
+| `EXT_8100` | `PATREON_PROVIDER_NOT_CONFIGURED` | Creator credentials or campaign configuration missing |
+| `EXT_8101` | `PATREON_PROVIDER_DISABLED` | Patreon integration disabled by config |
+| `EXT_8102` | `PATREON_CONFIGURATION_INVALID` | Configuration present but internally inconsistent |
+| `EXT_8103` | `PATREON_CREATOR_API_UNAVAILABLE` | Creator API unreachable |
+| `EXT_8104` | `PATREON_CREATOR_API_TIMEOUT` | Creator API timed out |
+| `EXT_8105` | `PATREON_CREATOR_API_RATE_LIMITED` | Provider-side rate limit hit |
+| `EXT_8106` | `PATREON_CREATOR_API_ERROR` | Creator API returned an error |
+| `EXT_8107` | `PATREON_LINK_ACTION_DENIED` | Link/unlink refused for this caller or state |
+| `EXT_8108` | `PATREON_LINK_CONFLICT` | The Patreon identity is already linked elsewhere; no owner is disclosed |
+| `EXT_8109` | `PATREON_PROOF_INVALID` | Email-loop proof token missing, expired, or already consumed |
+| `EXT_8110` | `PATREON_PROOF_RATE_LIMITED` | Proof request/confirm bucket exceeded; honor `Retry-After` |
+| `EXT_8111` | `PATREON_WEBHOOK_SIGNATURE_INVALID` | Webhook signature rejected before any mutation |
+| `EXT_8112` | `PATREON_S2S_UNAUTHORIZED` | Dedicated Patreon S2S bearer missing or invalid |
+| `EXT_8113` | `PATREON_SYNC_DEGRADED` | Entitlement data is stale; coarse reason only |
+| `EXT_8114` | `PATREON_TIER_MAP_NOT_READY` | Campaign tier map unseeded or incomplete |
+| `EXT_8115` | `PATREON_SECURITY_EVENT` | Abuse/security posture tripped |
+| `EXT_8116` | `PATREON_RATE_LIMITED` | Patreon surface rate limit hit; honor `Retry-After` |
+
+Billing codes (`EXT_8200`–`EXT_8215`) are documented with their surface in the
+[Stripe billing reference](stripe-billing/reference.md#error-codes).
 
 ### Email / Transactional Auth Email Errors
 
@@ -469,7 +509,7 @@ Checklist:
 4. If `429`, wait for `Retry-After` before retrying.
 5. Never log or paste activation/reset full links or token secrets.
 
-### Google OAuth Flow Fails
+### OAuth Sign-in Flow Fails
 
 **Symptoms**: an `EXT_80xx` code in `error.code` with a neutral message such as "OAuth authentication could not be completed."
 
@@ -477,16 +517,17 @@ The public message is deliberately generic and does **not** reveal which check f
 
 | If you see | Likely cause | Action |
 |------------|--------------|--------|
-| `OAUTH_PROVIDER_DISABLED` / `OAUTH_PROVIDER_NOT_CONFIGURED` | OAuth disabled or misconfigured | Operator: set/enable the `GOOGLE_OAUTH_*` config |
-| `OAUTH_STATE_INVALID` / `_EXPIRED` / `_REUSED` | Stale/replayed callback or back-button reuse | Restart the flow from `POST /auth/google/start` |
+| `OAUTH_PROVIDER_DISABLED` / `OAUTH_PROVIDER_NOT_CONFIGURED` | OAuth disabled or misconfigured | Operator: check `GET /admin/oauth/projects/{project_hash}/readiness`, which names the failing layer |
+| `OAUTH_STATE_INVALID` / `_EXPIRED` / `_REUSED` | Stale/replayed callback or back-button reuse | Restart the flow from `POST /auth/oauth/start` with a fresh `init_token` |
 | `OAUTH_ID_TOKEN_INVALID` / `_ISSUER_MISMATCH` / `_AUDIENCE_MISMATCH` | Token verification failed | Check client id/issuer config; retry a fresh sign-in |
 | `OAUTH_PROVISIONING_DENIED` / `OAUTH_PROJECT_ACCESS_DENIED` | Identity resolved but provisioning/project access not allowed | Verify provisioning mode and the user's group→project chain |
-| `EXTERNAL_IDENTITY_SUB_CONFLICT` (409) | Google account already maps to a different user | Sign in with the original account or unlink first |
+| `EXTERNAL_IDENTITY_SUB_CONFLICT` (409) | The provider account already maps to a different user | Sign in with the original account or unlink first |
 | `OAUTH_RATE_LIMITED` (429) | Too many OAuth attempts | Honor `Retry-After` |
 | `OAUTH_USER_CANCELLED` (400) | User pressed cancel at the provider | Offer to try again; do not report an error |
 | `OAUTH_ACCOUNT_LINK_REQUIRED` (409) | A local account already uses this verified e-mail | Ask the user to sign in with their existing method, then link the provider from their account |
 
-Full per-endpoint behavior is in the [OAuth reference](oauth/reference.md) and, for the deprecated aliases, the [Google OAuth Suite](google-oauth/README.md).
+Full per-endpoint behavior is in the [OAuth reference](oauth/reference.md); the
+deprecated `/auth/google/*` aliases are in the [Google OAuth Suite](google-oauth/README.md).
 
 ### Access Denied to Project
 
@@ -524,7 +565,7 @@ Look at the `category` field in the error response:
 | `conflict` | Duplicate resource |
 | `database` | DB connectivity or query issues |
 | `internal` | Server-side bug, rate limits, unimplemented stubs |
-| `external` | Google OAuth / external-identity flow failure (`EXT_8xxx`) |
+| `external` | OAuth, Patreon, or billing provider failure (`EXT_8xxx`) |
 | `email` | Transactional email delivery/safety state (`EMAIL_9xxx`) |
 
 ### Step 2: Check DEBUG_MODE (development only)
@@ -590,10 +631,8 @@ curl -X POST "{BASE_URL}/system/cache/invalidate/user/$USER_HASH" \
 - [Authentication Usage Cases](authentication-usage-cases.md) — Auth flows and troubleshooting
 - [Client Authentication Guide](client-authentication-guide.md) — Error handling in client code
 - [Permission Resolution](permissions/resolution.md) — Permission resolution mechanics and the auth-vs-inspection gap
-- [Google OAuth Suite](google-oauth/README.md) — `EXT_8xxx` OAuth/external-identity error behavior
+- [OAuth Suite](oauth/README.md) — `EXT_80xx` OAuth/external-identity error behavior
+- [Patreon Suite](patreon-link/README.md) — `EXT_81xx` entitlement-link error behavior
+- [Stripe Billing Suite](stripe-billing/README.md) — `EXT_82xx` billing error behavior
 - [API Keys Suite](api-keys/README.md) — API-key validation and `API_KEY_*` errors
 - [Email Suite](email/README.md) — `EMAIL_9xxx` codes and the generic-`202` public posture
-
----
-
-**Document Version**: 1.1

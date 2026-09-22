@@ -4,7 +4,7 @@ Detailed, repo-specific documentation for project management and project access 
 
 ---
 
-## 📖 Overview
+## Overview
 
 Projects are the leaf nodes of the runtime access model implemented in this repository:
 
@@ -24,7 +24,7 @@ If you need the full group model first, read the [groups documentation suite](..
 
 ---
 
-## 🗂️ Documents in This Suite
+## Documents in This Suite
 
 | Document | Focus |
 |----------|-------|
@@ -37,7 +37,7 @@ If you need the full group model first, read the [groups documentation suite](..
 
 ---
 
-## 🧠 Core Project Model in This Repo
+## Core Project Model in This Repo
 
 - **Projects** live in `projects`
 - **Project groups** live in `project_groups` and contain projects through `project_group_members`
@@ -48,7 +48,7 @@ If you need the full group model first, read the [groups documentation suite](..
 
 ---
 
-## 🚦 Recommended Reading Order
+## Recommended Reading Order
 
 1. Start with [usage.md](usage.md)
 2. Then read [architecture.md](architecture.md)
@@ -58,14 +58,10 @@ If you need the full group model first, read the [groups documentation suite](..
 
 ---
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - **[Usage Documentation Home](../README.md)** - Complete usage index
 - **[Groups Documentation Suite](../groups/README.md)** - Access model and group operations
 - **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, refresh, and project switching
 - **[Permissions Documentation Suite](../permissions/README.md)** - Capability management separate from project reach
-- **[Database Schema](../../../schemas/)** - SQL schema, views, and stored procedures
-
----
-
-**Document Version**: 1.1
+- **Database schema** (`schemas/`) - SQL schema, views, and stored procedures

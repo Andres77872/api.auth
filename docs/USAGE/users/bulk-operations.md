@@ -171,7 +171,3 @@ Those belong to the groups/roles admin endpoints.
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

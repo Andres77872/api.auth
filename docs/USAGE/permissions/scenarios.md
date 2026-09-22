@@ -196,7 +196,3 @@ If the self-query endpoints say the permission exists, but the target route stil
 - **[Request & Data Flow](request-flow.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

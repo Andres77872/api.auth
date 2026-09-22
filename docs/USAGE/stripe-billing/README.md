@@ -17,7 +17,6 @@ provider-neutral subscription `plan` projection on project-scoped login,
 | [Scenarios](scenarios.md) | Subscribe, upgrade/downgrade, cancel, payment-method update, payment failure/recovery, credit purchase, refund, dispute, stale/unknown, and consumer projection behavior. |
 | [Reference](reference.md) | S2S route contracts, safe DTO allow-lists, forbidden fields, normalized statuses, error codes, idempotency, and redaction guarantees. |
 | [Troubleshooting](troubleshooting.md) | Redacted operations troubleshooting for signatures, config, decrypt failures, idempotency conflicts, webhook lag, stale snapshots, sync backlog, and Portal readiness. |
-| [Runbook](../../RUNBOOKS/stripe-billing.md) | Deploy-disabled rollout, bootstrap checks, sandbox gates, monitoring, incident response, key rotation, retention, rollback, and optional live smoke gates. |
 
 ## What This Integration Does
 
@@ -182,7 +181,3 @@ Indefinite history does not mean indefinite raw provider payload retention. Long
 - Each billing group owns one Stripe account and one catalog. Subscription facts/customers are group-scoped; credit purchases retain project scope.
 - Subscription upgrades/downgrades go through consumer-owned Checkout intent. Customer Portal plan changes are disabled.
 - One-time credit purchases expose purchase facts only; consuming projects own credit fulfillment and reversal.
-
----
-
-**Document Version**: 1.0

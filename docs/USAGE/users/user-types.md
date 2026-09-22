@@ -221,7 +221,3 @@ This removes the admin user from the matching admin group membership for that pr
 - **[Scenarios](scenarios.md)**
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
-
----
-
-**Document Version**: 1.0

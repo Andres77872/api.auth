@@ -196,16 +196,12 @@ Verify behavior:
 
 > Do **not** put a body-rewriting proxy in front of this endpoint. Svix verifies the **raw bytes**; reserializing the JSON breaks the signature.
 
-For secret rotation and bounce/complaint operations, see the [Email Activation Runbook](../../RUNBOOKS/email-activation.md).
+Secret rotation and bounce/complaint operations are operational procedures and live with the runbooks under `docs/RUNBOOKS/`, outside this suite.
 
 ---
 
 ## Related flows handled elsewhere
 
 - A user's email addresses (add/list/activate/resend/remove) → [Users Documentation](../users/README.md).
-- Reading sanitized email delivery logs (`GET /admin/email/logs`) → [Audit Logs Usage Cases](../audit-log-usage-cases.md).
+- Reading sanitized email delivery logs (`GET /admin/email/logs`) → [Audit Logs Usage](../audit_logs/usage.md#email-delivery-logs).
 - Public verify/forgot/reset link consumption (`/auth/...`) → [Authentication Usage Cases](../authentication-usage-cases.md).
-
----
-
-**Document Version**: 1.0

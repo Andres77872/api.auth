@@ -254,12 +254,22 @@ async def start_session_round_trip(
     )
     if not redirect_uri:
         return oauth_error_response(ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED, status_code=400)
+    # The caller may name its return origin; it is validated against the binding exactly
+    # as login start validates it. With several origins configured, "the first of many"
+    # would silently pick an arbitrary one -- the binding's JSON_ARRAYAGG has no ORDER BY
+    # -- so the caller must name the one it wants and we refuse rather than guess.
+    requested_origin = str((await read_json_object(request) or {}).get("return_origin") or "").strip()
+    if requested_origin and not resolved.binding.is_return_origin_allowed(requested_origin):
+        return oauth_error_response(ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED, status_code=400)
+    return_origin = requested_origin or resolved.binding.sole_return_origin()
+    if not return_origin and resolved.binding.return_origins:
+        return oauth_error_response(ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED, status_code=400)
     start = AuthorizationStart(
         resolved=resolved,
         purpose=purpose,
         project_hash=str(field_of(login_data, "project_hash") or ""),
         redirect_uri=redirect_uri,
-        return_origin=resolved.binding.return_origins[0] if resolved.binding.return_origins else None,
+        return_origin=return_origin,
         user_id=user_id,
         session_id=session_id_of(login_data),
         prompt="login" if purpose == OAUTH_PURPOSE_REAUTH else None,

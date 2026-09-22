@@ -193,7 +193,7 @@ curl -X GET "http://localhost:8000/admin/audit/security-events?severity=critical
 - `last_error_code` on failed rows
 - `attempt_count` vs `max_attempts` — a row at the cap with `status=dead` exhausted retries
 - `status=suppressed` rows — the address is on the suppression list (prior hard bounce/complaint)
-- Cross-references to activity catalog IDs `act-cat-056`…`act-cat-062` (see [audit-log-usage-cases.md](../audit-log-usage-cases.md#email-activation--delivery-audit-quick-reference))
+- Cross-references to activity catalog IDs `act-cat-056`…`act-cat-062` (see the [activity catalog](reference.md#activity-catalog))
 
 **Note:** `GET /admin/email/logs` reports `has_more` via a page-fill heuristic (no total count). When a page is exactly full, page through with `offset` until a page returns fewer than `limit` rows.
 
@@ -322,7 +322,3 @@ The `api_audit_summary` in the user activity response includes `total_requests` 
 - **[Operational Reference](reference.md)**
 - **[Troubleshooting](troubleshooting.md)**
 - **[Admin Usage Cases](../admin-usage-cases.md)** — Dashboard, activity feed quick reference
-
----
-
-**Document Version**: 1.1

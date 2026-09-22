@@ -57,7 +57,7 @@ async def test_link_completes_in_the_callback_and_links_to_the_session_user(
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = None
         db["link_external_account"].return_value = {"status": "linked"}
-        start = await client.post(start_path, headers=AUTH, follow_redirects=False)
+        start = await client.post(start_path, headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
         state = _state_from(start)
         callback = await client.get("/auth/google/callback", params={"code": "fake-google-auth-code-not-real", "state": state})
 
@@ -83,7 +83,7 @@ async def test_link_is_refused_when_the_identity_already_belongs_to_another_user
     other_user = SimpleNamespace(id="usr-someone-else", user_type="consumer", is_active=True)
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = other_user
-        state = _state_from(await client.post("/auth/google/link/start", headers=AUTH, follow_redirects=False))
+        state = _state_from(await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
         callback = await client.get("/auth/google/callback", params={"code": "c", "state": state})
 
     assert callback.status_code == 409
@@ -97,12 +97,12 @@ async def test_link_start_requires_recent_reauthentication_and_a_link_capable_bi
     client, fake_google_token_exchange, fake_google_verifier, db_patcher, monkeypatch
 ):
     with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier, recent_reauth=False):
-        stale = await client.post("/auth/google/link/start", headers=AUTH, follow_redirects=False)
+        stale = await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
     assert stale.status_code == 401, "a session without recent proof may not start a link"
 
     monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "auto_create")  # linking not permitted
     with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier):
-        denied = await client.post("/auth/google/link/start", headers=AUTH, follow_redirects=False)
+        denied = await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
     assert denied.status_code == 401
 
 
@@ -117,7 +117,7 @@ async def test_reauth_records_the_marker_that_sensitive_operations_check(
     linked_user = SimpleNamespace(id=SESSION.user_id, user_type="consumer", is_active=True)
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = linked_user
-        start = await client.post(start_path, headers=AUTH, follow_redirects=False)
+        start = await client.post(start_path, headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
         assert parse_qs(urlparse(start.headers["location"]).query)["prompt"] == ["login"]
         callback = await client.get("/auth/google/callback", params={"code": "c", "state": _state_from(start)})
 
@@ -139,7 +139,7 @@ async def test_reauth_with_someone_elses_google_account_does_not_count(
     stranger = SimpleNamespace(id="usr-stranger", user_type="consumer", is_active=True)
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = stranger
-        state = _state_from(await client.post("/auth/google/reauth/start", headers=AUTH, follow_redirects=False))
+        state = _state_from(await client.post("/auth/google/reauth/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
         callback = await client.get("/auth/google/callback", params={"code": "c", "state": state})
 
     assert callback.status_code == 401
@@ -159,3 +159,43 @@ async def test_a_login_state_can_never_be_completed_as_a_link_and_vice_versa(
         )
     assert not db["link_external_account"].called
     assert response.status_code in {401, 403, 409}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start_path", ["/auth/google/link/start", "/auth/oauth/google/link/start"])
+async def test_link_start_refuses_to_guess_among_several_return_origins(
+    client, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
+):
+    """With more than one origin allowed, silently taking the first would send a production
+    user to whichever origin the binding happened to list first -- the aggregate has no
+    ORDER BY. The caller must name one, exactly as login start requires."""
+    with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier):
+        response = await client.post(start_path, headers=AUTH, follow_redirects=False)
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start_path", ["/auth/google/link/start", "/auth/oauth/google/link/start"])
+async def test_link_start_refuses_a_return_origin_the_binding_does_not_allow(
+    client, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
+):
+    with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier):
+        response = await client.post(
+            start_path, headers=AUTH, json={"return_origin": "https://attacker.example"}, follow_redirects=False
+        )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_link_start_uses_the_sole_return_origin_without_the_caller_naming_it(
+    client, monkeypatch, fake_google_token_exchange, fake_google_verifier, db_patcher
+):
+    """A correctly scoped binding lists exactly one origin, so nothing is ambiguous and
+    existing callers that send no body keep working."""
+    monkeypatch.setenv("GOOGLE_OAUTH_RETURN_ORIGINS", "http://localhost:3000")
+    monkeypatch.setenv("PROVIDER_INIT_RETURN_ORIGINS", "http://localhost:3000")
+    with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
+        db["get_user_by_external_account"].return_value = None
+        response = await client.post("/auth/google/link/start", headers=AUTH, follow_redirects=False)
+    assert response.status_code == 303
+    assert "response_type=code" in response.headers["location"]
