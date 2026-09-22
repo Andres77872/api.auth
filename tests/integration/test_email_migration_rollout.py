@@ -153,3 +153,107 @@ def test_docker_email_worker_deployment_uses_runtime_env_contract():
 
     assert "EMAIL_REAL_SEND_TEST_OPT_IN" not in compose_test
     assert "MAILPIT_HTTP_BASE_URL" not in compose_test
+
+
+def _email_template_seed_statements() -> list[str]:
+    sql = (ROOT / "schemas/tables/09_email_activation_tables.sql").read_text()
+    statements = [chunk for chunk in sql.split(";") if "INSERT INTO email_templates" in chunk]
+    assert len(statements) == 2, "expected the patreon_link_proof and email_credit_grant_notification seeds"
+    return statements
+
+
+def test_email_template_seeds_are_insert_only_on_rerun():
+    """schema_sync re-executes this file; a re-run must never rewrite operator-owned version history.
+
+    Overwriting on duplicate key reset the version-1 body and re-activated it beside the
+    version an operator had saved since, leaving two active versions of one template code.
+    """
+    seeded_codes = set()
+    for statement in _email_template_seed_statements():
+        insert, _, on_duplicate = statement.partition("ON DUPLICATE KEY UPDATE")
+        assert on_duplicate, "a bare INSERT would abort schema_sync on the second apply"
+        assert "INSERT IGNORE" not in insert, "IGNORE would also hide truncation and constraint errors"
+        for column in ("subject_template", "html_template", "text_template", "is_active", "version", "template_code"):
+            assert column not in on_duplicate, f"seed must not overwrite {column} on duplicate key"
+        assert on_duplicate.split() == ["id", "=", "id"], "the duplicate-key clause must stay a no-op"
+
+        # A fresh bootstrap still ends with the template active at version 1.
+        values = insert.split("VALUES", 1)[1]
+        assert "\n    1,\n" in values and "\n    TRUE,\n" in values
+        seeded_codes.update(code for code in ("patreon_link_proof", "email_credit_grant_notification") if f"'{code}'" in values)
+    assert seeded_codes == {"patreon_link_proof", "email_credit_grant_notification"}
+
+
+class _CleanupCursor:
+    """Answers schema_sync._cleanup_stale_objects from a declared state and records writes."""
+
+    def __init__(self, *, active_template_rows: int, catalog_rows: int = 0, message_refs: int = 0):
+        self.active_template_rows, self.catalog_rows, self.message_refs = active_template_rows, catalog_rows, message_refs
+        self.writes: list[str] = []
+        self._row = None
+
+    def execute(self, sql, params=()):
+        text = " ".join(sql.split())
+        lowered = text.lower()
+        if lowered.startswith(("update", "delete", "drop", "insert", "alter")):
+            self.writes.append(text)
+            return
+        if "information_schema.tables" in lowered:
+            self._row = {"count": 1}
+        elif "information_schema.routines" in lowered:
+            self._row = {"count": 0}
+        elif "from email_templates" in lowered:
+            assert "is_active = true" in lowered, "only ACTIVE stale rows are work; inert history is not"
+            self._row = {"count": self.active_template_rows}
+        elif "from email_template_catalog" in lowered:
+            self._row = {"count": self.catalog_rows}
+        elif "from email_messages" in lowered:
+            self._row = {"count": self.message_refs}
+        else:  # pragma: no cover - a new query must be modelled here
+            raise AssertionError(f"unmodelled cleanup query: {text[:80]}")
+
+    def fetchone(self):
+        return self._row
+
+
+def _load_schema_sync():
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("schema_sync_email_under_test", ROOT / "scripts/schema_sync.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve annotations through sys.modules
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_schema_sync_deactivates_the_stale_template_and_never_deletes_template_history():
+    schema_sync = _load_schema_sync()
+
+    # Unreferenced by any message: the old behaviour deleted every version here.
+    unreferenced = _CleanupCursor(active_template_rows=2, catalog_rows=1, message_refs=0)
+    actions = schema_sync._cleanup_stale_objects(unreferenced, dry_run=False)
+    assert any(action.startswith("deactivate stale template free_credit_invite") for action in actions)
+    template_writes = [write for write in unreferenced.writes if "email_templates" in write]
+    assert len(template_writes) == 1 and template_writes[0].startswith("UPDATE email_templates SET is_active = FALSE")
+    assert "AND is_active = TRUE" in template_writes[0]
+    assert not any(write.upper().startswith("DELETE FROM EMAIL_TEMPLATES") for write in unreferenced.writes)
+    # The catalog row is configuration for a code nothing can send; removing it is what makes the code unreachable.
+    assert any(write.startswith("DELETE FROM email_template_catalog") for write in unreferenced.writes)
+
+    # Converged: nothing active, no catalog row -> an empty plan and no write, referenced or not.
+    for message_refs in (0, 3):
+        converged = _CleanupCursor(active_template_rows=0, catalog_rows=0, message_refs=message_refs)
+        assert schema_sync._cleanup_stale_objects(converged, dry_run=False) == []
+        assert converged.writes == []
+
+    # A dry run reports the action and writes nothing.
+    preview = _CleanupCursor(active_template_rows=1)
+    assert len(schema_sync._cleanup_stale_objects(preview, dry_run=True)) == 1
+    assert preview.writes == []
+
+    source = (ROOT / "scripts/schema_sync.py").read_text()
+    assert "DELETE FROM email_templates" not in source

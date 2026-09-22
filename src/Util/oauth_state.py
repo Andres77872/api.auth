@@ -1,6 +1,9 @@
-"""Redis-backed Google OAuth state, nonce, PKCE, link, and reauth storage.
+"""Redis-backed OAuth state, nonce, PKCE and recent-reauth storage (provider-agnostic).
 
-Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 6.1.
+Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 6.1; generalised by
+`docs/agnostic_oauth`. The state record binds the connection and project binding
+chosen at start, so the callback selects the provider from the record only and
+never from caller input (mix-up defence).
 
 Security posture:
 - Redis keys use HMAC-SHA256 fingerprints; raw state/link/reauth secrets are
@@ -8,8 +11,11 @@ Security posture:
 - Raw nonce and PKCE verifier live only in short-lived Redis values because the
   callback needs them for OIDC/PKCE validation.
 - Redis errors fail closed by default. There is no process-memory fallback.
-- Configuration is loaded lazily through ``google_oauth_config``; this module
-  does not parse ``.env`` or read secrets at import time.
+- Deployment settings are loaded lazily through ``src.Util.oauth.settings``; this
+  module does not parse ``.env`` or read secrets at import time.
+- Keys use neutral ``oauth_state:`` prefixes. The historical ``google_oauth_*``
+  prefixes are still *read* on consume so transactions in flight across a deploy
+  survive; nothing is written under them any more.
 """
 
 from __future__ import annotations
@@ -26,12 +32,18 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from src.Util.auth_constants import (
-    GOOGLE_OAUTH_LINK_TOKEN_PREFIX,
     GOOGLE_OAUTH_RECENT_REAUTH_PREFIX,
     GOOGLE_OAUTH_STATE_CONSUMED_PREFIX,
     GOOGLE_OAUTH_STATE_PREFIX,
+    OAUTH_RECENT_REAUTH_PREFIX,
+    OAUTH_STATE_CONSUMED_PREFIX,
+    OAUTH_STATE_PREFIX,
 )
-from src.Util.google_oauth_config import load_google_oauth_config
+from src.Util.oauth.settings import load_oauth_settings
+
+
+STATE_RECORD_VERSION = 2
+_SUPPORTED_STATE_RECORD_VERSIONS = {1, 2}
 
 
 # Test fixtures patch this usage location after the module exists. Keep the
@@ -112,6 +124,16 @@ class OAuthStateRecord:
     created_at: str | None = None
     expires_at: str | None = None
     provider_init_binding: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    connection_id: str | None = None
+    binding_id: str | None = None
+    config_source: str | None = None
+    expected_issuer: str | None = None
+    delivery_mode: str | None = None
+    prompt: str | None = None
+    remember_me: bool = False
+    user_id: str | None = field(default=None, repr=False)
+    session_id: str | None = field(default=None, repr=False)
+    version: int = STATE_RECORD_VERSION
 
 
 def _default_redis_client():
@@ -222,13 +244,13 @@ class OAuthStateStore:
         pepper: str | None = None,
         fail_closed: bool | None = None,
     ) -> None:
-        config = None
+        settings = None
         resolved_pepper = state_pepper or pepper
         if not resolved_pepper or fail_closed is None:
-            config = load_google_oauth_config()
+            settings = load_oauth_settings()
         self.redis = redis_client if redis_client is not None else redis if redis is not None else _default_redis_client()
-        self.state_pepper = resolved_pepper or config.state_pepper
-        self.fail_closed = config.fail_closed_on_redis_error if fail_closed is None else bool(fail_closed)
+        self.state_pepper = resolved_pepper or settings.state_pepper
+        self.fail_closed = settings.fail_closed_on_redis_error if fail_closed is None else bool(fail_closed)
         if not self.state_pepper:
             raise OAuthStateStoreUnavailable("OAuth state pepper is not configured")
 
@@ -280,35 +302,58 @@ class OAuthStateStore:
             raise OAuthStateInvalidError("OAuth state collision")
         return key
 
-    def _consume_record(self, *, prefix: str, consumed_prefix: str, secret: str, label: str) -> dict[str, Any]:
+    def _consume_record(
+        self,
+        *,
+        prefix: str,
+        consumed_prefix: str,
+        secret: str,
+        label: str,
+        legacy_prefixes: tuple[tuple[str, str], ...] = (),
+    ) -> dict[str, Any]:
         _ensure_state_shape(secret, label=label)
-        key = self._key(prefix, secret)
         consumed_key = self._key(consumed_prefix, secret)
-        value = self._get_and_delete(key)
+        value = self._get_and_delete(self._key(prefix, secret))
+        legacy_consumed_keys = [self._key(legacy_consumed, secret) for _, legacy_consumed in legacy_prefixes]
         if value is None:
-            if self._exists(consumed_key):
+            # Transactions started before the prefix rename are still honoured.
+            for legacy_prefix, _ in legacy_prefixes:
+                value = self._get_and_delete(self._key(legacy_prefix, secret))
+                if value is not None:
+                    break
+        if value is None:
+            if self._exists(consumed_key) or any(self._exists(key) for key in legacy_consumed_keys):
                 raise OAuthStateReplayError(f"OAuth {label} was already consumed")
             raise OAuthStateInvalidError(f"OAuth {label} is missing or expired")
         self._set(consumed_key, "1", ttl_seconds=MAX_OAUTH_STATE_TTL_SECONDS, nx=False)
         return _json_loads(value)
 
     def create_state(self, *, provider_init_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
-        """Create Redis-backed OAuth state bound to a provider-init payload."""
+        """Create Redis-backed OAuth state bound to a connection and its init binding."""
 
-        ttl = _ttl(ttl_seconds, load_google_oauth_config().state_ttl_seconds)
+        ttl = _ttl(ttl_seconds, load_oauth_settings().max_state_ttl_seconds)
         material = generate_oauth_material()
         now = time.time()
         expires_at = _utc_timestamp(now + ttl)
         binding = dict(provider_init_binding or {})
         provider_init_fingerprint = binding.get("provider_init_fingerprint")
         payload = {
-            "version": 1,
+            "version": STATE_RECORD_VERSION,
             "provider": binding.get("provider", "google"),
             "purpose": binding.get("purpose", "login"),
+            "connection_id": binding.get("connection_id"),
+            "binding_id": binding.get("binding_id"),
+            "config_source": binding.get("config_source"),
+            "expected_issuer": binding.get("expected_issuer"),
+            "delivery_mode": binding.get("delivery_mode"),
             "project_hash": binding.get("project_hash"),
             "user_group_hash": binding.get("user_group_hash"),
             "return_origin": binding.get("return_origin"),
             "redirect_uri": binding.get("redirect_uri"),
+            "prompt": binding.get("prompt"),
+            "remember_me": bool(binding.get("remember_me", False)),
+            "user_id": binding.get("user_id"),
+            "session_id": binding.get("session_id"),
             "nonce": material.nonce,
             "code_verifier": material.code_verifier,
             "code_challenge": material.code_challenge,
@@ -321,7 +366,7 @@ class OAuthStateStore:
             "created_at": _utc_timestamp(now),
             "expires_at": expires_at,
         }
-        self._write_record(prefix=GOOGLE_OAUTH_STATE_PREFIX, secret=material.state, payload=payload, ttl_seconds=ttl)
+        self._write_record(prefix=OAUTH_STATE_PREFIX, secret=material.state, payload=payload, ttl_seconds=ttl)
         return OAuthStateCreated(
             state=material.state,
             nonce=material.nonce,
@@ -341,11 +386,18 @@ class OAuthStateStore:
         """Consume an OAuth state exactly once and return its Redis payload."""
 
         payload = self._consume_record(
-            prefix=GOOGLE_OAUTH_STATE_PREFIX,
-            consumed_prefix=GOOGLE_OAUTH_STATE_CONSUMED_PREFIX,
+            prefix=OAUTH_STATE_PREFIX,
+            consumed_prefix=OAUTH_STATE_CONSUMED_PREFIX,
             secret=state,
             label="state",
+            legacy_prefixes=((GOOGLE_OAUTH_STATE_PREFIX, GOOGLE_OAUTH_STATE_CONSUMED_PREFIX),),
         )
+        try:
+            version = int(payload.get("version") or 1)
+        except (TypeError, ValueError) as exc:
+            raise OAuthStateInvalidError("OAuth state payload is malformed") from exc
+        if version not in _SUPPORTED_STATE_RECORD_VERSIONS:
+            raise OAuthStateInvalidError("OAuth state record version is not supported")
         return OAuthStateRecord(
             provider=str(payload.get("provider") or "google"),
             purpose=str(payload.get("purpose") or "login"),
@@ -365,68 +417,37 @@ class OAuthStateStore:
             created_at=payload.get("created_at"),
             expires_at=payload.get("expires_at"),
             provider_init_binding=payload,
+            connection_id=payload.get("connection_id"),
+            binding_id=payload.get("binding_id"),
+            config_source=payload.get("config_source"),
+            expected_issuer=payload.get("expected_issuer"),
+            delivery_mode=payload.get("delivery_mode"),
+            prompt=payload.get("prompt"),
+            remember_me=bool(payload.get("remember_me", False)),
+            user_id=payload.get("user_id"),
+            session_id=payload.get("session_id"),
+            version=version,
         )
 
     consume_oauth_state = consume_state
 
-    def create_link_token(self, *, binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
-        """Create a single-use link-token record with the state TTL cap."""
-
-        config = load_google_oauth_config()
-        ttl = _ttl(ttl_seconds, config.link_token_ttl_seconds)
-        material = generate_oauth_material()
-        now = time.time()
-        payload = {
-            "version": 1,
-            "provider": "google",
-            "purpose": "link",
-            "nonce": material.nonce,
-            "code_verifier": material.code_verifier,
-            "code_challenge": material.code_challenge,
-            "code_challenge_method": material.code_challenge_method,
-            "state_fingerprint": fingerprint_oauth_value(material.state),
-            "created_at": _utc_timestamp(now),
-            "expires_at": _utc_timestamp(now + ttl),
-            **dict(binding or {}),
-        }
-        self._write_record(prefix=GOOGLE_OAUTH_LINK_TOKEN_PREFIX, secret=material.state, payload=payload, ttl_seconds=ttl)
-        return OAuthStateCreated(
-            state=material.state,
-            nonce=material.nonce,
-            code_verifier=material.code_verifier,
-            code_challenge=material.code_challenge,
-            code_challenge_method=material.code_challenge_method,
-            expires_in=ttl,
-            expires_at=payload["expires_at"],
-            state_fingerprint=payload["state_fingerprint"],
-            provider_init_fingerprint=payload.get("provider_init_fingerprint"),
-            cookie_metadata=OAuthBindingCookieMetadata(name="oauth_link", max_age_seconds=ttl),
-        )
-
-    def consume_link_token(self, link_token: str) -> dict[str, Any]:
-        """Consume an OAuth link token once."""
-
-        return self._consume_record(
-            prefix=GOOGLE_OAUTH_LINK_TOKEN_PREFIX,
-            consumed_prefix=GOOGLE_OAUTH_STATE_CONSUMED_PREFIX,
-            secret=link_token,
-            label="link token",
-        )
-
     def mark_recent_reauth(self, *, user_id: str, session_id: str | None = None, ttl_seconds: int | None = None) -> str:
         """Record a short-lived recent reauthentication marker."""
 
-        config = load_google_oauth_config()
-        ttl = max(1, int(ttl_seconds if ttl_seconds is not None else config.recent_reauth_seconds))
+        settings = load_oauth_settings()
+        ttl = max(1, int(ttl_seconds if ttl_seconds is not None else settings.recent_reauth_seconds))
         material = f"{user_id}|{session_id or ''}"
-        key = self._key(GOOGLE_OAUTH_RECENT_REAUTH_PREFIX, material)
+        key = self._key(OAUTH_RECENT_REAUTH_PREFIX, material)
         self._set(key, _json_dumps({"user_id": user_id, "session_id": session_id, "created_at": _utc_timestamp(time.time())}), ttl_seconds=ttl)
         return key
 
     def has_recent_reauth(self, *, user_id: str, session_id: str | None = None) -> bool:
         """Return whether a recent reauthentication marker exists."""
 
-        return self._exists(self._key(GOOGLE_OAUTH_RECENT_REAUTH_PREFIX, f"{user_id}|{session_id or ''}"))
+        material = f"{user_id}|{session_id or ''}"
+        return self._exists(self._key(OAUTH_RECENT_REAUTH_PREFIX, material)) or self._exists(
+            self._key(GOOGLE_OAUTH_RECENT_REAUTH_PREFIX, material)
+        )
 
 
 def create_state(*, provider_init_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:

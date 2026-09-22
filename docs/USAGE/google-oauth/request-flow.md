@@ -1,5 +1,7 @@
 # Google OAuth Request Flow
 
+> `/auth/google/*` are deprecated aliases onto the provider-agnostic pipeline; see the [OAuth reference](../oauth/reference.md). The diagrams below show the browser talking to `api.auth` directly for clarity. In the deployed BFF-mediated topology the companion backend sits in between: it calls `/start` and `/callback` server-to-server and owns delivery of the session to its own front end.
+
 All examples use localhost-only placeholders. Do not paste real Google codes, tokens, client credentials, raw `project_hash`, raw `user_group_hash`, or production origins into docs or smoke files.
 
 ## Route Family
@@ -7,15 +9,14 @@ All examples use localhost-only placeholders. Do not paste real Google codes, to
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `POST /auth/google/start` | Public, rate-limited | Redeem provider-init and redirect to Google. |
-| `GET /auth/google/callback` | Public redirect, rate-limited | Consume state, exchange code, validate ID token, issue local session. |
+| `GET /auth/google/callback` | Public redirect, rate-limited | Consume state, exchange code, validate ID token, then complete the state's purpose: issue a local session (login), link the identity to the initiating user (link), or record recent reauthentication (reauth). |
 | `POST /auth/google/link/start` | Existing local session + recent reauth | Start a Google link flow for a local consumer. |
-| `POST /auth/google/link/finish` | Existing local session + recent reauth | Finish linking by consuming an OAuth link token. |
 | `POST /auth/google/reauth/start` | Existing local session | Start Google step-up/reauth round-trip. |
 | `DELETE /auth/google/unlink` | Existing local session + recent reauth | Soft-unlink Google if fallback auth exists. |
 
 > Provider boundary: the route family below is Google OAuth login/link behavior. Patreon has separate link request/confirm/status/unlink, webhook, sync, and internal S2S flows documented in [Patreon account linking](../patreon-link/README.md); those flows are entitlement/link only and do not produce `LoginResponse`, local session cookies, or refresh tokens.
 
-> Unlike `link/start`, the `reauth/start` handler is **not** gated by provisioning mode and does **not** pre-require recent reauth (`require_recent_reauthentication`); it only initiates a Google step-up round-trip (`prompt=login`). Any failure returns `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`). The `link/start` and `link/finish` handlers both call `require_recent_reauthentication` (op `google_oauth_link`) and require provisioning mode `link_only`/`both`.
+> Unlike `link/start`, the `reauth/start` handler is **not** gated by provisioning mode and does **not** pre-require recent reauth (`require_recent_reauthentication`); it only initiates a Google step-up round-trip (`prompt=login`). Any failure returns `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`). The `link/start` handler calls `require_recent_reauthentication` and requires provisioning mode `link_only`/`both`. Linking and re-authentication complete inside the callback; there is no separate finish route.
 
 ## Login Start
 
@@ -74,7 +75,7 @@ api.auth
   2. rate-limit callback/state consume
   3. consume Redis state before code exchange
   4. exchange code once with PKCE verifier
-  5. validate ID token: RS256, JWKS, iss, aud, azp, exp/iat, nonce, no hd
+  5. validate ID token: RS256, JWKS, iss, aud, azp, exp/iat, nonce, hosted-domain allow-list
   6. discard token response and raw id token
   7. resolve local consumer by provider-sub HMAC
   8. enforce provisioning and project access policy
@@ -99,8 +100,8 @@ Failure surface:
 Authenticated consumer + recent reauth
   -> POST /auth/google/link/start
   -> Google round-trip
-  -> POST /auth/google/link/finish with oauth_link_token/state
-  -> sp_link_external_account(...)
+  -> GET /auth/google/callback (the state record carries purpose=link and the initiating user)
+  -> identity linked to that user; no new session is issued
 ```
 
 Linking is allowed only when provisioning mode is `link_only` or `both`. The Google provider-sub must not already be actively linked to another user. Google `email_verified` does not activate local email.

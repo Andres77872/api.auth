@@ -12,12 +12,14 @@ from src.middleware.auth_context import AuthContextMiddleware
 from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
-    auth, auth_google, auth_patreon, email_webhooks, patreon_webhooks,
+    auth, auth_google, auth_oauth, auth_patreon, email_webhooks, patreon_webhooks,
     stripe_webhooks, internal_patreon, internal_billing, internal_email, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, admin_patreon, system, bulk_operations, global_roles, permission_assignments,
-    audit_logs, api_keys, user_api_keys, email_templates, admin_billing,
+    audit_logs, api_keys, user_api_keys, email_templates, admin_billing, admin_oauth,
 )
+from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
+from src.Util.oauth.registry import register_default_adapters
 
 # Read description from README file
 with open('./src/README.md', 'r', encoding='utf-8') as f:
@@ -37,8 +39,12 @@ app = FastAPI(
 # Register exception handlers for enhanced error handling
 register_exception_handlers(app)
 
+# OAuth provider adapters are registered explicitly at start-up (no import-time side effects).
+register_default_adapters()
+
 # 3-TIER USER TYPE AUTHENTICATION ROUTES
 app.include_router(auth.router, tags=['Authentication'])
+app.include_router(auth_oauth.router, tags=['OAuth'])
 app.include_router(auth_google.router, tags=['Google OAuth'])
 app.include_router(auth_patreon.router, tags=['Patreon Link'])
 app.include_router(email_webhooks.router, tags=["Email Webhooks"])
@@ -55,6 +61,7 @@ app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
 app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
 app.include_router(admin_patreon.router, tags=['Admin - Patreon'])
 app.include_router(admin_billing.router, tags=['Admin - Billing'])
+app.include_router(admin_oauth.router, tags=['Admin - OAuth'])
 app.include_router(email_templates.router, tags=['Admin - Email Templates'])
 app.include_router(system.router, tags=['System Information'])
 app.include_router(internal_patreon.router, tags=['Patreon Internal'])
@@ -67,10 +74,7 @@ app.include_router(audit_logs.router, tags=['Audit Logs'])
 app.include_router(api_keys.router, tags=["API Keys - Admin"])
 
 # CORS configuration — explicit browser clients only.
-_allowed_origins = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://192.168.1.13:5010,http://192.168.1.90:5010,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5780,,http://localhost:5183,http://192.168.1.13:5173",
-)
+_allowed_origins = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 
 app.add_middleware(

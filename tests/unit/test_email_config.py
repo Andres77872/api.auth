@@ -130,3 +130,55 @@ def test_enabled_fake_provider_is_not_ready_outside_explicit_test_runtime(monkey
     assert readiness.ready is False
     assert readiness.status == "not_ready"
     assert "EMAIL_PROVIDER" in readiness.missing
+
+
+def test_reply_to_address_is_parsed_from_env_and_optional(monkeypatch):
+    config = _config_module()
+
+    for key, value in _base_env(EMAIL_REPLY_TO_ADDRESS="  support@example.com  ").items():
+        monkeypatch.setenv(key, value)
+    assert config.load_email_config().reply_to_address == "support@example.com"
+
+    monkeypatch.setenv("EMAIL_REPLY_TO_ADDRESS", "")
+    loaded = config.load_email_config()
+    assert loaded.reply_to_address is None
+    assert config.validate_email_readiness(loaded).ready is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["support@example.com", "Support <support@example.com>", '"Doe, John" <john@example.com>'],
+)
+def test_valid_reply_to_address_keeps_delivery_ready(monkeypatch, value):
+    config = _config_module()
+
+    for key, item in _base_env(EMAIL_REPLY_TO_ADDRESS=value).items():
+        monkeypatch.setenv(key, item)
+
+    readiness = config.validate_email_readiness(config.load_email_config())
+
+    assert readiness.ready is True
+    assert readiness.missing == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-an-email", "support@localhost", "a@example.com, b@example.com", "sup port@example.com", "a@@example.com"],
+)
+def test_malformed_reply_to_address_reports_not_ready(monkeypatch, value):
+    config = _config_module()
+
+    for key, item in _base_env(EMAIL_REPLY_TO_ADDRESS=value).items():
+        monkeypatch.setenv(key, item)
+
+    readiness = config.validate_email_readiness(config.load_email_config())
+
+    assert readiness.ready is False
+    assert readiness.missing == ["EMAIL_REPLY_TO_ADDRESS"]
+
+
+def test_reply_to_address_rejects_header_injection():
+    config = _config_module()
+
+    assert config.is_valid_reply_to_address("a@example.com\r\nBcc: attacker@example.com") is False
+    assert config.is_valid_reply_to_address("a@example.com\nX-Injected: 1") is False

@@ -89,6 +89,7 @@ def _optional_patch_targets(targets: tuple[str, ...], value: Any):
 def _patched_start_seams(fake_provider_init_redeemer, oauth_activity_capture):
     fake_config = MagicMock(
         enabled=True,
+        client_id="test-google-client-id.apps.googleusercontent.com",
         provisioning_mode="link_only",
         redirect_uris=[CALLBACK_URI],
         return_origins=[RETURN_ORIGIN],
@@ -131,7 +132,7 @@ async def test_google_oauth_start_denies_disabled_config_without_state_or_redire
     _assert_start_route_exists(response)
     assert response.status_code in {403, 404, 503}
     assert "location" not in response.headers
-    assert not list(fake_redis.scan_iter(match="*google_oauth_state*"))
+    assert not list(fake_redis.scan_iter(match="*oauth_state*"))
     oauth_assert_no_leaks(response, context="disabled start response")
 
 
@@ -189,7 +190,7 @@ async def test_google_oauth_start_rejects_provider_init_failure_and_replay_witho
     _assert_start_route_exists(response)
     assert response.status_code in {400, 401, 403}
     assert "location" not in response.headers
-    assert not list(fake_redis.scan_iter(match="*google_oauth_state*"))
+    assert not list(fake_redis.scan_iter(match="*oauth_state*"))
     oauth_assert_no_leaks(response, context="provider-init rejected start response")
 
 
@@ -237,7 +238,20 @@ async def test_google_oauth_start_creates_redis_state_and_start_rate_limit_bucke
     assert response.status_code in {200, 302, 303}
     redis_keys = [key.decode() if isinstance(key, bytes) else str(key) for key in fake_redis.scan_iter(match="*")]
 
-    assert any("google_oauth_state" in key for key in redis_keys), "start must persist server-side OAuth state"
+    assert any(key.startswith("oauth_state:") for key in redis_keys), "start must persist server-side OAuth state"
     assert any("google_oauth" in key and "rate" in key and "start" in key for key in redis_keys), (
         "start must apply the OAuth start/provider-init rate-limit bucket"
     )
+
+
+@pytest.mark.asyncio
+async def test_google_oauth_start_fails_fast_when_enabled_without_a_client_id(client, fake_redis, monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "")
+
+    response = await _post_start(client)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "EXT_8010"
+    assert "location" not in response.headers
+    assert not list(fake_redis.scan_iter(match="*oauth_state*"))

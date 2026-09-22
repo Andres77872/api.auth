@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.db import db_email
 from src.Util.db_config import redis_client
 from src.Util.email.config import EmailConfig, load_email_config
@@ -49,13 +50,6 @@ logger = logging.getLogger(__name__)
 # so user-facing email links are built from where the user actually is, instead of
 # this service's own bind address.
 PUBLIC_BASE_URL_HEADER = "X-Public-Base-Url"
-
-# Mirror of the CORS allowlist default in src/main.py. Duplicated here (rather than
-# imported) to avoid an import cycle with the app module.
-_DEFAULT_ALLOWED_ORIGINS = (
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,"
-    "https://auth-ui.arz.ai,http://localhost:5177,,http://localhost:5183"
-)
 
 # Hosts that are valid socket bind addresses but never reachable as a link host.
 _UNUSABLE_LINK_HOSTS = {"0.0.0.0", "::", ""}
@@ -161,7 +155,7 @@ def allowed_link_origins() -> set[str]:
     Reuses the CORS allowlist (``ALLOWED_ORIGINS``) so there is one place to list
     trusted frontends. A bare ``*`` entry means accept any forwarded origin.
     """
-    raw = os.environ.get("ALLOWED_ORIGINS", _DEFAULT_ALLOWED_ORIGINS)
+    raw = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
     return {origin.strip() for origin in raw.split(",") if origin.strip()}
 
 

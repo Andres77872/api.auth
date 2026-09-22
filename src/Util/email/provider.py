@@ -17,6 +17,7 @@ class EmailSendRequest:
     headers: Mapping[str, str] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     idempotency_key: str = ""
+    reply_to: str | None = None
 
 
 @dataclass(frozen=True)

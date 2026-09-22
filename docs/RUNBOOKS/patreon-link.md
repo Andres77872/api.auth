@@ -74,6 +74,10 @@ PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY
 PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY_ID
 ```
 
+`PATREON_WEBHOOK_ID` is inventory only: the loader parses it, but no code path
+reads the parsed value, so setting it has no runtime effect today. Webhook
+verification uses `PATREON_WEBHOOK_SECRET`.
+
 Tier-map keys:
 
 ```text

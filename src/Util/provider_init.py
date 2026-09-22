@@ -1,4 +1,13 @@
-"""Server-to-server provider-init token redemption for Google OAuth.
+"""Server-to-server provider-init token redemption (legacy companion handshake).
+
+This is the historical handshake in which ``api.auth`` calls the companion backend
+to learn the project binding. It survives only as a compatibility bridge
+(``init_mode='legacy_redeem'``); new integrations mint init tokens through
+``POST /auth/oauth/init`` instead (see ``src.Util.oauth.init_tokens``).
+
+The redeem URL is operator/root-managed and is typically an internal service
+address, so it is deliberately exempt from the public-address SSRF guard that
+protects tenant-supplied provider endpoints.
 
 Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 6.5.
 
@@ -206,6 +215,7 @@ def redeem_provider_init_token_sync(
     return_origin: str | None = None,
     http_post: Callable[..., Any] | None = None,
     timeout_seconds: float = 5.0,
+    expected_provider: str = PROVIDER_INIT_PROVIDER,
 ) -> ProviderInitBinding:
     """Redeem a provider-init token with exactly one server-to-server POST."""
 
@@ -225,7 +235,7 @@ def redeem_provider_init_token_sync(
     }
     body = {
         "provider_init_token": token,
-        "provider": PROVIDER_INIT_PROVIDER,
+        "provider": expected_provider,
         "audience": PROVIDER_INIT_AUDIENCE,
     }
     try:
@@ -236,6 +246,7 @@ def redeem_provider_init_token_sync(
     return validate_provider_init_binding(
         payload,
         config=config,
+        expected_provider=expected_provider,
         expected_purpose=expected_purpose,
         requested_return_origin=return_origin,
         token_fingerprint=token_fingerprint,
@@ -250,6 +261,7 @@ async def redeem_provider_init_token(
     return_origin: str | None = None,
     http_post: Callable[..., Any] | None = None,
     timeout_seconds: float = 5.0,
+    expected_provider: str = PROVIDER_INIT_PROVIDER,
 ) -> ProviderInitBinding:
     """Async route-friendly wrapper around one-shot provider-init redemption."""
 
@@ -261,13 +273,27 @@ async def redeem_provider_init_token(
         return_origin=return_origin,
         http_post=http_post,
         timeout_seconds=timeout_seconds,
+        expected_provider=expected_provider,
     )
+
+
+@dataclass(frozen=True)
+class LegacyRedeemRuntimeConfig:
+    """Duck-typed stand-in for ``GoogleOAuthConfig`` built from a project binding."""
+
+    provider_init_redeem_url: str | None = field(default=None, repr=False)
+    provider_init_redeem_token: str | None = field(default=None, repr=False)
+    provider_init_return_origins: tuple[str, ...] = ()
+
+    def is_provider_init_return_origin_allowed(self, return_origin: str) -> bool:
+        return str(return_origin or "") in self.provider_init_return_origins
 
 
 redeem_provider_init = redeem_provider_init_token
 
 
 __all__ = [
+    "LegacyRedeemRuntimeConfig",
     "ProviderInitBinding",
     "ProviderInitRedeemError",
     "fingerprint_provider_init_token",

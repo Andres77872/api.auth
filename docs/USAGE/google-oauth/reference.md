@@ -13,29 +13,38 @@ Values below are names only. Do not paste real secrets into docs. Use localhost 
 | `GOOGLE_OAUTH_ENABLED` | Runtime kill switch | Keep false/disabled until rollout gate passes. |
 | `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth client identifier | Use deployment secret/config management. |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client credential | Rotate via runbook; never log or document the value. |
-| `GOOGLE_OAUTH_DISCOVERY_URL` | OIDC discovery metadata URL | Default points to Google discovery. |
-| `GOOGLE_OAUTH_AUTHORIZE_ENDPOINT` | Authorization endpoint | Google authorization URL. |
-| `GOOGLE_OAUTH_TOKEN_ENDPOINT` | Token endpoint | Used for exactly-once code exchange. |
-| `GOOGLE_OAUTH_JWKS_URI` | JWKS endpoint | Cache TTL capped at `3600` seconds. |
-| `GOOGLE_OAUTH_ISSUERS` | Accepted issuers | `https://accounts.google.com` and `accounts.google.com`. |
+| `GOOGLE_OAUTH_DISCOVERY_URL` | OIDC discovery metadata URL | **Optional override.** Leave unset; `load_google_oauth_config` defaults to `https://accounts.google.com/.well-known/openid-configuration`. |
+| `GOOGLE_OAUTH_AUTHORIZE_ENDPOINT` | Authorization endpoint | **Optional override.** Defaults to `https://accounts.google.com/o/oauth2/v2/auth`. |
+| `GOOGLE_OAUTH_TOKEN_ENDPOINT` | Token endpoint | **Optional override.** Defaults to `https://oauth2.googleapis.com/token`. Used for exactly-once code exchange. |
+| `GOOGLE_OAUTH_JWKS_URI` | JWKS endpoint | **Optional override.** Defaults to `https://www.googleapis.com/oauth2/v3/certs`. Cache TTL capped at `3600` seconds. |
+| `GOOGLE_OAUTH_ISSUERS` | Accepted issuers | **Optional override.** Defaults to `https://accounts.google.com` and `accounts.google.com`. |
 | `GOOGLE_OAUTH_SCOPES` | OAuth scopes | Must be exactly `openid email`. |
+| `GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS` | Optional Google Workspace `hd` restriction | Comma-separated domain list; empty (the default) allows **all** accounts, and `*` also allows all. A non-empty list restricts Workspace sign-in to those domains (case-insensitive); a non-matching `hd` is rejected with `OAUTH_WORKSPACE_DENIED` (`EXT_8023`). Consumer Gmail carries no `hd` and is always allowed. |
 | `GOOGLE_OAUTH_REDIRECT_URIS` | Exact callback URI allowlist | Local examples: `http://localhost:8000/auth/google/callback`, `http://127.0.0.1:8000/auth/google/callback`. |
 | `GOOGLE_OAUTH_RETURN_ORIGINS` | Exact frontend return-origin allowlist | Local examples: `http://localhost:3000`, `http://localhost:5173`. |
 | `GOOGLE_OAUTH_PROVISIONING_MODE` | `disabled`, `link_only`, `auto_create`, or `both` | Production default must be `disabled` or `link_only`. |
-| `GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH` | Reserved/default binding hook | Keep empty unless an approved spec says otherwise; provider-init binding is authoritative. |
 | `GOOGLE_OAUTH_STATE_TTL_SECONDS` | OAuth state TTL | Max `600`. |
-| `GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS` | Link token TTL | Max `600`. |
 | `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS` | Recent step-up lifetime | Default design value `300`. |
 | `GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS` | JWKS cache cap | Max `3600`. |
 | `GOOGLE_OAUTH_LEEWAY_SECONDS` | Exp/iat clock leeway | Max `30`. |
 | `GOOGLE_OAUTH_STATE_PEPPER` | HMAC key for state Redis keys | Secret value, never printed. |
 | `GOOGLE_OAUTH_PROVIDER_SUB_PEPPER` | HMAC key for Google `sub` authority | Secret value, never printed. |
 | `GOOGLE_OAUTH_EMAIL_HASH_PEPPER` | HMAC key for email snapshot hash | Secret value, never printed. |
-| `GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET` | Disabled placeholder hash secret | Secret value, never printed. |
 | `GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | Redis failure policy | Should remain fail closed. |
 | `PROVIDER_INIT_REDEEM_URL` | Server-to-server companion redeem endpoint | Local/test only in docs; production value omitted. |
 | `PROVIDER_INIT_REDEEM_TOKEN` | Bearer trust-boundary credential | Secret value, never printed. |
 | `PROVIDER_INIT_RETURN_ORIGINS` | Provider-init return-origin allowlist | Exact match; defaults can mirror return origins. |
+
+The five Google endpoint keys — `GOOGLE_OAUTH_DISCOVERY_URL`,
+`GOOGLE_OAUTH_AUTHORIZE_ENDPOINT`, `GOOGLE_OAUTH_TOKEN_ENDPOINT`,
+`GOOGLE_OAUTH_JWKS_URI`, and `GOOGLE_OAUTH_ISSUERS` — are **optional
+overrides**, not required settings. `src/Util/google_oauth_config.py` already
+carries the correct Google values as built-in defaults, so leave all five unset
+unless a deployment deliberately points at a different endpoint. Setting them to
+placeholder values overrides the working defaults with garbage and breaks
+sign-in. What a deployment actually must supply to enable the feature is
+`GOOGLE_OAUTH_ENABLED`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+the redirect/return-origin allowlists, and the peppers/secrets above.
 
 Rate-limit keys:
 
@@ -44,8 +53,6 @@ Rate-limit keys:
 - `GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT`, `GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS`
 - `GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT`, `GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS`
 - `GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT`, `GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT`, `GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT`, `GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS`
 - `GOOGLE_OAUTH_UNLINK_RATE_LIMIT`, `GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS`
 
 ## Exact Allowlist Behavior
@@ -61,12 +68,13 @@ Local examples only:
 
 ## Endpoints
 
+> **Deprecated aliases.** `/auth/google/*` delegates to the provider-agnostic pipeline with the connection key `google` and stays available for existing consumers. New integrations should use [`/auth/oauth/*`](../oauth/reference.md). Linking and re-authentication complete inside the callback; the former `POST /auth/google/link/finish` route has been removed because nothing could ever satisfy it.
+
 | Endpoint | Method | Request | Success | Failure |
 | --- | --- | --- | --- | --- |
 | `/auth/google/start` | POST | `GoogleOAuthStartRequest` | `303` redirect to Google, OAuth binding cookie | Disabled provider returns `OAUTH_PROVIDER_DISABLED` / `EXT_8011` with explicit `403`; otherwise neutral `EXT_8xxx` (`EXT_8012` redeem, `EXT_8013` allowlist, `EXT_8014` state, `EXT_8030` rate-limit); no strict hash leakage |
-| `/auth/google/callback` | GET | `code`, `state`, optional `error`/`error_description` | Existing `LoginResponse` + existing cookies | Neutral `EXT_8xxx`; no provider/local enumeration |
+| `/auth/google/callback` | GET | `code`, `state`, optional `error`/`error_description` | For a login state: existing `LoginResponse` + existing cookies. For a link state: `ExternalIdentityLinkResponse` (no new session). For a reauth state: `{"reauthenticated": true}` and the recent-reauth marker is recorded. The purpose comes from the server-side state record only. | Neutral `EXT_8xxx`; no provider/local enumeration. `error=access_denied` returns `OAUTH_USER_CANCELLED` / `EXT_8031` (`400`) and consumes the state. A verified-e-mail collision with an existing local account returns `OAUTH_ACCOUNT_LINK_REQUIRED` / `EXT_8032` (`409`). |
 | `/auth/google/link/start` | POST | Local session + recent reauth (`require_recent_reauthentication`, op `google_oauth_link`); provisioning `link_only`/`both` | `303` redirect to Google | `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`) neutral denial on any failure |
-| `/auth/google/link/finish` | POST | Local session + recent reauth (op `google_oauth_link`); provisioning `link_only`/`both`; body `oauth_link_token` or `state` | `ExternalIdentityLinkResponse` | Broad-failure path returns `EXTERNAL_IDENTITY_SUB_CONFLICT` / `EXT_8027` (`409`); `OAUTH_STATE_INVALID` / `EXT_8014` (`400`) when token missing; `OAUTH_ID_TOKEN_INVALID` / `EXT_8019` (`401`) when claims absent. `EXTERNAL_IDENTITY_ALREADY_LINKED` / `EXT_8026` is reserved and not emitted by this route. |
 | `/auth/google/reauth/start` | POST | Local session (no provisioning gate, no pre-required recent reauth) | `303` redirect to Google with `prompt=login` step-up intent | `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`) on failure |
 | `/auth/google/unlink` | DELETE | Local session + recent reauth (op `google_oauth_unlink`) | `ExternalIdentityUnlinkResponse` (with `sessions_revoked`) | `EXTERNAL_IDENTITY_NOT_LINKED` / `EXT_8028` (`404`), `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` / `EXT_8029` (`409`), or `OAUTH_RATE_LIMITED` / `EXT_8030` (`429`, unlink-specific) |
 
@@ -113,7 +121,7 @@ OAuth provider/protocol/external identity errors use enum symbols whose values s
 | `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` | `EXT_8029` | 409 | Establish fallback auth first |
 | `OAUTH_RATE_LIMITED` | `EXT_8030` | 429 | Retry later |
 
-`EXTERNAL_IDENTITY_ALREADY_LINKED` / `EXT_8026` is defined in the enum but is **not currently emitted** by `auth_google.py`. The `link/finish` broad-failure path returns `EXTERNAL_IDENTITY_SUB_CONFLICT` / `EXT_8027` (`409`); treat `EXT_8026` as a reserved/latent code for this route.
+`EXTERNAL_IDENTITY_ALREADY_LINKED` / `EXT_8026` is defined in the enum but is **not currently emitted**. Linking an identity that already belongs to another user returns `EXTERNAL_IDENTITY_SUB_CONFLICT` / `EXT_8027` (`409`) from the callback; treat `EXT_8026` as a reserved code.
 
 ## Activity Catalog `act-cat-064..074`
 

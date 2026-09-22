@@ -21,11 +21,19 @@ All billing behavior is disabled by default. Enable only the narrow switches req
 | `BILLING_PORTAL_ENABLED` | `false` | Enables restricted Portal flow readiness. |
 | `BILLING_SYNC_ENABLED` | `false` | Enables billing sync worker behavior. |
 | `BILLING_RAW_PAYLOAD_CAPTURE_ENABLED` | `false` | Enables encrypted raw-evidence quarantine for approved diagnostics only. |
-| `STRIPE_BILLING_ENABLED` | `false` | Enables Stripe adapter readiness. |
+| `STRIPE_BILLING_ENABLED` | `false` | Required global Stripe gate, not just adapter readiness. See the note below. |
 | `STRIPE_WEBHOOKS_ENABLED` | `false` | Enables signed Stripe webhook processing. |
 | `STRIPE_CHECKOUT_ENABLED` | `false` | Enables Stripe Checkout adapter calls. |
 | `STRIPE_PORTAL_ENABLED` | `false` | Enables Stripe Portal adapter calls. |
 | `STRIPE_SYNC_ENABLED` | `false` | Enables Stripe source-of-truth sync. |
+
+The Checkout and Portal S2S routes in `src/routes/internal_billing.py` return
+`503` unless **both** `BILLING_ENABLED` and `STRIPE_BILLING_ENABLED` are true —
+even when `STRIPE_CHECKOUT_ENABLED=true` and the per-group capability is ready.
+`src/routes/admin_billing.py` reports `STRIPE_BILLING_ENABLED` in its missing
+list for the same reason. This trap is silent: `validate_stripe_runtime_readiness`
+ORs the switches together, so it still reports `ready` while the routes reject
+every request. Set both global gates before enabling any per-feature switch.
 
 Disabling these switches must preserve existing local authentication, Google OAuth, email, sessions, refresh tokens, API keys, and Patreon behavior.
 
@@ -40,7 +48,7 @@ Disabling these switches must preserve existing local authentication, Google OAu
 | `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON` | JSON key-id map for active and previous decrypt keys. |
 | `BILLING_RAW_PAYLOAD_ENCRYPTION_KEY` | Optional encrypted raw-evidence quarantine key. |
 | `BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID` | Key id for raw-evidence quarantine. |
-| `BILLING_RETURN_URL_ALLOWLIST` / `BILLING_ALLOWED_RETURN_ORIGINS` | Allowed Checkout/Portal return origins. |
+| `BILLING_RETURN_URL_ALLOWLIST` / `BILLING_ALLOWED_RETURN_ORIGINS` | Comma-separated allow-list of `http(s)` Checkout/Portal return origins. Required by readiness as soon as `BILLING_CHECKOUT_ENABLED` or `BILLING_PORTAL_ENABLED` is true. `BILLING_ALLOWED_RETURN_ORIGINS` is a fallback alias read only when the first name is empty. |
 
 Generate high-entropy values outside source control. Use placeholders in docs/tickets only; never paste real secrets.
 
@@ -85,6 +93,7 @@ Validly signed unsupported events are ignored or recorded safely without current
 | `BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | `90` days. |
 | `BILLING_RAW_PAYLOAD_RETENTION_DAYS` | `30` | `30` days. |
 | `BILLING_SYNC_STALE_AFTER_SECONDS` | `86400` | Product-specific stale policy stays consumer-owned. |
+| `BILLING_RETENTION_PURGE_INTERVAL_SECONDS` | `3600` | In-worker retention purge cadence in `src/workers/billing_sync_worker.py` (`0` or less disables the in-worker purge). |
 
 Normalized billing entitlement history and purchase history are retained indefinitely in privacy-minimized form.
 
@@ -105,9 +114,8 @@ Redis keys must use hashed bucket material. Do not use raw provider refs, signat
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `RUN_STRIPE_E2E` | `false` | Opt-in Stripe sandbox smoke only. |
-| `RUN_STRIPE_LOCAL_E2E` | `false` | Opt-in local Stripe-style fixture smoke. |
-| `STRIPE_LIVE_TEST_USER_HASH` | Empty | Test-only local user hash. |
-| `STRIPE_LIVE_TEST_PROJECT_HASH` | Empty | Test-only local project hash. |
+| `STRIPE_LIVE_TEST_USER_HASH` | Empty | Test-only local user hash; required once `RUN_STRIPE_E2E` is true, otherwise the live smoke fails fast. |
+| `STRIPE_LIVE_TEST_PROJECT_HASH` | Empty | Test-only local project hash; required once `RUN_STRIPE_E2E` is true, otherwise the live smoke fails fast. |
 | `STRIPE_LIVE_TEST_LOOKUP_KEY` | Empty | Test-only provider lookup key. |
 
 Never commit live provider credentials or webhook secrets.

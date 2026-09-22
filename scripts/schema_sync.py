@@ -27,13 +27,18 @@ PATCH_FILES = (
     "tables/09_email_activation_tables.sql",
     "tables/10_external_accounts.sql",
     "tables/11_patreon_entitlements.sql",
+    # OAuth catalog/connections/bindings. Listed before the procedure and trigger files:
+    # the external-account triggers validate the provider against oauth_provider_catalog.
+    "tables/13_oauth_connections.sql",
     "stored_procedures/14_email_activation.sql",
     "stored_procedures/15_external_accounts.sql",
     "stored_procedures/16_patreon_entitlements.sql",
     "stored_procedures/18_billing_groups.sql",
+    "stored_procedures/19_oauth_connections.sql",
     "triggers/04_email_activation_triggers.sql",
     "triggers/05_external_accounts_triggers.sql",
     "triggers/06_patreon_entitlements_triggers.sql",
+    "triggers/08_oauth_connections_triggers.sql",
 )
 
 # Additive column catch-up for existing DBs (MySQL has no ADD COLUMN IF NOT EXISTS).
@@ -50,10 +55,76 @@ COLUMN_PATCHES = (
         "billing_groups.catalog_sync_error_redacted",
         "ALTER TABLE billing_groups ADD COLUMN catalog_sync_error_redacted TEXT NULL",
     ),
+    # Namespace-keyed external identities (docs/agnostic_oauth). Additive: the HMAC input and
+    # the pepper are untouched, so every existing link keeps resolving.
+    (
+        "user_external_accounts.identity_namespace",
+        "ALTER TABLE user_external_accounts ADD COLUMN identity_namespace VARCHAR(191) NOT NULL DEFAULT '' AFTER provider",
+    ),
+    (
+        "user_external_accounts.connection_id",
+        "ALTER TABLE user_external_accounts ADD COLUMN connection_id VARCHAR(64) NULL AFTER identity_namespace",
+    ),
+    (
+        "user_external_accounts.active_user_namespace",
+        """
+        ALTER TABLE user_external_accounts ADD COLUMN active_user_namespace VARCHAR(256)
+            GENERATED ALWAYS AS (
+                CASE WHEN status = 'linked' THEN CONCAT(user_id, ':', identity_namespace) ELSE NULL END
+            ) VIRTUAL
+        """,
+    ),
 )
 
+# Idempotent data backfills, run after PATCH_FILES. Existing rows predate the namespace
+# column; their namespace is their provider ('google', 'patreon').
+DATA_PATCHES = (
+    (
+        "user_external_accounts.identity_namespace backfill",
+        "SELECT COUNT(*) AS count FROM user_external_accounts WHERE identity_namespace = ''",
+        "UPDATE user_external_accounts SET identity_namespace = provider WHERE identity_namespace = ''",
+    ),
+)
+
+# Index swap for the namespace-keyed identity, run after the backfill. Each entry is
+# (label, table, index_name, action, sql); 'add' runs when the index is missing, 'drop'
+# when it is still present. No row is ever deleted.
+INDEX_PATCHES = (
+    (
+        "add uk_external_accounts_active_namespace_sub",
+        "user_external_accounts",
+        "uk_external_accounts_active_namespace_sub",
+        "add",
+        "ALTER TABLE user_external_accounts ADD UNIQUE KEY uk_external_accounts_active_namespace_sub (identity_namespace, active_provider_sub_hash)",
+    ),
+    (
+        "add uk_external_accounts_user_namespace",
+        "user_external_accounts",
+        "uk_external_accounts_user_namespace",
+        "add",
+        "ALTER TABLE user_external_accounts ADD UNIQUE KEY uk_external_accounts_user_namespace (active_user_namespace)",
+    ),
+    (
+        "drop provider-keyed uk_external_accounts_active_sub",
+        "user_external_accounts",
+        "uk_external_accounts_active_sub",
+        "drop",
+        "ALTER TABLE user_external_accounts DROP INDEX uk_external_accounts_active_sub",
+    ),
+    (
+        "drop provider-keyed uk_external_accounts_user_provider",
+        "user_external_accounts",
+        "uk_external_accounts_user_provider",
+        "drop",
+        "ALTER TABLE user_external_accounts DROP INDEX uk_external_accounts_user_provider",
+    ),
+)
+
+# Generated columns made obsolete by INDEX_PATCHES; dropped only once their index is gone.
+STALE_COLUMNS = (("user_external_accounts", "active_user_provider"),)
+
 CANONICAL_ENUMS = {
-    ("user_external_accounts", "provider"): "enum('google','patreon')",
+    ("user_external_accounts", "provider"): "enum('google','patreon','github','discord','microsoft','oidc')",
     (
         "email_messages",
         "purpose",
@@ -67,7 +138,8 @@ CANONICAL_ENUMS = {
 ENUM_PATCHES = (
     (
         "user_external_accounts.provider",
-        "ALTER TABLE user_external_accounts MODIFY provider ENUM('google','patreon') NOT NULL",
+        # Widened only by APPENDING values; 'google','patreon' keep their positions.
+        "ALTER TABLE user_external_accounts MODIFY provider ENUM('google','patreon','github','discord','microsoft','oidc') NOT NULL",
     ),
     (
         "email_messages.purpose",
@@ -202,7 +274,15 @@ def _split_sql_statements(sql_content: str) -> list[str]:
 def _execute_statements(cursor, statements: Iterable[str]) -> int:
     count = 0
     for statement in statements:
-        cursor.execute(statement)
+        try:
+            cursor.execute(statement)
+        except Exception:
+            # DDL commits implicitly, so everything before this statement is already live
+            # and rollback() cannot undo it. Show where the run stopped; re-running --apply
+            # converges because every statement is idempotent.
+            head = " ".join(statement.split())[:160]
+            print(f"  ! failed after {count} statement(s) of this file, at: {head}", file=sys.stderr)
+            raise
         count += 1
     return count
 
@@ -272,6 +352,63 @@ def _apply_column_patches(cursor, *, dry_run: bool) -> list[str]:
     return changed
 
 
+def _index_exists(cursor, table: str, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+          AND index_name = %s
+        """,
+        (table, index_name),
+    )
+    return int(cursor.fetchone()["count"]) > 0
+
+
+def _apply_data_patches(cursor, *, dry_run: bool) -> list[str]:
+    changed: list[str] = []
+    for label, count_sql, update_sql in DATA_PATCHES:
+        table = label.split(".", 1)[0]
+        column = label.split(".", 1)[1].split(" ", 1)[0]
+        if not _table_exists(cursor, table) or _column_type(cursor, table, column) is None:
+            # Only reachable in a dry run: --apply adds the column first. Say what will
+            # happen rather than "skip", which hides the one bulk UPDATE of the plan.
+            total = 0
+            if _table_exists(cursor, table):
+                cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
+                total = int(cursor.fetchone()["count"])
+            changed.append(f"{label}: runs once the column is added ({total} existing row(s))")
+            continue
+        cursor.execute(count_sql)
+        pending = int(cursor.fetchone()["count"])
+        if pending == 0:
+            continue
+        changed.append(f"{label}: {pending} row(s)")
+        if not dry_run:
+            cursor.execute(update_sql)
+    return changed
+
+
+def _apply_index_patches(cursor, *, dry_run: bool) -> list[str]:
+    changed: list[str] = []
+    for label, table, index_name, action, sql in INDEX_PATCHES:
+        if not _table_exists(cursor, table):
+            continue
+        present = _index_exists(cursor, table, index_name)
+        if (action == "add" and present) or (action == "drop" and not present):
+            continue
+        changed.append(label)
+        if not dry_run:
+            cursor.execute(sql)
+    for table, column in STALE_COLUMNS:
+        if _table_exists(cursor, table) and _column_type(cursor, table, column) is not None:
+            changed.append(f"drop stale generated column {table}.{column}")
+            if not dry_run:
+                cursor.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    return changed
+
+
 def _extract_patreon_activity_upsert() -> str:
     source = (SCHEMAS_DIR / "tables/08_activity_logging_tables.sql").read_text(
         encoding="utf-8"
@@ -286,6 +423,28 @@ def _extract_patreon_activity_upsert() -> str:
         raise SystemExit("Could not extract Patreon activity catalog upsert")
     update_end += len("is_active = VALUES(is_active);")
     return source[insert_start:update_end]
+
+
+def _extract_oauth_activity_upsert() -> str:
+    source = (SCHEMAS_DIR / "tables/08_activity_logging_tables.sql").read_text(encoding="utf-8")
+    marker = "-- Provider-agnostic OAuth Activities"
+    start = source.find(marker)
+    if start < 0:
+        raise SystemExit("Could not find OAuth activity catalog block")
+    insert_start = source.find("INSERT INTO activity_catalog", start)
+    update_end = source.find("is_active = VALUES(is_active);", insert_start)
+    if insert_start < 0 or update_end < 0:
+        raise SystemExit("Could not extract OAuth activity catalog upsert")
+    return source[insert_start : update_end + len("is_active = VALUES(is_active);")]
+
+
+def _apply_oauth_activity_catalog(cursor, *, dry_run: bool) -> str:
+    cursor.execute("SELECT COUNT(*) AS count FROM activity_catalog WHERE activity_code LIKE 'oauth\\_%'")
+    before = int(cursor.fetchone()["count"])
+    if dry_run:
+        return f"upsert provider-agnostic OAuth activity catalog rows (currently {before})"
+    cursor.execute(_extract_oauth_activity_upsert())
+    return "upserted provider-agnostic OAuth activity catalog rows"
 
 
 def _apply_patreon_activity_catalog(cursor, *, dry_run: bool) -> str:
@@ -321,42 +480,34 @@ def _cleanup_stale_objects(cursor, *, dry_run: bool) -> list[str]:
             if not dry_run:
                 cursor.execute(f"DROP PROCEDURE IF EXISTS {procedure}")
 
-    message_refs = 0
-    if _table_exists(cursor, "email_messages"):
-        cursor.execute(
-            "SELECT COUNT(*) AS count FROM email_messages WHERE template_code = %s",
-            (STALE_TEMPLATE_CODE,),
-        )
-        message_refs = int(cursor.fetchone()["count"])
-
-    template_rows = 0
+    # The stale template is DEACTIVATED, never deleted. Removing its catalog row (below)
+    # already makes the code unreachable -- rendering and the admin listing both resolve
+    # through email_template_catalog -- so a DELETE would add nothing except risk:
+    # email_templates is version history, a delete would take operator-authored versions
+    # with it, and gating it on "no email_messages row references the code" would make
+    # this additive tool destroy rows at whatever later moment that stops being true.
+    active_template_rows = 0
     if _table_exists(cursor, "email_templates"):
         cursor.execute(
-            "SELECT COUNT(*) AS count FROM email_templates WHERE template_code = %s",
+            "SELECT COUNT(*) AS count FROM email_templates WHERE template_code = %s AND is_active = TRUE",
             (STALE_TEMPLATE_CODE,),
         )
-        template_rows = int(cursor.fetchone()["count"])
-    if template_rows:
-        if message_refs:
-            actions.append(
-                f"deactivate stale template {STALE_TEMPLATE_CODE}; referenced by {message_refs} email_messages rows"
+        active_template_rows = int(cursor.fetchone()["count"])
+    if active_template_rows:
+        # Reported only while something is still active: a converged database plans nothing.
+        actions.append(
+            f"deactivate stale template {STALE_TEMPLATE_CODE} ({active_template_rows} active version(s); rows are kept)"
+        )
+        if not dry_run:
+            cursor.execute(
+                """
+                UPDATE email_templates
+                   SET is_active = FALSE
+                 WHERE template_code = %s
+                   AND is_active = TRUE
+                """,
+                (STALE_TEMPLATE_CODE,),
             )
-            if not dry_run:
-                cursor.execute(
-                    """
-                    UPDATE email_templates
-                       SET is_active = FALSE
-                     WHERE template_code = %s
-                    """,
-                    (STALE_TEMPLATE_CODE,),
-                )
-        else:
-            actions.append(f"delete unreferenced stale template {STALE_TEMPLATE_CODE}")
-            if not dry_run:
-                cursor.execute(
-                    "DELETE FROM email_templates WHERE template_code = %s",
-                    (STALE_TEMPLATE_CODE,),
-                )
 
     catalog_rows = 0
     if _table_exists(cursor, "email_template_catalog"):
@@ -523,6 +674,65 @@ def _verify_markers(cursor) -> list[str]:
     if int(cursor.fetchone()["count"]) < 16:
         failures.append("Patreon activity catalog range is incomplete")
 
+    failures.extend(_verify_oauth_markers(cursor))
+    return failures
+
+
+def _verify_oauth_markers(cursor) -> list[str]:
+    """Outcome checks for the namespace-keyed identity migration.
+
+    The drift report compares object NAMES only, so a half-applied index swap, a skipped
+    backfill or an empty provider catalog would otherwise pass verification.
+    """
+    failures: list[str] = []
+    table = "user_external_accounts"
+
+    for _, _, index_name, action, _ in INDEX_PATCHES:
+        present = _index_exists(cursor, table, index_name)
+        if action == "add" and not present:
+            failures.append(f"missing unique key {index_name}")
+        if action == "drop" and present:
+            failures.append(f"provider-keyed unique key still present: {index_name}")
+    for stale_table, column in STALE_COLUMNS:
+        if _column_type(cursor, stale_table, column) is not None:
+            failures.append(f"stale generated column still present: {stale_table}.{column}")
+
+    if _column_type(cursor, table, "identity_namespace") is None:
+        failures.append("missing column user_external_accounts.identity_namespace")
+    else:
+        cursor.execute("SELECT COUNT(*) AS count FROM user_external_accounts WHERE identity_namespace = ''")
+        pending = int(cursor.fetchone()["count"])
+        if pending:
+            failures.append(f"identity_namespace backfill incomplete: {pending} row(s)")
+
+    if not _table_exists(cursor, "oauth_provider_catalog"):
+        failures.append("missing table oauth_provider_catalog")
+    else:
+        # The external-account triggers refuse any provider without a catalog row.
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM (SELECT DISTINCT provider FROM user_external_accounts) used
+            LEFT JOIN oauth_provider_catalog c ON c.provider_type = used.provider
+            WHERE c.provider_type IS NULL
+            """
+        )
+        uncovered = int(cursor.fetchone()["count"])
+        if uncovered:
+            failures.append(f"{uncovered} provider value(s) in use have no oauth_provider_catalog row")
+        for provider_type in ("google", "patreon"):
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM oauth_provider_catalog WHERE provider_type = %s",
+                (provider_type,),
+            )
+            if int(cursor.fetchone()["count"]) != 1:
+                failures.append(f"oauth_provider_catalog is missing the {provider_type} row")
+
+    expected_oauth_codes = len(re.findall(r"\(\s*'act-cat-\d+'", _extract_oauth_activity_upsert()))
+    cursor.execute("SELECT COUNT(*) AS count FROM activity_catalog WHERE activity_code LIKE 'oauth\\_%'")
+    if int(cursor.fetchone()["count"]) < expected_oauth_codes:
+        failures.append("provider-agnostic OAuth activity catalog range is incomplete")
+
     return failures
 
 
@@ -555,7 +765,12 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
                     print(f"  - {action}")
                 for relative_path in PATCH_FILES:
                     print(f"  - execute canonical SQL {relative_path}")
+                for action in _apply_data_patches(cursor, dry_run=True):
+                    print(f"  - {action}")
+                for action in _apply_index_patches(cursor, dry_run=True):
+                    print(f"  - {action}")
                 print(f"  - {_apply_patreon_activity_catalog(cursor, dry_run=True)}")
+                print(f"  - {_apply_oauth_activity_catalog(cursor, dry_run=True)}")
                 for action in _cleanup_stale_objects(cursor, dry_run=True):
                     print(f"  - {action}")
                 print("\nCurrent object drift:")
@@ -564,6 +779,12 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
 
             if apply:
                 print("\nApplying additive schema catch-up...")
+                # A DDL statement that cannot get its metadata lock queues, and every later
+                # query on that table queues behind it. Fail fast instead of stalling logins;
+                # keep this below the connection's read timeout so the server gives up first.
+                lock_wait = int(os.getenv("SCHEMA_SYNC_LOCK_WAIT_TIMEOUT", "15"))
+                cursor.execute("SET SESSION lock_wait_timeout = %s", (lock_wait,))
+                print(f"  - session lock_wait_timeout = {lock_wait}s")
                 for action in _apply_enum_patches(cursor, dry_run=False):
                     print(f"  - {action}")
                 for action in _apply_column_patches(cursor, dry_run=False):
@@ -574,7 +795,14 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
                 for relative_path in PATCH_FILES:
                     count = _run_sql_file(cursor, relative_path)
                     print(f"  - executed {relative_path} ({count} statements)")
+                # Backfill before the index swap: the new unique keys are built over the
+                # namespace column, so it must be populated first.
+                for action in _apply_data_patches(cursor, dry_run=False):
+                    print(f"  - {action}")
+                for action in _apply_index_patches(cursor, dry_run=False):
+                    print(f"  - {action}")
                 print(f"  - {_apply_patreon_activity_catalog(cursor, dry_run=False)}")
+                print(f"  - {_apply_oauth_activity_catalog(cursor, dry_run=False)}")
                 for action in _cleanup_stale_objects(cursor, dry_run=False):
                     print(f"  - {action}")
                 connection.commit()

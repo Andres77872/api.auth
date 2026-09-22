@@ -32,7 +32,7 @@ The Magic Auth database implements a sophisticated **multi-project authenticatio
 - **Hierarchical Groups**: Both user groups and project groups support parent-child hierarchies
 - **Global Role System**: Roles with permission groups containing individual permissions
 - **Scoped Permissions**: Grant or deny permissions at project-group level with priority
-- **Comprehensive Auditing**: Full activity logging with 90 activity types in the canonical SQL seed
+- **Comprehensive Auditing**: Full activity logging with 111 activity types in the canonical SQL seed
 - **Error Tracking**: Dedicated error logging with statistics and alerting
 - **Performance Optimized**: 83 explicit indexes, permission caching, and 18 SQL views
 
@@ -172,7 +172,7 @@ bootstrap order from this compact tree; use `scripts/create_database.py`.
 | `user_sessions` | Active user sessions per project |
 | `api_audit_log` | Complete API request/response logging |
 | `activity_logs` | User and system activity tracking |
-| `activity_catalog` | 90 seeded activity type definitions |
+| `activity_catalog` | 111 seeded activity type definitions |
 | `permission_audit_log` | Permission change audit trail |
 | `role_assignment_history` | Role/permission assignment history |
 
@@ -726,9 +726,12 @@ helper described in the same guide.
 
 ### Activity Catalog
 
-`schemas/tables/08_activity_logging_tables.sql` currently seeds 90 catalog rows
-(`act-cat-001` through `act-cat-090`) across core authentication/administration,
-email, Google OAuth, and Patreon categories.
+`schemas/tables/08_activity_logging_tables.sql` currently seeds 111 catalog rows:
+`act-cat-001` through `act-cat-090` across core authentication/administration,
+email, Google OAuth, and Patreon categories, plus `act-cat-107` through
+`act-cat-127` for provider-agnostic OAuth (the shared sign-in pipeline and the
+OAuth admin API). The `google_oauth_*` rows are kept for history and are still
+emitted by the deprecated `/auth/google` alias routes.
 
 Runtime code also reserves billing IDs `act-cat-091` through `act-cat-106`, but
 the canonical SQL bootstrap does not currently seed those 16 rows. Treat this
@@ -741,13 +744,13 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 69
+- **Tables**: 73
 - **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
-- **Stored Procedures**: 277
+- **Stored Procedures**: 308
 - **Functions**: 1
 - **Views**: 18
-- **Triggers**: 119 total (104 activity/domain triggers plus 15 validation triggers in table setup)
-- **Activity Types**: 90 seeded; 16 billing IDs reserved in runtime but not yet seeded
+- **Triggers**: 123 total (108 activity/domain triggers plus 15 validation triggers in table setup)
+- **Activity Types**: 111 seeded (including 21 provider-agnostic `oauth_*` rows, `act-cat-107` to `act-cat-127`); 16 billing IDs reserved in runtime but not yet seeded
 
 ---
 

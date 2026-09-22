@@ -96,7 +96,7 @@ curl -X GET "http://localhost:8000/admin/activity?search=john_doe&days=7" \
 
 ### Get Activity Types
 
-Returns the current runtime list of 91 `ActivityType` values available for
+Returns the current runtime list of 112 `ActivityType` values available for
 filtering:
 
 ```bash

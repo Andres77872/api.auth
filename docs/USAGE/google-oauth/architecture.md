@@ -53,7 +53,7 @@ api.auth
   |-- consumes state before code exchange
   |-- exchanges code once using PKCE verifier
   |-- validates ID token using RS256/JWKS + google-auth cross-check
-  |-- rejects Workspace hd accounts
+  |-- applies the optional hosted-domain (hd) allow-list; empty allows every account
   |-- discards Google token material
   |-- resolves or creates local consumer according to policy
   |-- checks group-derived access to provider-init-bound project
@@ -76,12 +76,13 @@ Existing local session lifecycle
 ```text
 valid state + valid ID token?
   no  -> neutral EXT_8xxx failure; no identity mutation
-  yes -> Workspace hd present?
-           yes -> neutral consumer-only denial
+  yes -> hosted-domain allow-list configured AND the token's hd is not on it?
+           yes -> neutral denial (OAUTH_WORKSPACE_DENIED)
            no  -> active provider-sub link exists?
                     yes -> returning linked consumer path
                     no  -> email-only collision?
-                             yes -> block ATO; require credential-first local proof before linking
+                             yes -> never merge or auto-link; with a provider-verified e-mail answer
+                                    OAUTH_ACCOUNT_LINK_REQUIRED so the client can offer "sign in, then link"
                              no  -> provisioning mode allows auto_create/both and provider-init group exists?
                                       yes -> create consumer + pending local email + external link
                                       no  -> neutral provisioning denial

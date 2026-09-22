@@ -18,12 +18,6 @@ from src.Util.auth_constants import (
     GOOGLE_OAUTH_CALLBACK_RATE_LIMIT_ENV,
     GOOGLE_OAUTH_CALLBACK_RATE_PREFIX,
     GOOGLE_OAUTH_CALLBACK_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_JWKS_FETCH_RATE_PREFIX,
-    GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_LINK_TOKEN_RATE_PREFIX,
-    GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS_ENV,
     GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT_ENV,
     GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX,
     GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS_ENV,
@@ -81,10 +75,6 @@ class OAuthRateLimitPolicy:
     state_consume_window_seconds: int = 60
     sub_collision_limit: int = 10
     sub_collision_window_seconds: int = 300
-    link_token_limit: int = 10
-    link_token_window_seconds: int = 300
-    jwks_fetch_limit: int = 5
-    jwks_fetch_window_seconds: int = 60
     unlink_limit: int = 10
     unlink_window_seconds: int = 300
     fail_closed_on_redis_error: bool = True
@@ -101,7 +91,12 @@ def _default_redis_client():
 
 
 def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
-    raw = env.get(name)
+    # Rate limits are deployment ceilings shared by every provider. The neutral OAUTH_* name
+    # wins; the historical GOOGLE_OAUTH_* name keeps working.
+    neutral = name.removeprefix("GOOGLE_")
+    raw = env.get(neutral)
+    if raw is None or str(raw).strip() == "":
+        raw = env.get(name)
     if raw is None or str(raw).strip() == "":
         return default
     try:
@@ -114,7 +109,9 @@ def load_oauth_rate_limit_policy(*, env: Mapping[str, str] | None = None) -> OAu
     """Load OAuth rate policy from documented env names and feature config."""
 
     values = env if env is not None else os.environ
-    oauth_config = load_google_oauth_config(env=values)
+    from src.Util.oauth.settings import load_oauth_settings
+
+    oauth_config = load_oauth_settings(env=values)
     return OAuthRateLimitPolicy(
         start_limit=_env_int(values, GOOGLE_OAUTH_START_RATE_LIMIT_ENV, 20),
         start_window_seconds=_env_int(values, GOOGLE_OAUTH_START_RATE_WINDOW_SECONDS_ENV, 60),
@@ -126,10 +123,6 @@ def load_oauth_rate_limit_policy(*, env: Mapping[str, str] | None = None) -> OAu
         state_consume_window_seconds=_env_int(values, GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV, 60),
         sub_collision_limit=_env_int(values, GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT_ENV, 10),
         sub_collision_window_seconds=_env_int(values, GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV, 300),
-        link_token_limit=_env_int(values, GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT_ENV, 10),
-        link_token_window_seconds=_env_int(values, GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS_ENV, 300),
-        jwks_fetch_limit=_env_int(values, GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT_ENV, 5),
-        jwks_fetch_window_seconds=_env_int(values, GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS_ENV, 60),
         unlink_limit=_env_int(values, GOOGLE_OAUTH_UNLINK_RATE_LIMIT_ENV, 10),
         unlink_window_seconds=_env_int(values, GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV, 300),
         fail_closed_on_redis_error=oauth_config.fail_closed_on_redis_error,
@@ -141,9 +134,27 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
-def _bucket_key(prefix: str, bucket: str, *parts: Any) -> str:
-    material = "|".join([bucket, *[str(part if part is not None else "") for part in parts]])
+def _bucket_key(prefix: str, bucket: str, *parts: Any, scope: str | None = None) -> str:
+    """Build a hashed bucket key.
+
+    ``scope`` carries the project/connection dimension so one tenant's traffic
+    cannot exhaust another's budget. It is appended only when provided, which
+    keeps keys for un-scoped callers unchanged.
+    """
+
+    values = [bucket, *[str(part if part is not None else "") for part in parts]]
+    if scope:
+        values.append(f"scope={scope}")
+    material = "|".join(values)
     return f"{prefix}{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
+
+
+def rate_limit_scope(*, project: str | None = None, connection: str | None = None) -> str | None:
+    """Non-reversible scope token for bucket keys (never the raw project hash)."""
+
+    if not project and not connection:
+        return None
+    return hashlib.sha256(f"{project or ''}|{connection or ''}".encode("utf-8")).hexdigest()[:16]
 
 
 class OAuthRateLimiter:
@@ -176,72 +187,54 @@ class OAuthRateLimiter:
             raise OAuthRateLimitExceeded(bucket=bucket, retry_after=self._ttl(key, window_seconds), limit=limit, key=key)
         return OAuthRateLimitDecision(allowed=True, bucket=bucket, remaining=max(0, limit - count))
 
-    def check_start(self, *, ip_address: str, provider_init_fingerprint: str | None = None) -> OAuthRateLimitDecision:
+    def check_start(self, *, ip_address: str, provider_init_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "start",
-            _bucket_key(GOOGLE_OAUTH_START_RATE_PREFIX, "start", _digest(ip_address), provider_init_fingerprint),
+            _bucket_key(GOOGLE_OAUTH_START_RATE_PREFIX, "start", _digest(ip_address), provider_init_fingerprint, scope=scope),
             limit=self.policy.start_limit,
             window_seconds=self.policy.start_window_seconds,
         )
 
-    def check_callback(self, *, ip_address: str, state_fingerprint: str | None = None) -> OAuthRateLimitDecision:
+    def check_callback(self, *, ip_address: str, state_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "callback",
-            _bucket_key(GOOGLE_OAUTH_CALLBACK_RATE_PREFIX, "callback", _digest(ip_address), state_fingerprint),
+            _bucket_key(GOOGLE_OAUTH_CALLBACK_RATE_PREFIX, "callback", _digest(ip_address), state_fingerprint, scope=scope),
             limit=self.policy.callback_limit,
             window_seconds=self.policy.callback_window_seconds,
         )
 
-    def check_provider_init_redeem(self, *, ip_address: str, provider_init_fingerprint: str | None = None) -> OAuthRateLimitDecision:
+    def check_provider_init_redeem(self, *, ip_address: str, provider_init_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "provider_init",
-            _bucket_key(GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX, "provider_init", _digest(ip_address), provider_init_fingerprint),
+            _bucket_key(GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX, "provider_init", _digest(ip_address), provider_init_fingerprint, scope=scope),
             limit=self.policy.provider_init_limit,
             window_seconds=self.policy.provider_init_window_seconds,
         )
 
     check_provider_init = check_provider_init_redeem
 
-    def check_state_consumption(self, *, ip_address: str, state_fingerprint: str | None = None) -> OAuthRateLimitDecision:
+    def check_state_consumption(self, *, ip_address: str, state_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "state_consume",
-            _bucket_key(GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX, "state_consume", _digest(ip_address), state_fingerprint),
+            _bucket_key(GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX, "state_consume", _digest(ip_address), state_fingerprint, scope=scope),
             limit=self.policy.state_consume_limit,
             window_seconds=self.policy.state_consume_window_seconds,
         )
 
     check_state_consume = check_state_consumption
 
-    def check_provider_sub_collision(self, *, provider_sub_fingerprint: str, ip_address: str | None = None) -> OAuthRateLimitDecision:
+    def check_provider_sub_collision(self, *, provider_sub_fingerprint: str, ip_address: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "sub_collision",
-            _bucket_key(GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX, "sub_collision", provider_sub_fingerprint, _digest(ip_address)),
+            _bucket_key(GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX, "sub_collision", provider_sub_fingerprint, _digest(ip_address), scope=scope),
             limit=self.policy.sub_collision_limit,
             window_seconds=self.policy.sub_collision_window_seconds,
         )
 
-    def check_link_token_consumption(self, *, ip_address: str, link_token_fingerprint: str | None = None) -> OAuthRateLimitDecision:
-        return self._consume_bucket(
-            "link_token",
-            _bucket_key(GOOGLE_OAUTH_LINK_TOKEN_RATE_PREFIX, "link_token", _digest(ip_address), link_token_fingerprint),
-            limit=self.policy.link_token_limit,
-            window_seconds=self.policy.link_token_window_seconds,
-        )
-
-    check_link_token_consume = check_link_token_consumption
-
-    def check_jwks_fetch(self, *, issuer: str = "google") -> OAuthRateLimitDecision:
-        return self._consume_bucket(
-            "jwks_fetch",
-            _bucket_key(GOOGLE_OAUTH_JWKS_FETCH_RATE_PREFIX, "jwks_fetch", issuer),
-            limit=self.policy.jwks_fetch_limit,
-            window_seconds=self.policy.jwks_fetch_window_seconds,
-        )
-
-    def check_unlink_attempt(self, *, user_id: str, ip_address: str | None = None) -> OAuthRateLimitDecision:
+    def check_unlink_attempt(self, *, user_id: str, ip_address: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "unlink",
-            _bucket_key(GOOGLE_OAUTH_UNLINK_RATE_PREFIX, "unlink", _digest(user_id), _digest(ip_address)),
+            _bucket_key(GOOGLE_OAUTH_UNLINK_RATE_PREFIX, "unlink", _digest(user_id), _digest(ip_address), scope=scope),
             limit=self.policy.unlink_limit,
             window_seconds=self.policy.unlink_window_seconds,
         )
@@ -250,6 +243,7 @@ class OAuthRateLimiter:
 
 
 __all__ = [
+    "rate_limit_scope",
     "OAuthRateLimitDecision",
     "OAuthRateLimitExceeded",
     "OAuthRateLimitPolicy",

@@ -272,7 +272,7 @@ async def test_google_oauth_start_callback_validate_refresh_logout_lifecycle(
         authorization_params = _authorization_params_from_start(start)
         emitted_state = authorization_params["state"]
         assert start.cookies.get("oauth_state") == fingerprint_oauth_value(emitted_state)
-        pending_state_keys = set(isolated_google_oauth_redis.scan_iter("google_oauth_state:*"))
+        pending_state_keys = set(isolated_google_oauth_redis.scan_iter("oauth_state:*"))
         assert len(pending_state_keys) == 1
 
         with _linked_google_identity_db_seams():
@@ -286,10 +286,10 @@ async def test_google_oauth_start_callback_validate_refresh_logout_lifecycle(
             assert callback.status_code == 200
             data = callback.json()
             assert not pending_state_keys.intersection(
-                isolated_google_oauth_redis.scan_iter("google_oauth_state:*")
+                isolated_google_oauth_redis.scan_iter("oauth_state:*")
             )
             assert len(
-                set(isolated_google_oauth_redis.scan_iter("google_oauth_state_consumed:*"))
+                set(isolated_google_oauth_redis.scan_iter("oauth_state_consumed:*"))
             ) == 1
             google_seams.token_client.exchange_authorization_code.assert_called_once()
             exchange_kwargs = (

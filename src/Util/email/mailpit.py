@@ -51,12 +51,14 @@ class MailpitProvider:
         message["From"] = _header(request.from_address)
         message["To"] = ", ".join(_header(item) for item in request.to)
         message["Subject"] = _header(request.subject)
+        if request.reply_to:
+            message["Reply-To"] = _header(request.reply_to)
         message["X-Auth-Email-Message-Id"] = _header(request.message_id)
         if request.idempotency_key:
             message["X-Idempotency-Key"] = _header(request.idempotency_key)
         for name, value in (request.headers or {}).items():
             header_name = _header(name)
-            if header_name and header_name.lower() not in {"from", "to", "subject"}:
+            if header_name and header_name.lower() not in {"from", "to", "subject", "reply-to"}:
                 message[header_name] = _header(value)
         message.set_content(request.text or "")
         if request.html:

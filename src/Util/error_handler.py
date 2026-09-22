@@ -81,6 +81,7 @@ class ErrorCode(str, Enum):
     TOKEN_EXPIRED = "AUTH_1019"
     SESSION_REVOKED = "AUTH_1020"
     JWT_CONFIGURATION_FAILURE = "AUTH_1021"
+    REFRESH_TOKEN_REPLAYED = "AUTH_1022"
     
     # Authorization errors (2xxx)
     ACCESS_DENIED = "AUTHZ_2001"
@@ -167,6 +168,8 @@ class ErrorCode(str, Enum):
     EXTERNAL_IDENTITY_NOT_LINKED = "EXT_8028"
     OAUTH_PASSWORD_REQUIRED_FOR_UNLINK = "EXT_8029"
     OAUTH_RATE_LIMITED = "EXT_8030"
+    OAUTH_USER_CANCELLED = "EXT_8031"
+    OAUTH_ACCOUNT_LINK_REQUIRED = "EXT_8032"
 
     PATREON_PROVIDER_NOT_CONFIGURED = "EXT_8100"
     PATREON_PROVIDER_DISABLED = "EXT_8101"
@@ -322,6 +325,13 @@ OAUTH_SENSITIVE_FIELD_NAMES = (
     "google_email",
     "google_hd",
     "oauth_link_token",
+    "init_token",
+    "client_secret",
+    "signing_key",
+    "redeem_token",
+    "redeem_url",
+    "legacy_redeem_token",
+    "provider_email",
     "project_hash",
     "user_group_hash",
     *PATREON_REDACTION_FIELD_NAMES,
@@ -539,6 +549,8 @@ OAUTH_NEUTRAL_PUBLIC_MESSAGE = "OAuth authentication could not be completed."
 OAUTH_PROVIDER_UNAVAILABLE_MESSAGE = "OAuth provider is not available."
 OAUTH_LINKING_DENIED_MESSAGE = "External identity action could not be completed."
 OAUTH_RATE_LIMITED_MESSAGE = "Too many OAuth attempts. Please try again later."
+OAUTH_USER_CANCELLED_MESSAGE = "Sign-in was cancelled at the provider."
+OAUTH_ACCOUNT_LINK_REQUIRED_MESSAGE = "Sign in with your existing method, then link this provider from your account."
 
 PATREON_NEUTRAL_PUBLIC_MESSAGE = "Patreon action could not be completed."
 PATREON_PROVIDER_UNAVAILABLE_MESSAGE = "Patreon service is not available."
@@ -572,6 +584,8 @@ OAUTH_ERROR_PUBLIC_MESSAGES: Dict[ErrorCode, str] = {
     ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED: OAUTH_LINKING_DENIED_MESSAGE,
     ErrorCode.OAUTH_PASSWORD_REQUIRED_FOR_UNLINK: OAUTH_LINKING_DENIED_MESSAGE,
     ErrorCode.OAUTH_RATE_LIMITED: OAUTH_RATE_LIMITED_MESSAGE,
+    ErrorCode.OAUTH_USER_CANCELLED: OAUTH_USER_CANCELLED_MESSAGE,
+    ErrorCode.OAUTH_ACCOUNT_LINK_REQUIRED: OAUTH_ACCOUNT_LINK_REQUIRED_MESSAGE,
 }
 
 OAUTH_ERROR_HTTP_STATUS: Dict[ErrorCode, int] = {
@@ -596,6 +610,8 @@ OAUTH_ERROR_HTTP_STATUS: Dict[ErrorCode, int] = {
     ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED: 404,
     ErrorCode.OAUTH_PASSWORD_REQUIRED_FOR_UNLINK: 409,
     ErrorCode.OAUTH_RATE_LIMITED: 429,
+    ErrorCode.OAUTH_USER_CANCELLED: 400,
+    ErrorCode.OAUTH_ACCOUNT_LINK_REQUIRED: 409,
 }
 
 PATREON_ERROR_PUBLIC_MESSAGES: Dict[ErrorCode, str] = {

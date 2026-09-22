@@ -119,18 +119,20 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `AUTH_1003` | `SESSION_INVALID` | Session is invalid | Token malformed or not found | Re-authenticate via login |
 | `AUTH_1004` | `TOKEN_INVALID` | Token invalid | JWT malformed or failed validation | Use a valid access/refresh token for the endpoint |
 | `AUTH_1005` | `ACCOUNT_INACTIVE` | Account is inactive | User status is `inactive` | Contact admin to reactivate |
+| `AUTH_1008` | `MFA_REQUIRED` | Recent reauthentication required | A step-up-gated operation (`/auth/switch-project`, Patreon link/unlink) was called with an access token issued more than `recent_reauth_seconds` ago (default 300s). MFA itself is not implemented; this is a recency gate | Call `/auth/refresh` and retry with the new access token |
 | `AUTH_1010` | `API_KEY_INVALID` | Invalid API key | `X-API-Key` malformed, fails HMAC verification, or owner is inactive (raised via the API-key validation adapter/middleware) | Use a valid, active API key |
 | `AUTH_1011` | `API_KEY_EXPIRED` | API key has expired | Key's `expires_at` has elapsed | Rotate or recreate the API key |
 | `AUTH_1012` | `API_KEY_REVOKED` | API key has been revoked | Key was revoked by owner/admin | Create a new key |
 | `AUTH_1013` | `REFRESH_TOKEN_INVALID` | Invalid refresh token | Refresh token malformed, missing Redis family/token record, hash mismatch, or otherwise not valid/current | Re-authenticate via login |
 | `AUTH_1014` | `REFRESH_TOKEN_MISSING` | Refresh token required | `/auth/refresh` called without `refresh_token` cookie/body | Send a valid refresh token or log in again |
-| `AUTH_1015` | `REFRESH_TOKEN_REUSED` | Refresh token reused | Old/used refresh token presented again; family revoked | Clear credentials and force re-login |
+| `AUTH_1015` | `REFRESH_TOKEN_REUSED` | Refresh token reused | A consumed refresh token was presented outside the replay grace window, or an older ancestor token was presented at all; the whole family is revoked | Clear credentials and force re-login |
 | `AUTH_1016` | `REFRESH_TOKEN_MISMATCH` | Refresh token mismatch | Cookie and explicit body refresh tokens differ | Send one matching refresh token source |
 | `AUTH_1017` | `REFRESH_FAMILY_REVOKED` | Refresh family revoked | Logout, reuse detection, deactivation, or admin revocation invalidated the family | Re-authenticate via login |
 | `AUTH_1018` | `TOKEN_TYPE_INVALID` | Wrong token type | Refresh token used as access token, or access/session token used for refresh | Use the correct token type for the endpoint |
 | `AUTH_1019` | `TOKEN_EXPIRED` | Token expired | JWT `exp` claim elapsed. Access-token expiry is recoverable through `/auth/refresh`; refresh-token expiry is terminal. | Refresh access token if the refresh token is still valid; otherwise re-authenticate |
 | `AUTH_1020` | `SESSION_REVOKED` | Session revoked | Server-side session/family context cannot be trusted, including unreconstructable legacy refresh context | Re-authenticate via login |
 | `AUTH_1021` | `JWT_CONFIGURATION_FAILURE` | JWT configuration failure | `JWT_SECRET_KEY` missing/invalid outside tests | Set `JWT_SECRET_KEY`; this is an operator issue |
+| `AUTH_1022` | `REFRESH_TOKEN_REPLAYED` | Refresh token already rotated | The refresh token that was *just* rotated was presented again within the replay grace window (lost response, retry, second tab). The family is **not** revoked | Use the refresh token from the response that already succeeded; if the client never received it, log in again |
 
 ### Authorization Errors (403)
 
@@ -247,6 +249,8 @@ These power the `/auth/google/*` flows. Public messages are intentionally neutra
 | `EXT_8028` | `EXTERNAL_IDENTITY_NOT_LINKED` | 404 | Unlink/reauth on an account with no linked identity |
 | `EXT_8029` | `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` | 409 | Cannot unlink the only credential without setting a password first |
 | `EXT_8030` | `OAUTH_RATE_LIMITED` | 429 | OAuth rate limit hit; honor `Retry-After` |
+| `EXT_8031` | `OAUTH_USER_CANCELLED` | 400 | The user cancelled or denied consent at the provider. A normal outcome: show "sign-in cancelled", not a failure. The state is consumed. |
+| `EXT_8032` | `OAUTH_ACCOUNT_LINK_REQUIRED` | 409 | An existing local account has this provider-verified e-mail. Accounts are never merged by e-mail: the user must sign in with their existing method and link the provider. |
 
 ### Email / Transactional Auth Email Errors
 
@@ -296,7 +300,6 @@ The following codes exist in the `ErrorCode` enum but are **not currently raised
 |------|-----------|-------|
 | `AUTH_1006` | `ACCOUNT_LOCKED` | Defined but not used (no account-lockout flow) |
 | `AUTH_1007` | `PASSWORD_RESET_REQUIRED` | Defined but not used |
-| `AUTH_1008` | `MFA_REQUIRED` | Defined but not used (MFA not implemented) |
 | `AUTH_1009` | `MFA_INVALID` | Defined but not used (MFA not implemented) |
 | `INT_7003` | `SERVICE_UNAVAILABLE` | Defined but not used |
 | `EXT_8026` | `EXTERNAL_IDENTITY_ALREADY_LINKED` | Reserved/latent — defined and mapped (409) but not currently emitted by any route |
@@ -480,8 +483,10 @@ The public message is deliberately generic and does **not** reveal which check f
 | `OAUTH_PROVISIONING_DENIED` / `OAUTH_PROJECT_ACCESS_DENIED` | Identity resolved but provisioning/project access not allowed | Verify provisioning mode and the user's group→project chain |
 | `EXTERNAL_IDENTITY_SUB_CONFLICT` (409) | Google account already maps to a different user | Sign in with the original account or unlink first |
 | `OAUTH_RATE_LIMITED` (429) | Too many OAuth attempts | Honor `Retry-After` |
+| `OAUTH_USER_CANCELLED` (400) | User pressed cancel at the provider | Offer to try again; do not report an error |
+| `OAUTH_ACCOUNT_LINK_REQUIRED` (409) | A local account already uses this verified e-mail | Ask the user to sign in with their existing method, then link the provider from their account |
 
-Full per-endpoint behavior is in the [Google OAuth Suite](google-oauth/README.md).
+Full per-endpoint behavior is in the [OAuth reference](oauth/reference.md) and, for the deprecated aliases, the [Google OAuth Suite](google-oauth/README.md).
 
 ### Access Denied to Project
 

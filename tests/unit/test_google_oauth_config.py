@@ -89,14 +89,12 @@ def _base_env(**overrides: str) -> dict[str, str]:
         "GOOGLE_OAUTH_RETURN_ORIGINS": "http://localhost:3000,http://localhost:5173",
         "GOOGLE_OAUTH_PROVISIONING_MODE": "link_only",
         "GOOGLE_OAUTH_STATE_TTL_SECONDS": "600",
-        "GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS": "600",
         "GOOGLE_OAUTH_RECENT_REAUTH_SECONDS": "300",
         "GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS": "3600",
         "GOOGLE_OAUTH_LEEWAY_SECONDS": "30",
         "GOOGLE_OAUTH_STATE_PEPPER": "test-oauth-state-pepper-not-real-min-32-bytes!!",
         "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": "test-oauth-provider-sub-pepper-not-real-min-32-bytes!!",
         "GOOGLE_OAUTH_EMAIL_HASH_PEPPER": "test-oauth-email-hash-pepper-not-real-min-32-bytes!!",
-        "GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET": "test-oauth-passwordless-secret-not-real-min-32-bytes!!",
         "GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "true",
         "PROVIDER_INIT_REDEEM_URL": "http://provider-init.test/internal/auth/provider-init/redeem",
         "PROVIDER_INIT_REDEEM_TOKEN": "test-provider-init-redeem-token-not-real",
@@ -181,14 +179,11 @@ def test_ttl_jwks_cache_and_leeway_caps_are_enforced():
 
     config = loader(env=_base_env())
     assert _field(config, "state_ttl_seconds") <= 600
-    assert _field(config, "link_token_ttl_seconds") <= 600
     assert _field(config, "jwks_cache_ttl_seconds") <= 3600
     assert _field(config, "leeway_seconds") == 30
 
     with pytest.raises(error_type, match="GOOGLE_OAUTH_STATE_TTL_SECONDS"):
         loader(env=_base_env(GOOGLE_OAUTH_STATE_TTL_SECONDS="601"))
-    with pytest.raises(error_type, match="GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS"):
-        loader(env=_base_env(GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS="601"))
     with pytest.raises(error_type, match="GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS"):
         loader(env=_base_env(GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS="3601"))
     with pytest.raises(error_type, match="GOOGLE_OAUTH_LEEWAY_SECONDS"):
@@ -203,7 +198,6 @@ def test_enabled_readiness_requires_google_provider_init_and_hashing_secrets():
             GOOGLE_OAUTH_STATE_PEPPER="",
             GOOGLE_OAUTH_PROVIDER_SUB_PEPPER="",
             GOOGLE_OAUTH_EMAIL_HASH_PEPPER="",
-            GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET="",
             PROVIDER_INIT_REDEEM_URL="",
             PROVIDER_INIT_REDEEM_TOKEN="",
         )
@@ -216,7 +210,6 @@ def test_enabled_readiness_requires_google_provider_init_and_hashing_secrets():
         "GOOGLE_OAUTH_STATE_PEPPER",
         "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER",
         "GOOGLE_OAUTH_EMAIL_HASH_PEPPER",
-        "GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET",
         "PROVIDER_INIT_REDEEM_URL",
         "PROVIDER_INIT_REDEEM_TOKEN",
     }

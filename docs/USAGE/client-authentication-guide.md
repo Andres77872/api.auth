@@ -39,7 +39,7 @@ The API uses a **true access/refresh token model**:
 | Content-Type (auth routes) | `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/switch-project` use `application/x-www-form-urlencoded` (form fields). The email/password JSON routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`, `/auth/password/change`) use `application/json`. `/auth/validate-api-key` carries no body (header auth). |
 | Content-Type (other routes) | Older CRUD/admin mutations are mainly form-encoded. Email-template, provider, internal S2S, audit-export, and selected bulk routes use JSON; webhooks use signed raw bytes. Follow each route's OpenAPI request schema. |
 | User-Agent | **Required on every request**. Missing it returns 422. |
-| CORS | Set `ALLOWED_ORIGINS` explicitly for every deployment. `.env.example` is the maintained template; do not depend on source-code fallback origins. |
+| CORS | Set `ALLOWED_ORIGINS` explicitly for every deployment. `.env.example` is the maintained template. When unset, CORS, early-reject responses, and email-link origin checks share one built-in list (`DEFAULT_ALLOWED_ORIGINS` in `src/Util/auth_constants.py`) of localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai` — do not depend on it. |
 | Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
 
 ---
@@ -52,9 +52,9 @@ The API uses a **true access/refresh token model**:
 3. Login (subsequent visits)        → POST /auth/login           → access + refresh token pair
 4. Validate access token            → GET  /auth/validate        → access cookie or Bearer access token
 5. Refresh access token             → POST /auth/refresh         → refresh cookie/body only; rotates refresh token
-6. Switch Project (optional)        → POST /auth/switch-project  → access token + current refresh token
+6. Switch Project (optional)        → POST /auth/switch-project  → recent access token + current refresh token
 7. Change Password (optional)       → POST /auth/password/change → access token + current password; no new session
-8. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked
+8. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked (an expired access token is accepted)
 ```
 
 For detailed endpoint parameters and response shapes, see [Authentication Usage Cases](authentication-usage-cases.md).
@@ -71,14 +71,21 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 | Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`. Max-Age tracks the refresh family TTL (72h sliding, or ~30 days when `remember_me=true`) |
 | Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
 | Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family. Default rotation slides the 72h window; a `remember_me=true` family keeps its fixed `absolute_expires_at` and does not slide |
+| Replay Grace | Re-presenting the refresh token that was *just* rotated returns `401 REFRESH_TOKEN_REPLAYED` **without** revoking the family, for `REFRESH_REPLAY_GRACE_SECONDS` (default 10s). This covers a lost response, an offline retry, or a second tab. Any older token, or the same token after the window, is reuse: `401 REFRESH_TOKEN_REUSED` and the family dies. Set the env var to `0` for strict zero-tolerance |
 | Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window. Successful login, refresh, and switch-project responses return the mode as top-level `remember_me`; `/auth/validate` returns it under `session.remember_me` |
 | Session Plan | A response-only, subscription-only object for project-scoped consumers: `provider`, six-state `state`, `active`, opaque plan/tier codes, expiry fields, and `cancel_at_period_end`. It is not embedded in auth tokens or Redis session state. |
 
 `POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
 
-The current refresh and switch-project response bodies do not expose `plan`.
-After either operation, call `GET /auth/validate` with the new access token when
-the client needs the current project plan projection.
+`POST /auth/switch-project` additionally requires a **recent** access token: one
+issued within `recent_reauth_seconds` (default 300s). Since access tokens live 15
+minutes, a session that has been idle for more than five minutes must call
+`/auth/refresh` first, or the switch returns `401 MFA_REQUIRED`.
+
+`POST /auth/refresh` returns `plan` for project-scoped consumers, like login.
+The switch-project response body still does not expose it; call
+`GET /auth/validate` with the new access token after a switch when the client
+needs the current project plan projection.
 
 ---
 
@@ -799,7 +806,9 @@ For the complete error code catalog, see [Error Reference](errors.md).
 | 401 | `SESSION_INVALID` | Token malformed | Re-authenticate |
 | 401 | `ACCOUNT_INACTIVE` | User is inactive | Contact admin |
 | 401 | `REFRESH_TOKEN_INVALID` | Refresh token invalid/expired/revoked | Re-authenticate |
-| 401 | `REFRESH_TOKEN_REUSED` | Old refresh token reused; family revoked | Clear tokens and re-authenticate |
+| 401 | `REFRESH_TOKEN_REUSED` | Consumed refresh token replayed outside the grace window; family revoked | Clear tokens and re-authenticate |
+| 401 | `REFRESH_TOKEN_REPLAYED` | The refresh token you just rotated was sent again within the grace window; family left intact | Use the newer token from the refresh that already succeeded; re-authenticate only if you never received it |
+| 401 | `MFA_REQUIRED` | `/auth/switch-project` called with an access token older than 300s | Call `/auth/refresh`, then retry the switch |
 | 401 | `TOKEN_TYPE_INVALID` | Refresh token used as access token, or access token used for refresh | Use the right token type |
 | 401 | `TOKEN_EXPIRED` | JWT `exp` elapsed | Refresh access token or re-authenticate |
 | 401 | `SESSION_REVOKED` | Access session or family revoked | Re-authenticate |

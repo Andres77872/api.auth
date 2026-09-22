@@ -432,6 +432,7 @@ class EmailWorker:
             headers=rendered.headers,
             tags=rendered.tags,
             idempotency_key=str(message.get("provider_idempotency_key") or message_id),
+            reply_to=self.config.reply_to_address,
         )
 
     def _render_variables(self, message: Mapping[str, Any]) -> dict[str, Any]:

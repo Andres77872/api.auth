@@ -30,7 +30,7 @@ Failure modes for the ROOT-only template API, the inbound Resend webhook, and th
 |---------|-------|-----|
 | `400` "You have no verified email address on file ..." | The ROOT caller has no `activated` email | Add and activate an email on the caller's account first (users suite); the recipient is **locked** to the caller's own activated address. |
 | `400` "Email delivery is not ready (status: disabled ...)" | `EMAIL_DELIVERY_ENABLED=false` | Enable delivery (and ensure provider config) before testing. |
-| `400` "Email delivery is not ready (status: not_ready ...)" | Missing provider config — e.g. `EMAIL_FROM_ADDRESS`, or for `resend` `RESEND_API_KEY`/`RESEND_WEBHOOK_SECRET`, or `EMAIL_SENDER_DOMAIN_VERIFIED` in prod | Fill the keys named in the readiness `missing[]` list. |
+| `400` "Email delivery is not ready (status: not_ready ...)" | Missing or invalid provider config — e.g. `EMAIL_FROM_ADDRESS`, a malformed `EMAIL_REPLY_TO_ADDRESS`, or for `resend` `RESEND_API_KEY`/`RESEND_WEBHOOK_SECRET`, or `EMAIL_SENDER_DOMAIN_VERIFIED` in prod | Fill the keys named in the readiness `missing[]` list. |
 | "Too many test emails; please wait ..." (`RATE_LIMIT_EXCEEDED`) | The `email_template_test` buckets are exhausted (recipient 3/hr & 10/day, user 5/hr, IP 20/hr) or Redis is down (fail-closed) | Wait for the window to reset; if Redis is unavailable the limiter fails closed — restore Redis. |
 | `400` "Test email could not be sent by the provider" | `provider.send` raised `EmailProviderError` | Check provider credentials/connectivity; inspect sanitized logs. |
 | Expected the recipient address in the response | By design | Only `recipient_masked` is returned; the audit entry redacts the recipient entirely. There is no recipient body field. |
@@ -43,7 +43,7 @@ Failure modes for the ROOT-only template API, the inbound Resend webhook, and th
 |---------|-------|-----|
 | `400 "Invalid webhook signature"` | Missing one of `svix-id` / `svix-timestamp` / `svix-signature` | Ensure Resend/Svix sends all three headers; do not strip them at a proxy. |
 | `400 "Invalid webhook signature"` (headers present) | Wrong `RESEND_WEBHOOK_SECRET`, or the body was re-serialized before verification | Deploy the correct Svix secret. Verification runs over the **raw bytes** — never JSON-parse-and-reserialize ahead of the endpoint. |
-| `400` after timestamp skew | Event timestamp outside `RESEND_WEBHOOK_TOLERANCE_SECONDS` (default 300) | Fix clock skew or widen the tolerance. |
+| `400` after timestamp skew | Event timestamp outside svix's **fixed 5-minute** tolerance, which `Webhook(secret).verify(...)` enforces internally | Sync the server clock (NTP). The tolerance is not configurable: `RESEND_WEBHOOK_TOLERANCE_SECONDS` is parsed but never passed to the verifier, so changing it has no effect. |
 | Event accepted (`204`) but nothing changed | Unsupported event `type`, or the provider event id was already seen (Redis 24h dedupe / DB authority) | Expected — only `delivered`/`sent`/`bounced`/`complained` variants act; duplicates are idempotently ignored. |
 | Expected a `200`/JSON result | The endpoint always returns `204 No Content` | There is no 2xx-with-body path. Only signature/header failures return `400`. |
 | A bounce/complaint did not suppress | The event id was deduped, or the recipient could not be resolved to a local message | Confirm the event is first-seen and carries a resolvable recipient/message id; suppression is applied by `apply_email_provider_event`. |

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, field
+from email.utils import getaddresses
 from typing import Mapping
 
 from src.Util.auth_constants import (
@@ -165,6 +166,22 @@ def _validate_payload_key(key: str) -> None:
         raise EmailConfigError(f"{EMAIL_PAYLOAD_KEY_ENV} must be a Fernet URL-safe base64 32-byte key") from exc
 
 
+def is_valid_reply_to_address(value: str | None) -> bool:
+    """Accept exactly one mailbox, bare (`a@b.co`) or named (`Name <a@b.co>`)."""
+
+    text = str(value or "")
+    if not text or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return False
+    parsed = [address for _name, address in getaddresses([text]) if address]
+    if len(parsed) != 1:
+        return False
+    address = parsed[0]
+    if address.count("@") != 1 or any(char.isspace() for char in address):
+        return False
+    local, domain = address.split("@")
+    return bool(local and domain and "." in domain and not domain.startswith(".") and not domain.endswith("."))
+
+
 def _enforce_no_real_send_guard(config: EmailConfig) -> None:
     if not config.delivery_enabled:
         return
@@ -252,6 +269,9 @@ def validate_email_readiness(config: EmailConfig) -> EmailReadiness:
     missing: list[str] = []
     if not config.from_address:
         missing.append(EMAIL_FROM_ADDRESS_ENV)
+    # Optional, but a malformed value must not reach a provider as a header.
+    if config.reply_to_address and not is_valid_reply_to_address(config.reply_to_address):
+        missing.append(EMAIL_REPLY_TO_ADDRESS_ENV)
 
     if config.provider == "resend":
         if not config.resend_api_key:

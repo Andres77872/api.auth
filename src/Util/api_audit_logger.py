@@ -154,10 +154,21 @@ class APIAuditLogger:
 
     @staticmethod
     def is_google_oauth_path(path: str) -> bool:
-        """Return True for the public Google OAuth route family."""
+        """Return True for the deprecated Google alias route family."""
 
         normalized_path = (path or "").split("?", 1)[0]
         return normalized_path == "/auth/google" or normalized_path.startswith("/auth/google/")
+
+    @staticmethod
+    def is_oauth_path(path: str) -> bool:
+        """Return True for any OAuth login route: ``/auth/oauth/*`` and the Google aliases."""
+
+        normalized_path = (path or "").split("?", 1)[0]
+        return (
+            normalized_path == "/auth/oauth"
+            or normalized_path.startswith("/auth/oauth/")
+            or APIAuditLogger.is_google_oauth_path(normalized_path)
+        )
 
     @staticmethod
     def _normalized_path(path: str) -> str:
@@ -253,7 +264,7 @@ class APIAuditLogger:
     def infer_auth_method_for_path(path: str) -> Optional[str]:
         """Infer audit auth-method tags without widening the DB enum."""
 
-        if APIAuditLogger.is_google_oauth_path(path):
+        if APIAuditLogger.is_oauth_path(path):
             return "oauth"
         if APIAuditLogger.is_patreon_webhook_path(path):
             return "webhook"
@@ -431,7 +442,7 @@ class APIAuditLogger:
             return True
 
         # Failed authentication
-        if APIAuditLogger.is_google_oauth_path(path) and status_code >= 400:
+        if APIAuditLogger.is_oauth_path(path) and status_code >= 400:
             return True
 
         # Failed authentication
@@ -503,8 +514,10 @@ class APIAuditLogger:
         # Add endpoint category tags
         if '/auth/' in path:
             tags.append('authentication')
-        if APIAuditLogger.is_google_oauth_path(path):
-            tags.append('google_oauth')
+        if APIAuditLogger.is_oauth_path(path):
+            tags.append('oauth')
+            if APIAuditLogger.is_google_oauth_path(path):
+                tags.append('google_oauth')
             tags.append('external_idp')
         if APIAuditLogger.is_patreon_path(path):
             tags.append('patreon')

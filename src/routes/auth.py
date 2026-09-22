@@ -65,6 +65,10 @@ from src.Util.db.db_user_groups import get_user_accessible_projects, get_user_gr
 from src.Util.db.db_projects import get_project_by_hash
 from src.Util.db.db_users import check_admin_multi_project_access, get_admin_project_assignments_with_details
 from src.Util.auth_flow import require_recent_reauthentication, resolve_target_project
+from src.Util.session_issue import (
+    project_is_auth_accessible as _project_is_auth_accessible,
+    set_token_pair_cookies as _set_token_pair_cookies,
+)
 from src.Util.auth_lifecycle import issue_platform_token_pair, issue_project_token_pair, rotate_refresh_family, revoke_refresh_family, revoke_user_auth_state, revoke_user_auth_state_except_current, validate_access_session
 from src.Util.db.db_enhanced import validate_session as validate_enhanced_session
 from src.middleware.authentication import validate_api_key_context
@@ -104,31 +108,6 @@ def _get_refresh_family(family_id: str) -> Optional[dict]:
     return json.loads(raw)
 
 
-def _set_token_pair_cookies(response: Response, token_pair) -> None:
-    """Apply access and refresh cookies from lifecycle token metadata."""
-    access_cookie = token_pair.cookie_metadata["access"]
-    response.set_cookie(
-        key=access_cookie["name"],
-        value=token_pair.access_token,
-        max_age=access_cookie["max_age"],
-        httponly=access_cookie["httponly"],
-        secure=access_cookie["secure"],
-        samesite=access_cookie["samesite"],
-        path=access_cookie["path"],
-    )
-
-    refresh_cookie = token_pair.cookie_metadata["refresh"]
-    response.set_cookie(
-        key=refresh_cookie["name"],
-        value=token_pair.refresh_token,
-        max_age=refresh_cookie["max_age"],
-        httponly=refresh_cookie["httponly"],
-        secure=refresh_cookie["secure"],
-        samesite=refresh_cookie["samesite"],
-        path=refresh_cookie["path"],
-    )
-
-
 def _route_refresh_groups(user_id: str, project_hash: str):
     try:
         groups = get_user_groups_in_project_by_hash(user_id, project_hash)
@@ -165,23 +144,6 @@ def _project_info_from_any(project: Any) -> Optional[ProjectInfo]:
     )
 
 
-def _project_is_auth_accessible(project: Any) -> bool:
-    """Project-scoped auth may only target active, non-archived projects."""
-    if project is None:
-        return False
-    is_active = getattr(project, "is_active", True)
-    if isinstance(is_active, Mock) and "is_active" not in getattr(project, "__dict__", {}):
-        is_active = True
-    if isinstance(project, dict):
-        is_active = project.get("is_active", is_active)
-    archived = getattr(project, "archived", False)
-    if isinstance(archived, Mock) and "archived" not in getattr(project, "__dict__", {}):
-        archived = False
-    if isinstance(project, dict):
-        archived = project.get("archived", archived)
-    return bool(is_active) and not bool(archived)
-
-
 def _deny_project_auth(project_hash: str) -> None:
     raise AuthorizationError(
         message="Access denied to requested project",
@@ -207,6 +169,35 @@ def _admin_accessible_project_infos(user_id: str) -> list[ProjectInfo]:
     return project_infos
 
 
+def _user_group_infos_from_records(group_records) -> list[UserGroupInfo]:
+    """Map reconstructed group rows onto the login response shape.
+
+    Only rows carrying a real ``group_hash`` are emitted. Root/admin sessions
+    have synthetic group labels with no backing row, so they yield an empty list
+    — which is exactly what `/auth/login` returns for those user types. Echoing
+    the group *name* into ``group_hash`` would hand clients a value that looks
+    like a hash and is not one.
+    """
+    group_infos = []
+    for group in group_records or []:
+        group_hash = getattr(group, "group_hash", None)
+        if isinstance(group, dict):
+            group_hash = group.get("group_hash", group_hash)
+        if not group_hash:
+            continue
+        group_name = getattr(group, "group_name", None)
+        group_description = getattr(group, "group_description", None)
+        if isinstance(group, dict):
+            group_name = group.get("group_name", group_name)
+            group_description = group.get("group_description", group_description)
+        group_infos.append(UserGroupInfo(
+            group_hash=str(group_hash),
+            group_name=str(group_name or ""),
+            description=group_description,
+        ))
+    return group_infos
+
+
 def _login_response_from_rotation(rotation) -> LoginResponse:
     token_pair = rotation.token_pair
     login_data = rotation.login_data
@@ -222,10 +213,8 @@ def _login_response_from_rotation(rotation) -> LoginResponse:
         for project_info_item in (_project_info_from_any(project) for project in (login_data.available_projects or []))
         if project_info_item is not None
     ]
-    user_groups_info = [
-        UserGroupInfo(group_hash=str(group), group_name=str(group))
-        for group in (login_data.groups or [])
-    ]
+    auth_context = getattr(rotation, "auth_context", None)
+    user_groups_info = _user_group_infos_from_records(getattr(auth_context, "group_records", None))
 
     return LoginResponse(
         success=True,
@@ -242,11 +231,16 @@ def _login_response_from_rotation(rotation) -> LoginResponse:
         user=UserInfo(
             user_hash=login_data.user_hash,
             username=login_data.username or login_data.user_hash,
+            # The session model carries no email, so take it from the user row
+            # the rotation just re-read. Login populates this field; refresh
+            # returning null for the same user reads as "email was removed".
+            email=_string_attr(getattr(auth_context, "user", None), "email"),
             user_type=login_data.user_type,
         ),
         project=project_info,
         accessible_projects=accessible_projects_info,
         user_groups=user_groups_info,
+        plan=login_data.plan,
         user_id=login_data.user_id,
     )
 
@@ -262,6 +256,8 @@ def _refresh_error_code_from_http_exception(exc: HTTPException) -> ErrorCode:
         return ErrorCode.TOKEN_TYPE_INVALID
     if "token expired" in detail:
         return ErrorCode.TOKEN_EXPIRED
+    if "already rotated" in detail:
+        return ErrorCode.REFRESH_TOKEN_REPLAYED
     if "reused" in detail:
         return ErrorCode.REFRESH_TOKEN_REUSED
     if "family revoked" in detail or "refresh family revoked" in detail:
@@ -1543,7 +1539,11 @@ async def logout(
     session_token = credentials.credentials
 
     try:
-        claims = JWTTokenHandler.decode_access_token(session_token)
+        # Logout is destructive, not authorizing. An access token whose window
+        # has closed is still proof of which family to revoke, so an idle tab
+        # can log itself out instead of leaving the family alive for the rest
+        # of its refresh TTL. Signature/type/claims are still enforced.
+        claims = JWTTokenHandler.decode_access_token_allow_expired(session_token)
         revoke_refresh_family(str(claims["family_id"]), reason="logout")
     except HTTPException as exc:
         raise AuthenticationError(

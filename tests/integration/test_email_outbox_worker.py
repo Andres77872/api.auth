@@ -293,6 +293,40 @@ def test_worker_uses_latest_active_template_at_render_time(fake_redis, monkeypat
     assert outbound.headers["X-Template-Revision"] == "2"
 
 
+def test_worker_send_request_carries_configured_reply_to(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: _dynamic_template_row())
+    monkeypatch.setenv("EMAIL_REPLY_TO_ADDRESS", "support@example.test")
+
+    provider = FakeEmailProvider()
+    worker = EmailWorker(worker_id="worker-reply-to", provider=provider, redis=fake_redis, db_module=WorkerDbStub())
+
+    result = worker.process_message(_message(worker, variables={"notice": "delivery state"}))
+
+    assert result.status == "sent"
+    assert provider.sent_messages[0].reply_to == "support@example.test"
+
+
+def test_worker_send_request_has_no_reply_to_when_unset(fake_redis, monkeypatch):
+    from src.Util.db import db_email_templates
+    from src.Util.email.fake_provider import FakeEmailProvider
+    from src.workers.email_worker import EmailWorker
+
+    monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: _dynamic_template_row())
+    monkeypatch.setenv("EMAIL_REPLY_TO_ADDRESS", "")
+
+    provider = FakeEmailProvider()
+    worker = EmailWorker(worker_id="worker-no-reply-to", provider=provider, redis=fake_redis, db_module=WorkerDbStub())
+
+    result = worker.process_message(_message(worker, variables={"notice": "delivery state"}))
+
+    assert result.status == "sent"
+    assert provider.sent_messages[0].reply_to is None
+
+
 def test_worker_cancels_disabled_template_without_provider_send(fake_redis, monkeypatch):
     from src.Util.db import db_email_templates
     from src.Util.email.fake_provider import FakeEmailProvider

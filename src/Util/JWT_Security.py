@@ -150,13 +150,13 @@ class JWTTokenHandler:
         return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
     @staticmethod
-    def _decode_typed_token(token: str, expected_type: str) -> Dict[str, Any]:
+    def _decode_typed_token(token: str, expected_type: str, *, verify_exp: bool = True) -> Dict[str, Any]:
         try:
             payload = jwt.decode(
                 token,
                 JWT_SECRET_KEY,
                 algorithms=[JWT_ALGORITHM],
-                options={"require": BASE_REQUIRED_JWT_CLAIMS},
+                options={"require": BASE_REQUIRED_JWT_CLAIMS, "verify_exp": verify_exp},
             )
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Token expired")
@@ -183,6 +183,19 @@ class JWTTokenHandler:
     def decode_refresh_token(token: str) -> Dict[str, Any]:
         """Decode a refresh JWT and enforce signature, exp, type, and claims."""
         return JWTTokenHandler._decode_typed_token(token, REFRESH_TOKEN_TYPE)
+
+    @staticmethod
+    def decode_access_token_allow_expired(token: str) -> Dict[str, Any]:
+        """Decode an access JWT enforcing everything except ``exp``.
+
+        Signature, token type, and the lifecycle claims are still mandatory, so
+        the caller only gains the ability to act on a token this server issued
+        whose access window has closed. Use it exclusively for *destructive*
+        operations such as logout, where honouring an expired-but-authentic
+        token revokes state instead of granting it. Never use it to authorize a
+        request.
+        """
+        return JWTTokenHandler._decode_typed_token(token, ACCESS_TOKEN_TYPE, verify_exp=False)
 
     @staticmethod
     def extract_session_id(token: str) -> Any:

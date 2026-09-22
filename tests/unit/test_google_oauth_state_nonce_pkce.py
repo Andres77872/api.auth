@@ -193,7 +193,10 @@ def test_state_creation_uses_hmac_redis_keys_ttl_cap_and_no_raw_state_key_materi
 
     assert redis.values, "creating state must write server-side Redis data"
     assert all(raw_state not in key for key in redis.values), "raw state must never appear in Redis keys"
-    assert any(key.startswith("google_oauth_state:") for key in redis.values)
+    assert any(key.startswith("oauth_state:") for key in redis.values), "state is written under the neutral prefix"
+    assert not any(key.startswith("google_oauth_state:") for key in redis.values), (
+        "nothing is written under the legacy Google prefix any more"
+    )
     assert all(ttl <= 600 for ttl in redis.ttls.values())
 
 
@@ -249,3 +252,24 @@ def test_redis_errors_fail_closed_instead_of_falling_back_to_process_memory():
         _create_state(store)
     with pytest.raises(unavailable_error):
         _consume_state(store, "fake-state-for-fail-closed-test")
+
+
+def test_state_written_under_legacy_google_prefix_is_still_consumable_once():
+    """Transactions in flight across the prefix rename must survive the deploy."""
+    module = _future_state_module()
+    replay_error = getattr(module, "OAuthStateReplayError")
+    redis = FakeRedis()
+    store = _state_store(module, redis)
+    created = _create_state(store)
+    state = _field(created, "state")
+
+    # Move the record to where the previous release would have written it.
+    new_key = next(key for key in redis.values if key.startswith("oauth_state:"))
+    legacy_key = "google_" + new_key
+    redis.values[legacy_key] = redis.values.pop(new_key)
+
+    consumed = _consume_state(store, state)
+
+    assert _field(consumed, "purpose") == "login"
+    with pytest.raises(replay_error):
+        _consume_state(store, state)

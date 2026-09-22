@@ -92,7 +92,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         
         path = str(request.url.path)
 
-        if APIAuditLogger.is_google_oauth_path(path):
+        if APIAuditLogger.is_oauth_path(path):
             auth_method = "oauth"
         elif self._is_patreon_webhook_path(path):
             auth_method = "webhook"
@@ -375,7 +375,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
     def _infer_auth_method(self, path: str, user_id: Optional[str], session_id: Optional[str]) -> str:
         """Classify unauthenticated email-link/webhook flows for audit taxonomy."""
         normalized_path = self._normalize_path(path)
-        if APIAuditLogger.is_google_oauth_path(normalized_path):
+        if APIAuditLogger.is_oauth_path(normalized_path):
             return "oauth"
         if normalized_path.startswith("/webhooks/email") or self._is_patreon_webhook_path(normalized_path):
             return "webhook"

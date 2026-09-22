@@ -19,7 +19,6 @@ from src.Util.auth_constants import (
     GOOGLE_OAUTH_CLIENT_ID_ENV,
     GOOGLE_OAUTH_CLIENT_SECRET_ENV,
     GOOGLE_OAUTH_DEFAULT_SCOPES,
-    GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH_ENV,
     GOOGLE_OAUTH_DISCOVERY_URL_ENV,
     GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV,
     GOOGLE_OAUTH_ENABLED_ENV,
@@ -28,8 +27,6 @@ from src.Util.auth_constants import (
     GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS_ENV,
     GOOGLE_OAUTH_JWKS_URI_ENV,
     GOOGLE_OAUTH_LEEWAY_SECONDS_ENV,
-    GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS_ENV,
-    GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET_ENV,
     GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV,
     GOOGLE_OAUTH_PROVISIONING_DISABLED,
     GOOGLE_OAUTH_PROVISIONING_LINK_ONLY,
@@ -58,7 +55,6 @@ DEFAULT_GOOGLE_JWKS_URI = "https://www.googleapis.com/oauth2/v3/certs"
 DEFAULT_GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 
 MAX_GOOGLE_OAUTH_STATE_TTL_SECONDS = 600
-MAX_GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS = 600
 MAX_GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS = 3600
 MAX_GOOGLE_OAUTH_LEEWAY_SECONDS = 30
 DEFAULT_GOOGLE_OAUTH_RECENT_REAUTH_SECONDS = 300
@@ -82,16 +78,13 @@ class GoogleOAuthConfig:
     redirect_uris: tuple[str, ...]
     return_origins: tuple[str, ...]
     provisioning_mode: str
-    default_user_group_hash: str | None
     state_ttl_seconds: int
-    link_token_ttl_seconds: int
     recent_reauth_seconds: int
     jwks_cache_ttl_seconds: int
     leeway_seconds: int
     state_pepper: str
     provider_sub_pepper: str
     email_hash_pepper: str
-    passwordless_hash_secret: str
     fail_closed_on_redis_error: bool
     provider_init_redeem_url: str | None
     provider_init_redeem_token: str | None
@@ -242,18 +235,11 @@ def load_google_oauth_config(*, env: Mapping[str, str] | None = None) -> GoogleO
         redirect_uris=_csv_tuple(_get(values, GOOGLE_OAUTH_REDIRECT_URIS_ENV)),
         return_origins=return_origins,
         provisioning_mode=_parse_provisioning_mode(values),
-        default_user_group_hash=_get(values, GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH_ENV) or None,
         state_ttl_seconds=_bounded_int(
             values,
             GOOGLE_OAUTH_STATE_TTL_SECONDS_ENV,
             MAX_GOOGLE_OAUTH_STATE_TTL_SECONDS,
             maximum=MAX_GOOGLE_OAUTH_STATE_TTL_SECONDS,
-        ),
-        link_token_ttl_seconds=_bounded_int(
-            values,
-            GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS_ENV,
-            MAX_GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS,
-            maximum=MAX_GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS,
         ),
         recent_reauth_seconds=_int(values, GOOGLE_OAUTH_RECENT_REAUTH_SECONDS_ENV, DEFAULT_GOOGLE_OAUTH_RECENT_REAUTH_SECONDS),
         jwks_cache_ttl_seconds=_bounded_int(
@@ -272,7 +258,6 @@ def load_google_oauth_config(*, env: Mapping[str, str] | None = None) -> GoogleO
         state_pepper=_get(values, GOOGLE_OAUTH_STATE_PEPPER_ENV),
         provider_sub_pepper=_get(values, GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV),
         email_hash_pepper=_get(values, GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV),
-        passwordless_hash_secret=_get(values, GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET_ENV),
         fail_closed_on_redis_error=_bool(_get(values, GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV), default=True),
         provider_init_redeem_url=_get(values, PROVIDER_INIT_REDEEM_URL_ENV) or None,
         provider_init_redeem_token=_get(values, PROVIDER_INIT_REDEEM_TOKEN_ENV) or None,
@@ -299,7 +284,6 @@ def validate_google_oauth_readiness(config: GoogleOAuthConfig) -> GoogleOAuthRea
         (GOOGLE_OAUTH_STATE_PEPPER_ENV, config.state_pepper),
         (GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV, config.provider_sub_pepper),
         (GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV, config.email_hash_pepper),
-        (GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET_ENV, config.passwordless_hash_secret),
         (PROVIDER_INIT_REDEEM_URL_ENV, config.provider_init_redeem_url),
         (PROVIDER_INIT_REDEEM_TOKEN_ENV, config.provider_init_redeem_token),
     )

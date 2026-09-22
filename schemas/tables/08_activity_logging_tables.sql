@@ -210,6 +210,42 @@ ON DUPLICATE KEY UPDATE
     requires_audit = VALUES(requires_audit),
     is_active = VALUES(is_active);
 
+-- Provider-agnostic OAuth Activities (act-cat-107..127, docs/agnostic_oauth)
+-- Emitted by the shared OAuth pipeline and the OAuth admin API with provider_type and a
+-- connection fingerprint in details. The google_oauth_* rows above are kept for history.
+-- Details must never contain client secrets, provider tokens, codes, state, nonce, PKCE
+-- verifiers, raw provider subjects/emails, or strict project/group hashes.
+INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
+('act-cat-107', 'oauth_started', 'OAuth Started', 'OAuth authorization start created for a project binding', 'authentication', 'info', TRUE, TRUE),
+('act-cat-108', 'oauth_init_rejected', 'OAuth Init Rejected', 'OAuth init token or provider-init redemption was rejected', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-109', 'oauth_callback_received', 'OAuth Callback Received', 'OAuth callback entered after basic parameter parsing', 'authentication', 'info', TRUE, TRUE),
+('act-cat-110', 'oauth_state_rejected', 'OAuth State Rejected', 'OAuth state was missing, expired, replayed, or mismatched', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-111', 'oauth_token_exchange_failed', 'OAuth Token Exchange Failed', 'OAuth authorization-code exchange failed at the provider', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-112', 'oauth_identity_rejected', 'OAuth Identity Rejected', 'Provider identity proof failed validation or a connection restriction', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-113', 'oauth_login_succeeded', 'OAuth Login Succeeded', 'OAuth local session issuance succeeded', 'authentication', 'info', TRUE, TRUE),
+('act-cat-114', 'oauth_login_denied', 'OAuth Login Denied', 'OAuth login denied by provisioning, project access, consumer policy, or collision checks', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-115', 'oauth_external_account_linked', 'OAuth External Account Linked', 'External account linked to a local consumer', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-116', 'oauth_external_account_unlinked', 'OAuth External Account Unlinked', 'External account unlinked from a local consumer', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-117', 'oauth_reauth_succeeded', 'OAuth Reauth Succeeded', 'OAuth step-up reauthentication succeeded', 'authentication', 'info', TRUE, TRUE),
+('act-cat-118', 'oauth_user_cancelled', 'OAuth User Cancelled', 'User cancelled or denied consent at the provider', 'authentication', 'info', TRUE, TRUE),
+('act-cat-119', 'oauth_connection_created', 'OAuth Connection Created', 'OAuth connection was created', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-120', 'oauth_connection_updated', 'OAuth Connection Updated', 'OAuth connection non-secret configuration was updated', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-121', 'oauth_connection_credentials_set', 'OAuth Connection Credentials Set', 'OAuth connection credentials were set or rotated', 'authentication', 'critical', TRUE, TRUE),
+('act-cat-122', 'oauth_connection_status_changed', 'OAuth Connection Status Changed', 'OAuth connection status changed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-123', 'oauth_binding_updated', 'OAuth Binding Updated', 'Project OAuth binding was created or updated', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-124', 'oauth_binding_removed', 'OAuth Binding Removed', 'Project OAuth binding was removed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-125', 'oauth_binding_url_added', 'OAuth Binding URL Added', 'Allow-listed redirect URI or return origin was added', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-126', 'oauth_binding_url_removed', 'OAuth Binding URL Removed', 'Allow-listed redirect URI or return origin was removed', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-127', 'oauth_provider_catalog_updated', 'OAuth Provider Catalog Updated', 'OAuth provider type status or capability flags changed', 'authentication', 'critical', TRUE, TRUE)
+ON DUPLICATE KEY UPDATE
+    activity_code = VALUES(activity_code),
+    activity_name = VALUES(activity_name),
+    activity_description = VALUES(activity_description),
+    activity_category = VALUES(activity_category),
+    severity_level = VALUES(severity_level),
+    requires_audit = VALUES(requires_audit),
+    is_active = VALUES(is_active);
+
 -- Patreon Entitlement/Link Activities (reserved act-cat-075+ range)
 -- These are redacted operational/security evidence events. Details must never contain
 -- raw Patreon IDs, raw email, signatures, raw payloads, creator tokens, proof tokens,

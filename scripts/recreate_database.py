@@ -96,6 +96,14 @@ BILLING_PROVIDER_FACT_FILES = [
     'triggers/07_billing_provider_facts_triggers.sql',  # schemas/triggers/07_billing_provider_facts_triggers.sql
 ]
 
+# Provider-agnostic OAuth configuration (docs/agnostic_oauth). Runs last: the catalog table
+# is referenced at run time by the external-account triggers and procedures above.
+OAUTH_CONNECTION_FILES = [
+    'tables/13_oauth_connections.sql',  # schemas/tables/13_oauth_connections.sql
+    'stored_procedures/19_oauth_connections.sql',  # schemas/stored_procedures/19_oauth_connections.sql
+    'triggers/08_oauth_connections_triggers.sql',  # schemas/triggers/08_oauth_connections_triggers.sql
+]
+
 
 def print_header(text):
     """Print a formatted header"""
@@ -251,7 +259,7 @@ def recreate_database():
             sys.exit(1)
         
         # Calculate total steps
-        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES) + len(TRIGGER_FILES) + len(BILLING_PROVIDER_FACT_FILES)
+        total_steps = len(TABLE_FILES) + len(STORED_PROCEDURE_FILES) + len(TRIGGER_FILES) + len(BILLING_PROVIDER_FACT_FILES) + len(OAUTH_CONNECTION_FILES)
         current_step = 0
         
         # Execute table files
@@ -312,6 +320,21 @@ def recreate_database():
             print_step(current_step, total_steps, f"Processing {file_name}")
             if not execute_sql_file(connection, file_path):
                 print("\n✗ Failed to execute billing provider fact file. Aborting.")
+                sys.exit(1)
+        
+        # Execute provider-agnostic OAuth configuration files last
+        print_header("Creating OAuth Connection Artifacts")
+        for file_name in OAUTH_CONNECTION_FILES:
+            current_step += 1
+            file_path = SCHEMAS_DIR / file_name
+
+            if not file_path.exists():
+                print(f"✗ File not found: {file_path}")
+                sys.exit(1)
+
+            print_step(current_step, total_steps, f"Processing {file_name}")
+            if not execute_sql_file(connection, file_path):
+                print("\n✗ Failed to execute OAuth connection file. Aborting.")
                 sys.exit(1)
         
         # Verify database creation

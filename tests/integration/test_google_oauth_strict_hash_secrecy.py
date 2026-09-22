@@ -222,34 +222,57 @@ async def test_strict_hashes_absent_from_start_success_url_headers_cookies_body_
 @pytest.mark.asyncio
 async def test_strict_hashes_absent_from_callback_success_login_response_and_cookies(
     client,
-    fake_redis,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
     oauth_audit_capture,
     oauth_activity_capture,
     oauth_assert_no_leaks,
     caplog,
+    monkeypatch,
 ):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
     sentinels = _strict_sentinels()
-    fake_redis.set(
-        "google_oauth_state:strict-hash-state",
-        json.dumps({"strict_binding": "server-side-only"}),
-        ex=600,
+    # The strict hashes live only in the server-side state record.
+    state = oauth_state_factory(
+        project_hash=sentinels["project_hash"],
+        user_group_hash=sentinels["user_group_hash"],
+    )
+    project = SimpleNamespace(
+        id="1", project_hash=sentinels["project_hash"], project_name="Strict Hash Project",
+        project_description=None, is_active=True, archived=False,
     )
 
     caplog.set_level(logging.INFO)
-    with _patched_secrecy_seams(
+    with db_patcher() as db, _patched_secrecy_seams(
         fake_provider_init_redeemer=type("NoopRedeemer", (), {"redeem_provider_init_token": None})(),
         oauth_audit_capture=oauth_audit_capture,
         oauth_activity_capture=oauth_activity_capture,
-    ), patch(
-        "src.routes.auth_google.db.get_user_by_external_account",
-        lambda **_: _linked_google_user(),
-        create=True,
+    ), patch("src.routes.auth_google.oauth_client", fake_google_token_exchange), patch(
+        "src.routes.auth_google.verify_google_id_token", fake_google_verifier
     ):
-        response = await _callback(client)
+        db["get_user_by_external_account"].return_value = _linked_google_user()
+        db["get_user_accessible_projects"].return_value = [project]
+        db["get_project_by_hash"].return_value = project
+        db["get_user_groups_for_user"].return_value = []
+        response = await _callback(client, state=state)
 
     _assert_oauth_route_exists(response, CALLBACK_PATH)
     assert response.status_code == 200
-    oauth_assert_no_leaks(response, forbidden_values=sentinels, context="callback success browser response")
+
+    # ``LoginResponse`` names the session's project by contract (``project`` and
+    # ``accessible_projects``), exactly as password login does; the companion backend is
+    # its only reader. The bound project hash may appear there and NOWHERE else, and the
+    # provisioning group hash may not appear at all.
+    data = response.json()
+    assert data["project"]["project_hash"] == sentinels["project_hash"]
+    documented = {"project", "accessible_projects"}
+    undocumented_body = json.dumps({key: value for key, value in data.items() if key not in documented})
+    assert sentinels["project_hash"] not in undocumented_body, "project hash leaked outside the documented LoginResponse fields"
+    assert sentinels["user_group_hash"] not in response.text, "provisioning group hash must never reach a response body"
+    transport_surface = {"headers": dict(response.headers), "cookies": dict(response.cookies)}
+    oauth_assert_no_leaks(transport_surface, forbidden_values=sentinels, context="callback success headers and cookies")
     oauth_assert_no_leaks(_log_surface(caplog), forbidden_values=sentinels, context="callback success logs")
     oauth_audit_capture.assert_no_leaks(sentinels)
     oauth_activity_capture.assert_no_leaks(sentinels)
@@ -287,10 +310,10 @@ def test_patreon_provider_widening_keeps_google_external_account_hash_and_finger
     compact_table = _compact(external_table)
     sp_source = _read(EXTERNAL_ACCOUNTS_SP_SQL)
 
-    assert (
-        "providerenum('google','patreon')" in compact_table
-        or "providerenum('patreon','google')" in compact_table
-    ), "provider widening must be additive; Google remains an external-account provider"
+    # The ENUM is only ever widened by APPENDING: 'google','patreon' keep their positions.
+    assert "providerenum('google','patreon'" in compact_table, (
+        "provider widening must be additive; Google remains an external-account provider"
+    )
     assert "provider_sub_hashbinary(32)" in compact_table
     assert "provider_sub_fingerprintchar(12)" in compact_table
     assert "provider_email_hashbinary(32)" in compact_table

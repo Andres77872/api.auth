@@ -18,8 +18,8 @@ Troubleshooting for provider-agnostic billing S2S routes, Stripe Checkout/Portal
 | Symptom | Likely cause | Safe first action |
 | --- | --- | --- |
 | Billing S2S returns unauthorized | Missing/rotated dedicated bearer, feature disabled, browser/session credential used instead of S2S token | Confirm `BILLING_ENABLED`, `BILLING_S2S_ENABLED`, and bearer presence by key name only. |
-| Checkout unavailable | Global/group capability disabled, group credentials inactive, SDK/API mismatch, catalog/return URL/DB/crypto not ready | Keep Checkout disabled; inspect the affected group's readiness and non-secret mismatch labels. |
-| Portal unavailable | Global/group capability disabled, missing per-group Portal configuration, no group customer | Keep Portal disabled for the group until readiness is verified. |
+| Checkout unavailable | Global/group capability disabled, group credentials inactive, SDK/API mismatch, catalog/return URL/DB/crypto not ready | Confirm `BILLING_ENABLED` **and** `STRIPE_BILLING_ENABLED` are both true (readiness does not flag a missing one), then inspect the affected group's readiness and non-secret mismatch labels. |
+| Portal unavailable | Global/group capability disabled, missing per-group Portal configuration, no group customer | Confirm both global gates as above, then keep Portal disabled for the group until readiness is verified. |
 | Webhook signature failures | Wrong per-group/global fallback secret, wrong endpoint, body changed before verification, timestamp/header failure | Reject before mutation; verify exact raw-body path and secret deployment by version label only. |
 | SDK/API version mismatch | Runtime package or configured API version does not match supported pins | Treat Stripe as not-ready; deploy the supported package/config pin before enabling behavior. |
 | Missing secrets/config | Secret manager key absent or app not reloaded | Keep flags disabled or not-ready; verify key presence by name only. |
@@ -54,23 +54,35 @@ authority.
 
 Common causes:
 
+- `BILLING_ENABLED=false` or `STRIPE_BILLING_ENABLED=false` — both global gates
+  must be true. This is the most common cause of a `503` on an otherwise fully
+  configured deployment, and readiness does **not** flag it (see below).
 - `BILLING_CHECKOUT_ENABLED=false` or `STRIPE_CHECKOUT_ENABLED=false`.
 - Missing/inactive credentials for the resolved billing group.
 - SDK/API version mismatch.
 - Missing provider-ref encryption key or key id.
-- Missing or invalid return URL allow-list.
+- Missing or invalid return URL allow-list (`BILLING_RETURN_URL_ALLOWLIST`).
 - DB schema/bootstrap not ready.
 - Stripe provider degraded or local rate limit exceeded.
 
+A ready-looking deployment can still return `503`:
+`validate_stripe_runtime_readiness` ORs the billing/Stripe switches, so it
+reports `ready` when only one of the two global gates is set, while
+`src/routes/internal_billing.py` requires both and rejects every Checkout and
+Portal call. Confirm both gates by name before chasing credentials or catalog
+state; `src/routes/admin_billing.py` lists `STRIPE_BILLING_ENABLED` in its
+missing-capability output when it is the blocker.
+
 Safe checks:
 
-1. With a valid access session, inspect `/system/health` billing components for non-secret `missing` and `critical_mismatches` key names.
-2. Confirm `stripe==15.2.1` and `STRIPE_API_VERSION=2026-05-27.dahlia` are the supported pins.
-3. Confirm the return URL origin, not the full secret-bearing request, is allow-listed.
-4. Confirm the project resolves to the intended active billing group and its
+1. Confirm `BILLING_ENABLED` and `STRIPE_BILLING_ENABLED` are both true in this environment, by key name only.
+2. With a valid access session, inspect `/system/health` billing components for non-secret `missing` and `critical_mismatches` key names.
+3. Confirm `stripe==15.2.1` and `STRIPE_API_VERSION=2026-05-27.dahlia` are the supported pins.
+4. Confirm the return URL origin, not the full secret-bearing request, is allow-listed.
+5. Confirm the project resolves to the intended active billing group and its
    Checkout/provisioning capability and catalog item are ready.
-5. Confirm no raw provider refs or price selector values are logged.
-6. Check idempotency conflict counts and `Retry-After` posture.
+6. Confirm no raw provider refs or price selector values are logged.
+7. Check idempotency conflict counts and `Retry-After` posture.
 
 Recovery:
 

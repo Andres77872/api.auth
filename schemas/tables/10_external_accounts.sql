@@ -7,6 +7,15 @@
 -- local sessions. The stable provider subject is stored only as an
 -- application-computed HMAC plus a short non-reversible fingerprint for support.
 -- Provider token material is intentionally absent from this schema.
+--
+-- Identity key (docs/agnostic_oauth): (identity_namespace, provider_sub_hash).
+--   * provider            the provider TYPE. The ENUM is only ever widened by APPENDING a
+--                         value, in step with a new adapter; existing values never move.
+--   * identity_namespace  scopes the subject. A constant for providers whose subject is
+--                         global ('google', 'github'), issuer/tenant/team-qualified otherwise
+--                         ('microsoft:<tid>', 'oidc:<issuer>'). It is a separate column and
+--                         is NEVER part of the HMAC input, so existing hashes keep resolving.
+--   * connection_id       informational "first seen through"; no authority.
 -- ===================================================================================
 
 USE magic_auth;
@@ -16,7 +25,9 @@ SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS user_external_accounts (
     id VARCHAR(64) NOT NULL,
     user_id VARCHAR(64) NOT NULL,
-    provider ENUM('google','patreon') NOT NULL,
+    provider ENUM('google','patreon','github','discord','microsoft','oidc') NOT NULL,
+    identity_namespace VARCHAR(191) NOT NULL DEFAULT '',
+    connection_id VARCHAR(64) NULL,
     provider_sub_hash BINARY(32) NOT NULL,
     provider_sub_fingerprint CHAR(12) NOT NULL,
     provider_email_hash BINARY(32) NULL,
@@ -38,17 +49,17 @@ CREATE TABLE IF NOT EXISTS user_external_accounts (
                 ELSE NULL
             END
         ) VIRTUAL,
-    active_user_provider VARCHAR(160)
+    active_user_namespace VARCHAR(256)
         GENERATED ALWAYS AS (
             CASE
-                WHEN status = 'linked' THEN CONCAT(user_id, ':', provider)
+                WHEN status = 'linked' THEN CONCAT(user_id, ':', identity_namespace)
                 ELSE NULL
             END
         ) VIRTUAL,
 
     PRIMARY KEY (id),
-    UNIQUE KEY uk_external_accounts_active_sub (provider, active_provider_sub_hash),
-    UNIQUE KEY uk_external_accounts_user_provider (active_user_provider),
+    UNIQUE KEY uk_external_accounts_active_namespace_sub (identity_namespace, active_provider_sub_hash),
+    UNIQUE KEY uk_external_accounts_user_namespace (active_user_namespace),
     INDEX idx_external_accounts_user_status (user_id, status, linked_at),
     INDEX idx_external_accounts_provider_fingerprint (provider, provider_sub_fingerprint),
     CONSTRAINT fk_external_accounts_user FOREIGN KEY (user_id)
@@ -60,4 +71,4 @@ CREATE TABLE IF NOT EXISTS user_external_accounts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SELECT 'External account tables created successfully!' AS status,
-       '1 table created: user_external_accounts with google|patreon provider authority and no token columns' AS details;
+       '1 table created: user_external_accounts keyed by (identity_namespace, subject HMAC); no token columns' AS details;

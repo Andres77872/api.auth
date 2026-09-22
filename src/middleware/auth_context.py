@@ -19,10 +19,18 @@ from src.Util.auth_constants import BILLING_INTERNAL_ROUTE_PREFIX, PATREON_INTER
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = {
+# Public OAuth entry points: no local session exists yet, so session extraction is skipped.
+# ``/auth/oauth/init`` and ``/auth/oauth/providers`` authenticate with a project API key
+# inside the route. Authenticated OAuth routes (link, reauth, unlink) are NOT listed here.
+OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = {
+    "/auth/oauth/start",
+    "/auth/oauth/callback",
+    "/auth/oauth/init",
+    "/auth/oauth/providers",
     "/auth/google/start",
     "/auth/google/callback",
 }
+GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS
 
 
 class AuthContextMiddleware(BaseHTTPMiddleware):

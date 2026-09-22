@@ -698,10 +698,80 @@ async def test_refresh_reuse_uses_refresh_reused_classification(
         )
 
     assert first.status_code == 200
+    # An immediate duplicate of the token that was just rotated is a lost
+    # response or a second tab, not a stolen-token replay: it is refused, but
+    # the family survives so the client that *did* get the new pair keeps
+    # working.
     assert reused.status_code == 401
-    assert _error_code(reused) == "AUTH_1015"
+    assert _error_code(reused) == "AUTH_1022"
     assert _error_code(reused) != "AUTH_1002"
-    assert fake_redis.get(f"refresh_anchor:{pair.refresh_claims['family_id']}") is None
+    assert fake_redis.get(f"refresh_anchor:{pair.refresh_claims['family_id']}") is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_reuse_outside_grace_window_revokes_family(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """A consumed refresh token replayed after the grace window kills the family."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.Util.auth_constants import REFRESH_REPLAY_GRACE_SECONDS
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    stale_refresh_jti = pair.refresh_claims["jti"]
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        first = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+        assert first.status_code == 200
+        child_refresh_token = first.json()["refresh_token"]
+
+        # Age the consumed token past the grace window instead of sleeping.
+        stale_key = f"refresh_token:{stale_refresh_jti}"
+        stale_record = _decode_redis_json(fake_redis, stale_key)
+        stale_record["used_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=REFRESH_REPLAY_GRACE_SECONDS + 60)
+        ).isoformat()
+        fake_redis.set(stale_key, json.dumps(stale_record))
+
+        reused = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            cookies={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+        assert reused.status_code == 401
+        assert _error_code(reused) == "AUTH_1015"
+        assert fake_redis.get(f"refresh_anchor:{family_id}") is None
+
+        # Reuse detection takes the whole family with it, including the token
+        # the honest client is currently holding.
+        orphaned = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": child_refresh_token},
+            cookies={"refresh_token": child_refresh_token},
+            headers={"User-Agent": "test"},
+        )
+        assert orphaned.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -778,3 +848,132 @@ async def test_refresh_hash_mismatch_uses_refresh_invalid_classification(
     assert response.status_code == 401
     assert _error_code(response) == "AUTH_1013"
     assert _error_code(response) != "AUTH_1002"
+
+
+@pytest.mark.asyncio
+async def test_logout_succeeds_with_an_expired_access_token(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """An idle tab must still be able to log itself out.
+
+    Access tokens live 15 minutes while the refresh family lives 72 hours, so
+    requiring an unexpired access token to log out left the family alive for
+    the rest of its TTL every time a user came back to a stale tab.
+    """
+    from datetime import timedelta
+
+    from src.Util.JWT_Security import JWTTokenHandler
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group()
+    pair = _issue_project_access_token(user=user, project=project, permissions=["read"], groups=[group.group_name])
+    claims = pair.access_claims
+    family_id = claims["family_id"]
+
+    expired_access_token = JWTTokenHandler.create_access_token(
+        session_id=claims["session_id"],
+        user_hash=claims["user_hash"],
+        collection=claims["collection"],
+        scope=claims["scope"],
+        jti=claims["jti"],
+        family_id=family_id,
+        expires_delta=timedelta(seconds=-5),
+    )
+
+    with _patch_canonical_validation(user, project=project, groups=[group], permissions=["read"]):
+        response = await client.post(
+            "/auth/logout",
+            headers={"Authorization": f"Bearer {expired_access_token}", "User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+    family = _decode_redis_json(fake_redis, f"refresh_family:{family_id}")
+    assert family["status"] == "revoked"
+    assert family["revocation_reason"] == "logout"
+    assert fake_redis.get(f"session:{claims['jti']}") is None
+
+    # The refresh token the tab was still holding must be dead too.
+    reuse_after_logout = await client.post(
+        "/auth/refresh",
+        data={"refresh_token": pair.refresh_token},
+        headers={"User-Agent": "test"},
+    )
+    assert reuse_after_logout.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_still_rejects_a_forged_access_token(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Tolerating expiry must not mean tolerating a bad signature."""
+    import jwt as pyjwt
+
+    from src.Util.JWT_Security import JWT_ALGORITHM
+
+    forged = pyjwt.encode(
+        {
+            "session_id": "s", "user_hash": "usr-test-001", "collection": "prj-test-001",
+            "exp": 9999999999, "iat": 1, "type": "access_token",
+            "jti": "forged-jti", "family_id": "forged-family", "scope": "project",
+        },
+        "not-the-server-signing-key",
+        algorithm=JWT_ALGORITHM,
+    )
+
+    response = await client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {forged}", "User-Agent": "test"},
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_response_carries_real_group_hashes_and_plan(
+    client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection,
+    patched_db_error_logger,
+):
+    """Refresh must not echo group names into `group_hash`, or drop plan/email."""
+    from src.Util.auth_lifecycle import issue_project_token_pair
+
+    user = _make_user()
+    project = _make_project()
+    group = _make_group(group_hash="grp-real-hash-001", group_name="Test Group")
+    pair = issue_project_token_pair(
+        user={"id": user.id, "user_hash": user.user_hash, "username": user.username, "user_type": user.user_type},
+        project={"id": project.id, "project_hash": project.project_hash, "project_name": project.project_name},
+        groups=[group.group_name],
+        permissions=["read"],
+    )
+
+    with patch("src.routes.auth.get_user_by_hash", return_value=user), \
+         patch("src.routes.auth.get_project_by_hash", return_value=project), \
+         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]), \
+         patch("src.routes.auth.get_user_groups_in_project_by_hash", return_value=[group]), \
+         patch("src.routes.auth.get_user_groups_for_user", return_value=[group]):
+        response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": pair.refresh_token},
+            headers={"User-Agent": "test"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_groups"] == [{
+        "group_hash": "grp-real-hash-001",
+        "group_name": "Test Group",
+        "description": "A test group",
+        "member_count": None,
+        "created_at": None,
+        "updated_at": None,
+    }]
+    assert body["user"]["email"] == "test@example.com"
+    assert "plan" in body

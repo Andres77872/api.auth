@@ -32,6 +32,14 @@ Stripe provider switches:
 - `STRIPE_PORTAL_ENABLED=false`
 - `STRIPE_SYNC_ENABLED=false`
 
+`BILLING_ENABLED` and `STRIPE_BILLING_ENABLED` are both global gates. The
+Checkout and Portal S2S routes return `503` while either one is false, even with
+`STRIPE_CHECKOUT_ENABLED=true` and an active, credentialed billing group. Either
+switch alone is therefore a complete kill switch for those routes. Note that
+Stripe readiness still reports `ready` in that state because it ORs the
+switches, so use the `503` posture and `missing` key names — not the readiness
+status — to confirm a kill took effect.
+
 Operational isolation controls:
 
 - Block `/webhooks/stripe` at ingress during active webhook incidents.
@@ -47,7 +55,9 @@ more projects. Provision a group in this order (all behind disabled-by-default f
 
 1. **Create the group** — `POST /admin/billing` (dashboard → Billing → New billing
    group), or seed the first one with `scripts/migrations/billing_group_bootstrap.py`
-   (`--apply`, dry-run by default, redacted output).
+   (`--apply`, dry-run by default, redacted output). That script reads the project to
+   attach from `PROJECT_HASH`, or from `BILLING_PROJECT_HASH` as an equivalent alias;
+   `--apply` fails without one of the two.
 2. **Attach project(s)** — `POST /admin/billing/{hash}/projects` with `project_hash`.
    A project belongs to exactly one group; re-attaching to a different group is rejected
    (409). One subscription then applies to every project in the group.

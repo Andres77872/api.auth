@@ -105,12 +105,13 @@ neither printed/seeded default is a valid current login.
 
 ## 📡 API Surface
 
-The app currently registers **217 route-module endpoint methods across 25 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
+The app currently registers **245 route-module endpoint methods across 27 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
 
 | Surface | Prefix | Module | Count | Contract |
 |---------|--------|--------|-------|----------|
 | Authentication | `/auth` | `auth.py` | 13 | Session, refresh token, API-key validation |
-| Google OAuth | `/auth/google` | `auth_google.py` | 6 | Provider-init mediated OAuth/OIDC |
+| OAuth | `/auth/oauth` | `auth_oauth.py` | 9 | Provider-agnostic OAuth: init token, start, callback, link, reauth, unlink |
+| Google OAuth (deprecated aliases) | `/auth/google` | `auth_google.py` | 5 | Aliases onto the OAuth pipeline with connection `google` |
 | Patreon Link | `/auth/patreon` | `auth_patreon.py` | 4 | Existing local session + recent reauth |
 | Users | `/users` | `users.py` | 19 | Profile, admin user management, email management |
 | User API Keys | `/users/api-keys` | `user_api_keys.py` | 5 | Self-service API-key lifecycle |
@@ -122,6 +123,7 @@ The app currently registers **217 route-module endpoint methods across 25 `src/r
 | Roles | `/roles` | `global_roles.py` | 28 | Roles, permission groups, permissions, role catalogs |
 | Permission Assignments | `/permissions` | `permission_assignments.py` | 17 | Permission-group assignment and lookup |
 | Admin Billing | `/admin/billing` | `admin_billing.py` | 22 | Billing groups, credentials, capabilities, catalog, metrics |
+| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Provider catalog, connections, write-only credentials, project bindings, URL allow-lists, readiness |
 | Billing Internal | `/internal/.../billing` | `internal_billing.py` | 6 | S2S billing facts, catalog, Checkout, Portal, resync |
 | Stripe Webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Raw Stripe webhook intake |
 | Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 7 | ROOT-only Patreon status and operations |
@@ -362,6 +364,12 @@ API_KEY_PEPPER=change-me-generate-with-openssl-rand-hex-32
 # Browser origins
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:4173
 ```
+
+`ALLOWED_ORIGINS` is optional: when unset, CORS, early-reject responses, and
+email-link origin validation share the built-in `DEFAULT_ALLOWED_ORIGINS` list in
+[src/Util/auth_constants.py](src/Util/auth_constants.py). That list holds
+localhost/LAN development origins plus the hosted auth UI origin
+`https://auth-ui.arz.ai`, so set the variable explicitly in every deployment.
 
 Provider-specific setup is intentionally documented outside this top-level README:
 - Google OAuth: [docs/USAGE/google-oauth/reference.md](docs/USAGE/google-oauth/reference.md) and [docs/RUNBOOKS/google-oauth.md](docs/RUNBOOKS/google-oauth.md)

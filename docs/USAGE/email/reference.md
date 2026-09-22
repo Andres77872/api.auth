@@ -225,7 +225,7 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 | `EMAIL_PROVIDER` | `fake` | `resend` (real send), `mailpit` (dev SMTP), or `fake` (tests/default) |
 | `EMAIL_ALLOW_REAL_SEND_IN_TESTS` | `false` | Opt-in to allow a real `resend` send under a test runtime (smoke tests only) |
 | `EMAIL_FROM_ADDRESS` | – | Sender address; required for readiness |
-| `EMAIL_REPLY_TO_ADDRESS` | – | Optional reply-to |
+| `EMAIL_REPLY_TO_ADDRESS` | – | Optional `Reply-To` for every outgoing email (worker sends and admin send-test): Resend `reply_to` param, Mailpit `Reply-To` header. One mailbox, bare (`support@example.com`) or named (`Support <support@example.com>`); need not be on the verified sender domain. Blank ⇒ no `Reply-To`. Set but malformed ⇒ readiness `not_ready` with this key in `missing[]`. Restart the API and worker after changing it |
 | `EMAIL_SENDER_DOMAIN_VERIFIED` | `false` | Must be `true` in prod with `resend` for readiness |
 | `APP_ENV` | – | Runtime name; `test`/`testing`/`pytest` ⇒ test runtime (no-real-send guard active) |
 
@@ -235,10 +235,10 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 |---------|---------|---------|
 | `RESEND_API_KEY` | – | Resend send key; required for `resend` readiness |
 | `RESEND_WEBHOOK_SECRET` | – | Svix signing secret; required for `resend` readiness and webhook verification |
-| `RESEND_WEBHOOK_TOLERANCE_SECONDS` | `300` | Allowed Svix timestamp skew |
+| `RESEND_WEBHOOK_TOLERANCE_SECONDS` | `300` | Parsed but never consumed — `verify_webhook` calls `Webhook(secret).verify(...)`, and svix enforces its own fixed 5-minute tolerance. Setting this has no effect; fix clock skew instead |
 | `MAILPIT_SMTP_HOST` | – | Required for `mailpit` readiness |
 | `MAILPIT_SMTP_PORT` | – | Required for `mailpit` readiness |
-| `MAILPIT_API_BASE_URL` | – | Optional Mailpit API base |
+| `MAILPIT_API_BASE_URL` | – | Optional Mailpit API base. Parsed into `EmailConfig`, but no application code path reads it; only the e2e tests use it to poll the Mailpit inbox |
 
 ### Secrets / crypto (required)
 
@@ -257,7 +257,7 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 | `EMAIL_PASSWORD_RESET_TOKEN_TTL_SECONDS` | `3600` | Reset link lifetime; not a token value |
 | `EMAIL_IDEMPOTENCY_TTL_SECONDS` | `86400` | Idempotency cache TTL |
 | `EMAIL_TERMINAL_RETENTION_DAYS` | `30` | Terminal message retention |
-| `EMAIL_DELIVERY_ATTEMPT_RETENTION_DAYS` | `365` | Delivery-attempt metadata retention |
+| `EMAIL_DELIVERY_ATTEMPT_RETENTION_DAYS` | `365` | Parsed but never consumed — no purge path reads it yet, so setting it currently has no effect |
 | `EMAIL_RETENTION_PURGE_INTERVAL_SECONDS` | `3600` | In-worker `sp_email_retention_purge` cadence (`0` disables) |
 
 ### Worker tuning
@@ -282,6 +282,24 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 
 `send-test` consumes the send buckets under `purpose="email_template_test"` with non-PII (hashed) key material; the limiter **fails closed** on a Redis error.
 
+### Login-failure defaults (same limiter, enforced on local password login)
+
+`EmailRateLimiter` also owns the failed-login buckets consumed by
+`src/routes/auth.py`. Defaults come from `auth_constants.py`; both buckets are
+checked before a login attempt and advanced on each failure.
+
+| Env var | Default | Bucket |
+|---------|---------|--------|
+| `EMAIL_LOGIN_IDENTIFIER_FAILURE_LIMIT` | `10` | identifier + IP failures per window |
+| `EMAIL_LOGIN_IDENTIFIER_FAILURE_WINDOW_SECONDS` | `900` | identifier + IP window |
+| `EMAIL_LOGIN_ACCOUNT_FAILURE_LIMIT` | `30` | identifier-only failures per window |
+| `EMAIL_LOGIN_ACCOUNT_FAILURE_WINDOW_SECONDS` | `900` | identifier-only window |
+
+The account bucket digests the identifier without the IP, so rotating source IPs
+cannot buy a fresh allowance against one account. Exceeding either bucket
+rejects the attempt with `429 RATE_LIMIT_EXCEEDED` plus a `Retry-After` header
+derived from that bucket's remaining TTL.
+
 ---
 
 ## Email Readiness States (`validate_email_readiness`)
@@ -289,7 +307,7 @@ Parsed by `load_email_config` (`src/Util/email/config.py`); defaults from `auth_
 | Status | `ready` | When |
 |--------|---------|------|
 | `disabled` | false | `EMAIL_DELIVERY_ENABLED=false` |
-| `not_ready` | false | Missing required config (e.g. `EMAIL_FROM_ADDRESS`; for `resend`: `RESEND_API_KEY`/`RESEND_WEBHOOK_SECRET`, and `EMAIL_SENDER_DOMAIN_VERIFIED` in prod; for `mailpit`: host/port) — `missing[]` lists the keys |
+| `not_ready` | false | Missing or invalid config (e.g. `EMAIL_FROM_ADDRESS`, or a malformed optional `EMAIL_REPLY_TO_ADDRESS`; for `resend`: `RESEND_API_KEY`/`RESEND_WEBHOOK_SECRET`, and `EMAIL_SENDER_DOMAIN_VERIFIED` in prod; for `mailpit`: host/port) — `missing[]` lists the keys |
 | `ready` | true | All required config present |
 
 `send-test` requires `ready=true`; otherwise it returns `400 INVALID_INPUT` with `Email delivery is not ready (status: ...)`.

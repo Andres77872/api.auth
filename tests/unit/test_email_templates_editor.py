@@ -638,3 +638,50 @@ def test_router_and_app_wire_up():
     assert "/admin/email-templates" in paths
     assert "/admin/email-templates/{template_code}" in paths
     assert "/admin/email-templates/{template_code}/send-test" in paths
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("support@example.test", "support@example.test"), ("", None)],
+)
+async def test_route_send_test_carries_configured_reply_to(monkeypatch, configured, expected):
+    from src.routes import email_templates as route
+    from src.Util.email.fake_provider import FakeEmailProvider
+
+    provider = FakeEmailProvider()
+    monkeypatch.setenv("EMAIL_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_PROVIDER", "fake")
+    monkeypatch.setenv("EMAIL_REPLY_TO_ADDRESS", configured)
+    monkeypatch.setattr(route, "is_root_user", lambda user_id: True)
+    monkeypatch.setattr(route, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        route,
+        "_load_template",
+        lambda code, allow_disabled=True: TEMPLATES["delivery_operation"],
+    )
+    monkeypatch.setattr(
+        route,
+        "list_user_emails",
+        lambda user_id: [
+            {"status": "activated", "email_normalized": "root@example.test", "email_masked": "r***@example.test"}
+        ],
+    )
+    monkeypatch.setattr(
+        route,
+        "EmailRateLimiter",
+        lambda: type("Limiter", (), {"check_send_request": lambda self, **kwargs: None})(),
+    )
+    monkeypatch.setattr(route, "_provider_from_config", lambda config: provider)
+
+    response = await route.send_test_email_template.__wrapped__(
+        template_code="delivery_operation",
+        body=None,
+        credentials=None,
+        log_context=type("Ctx", (), {"user_id": "root-user", "ip_address": "127.0.0.1"})(),
+    )
+
+    assert response["success"] is True
+    assert len(provider.sent_messages) == 1
+    assert provider.sent_messages[0].to == ["root@example.test"]
+    assert provider.sent_messages[0].reply_to == expected

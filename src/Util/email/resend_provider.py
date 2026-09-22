@@ -95,6 +95,8 @@ class ResendProvider:
             "headers": dict(request.headers),
             "tags": [{"name": str(key), "value": str(value)} for key, value in request.tags.items()],
         }
+        if request.reply_to:
+            params["reply_to"] = request.reply_to
         options = {"idempotency_key": request.idempotency_key}
 
         try:

@@ -129,6 +129,27 @@ class ActivityType(Enum):
     BILLING_PROVIDER_REF_MISMATCH = "billing_provider_ref_mismatch"
     BILLING_RETENTION_PURGED = "billing_retention_purged"
     BILLING_KEY_ROTATION_COMPLETED = "billing_key_rotation_completed"
+    OAUTH_STARTED = "oauth_started"
+    OAUTH_INIT_REJECTED = "oauth_init_rejected"
+    OAUTH_CALLBACK_RECEIVED = "oauth_callback_received"
+    OAUTH_STATE_REJECTED = "oauth_state_rejected"
+    OAUTH_TOKEN_EXCHANGE_FAILED = "oauth_token_exchange_failed"
+    OAUTH_IDENTITY_REJECTED = "oauth_identity_rejected"
+    OAUTH_LOGIN_SUCCEEDED = "oauth_login_succeeded"
+    OAUTH_LOGIN_DENIED = "oauth_login_denied"
+    OAUTH_EXTERNAL_ACCOUNT_LINKED = "oauth_external_account_linked"
+    OAUTH_EXTERNAL_ACCOUNT_UNLINKED = "oauth_external_account_unlinked"
+    OAUTH_REAUTH_SUCCEEDED = "oauth_reauth_succeeded"
+    OAUTH_USER_CANCELLED = "oauth_user_cancelled"
+    OAUTH_CONNECTION_CREATED = "oauth_connection_created"
+    OAUTH_CONNECTION_UPDATED = "oauth_connection_updated"
+    OAUTH_CONNECTION_CREDENTIALS_SET = "oauth_connection_credentials_set"
+    OAUTH_CONNECTION_STATUS_CHANGED = "oauth_connection_status_changed"
+    OAUTH_BINDING_UPDATED = "oauth_binding_updated"
+    OAUTH_BINDING_REMOVED = "oauth_binding_removed"
+    OAUTH_BINDING_URL_ADDED = "oauth_binding_url_added"
+    OAUTH_BINDING_URL_REMOVED = "oauth_binding_url_removed"
+    OAUTH_PROVIDER_CATALOG_UPDATED = "oauth_provider_catalog_updated"
 
 
 EMAIL_ACTIVITY_CATALOG_RANGE = {
@@ -167,6 +188,30 @@ GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE = {
     "act-cat-072": ActivityType.GOOGLE_OAUTH_LOGIN_DENIED.value,
     "act-cat-073": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED.value,
     "act-cat-074": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED.value,
+}
+
+OAUTH_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-107": ActivityType.OAUTH_STARTED.value,
+    "act-cat-108": ActivityType.OAUTH_INIT_REJECTED.value,
+    "act-cat-109": ActivityType.OAUTH_CALLBACK_RECEIVED.value,
+    "act-cat-110": ActivityType.OAUTH_STATE_REJECTED.value,
+    "act-cat-111": ActivityType.OAUTH_TOKEN_EXCHANGE_FAILED.value,
+    "act-cat-112": ActivityType.OAUTH_IDENTITY_REJECTED.value,
+    "act-cat-113": ActivityType.OAUTH_LOGIN_SUCCEEDED.value,
+    "act-cat-114": ActivityType.OAUTH_LOGIN_DENIED.value,
+    "act-cat-115": ActivityType.OAUTH_EXTERNAL_ACCOUNT_LINKED.value,
+    "act-cat-116": ActivityType.OAUTH_EXTERNAL_ACCOUNT_UNLINKED.value,
+    "act-cat-117": ActivityType.OAUTH_REAUTH_SUCCEEDED.value,
+    "act-cat-118": ActivityType.OAUTH_USER_CANCELLED.value,
+    "act-cat-119": ActivityType.OAUTH_CONNECTION_CREATED.value,
+    "act-cat-120": ActivityType.OAUTH_CONNECTION_UPDATED.value,
+    "act-cat-121": ActivityType.OAUTH_CONNECTION_CREDENTIALS_SET.value,
+    "act-cat-122": ActivityType.OAUTH_CONNECTION_STATUS_CHANGED.value,
+    "act-cat-123": ActivityType.OAUTH_BINDING_UPDATED.value,
+    "act-cat-124": ActivityType.OAUTH_BINDING_REMOVED.value,
+    "act-cat-125": ActivityType.OAUTH_BINDING_URL_ADDED.value,
+    "act-cat-126": ActivityType.OAUTH_BINDING_URL_REMOVED.value,
+    "act-cat-127": ActivityType.OAUTH_PROVIDER_CATALOG_UPDATED.value,
 }
 
 PATREON_ACTIVITY_CATALOG_RANGE = {

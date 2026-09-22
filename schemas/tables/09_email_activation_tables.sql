@@ -288,6 +288,14 @@ ON DUPLICATE KEY UPDATE
 
 -- Patreon proof template metadata. Render payloads and proof tokens remain in the
 -- durable outbox/proof tables; local email activation semantics are untouched.
+--
+-- Template seeds are INSERT-ONLY. scripts/schema_sync.py re-executes this file against
+-- existing databases, and email_templates is version history owned by operators:
+-- sp_email_template_save_and_activate deactivates the current version and inserts
+-- MAX(version) + 1. Rewriting version 1 on a re-run would reset its body and re-activate
+-- it beside the operator's newer version (two active versions of one code). So the
+-- duplicate-key clause is a no-op on either key (id, or template_code + version); a new
+-- built-in body ships as a new version through the template API, never by editing v1 here.
 INSERT INTO email_templates (
     id, template_code, version, subject_template, html_template, text_template,
     is_active, created_at
@@ -301,10 +309,7 @@ INSERT INTO email_templates (
     TRUE,
     NOW()
 ) ON DUPLICATE KEY UPDATE
-    subject_template = VALUES(subject_template),
-    html_template = VALUES(html_template),
-    text_template = VALUES(text_template),
-    is_active = VALUES(is_active);
+    id = id;
 
 INSERT INTO email_templates (
     id, template_code, version, subject_template, html_template, text_template,
@@ -319,10 +324,7 @@ INSERT INTO email_templates (
     TRUE,
     NOW()
 ) ON DUPLICATE KEY UPDATE
-    subject_template = VALUES(subject_template),
-    html_template = VALUES(html_template),
-    text_template = VALUES(text_template),
-    is_active = VALUES(is_active);
+    id = id;
 
 -- ===================================================================================
 -- EMAIL ACTIVATION TABLES COMPLETE

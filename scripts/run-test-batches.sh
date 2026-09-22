@@ -27,6 +27,7 @@ declare -A REAL_DB_ONLY_TARGETS=(
   ["tests/integration/test_slice22_real_access_resolution.py"]=1
   ["tests/integration/test_slice23_soft_delete_cascades.py"]=1
   ["tests/integration/test_slice24_real_default_groups.py"]=1
+  ["tests/integration/test_oauth_real_db.py"]=1
 )
 
 discover_host_targets() {

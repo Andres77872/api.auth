@@ -507,7 +507,7 @@ async def delete_group(group_hash: str, session_data=Depends(require_billing_adm
     except Exception as exc:  # SIGNAL: active subscriptions block deletion
         raise ConflictError(
             message="Cannot delete a billing group with active subscriptions",
-            error_code=ErrorCode.CONFLICT,
+            error_code=ErrorCode.STATE_CONFLICT,
         ) from exc
     return BaseResponse(success=True, message="Billing group deleted")
 
@@ -546,7 +546,7 @@ async def attach_project(
     except Exception as exc:  # SIGNAL: project already attached to another group
         raise ConflictError(
             message="Project is already attached to another billing group",
-            error_code=ErrorCode.CONFLICT,
+            error_code=ErrorCode.STATE_CONFLICT,
         ) from exc
     return AttachProjectToBillingGroupResponse(
         success=True,

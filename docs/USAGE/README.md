@@ -57,7 +57,7 @@ Project reach and action permission are related but distinct:
 
 ## API Surface
 
-The application currently registers **217 method/path operations across 25
+The application currently registers **245 method/path operations across 27
 `src/routes/*.py` modules**. This inventory excludes FastAPI's built-in
 `/docs`, `/redoc`, and `/openapi.json` routes plus routes implemented directly
 in `src/main.py`.
@@ -65,7 +65,8 @@ in `src/main.py`.
 | Surface | Prefix | Module | Operations | Authority |
 | --- | --- | --- | ---: | --- |
 | Authentication | `/auth` | `auth.py` | 13 | Mixed public/session |
-| Google OAuth | `/auth/google` | `auth_google.py` | 6 | Public OAuth + session |
+| OAuth | `/auth/oauth` | `auth_oauth.py` | 9 | Project API key (init, providers), public (start, callback), session (link, reauth, unlink) |
+| Google OAuth (deprecated) | `/auth/google` | `auth_google.py` | 5 | Public OAuth + session |
 | Patreon link | `/auth/patreon` | `auth_patreon.py` | 4 | Session + recent reauth |
 | Users | `/users` | `users.py` | 19 | Session/scoped admin/root |
 | User API keys | `/users/api-keys` | `user_api_keys.py` | 5 | Session + step-up |
@@ -77,6 +78,7 @@ in `src/main.py`.
 | Roles | `/roles` | `global_roles.py` | 28 | Mixed session/admin |
 | Permission assignments | `/permissions` | `permission_assignments.py` | 17 | Mixed session/admin |
 | Admin billing | `/admin/billing` | `admin_billing.py` | 22 | Admin/manage_billing; credentials root-only |
+| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Admin; connections, credentials and catalog root-only |
 | Billing internal | `/internal/.../billing` | `internal_billing.py` | 6 | Dedicated billing S2S bearer |
 | Stripe webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Stripe signature |
 | Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 7 | Root |
@@ -105,7 +107,7 @@ running OpenAPI document.
 | Billing plan projection | Project-scoped consumer login, validation, and consumer API-key validation may expose a provider-neutral subscription `plan`; it is not stored in JWT/cookie/Redis auth state. Current refresh and switch-project response bodies omit it. |
 | System details | `/system/info` and `/system/health` require a valid access session. `/ping` and `/system/ping` are public. |
 | Project stubs | `PATCH /projects/{project_hash}/owner` and `/archive` currently return `501`; archive enforcement elsewhere is active. |
-| CORS | Set `ALLOWED_ORIGINS` explicitly. `.env.example` is the maintained deployment template; do not depend on development fallback origins. |
+| CORS | Set `ALLOWED_ORIGINS` explicitly. `.env.example` is the maintained deployment template. When unset, CORS, early-reject responses, and email-link origin checks share one built-in list (`DEFAULT_ALLOWED_ORIGINS` in `src/Util/auth_constants.py`) of localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai` — never rely on it in a deployment. |
 | First root | There is no unauthenticated API bootstrap. The canonical SQL currently seeds a legacy SHA-256 root credential that the Argon2id-only verifier rejects, while the Python bootstrap scripts print a different password. Rotate that row to Argon2id before first login, or omit the seed and create the root through the application helper. |
 
 ## Common Tasks

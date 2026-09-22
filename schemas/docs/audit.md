@@ -33,7 +33,7 @@ The Magic Auth system implements comprehensive auditing at multiple levels:
 ### Key Features
 
 - **Automatic Trigger-Based Logging**: 104 triggers are defined across the canonical trigger files; this guide details the 46 core/permission triggers below
-- **90 Seeded Activity Types**: The canonical seed extends the original core catalog with email, Google OAuth, and Patreon activities
+- **111 Seeded Activity Types**: The canonical seed extends the original core catalog with email, Google OAuth, Patreon, and provider-agnostic OAuth activities
 - **Error Tracking**: Always logs regardless of DEBUG_MODE
 - **Alert System**: Automatic alerting for error patterns
 - **Retention Management**: Cleanup procedures for old logs
@@ -553,10 +553,11 @@ CREATE TABLE activity_catalog (
 ### Original Core Activity Types (First 40)
 
 The tables below document the original `act-cat-001` through `act-cat-040`
-catalog. The authoritative seed now continues through `act-cat-090`; inspect
-`schemas/tables/08_activity_logging_tables.sql` for the email, Google OAuth, and
-Patreon additions. Billing IDs `act-cat-091` through `act-cat-106` exist in
-runtime constants but are not currently present in the SQL seed.
+catalog. The authoritative seed now continues through `act-cat-090` and resumes at
+`act-cat-107` through `act-cat-127`; inspect
+`schemas/tables/08_activity_logging_tables.sql` for the email, Google OAuth,
+Patreon, and provider-agnostic OAuth additions. Billing IDs `act-cat-091` through
+`act-cat-106` exist in runtime constants but are not currently present in the SQL seed.
 
 #### Authentication (5 types)
 

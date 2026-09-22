@@ -198,12 +198,10 @@ def test_external_account_provider_model_is_widened_for_patreon_without_token_co
     assert "user_external_accounts" in source
     assert "provider_sub_hash" in source
     assert "provider_sub_fingerprint" in source
-    assert (
-        "providerenum('google','patreon')" in compact
-        or "providerenum('patreon','google')" in compact
-        or "providerin('google','patreon')" in compact
-        or "providerin('patreon','google')" in compact
-    ), "user_external_accounts.provider must support both google and patreon"
+    # The ENUM is widened only by appending further provider types after these two.
+    assert "providerenum('google','patreon'" in compact, (
+        "user_external_accounts.provider must support both google and patreon"
+    )
 
     for column in FORBIDDEN_PER_USER_TOKEN_COLUMNS:
         assert not _has_forbidden_column(source, column), f"per-user provider token column is forbidden: {column}"

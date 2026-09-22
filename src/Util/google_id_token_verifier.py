@@ -31,7 +31,15 @@ MAX_JWKS_CACHE_TTL_SECONDS = 3600
 
 
 class GoogleIDTokenValidationError(RuntimeError):
-    """Raised when a Google ID token cannot be validated safely."""
+    """Raised when a Google ID token cannot be validated safely.
+
+    ``failure`` is a closed classification (see ``OAuthFailure``) so callers map
+    failures to public error codes without substring-matching the message.
+    """
+
+    def __init__(self, message: str = "Google ID token is invalid", *, failure: str = "id_token_invalid") -> None:
+        self.failure = failure
+        super().__init__(message)
 
 
 def _b64url_decode_json(segment: str) -> dict[str, Any]:
@@ -127,31 +135,31 @@ def validate_google_claims(
     normalized = dict(claims or {})
 
     if normalized.get("iss") not in tuple(issuers):
-        raise GoogleIDTokenValidationError("Google ID token issuer is not allowed")
+        raise GoogleIDTokenValidationError("Google ID token issuer is not allowed", failure="issuer_mismatch")
     if not _audience_matches(normalized.get("aud"), client_id):
-        raise GoogleIDTokenValidationError("Google ID token audience mismatch")
+        raise GoogleIDTokenValidationError("Google ID token audience mismatch", failure="audience_mismatch")
     azp = normalized.get("azp")
     if azp is not None and not hmac.compare_digest(str(azp), client_id):
-        raise GoogleIDTokenValidationError("Google ID token azp mismatch")
+        raise GoogleIDTokenValidationError("Google ID token azp mismatch", failure="audience_mismatch")
     try:
         exp = int(normalized["exp"])
     except Exception as exc:
-        raise GoogleIDTokenValidationError("Google ID token expired claim is missing") from exc
+        raise GoogleIDTokenValidationError("Google ID token expired claim is missing", failure="token_expired") from exc
     if exp < now - leeway:
-        raise GoogleIDTokenValidationError("Google ID token expired")
+        raise GoogleIDTokenValidationError("Google ID token expired", failure="token_expired")
     try:
         iat = int(normalized["iat"])
     except Exception as exc:
-        raise GoogleIDTokenValidationError("Google ID token issued-at claim is missing") from exc
+        raise GoogleIDTokenValidationError("Google ID token issued-at claim is missing", failure="token_expired") from exc
     if iat > now + leeway:
-        raise GoogleIDTokenValidationError("Google ID token issued in the future")
+        raise GoogleIDTokenValidationError("Google ID token issued in the future", failure="token_expired")
     if not hmac.compare_digest(str(normalized.get("nonce") or ""), str(expected_nonce or "")):
-        raise GoogleIDTokenValidationError("Google ID token nonce mismatch")
+        raise GoogleIDTokenValidationError("Google ID token nonce mismatch", failure="nonce_mismatch")
     hd = normalized.get("hd")
     if hd and not _hosted_domain_allowed(str(hd), allowed_hosted_domains):
-        raise GoogleIDTokenValidationError("Workspace hosted-domain accounts are not allowed")
+        raise GoogleIDTokenValidationError("Workspace hosted-domain accounts are not allowed", failure="restriction_denied")
     if not normalized.get("sub"):
-        raise GoogleIDTokenValidationError("Google ID token subject is missing")
+        raise GoogleIDTokenValidationError("Google ID token subject is missing", failure="subject_missing")
     if "email_verified" in normalized and not isinstance(normalized.get("email_verified"), bool):
         raise GoogleIDTokenValidationError("Google ID token email_verified must be boolean")
     return normalized
@@ -188,38 +196,42 @@ def sanitize_google_claims(claims: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def provider_sub_hmac(provider_sub: str, *, pepper: str | None = None, config: GoogleOAuthConfig | None = None) -> bytes:
-    """Return the durable HMAC authority key for Google provider ``sub``."""
+    """Return the durable HMAC authority key for a provider ``sub``.
 
-    config = config or (None if pepper else load_google_oauth_config())
-    secret = pepper or config.provider_sub_pepper
-    if not secret:
-        raise GoogleIDTokenValidationError("Provider-sub pepper is not configured")
-    return hmac.new(secret.encode("utf-8"), str(provider_sub).encode("utf-8"), hashlib.sha256).digest()
+    Delegates to :mod:`src.Util.oauth.identity`; kept here for compatibility.
+    """
+
+    from src.Util.oauth import identity as oauth_identity
+
+    try:
+        return oauth_identity.provider_sub_hmac(
+            provider_sub, pepper=pepper or (config.provider_sub_pepper if config else None)
+        )
+    except oauth_identity.OAuthIdentityKeyError as exc:
+        raise GoogleIDTokenValidationError(str(exc)) from exc
 
 
 def provider_sub_fingerprint(provider_sub: str) -> str:
-    return hashlib.sha256(str(provider_sub).encode("utf-8")).hexdigest()[:12]
+    from src.Util.oauth import identity as oauth_identity
+
+    return oauth_identity.provider_sub_fingerprint(provider_sub)
 
 
 def provider_email_hmac(email: str | None, *, pepper: str | None = None, config: GoogleOAuthConfig | None = None) -> bytes | None:
-    if not email:
-        return None
-    config = config or (None if pepper else load_google_oauth_config())
-    secret = pepper or config.email_hash_pepper
-    if not secret:
-        raise GoogleIDTokenValidationError("Provider-email pepper is not configured")
-    return hmac.new(secret.encode("utf-8"), str(email).strip().lower().encode("utf-8"), hashlib.sha256).digest()
+    from src.Util.oauth import identity as oauth_identity
+
+    try:
+        return oauth_identity.provider_email_hmac(
+            email, pepper=pepper or (config.email_hash_pepper if config else None)
+        )
+    except oauth_identity.OAuthIdentityKeyError as exc:
+        raise GoogleIDTokenValidationError(str(exc)) from exc
 
 
 def mask_provider_email(email: str | None) -> str | None:
-    if not email or "@" not in str(email):
-        return None
-    local, domain = str(email).split("@", 1)
-    if len(local) <= 2:
-        local_mask = local[:1] + "***"
-    else:
-        local_mask = f"{local[0]}***{local[-1]}"
-    return f"{local_mask}@{domain}"
+    from src.Util.oauth import identity as oauth_identity
+
+    return oauth_identity.mask_provider_email(email)
 
 
 class DefaultJWKSFetcher:
@@ -297,7 +309,14 @@ class GoogleIDTokenVerifier:
         if self.jwks_fetcher is None and self.jwks_client is not None:
             self.jwks_fetcher = self.jwks_client
         if self.jwks_fetcher is None:
-            self.jwks_fetcher = DefaultJWKSFetcher(jwks_uri=str(self.jwks_uri))
+            # Process-wide cache keyed by JWKS URI. A fresh verifier per callback used
+            # to mean a JWKS fetch per callback; the instance cache never survived.
+            from src.Util.oauth.http import CachedJWKSFetcher
+
+            self.jwks_fetcher = CachedJWKSFetcher(
+                jwks_uri=str(self.jwks_uri),
+                ttl_seconds=int(self.jwks_cache_ttl_seconds),
+            )
         self._jwks_cache: Mapping[str, Any] | None = None
         self._jwks_cache_expires_at = 0.0
 

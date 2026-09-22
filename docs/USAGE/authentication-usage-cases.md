@@ -547,6 +547,12 @@ curl -X POST "http://localhost:8000/auth/refresh" \
 
 **Scenario**: End current session. Logout validates the access token, revokes the associated refresh family, and clears both `session_token` and `refresh_token` cookies.
 
+An **expired** access token is accepted here. Logout only destroys state, so an
+authentic token whose 15-minute window has closed is still valid proof of which
+family to revoke — a tab left idle can log itself out instead of leaving the
+family alive for the remainder of its refresh TTL. Signature, token type, and the
+lifecycle claims are still enforced, so a forged or malformed token is refused.
+
 ```bash
 curl -X POST "http://localhost:8000/auth/logout" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
@@ -864,9 +870,9 @@ curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups"
 | Register | `/auth/register` | POST | No |
 | Validate access token | `/auth/validate` | GET | Access JWT or `session_token` cookie |
 | Validate API key | `/auth/validate-api-key` | POST | `X-API-Key` header |
-| Logout | `/auth/logout` | POST | Access JWT or `session_token` cookie |
+| Logout | `/auth/logout` | POST | Access JWT or `session_token` cookie (expiry tolerated) |
 | Refresh token | `/auth/refresh` | POST | Refresh token only |
-| Switch project | `/auth/switch-project` | POST | Access token + current refresh token |
+| Switch project | `/auth/switch-project` | POST | Access token issued within the last `recent_reauth_seconds` (default 300s) + current refresh token |
 | Check availability | `/auth/check-availability` | POST | No |
 | Verify email activation | `/auth/email/verify` | POST | No (public; JSON body) |
 | Forgot password | `/auth/password/forgot` | POST | No (public; JSON body) |

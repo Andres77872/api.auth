@@ -32,7 +32,7 @@ Disabling these switches must preserve existing local authentication, Google OAu
 | `PATREON_CLIENT_ID` | empty | Secret-adjacent provider client config; server-only. |
 | `PATREON_CLIENT_SECRET` | empty | Secret; server-only. |
 | `PATREON_WEBHOOK_SECRET` | empty | Secret for `X-Patreon-Signature` verification. |
-| `PATREON_WEBHOOK_ID` | empty | Server-only webhook management reference. |
+| `PATREON_WEBHOOK_ID` | empty | Server-only webhook management reference. Parsed into config but not consumed by any code path yet, so setting it currently has no runtime effect. |
 | `PATREON_S2S_BEARER_TOKEN` | empty | Secret dedicated internal bearer for Magic Worlds/api.auth S2S. |
 | `PATREON_USER_AGENT` | `api.auth-patreon-sync/1.0` | Provider API user-agent value; safe if non-secret. |
 
@@ -46,7 +46,7 @@ Never store creator tokens in per-user rows. Never expose these values in browse
 | `PATREON_EMAIL_HASH_PEPPER` | HMAC pepper for proof email hashing. |
 | `PATREON_PROOF_TOKEN_PEPPER` | HMAC pepper for split proof-token hash-at-rest behavior. |
 | `PATREON_ID_HMAC_SECRET` | Required HMAC secret for raw Patreon campaign/member/tier IDs. |
-| `PATREON_HMAC_SECRET` | Backward-compatible/fallback HMAC secret input; do not use as the production standard. |
+| `PATREON_HMAC_SECRET` | Legacy fallback alias only: read when `PATREON_ID_HMAC_SECRET` is empty. Not an independent secret; do not use as the production standard. |
 | `PATREON_WEBHOOK_DELIVERY_HASH_PEPPER` | Pepper for local webhook delivery idempotency hashes. |
 | `PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY` | Encryption key for optional global creator-token state/quarantine use. |
 | `PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY_ID` | Non-secret key identifier if carefully redacted; still server-only by default. |
@@ -93,10 +93,10 @@ Link history, membership/snapshot history, entitlement history, and unlink histo
 | `PATREON_API_CONNECT_TIMEOUT_SECONDS` | `5` | Provider API connect timeout. |
 | `PATREON_API_PAGE_SIZE` | `1000` | Campaign member page size; capped at `1000`. |
 | `PATREON_API_MAX_PAGES_PER_SYNC` | `0` | Local page cap; `0` means no local cap. |
-| `PATREON_API_RETRY_MAX_ATTEMPTS` | `3` | Provider API retry attempts. |
+| `PATREON_API_RETRY_MAX_ATTEMPTS` | `3` | Provider API retry attempts. Parsed but not consumed yet; setting it currently has no effect. |
 | `PATREON_API_RETRY_BACKOFF_SECONDS` | `1,5,15` | Provider API retry backoff sequence. |
 | `PATREON_API_RETRY_JITTER_SECONDS` | `5` | Provider API retry jitter. |
-| `PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS` | `604800` | Refresh margin before creator-token expiry. |
+| `PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS` | `604800` | Refresh margin before creator-token expiry. Parsed but not consumed yet; setting it currently has no effect. |
 | `PATREON_SYNC_INTERVAL_SECONDS` | `21600` | Scheduled full sync interval. |
 | `PATREON_SYNC_JITTER_SECONDS` | `900` | Scheduled sync jitter. |
 | `PATREON_SYNC_STALE_AFTER_SECONDS` | `86400` | Snapshot freshness boundary. |
@@ -135,7 +135,6 @@ Redis rate-limit keys must use hashed bucket material only. Never use raw IPs, u
 | `PATREON_LIVE_TEST_USER_HASH` | empty | Live-test local user hash. |
 | `PATREON_TEST_CAMPAIGN_ID` | empty | Live-test campaign ID; server-only test config. |
 | `PATREON_TEST_MEMBER_EMAIL` | empty | Live-test member email; server-only test config. |
-| `PATREON_E2E_CREATOR_TOKEN` | empty | Live-test creator token; secret. |
 
 ## Route Contracts
 

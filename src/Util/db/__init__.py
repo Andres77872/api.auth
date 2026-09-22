@@ -199,9 +199,12 @@ from src.Util.db.db_external_accounts import (
     create_consumer_user_from_external_account,
     get_user_by_external_account,
     link_external_account,
+    list_external_accounts_for_user,
     touch_external_account_last_seen,
     unlink_external_account,
 )
+# Provider-agnostic OAuth connection/binding wrapper module
+from src.Util.db import db_oauth_connections
 # Import provider-agnostic billing wrapper module
 from src.Util.db import db_billing
 # Import transactional auth email functions
@@ -610,6 +613,8 @@ __all__ = [
     'link_external_account',
     'touch_external_account_last_seen',
     'unlink_external_account',
+    'list_external_accounts_for_user',
+    'db_oauth_connections',
 
     # Patreon External Accounts / Entitlement Wrapper
     'db_patreon',

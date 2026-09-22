@@ -177,9 +177,9 @@ def _recent_reauth_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     if ttl_seconds is not None:
         return max(1, int(ttl_seconds))
     try:
-        from src.Util.google_oauth_config import load_google_oauth_config
+        from src.Util.oauth.settings import load_oauth_settings
 
-        return max(1, int(load_google_oauth_config().recent_reauth_seconds))
+        return max(1, int(load_oauth_settings().recent_reauth_seconds))
     except Exception:
         return 300
 

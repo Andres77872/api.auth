@@ -55,7 +55,7 @@ The API reads configuration from environment variables. See [.env.example](../..
 | `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes. Refresh continuity is 72h sliding (`remember_me=false`) or a 30-day absolute, non-sliding window (`remember_me=true`). |
 | `API_KEY_PEPPER` | Yes | -- | HMAC pepper for API key hashing; required before API key utilities import |
-| `ALLOWED_ORIGINS` | No | source fallback | Explicit CORS allow-list (comma-separated). **Set it in every deployment.** Use [.env.example](../../.env.example) as the maintained template rather than relying on source fallbacks. |
+| `ALLOWED_ORIGINS` | No | `DEFAULT_ALLOWED_ORIGINS` | Explicit CORS allow-list (comma-separated). When unset, the app falls back to the single built-in list `DEFAULT_ALLOWED_ORIGINS` in [src/Util/auth_constants.py](../../src/Util/auth_constants.py), shared by the CORS middleware, early-reject responses, and email-link origin validation. That list holds localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai`, so it is not a deployment configuration — **set it in every deployment.** Use [.env.example](../../.env.example) as the maintained template. |
 | `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
 
 ### Critical: `JWT_SECRET_KEY`
@@ -401,8 +401,12 @@ dependency.
 ### 7. CORS uses an explicit allow-list
 
 Set `ALLOWED_ORIGINS` to the exact browser clients that should call the API.
-[`.env.example`](../../.env.example) is the maintained deployment template; do
-not depend on fallback lists embedded in source.
+[`.env.example`](../../.env.example) is the maintained deployment template. When
+the variable is unset, CORS, early-reject responses, and email-link origin
+validation all fall back to the same built-in `DEFAULT_ALLOWED_ORIGINS` list in
+[`src/Util/auth_constants.py`](../../src/Util/auth_constants.py); it contains
+localhost/LAN development origins plus the hosted auth UI origin
+`https://auth-ui.arz.ai`, and is not a deployment configuration.
 
 ### 8. Password policy is server-enforced
 

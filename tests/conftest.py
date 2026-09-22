@@ -74,16 +74,13 @@ _GOOGLE_OAUTH_TEST_ENV_DEFAULTS = {
     "GOOGLE_OAUTH_REDIRECT_URIS": "http://localhost:8000/auth/google/callback,http://127.0.0.1:8000/auth/google/callback",
     "GOOGLE_OAUTH_RETURN_ORIGINS": "http://localhost:3000,http://localhost:5173",
     "GOOGLE_OAUTH_PROVISIONING_MODE": "disabled",
-    "GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH": "",
     "GOOGLE_OAUTH_STATE_TTL_SECONDS": "600",
-    "GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS": "600",
     "GOOGLE_OAUTH_RECENT_REAUTH_SECONDS": "300",
     "GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS": "3600",
     "GOOGLE_OAUTH_LEEWAY_SECONDS": "30",
     "GOOGLE_OAUTH_STATE_PEPPER": "test-oauth-state-pepper-not-real-min-32-bytes!!",
     "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": "test-oauth-provider-sub-pepper-not-real-min-32-bytes!!",
     "GOOGLE_OAUTH_EMAIL_HASH_PEPPER": "test-oauth-email-hash-pepper-not-real-min-32-bytes!!",
-    "GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET": "test-oauth-passwordless-secret-not-real-min-32-bytes!!",
     "GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "true",
     "PROVIDER_INIT_REDEEM_URL": "http://provider-init.test/internal/auth/provider-init/redeem",
     "PROVIDER_INIT_REDEEM_TOKEN": "test-provider-init-redeem-token-not-real",
@@ -207,7 +204,6 @@ _PATREON_TEST_ENV_DEFAULTS = {
     "PATREON_LIVE_TEST_USER_HASH": "",
     "PATREON_TEST_CAMPAIGN_ID": "",
     "PATREON_TEST_MEMBER_EMAIL": "",
-    "PATREON_E2E_CREATOR_TOKEN": "",
 }
 
 for _oauth_env_key, _oauth_env_value in _GOOGLE_OAUTH_TEST_ENV_DEFAULTS.items():
@@ -386,7 +382,6 @@ _PATREON_SECRET_ENV_NAMES = (
     "PATREON_HMAC_SECRET",
     "PATREON_WEBHOOK_DELIVERY_HASH_PEPPER",
     "PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY",
-    "PATREON_E2E_CREATOR_TOKEN",
 )
 _PATREON_SENSITIVE_KEY_FRAGMENTS = (
     "authorization",

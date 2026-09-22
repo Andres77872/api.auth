@@ -8,8 +8,6 @@ import pytest
 
 from src.Util.auth_constants import (
     GOOGLE_OAUTH_CALLBACK_RATE_PREFIX,
-    GOOGLE_OAUTH_JWKS_FETCH_RATE_PREFIX,
-    GOOGLE_OAUTH_LINK_TOKEN_RATE_PREFIX,
     GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX,
     GOOGLE_OAUTH_START_RATE_PREFIX,
     GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX,
@@ -28,9 +26,7 @@ RAW_IP = "203.0.113.45"
 RAW_PROVIDER_INIT = "provider-init-fingerprint-sensitive"
 RAW_STATE = "state-fingerprint-sensitive"
 RAW_PROVIDER_SUB = "provider-sub-fingerprint-sensitive"
-RAW_LINK_TOKEN = "link-token-fingerprint-sensitive"
 RAW_USER_ID = "user-id-sensitive"
-RAW_ISSUER = "https://accounts.example.test/issuer-sensitive"
 
 
 class RecordingRedis:
@@ -99,20 +95,6 @@ class RecordingRedis:
             "sub_collision",
             GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX,
             (RAW_PROVIDER_SUB, RAW_IP),
-        ),
-        (
-            "check_link_token_consumption",
-            {"ip_address": RAW_IP, "link_token_fingerprint": RAW_LINK_TOKEN},
-            "link_token",
-            GOOGLE_OAUTH_LINK_TOKEN_RATE_PREFIX,
-            (RAW_IP, RAW_LINK_TOKEN),
-        ),
-        (
-            "check_jwks_fetch",
-            {"issuer": RAW_ISSUER},
-            "jwks_fetch",
-            GOOGLE_OAUTH_JWKS_FETCH_RATE_PREFIX,
-            (RAW_ISSUER,),
         ),
         (
             "check_unlink_attempt",
@@ -247,10 +229,6 @@ def test_policy_loader_applies_bucket_values_and_redis_failure_policy():
             "GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS": "29",
             "GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT": "7",
             "GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS": "31",
-            "GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT": "8",
-            "GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS": "37",
-            "GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT": "9",
-            "GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS": "41",
             "GOOGLE_OAUTH_UNLINK_RATE_LIMIT": "10",
             "GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS": "43",
         }
@@ -267,11 +245,27 @@ def test_policy_loader_applies_bucket_values_and_redis_failure_policy():
         state_consume_window_seconds=29,
         sub_collision_limit=7,
         sub_collision_window_seconds=31,
-        link_token_limit=8,
-        link_token_window_seconds=37,
-        jwks_fetch_limit=9,
-        jwks_fetch_window_seconds=41,
         unlink_limit=10,
         unlink_window_seconds=43,
         fail_closed_on_redis_error=False,
     )
+
+
+def test_neutral_oauth_rate_limit_names_win_and_google_names_still_work():
+    from src.Util.oauth_rate_limit import load_oauth_rate_limit_policy
+
+    legacy = load_oauth_rate_limit_policy(env={"GOOGLE_OAUTH_START_RATE_LIMIT": "7"})
+    neutral = load_oauth_rate_limit_policy(env={"OAUTH_START_RATE_LIMIT": "9", "GOOGLE_OAUTH_START_RATE_LIMIT": "7"})
+    assert legacy.start_limit == 7
+    assert neutral.start_limit == 9
+
+
+def test_scope_dimension_separates_tenants_without_changing_unscoped_keys():
+    from src.Util.oauth_rate_limit import _bucket_key, rate_limit_scope
+
+    unscoped = _bucket_key("p:", "start", "ip", "fp")
+    scope_a = rate_limit_scope(project="project-a", connection="oac-1")
+    scope_b = rate_limit_scope(project="project-b", connection="oac-1")
+    assert _bucket_key("p:", "start", "ip", "fp", scope=None) == unscoped
+    assert len({unscoped, _bucket_key("p:", "start", "ip", "fp", scope=scope_a), _bucket_key("p:", "start", "ip", "fp", scope=scope_b)}) == 3
+    assert "project-a" not in scope_a, "the raw project hash never appears in a Redis key"

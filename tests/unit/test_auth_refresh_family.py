@@ -718,3 +718,179 @@ def test_reconstruct_context_inactive_user_fails_closed_and_revokes_family(monke
     assert family["revocation_reason"] == "inactive_user"
     assert fake.get("session:acc-inactive") is None
     assert fake.get("session_full:acc-inactive") is None
+
+
+def test_duplicate_refresh_inside_grace_window_keeps_family_alive(monkeypatch):
+    """A lost response or a second tab must not destroy the session.
+
+    The duplicate is still refused, but the pair the first caller received has
+    to keep working — that is the whole point of the grace window.
+    """
+    from fakeredis import FakeStrictRedis
+    from fastapi import HTTPException
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={"id": "usr-db-1", "user_hash": "usr-hash-1", "username": "consumer", "user_type": "consumer"},
+        project={"id": "prj-db-1", "project_hash": "prj-hash-1", "project_name": "Project One"},
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+
+    first = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    with pytest.raises(HTTPException) as denial:
+        lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+    assert denial.value.status_code == 401
+    assert "already rotated" in str(denial.value.detail)
+
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    assert family["status"] == "active"
+    assert fake.get(f"refresh_anchor:{family_id}") is not None
+
+    # The token the first caller actually received is still usable.
+    second = lifecycle.rotate_refresh_family(first.token_pair.refresh_token, **_project_refresh_hooks())
+    assert second.token_pair.refresh_token != first.token_pair.refresh_token
+
+
+def test_reuse_after_grace_window_still_revokes_family(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from fakeredis import FakeStrictRedis
+    from fastapi import HTTPException
+    import src.Util.auth_lifecycle as lifecycle
+    from src.Util.auth_constants import REFRESH_REPLAY_GRACE_SECONDS
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={"id": "usr-db-1", "user_hash": "usr-hash-1", "username": "consumer", "user_type": "consumer"},
+        project={"id": "prj-db-1", "project_hash": "prj-hash-1", "project_name": "Project One"},
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+    stale_jti = pair.refresh_claims["jti"]
+
+    lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+
+    stale_key = f"refresh_token:{stale_jti}"
+    stale_record = _decode(fake.get(stale_key))
+    stale_record["used_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=REFRESH_REPLAY_GRACE_SECONDS + 60)
+    ).isoformat()
+    fake.set(stale_key, json.dumps(stale_record))
+
+    with pytest.raises(HTTPException) as denial:
+        lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+    assert "reused" in str(denial.value.detail)
+
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    assert family["status"] == "reused"
+    assert family["revocation_reason"] == "refresh_reuse"
+    assert fake.get(f"refresh_anchor:{family_id}") is None
+
+
+def test_older_ancestor_replay_is_never_treated_as_a_duplicate(monkeypatch):
+    """Only the immediately-previous token qualifies for the grace window."""
+    from fakeredis import FakeStrictRedis
+    from fastapi import HTTPException
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={"id": "usr-db-1", "user_hash": "usr-hash-1", "username": "consumer", "user_type": "consumer"},
+        project={"id": "prj-db-1", "project_hash": "prj-hash-1", "project_name": "Project One"},
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+    family_id = pair.refresh_claims["family_id"]
+
+    first = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+    lifecycle.rotate_refresh_family(first.token_pair.refresh_token, **_project_refresh_hooks())
+
+    # The original token is now two generations back: its child is no longer the
+    # family's current token, so this is reuse even though it is seconds old.
+    with pytest.raises(HTTPException) as denial:
+        lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
+    assert "reused" in str(denial.value.detail)
+
+    family = _decode(fake.get(f"refresh_family:{family_id}"))
+    assert family["status"] == "reused"
+
+
+def test_switch_project_rescopes_a_platform_family_to_the_target_project(monkeypatch):
+    """A platform session switching projects must actually get project tokens."""
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+    from src.Util.auth_constants import AUTH_SCOPE_PROJECT
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    admin = SimpleNamespace(
+        id="usr-db-admin",
+        user_hash="usr-hash-admin",
+        username="admin",
+        user_type="admin",
+        is_active=True,
+    )
+    project = SimpleNamespace(
+        id="prj-db-1",
+        project_hash="prj-hash-1",
+        project_name="Project One",
+        is_active=True,
+        archived=False,
+    )
+
+    pair = lifecycle.issue_platform_token_pair(user=admin, permissions=["admin"], groups=["platform_admins"])
+    assert pair.access_claims["scope"] == "platform"
+
+    rotation = lifecycle.rotate_refresh_family(
+        pair.refresh_token,
+        target_project=project,
+        get_user_by_hash_fn=Mock(return_value=admin),
+        get_project_by_hash_fn=Mock(return_value=project),
+        check_admin_project_access_fn=Mock(return_value=True),
+        get_user_groups_in_project_by_hash_fn=Mock(return_value=[SimpleNamespace(group_name="g")]),
+        get_user_permissions_fn=Mock(return_value=["read"]),
+        get_user_accessible_projects_fn=Mock(return_value=[project]),
+    )
+
+    assert rotation.token_pair.access_claims["scope"] == AUTH_SCOPE_PROJECT
+    assert rotation.token_pair.access_claims["collection"] == "prj-hash-1"
+    assert rotation.token_pair.refresh_claims["scope"] == AUTH_SCOPE_PROJECT
+    assert rotation.session_payload["project_hash"] == "prj-hash-1"
+    assert rotation.session_payload["project_id"] == "prj-db-1"
+    assert rotation.family_payload["scope"] == AUTH_SCOPE_PROJECT
+    assert rotation.family_payload["project_hash"] == "prj-hash-1"
+
+
+def test_rotation_drops_the_retired_access_jti_from_the_user_session_index(monkeypatch):
+    from fakeredis import FakeStrictRedis
+    import src.Util.auth_lifecycle as lifecycle
+
+    fake = FakeStrictRedis()
+    monkeypatch.setattr(lifecycle, "redis_client", fake)
+
+    pair = lifecycle.issue_project_token_pair(
+        user={"id": "usr-db-1", "user_hash": "usr-hash-1", "username": "consumer", "user_type": "consumer"},
+        project={"id": "prj-db-1", "project_hash": "prj-hash-1", "project_name": "Project One"},
+        permissions=["read"],
+        groups=["Consumers"],
+    )
+
+    token = pair.refresh_token
+    for _ in range(5):
+        rotation = lifecycle.rotate_refresh_family(token, **_project_refresh_hooks())
+        token = rotation.token_pair.refresh_token
+
+    members = lifecycle._decode_set_members(fake.smembers("user_sessions:usr-db-1"))
+    assert members == [rotation.token_pair.access_claims["jti"]]

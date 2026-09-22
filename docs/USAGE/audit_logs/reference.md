@@ -37,7 +37,7 @@ All endpoints under `/admin/activity*` require **root or admin** user type. Auth
 |----------|--------|------|--------------|---------|
 | `/admin/activity` | GET | root/admin | Query params | Activity feed from `activity_logs` table |
 | `/admin/activity/{activity_id}` | GET | root/admin | — | Single activity log detail by ID |
-| `/admin/activity/types` | GET | root/admin | — | Current runtime `ActivityType` enum (91 values) |
+| `/admin/activity/types` | GET | root/admin | — | Current runtime `ActivityType` enum (112 values) |
 
 ---
 

@@ -138,18 +138,19 @@ async def test_callback_rejects_replay_expired_and_malformed_state_without_cooki
 @pytest.mark.asyncio
 async def test_callback_exchanges_code_once_invokes_verifier_and_returns_login_response_parity(
     client,
-    fake_redis,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
     oauth_assert_no_leaks,
+    monkeypatch,
 ):
-    # Future state implementation owns the exact Redis shape; this marker keeps
-    # the test intentional during RED and gives GREEN code a deterministic value.
-    fake_redis.set("google_oauth_state:test-valid-state", "phase3-callback-contract", ex=600)
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    # A state is valid only when the production store issued it.
+    state = oauth_state_factory()
 
     with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher):
-        response = await _get_callback(client, code="fake-google-auth-code-not-real", state="test-valid-state")
+        response = await _get_callback(client, code="fake-google-auth-code-not-real", state=state)
 
     _assert_callback_route_exists(response)
     assert response.status_code == 200
@@ -176,16 +177,18 @@ async def test_callback_exchanges_code_once_invokes_verifier_and_returns_login_r
 @pytest.mark.asyncio
 async def test_callback_replay_does_not_exchange_code_twice_or_issue_second_session(
     client,
-    fake_redis,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
+    monkeypatch,
 ):
-    fake_redis.set("google_oauth_state:test-replay-state", "phase3-callback-contract", ex=600)
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    state = oauth_state_factory()
 
     with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher):
-        first = await _get_callback(client, state="test-replay-state")
-        second = await _get_callback(client, state="test-replay-state")
+        first = await _get_callback(client, state=state)
+        second = await _get_callback(client, state=state)
 
     _assert_callback_route_exists(first)
     _assert_callback_route_exists(second)
@@ -194,3 +197,150 @@ async def test_callback_replay_does_not_exchange_code_twice_or_issue_second_sess
     assert len(fake_google_token_exchange.calls) == 1
     assert "session_token" not in second.cookies
     assert "refresh_token" not in second.cookies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "forged_state",
+    [
+        # Literal values that an earlier revision of the route accepted in a test
+        # runtime without any Redis record. They must be plain unknown states.
+        "companion-contract-state",
+        "strict-hash-state",
+        "e2e-valid-state",
+        "security-anything",
+        "state-for-root",
+    ],
+)
+async def test_callback_has_no_test_runtime_state_bypass(
+    client,
+    forged_state,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
+    monkeypatch,
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+
+    with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher):
+        response = await _get_callback(client, code="fake-google-auth-code-not-real", state=forged_state)
+
+    assert response.status_code in {400, 401}
+    assert fake_google_token_exchange.calls == []
+    assert "session_token" not in response.cookies
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_forged_code_and_token_when_no_test_double_is_installed(
+    client,
+    oauth_state_factory,
+    db_patcher,
+    monkeypatch,
+):
+    """With a genuine state but no injected fakes, a forged code must not yield a session."""
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    state = oauth_state_factory()
+
+    with db_patcher(), patch(
+        "src.Util.oauth.adapters.oidc.guarded_post_form", side_effect=RuntimeError("no network in tests")
+    ):
+        response = await _get_callback(client, code="fake-google-auth-code-forged", state=state)
+
+    assert response.status_code == 502
+    assert "session_token" not in response.cookies
+    assert "refresh_token" not in response.cookies
+
+
+@pytest.mark.asyncio
+async def test_callback_user_cancel_returns_distinct_neutral_code_and_consumes_state(
+    client,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
+    monkeypatch,
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    state = oauth_state_factory()
+
+    with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher):
+        cancelled = await client.get(CALLBACK_PATH, params={"error": "access_denied", "state": state})
+        replay = await _get_callback(client, state=state)
+
+    assert cancelled.status_code == 400
+    assert cancelled.json()["error"]["code"] == "EXT_8031"
+    assert replay.status_code in {400, 401}, "a cancelled round trip must consume its state"
+    assert fake_google_token_exchange.calls == []
+
+
+@pytest.mark.asyncio
+async def test_callback_refuses_in_flight_transaction_after_provider_is_disabled(
+    client,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
+    monkeypatch,
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    state = oauth_state_factory()
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "false")
+
+    with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher):
+        response = await _get_callback(client, state=state)
+
+    assert response.status_code in {403, 404}
+    assert fake_google_token_exchange.calls == []
+    assert "session_token" not in response.cookies
+
+
+@pytest.mark.asyncio
+async def test_environment_mode_never_depends_on_the_namespace_aware_schema(
+    client,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
+    monkeypatch,
+):
+    """Deploying this code before the schema catch-up must not break Google sign-in."""
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "both")
+
+    with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher) as db:
+        created = db["get_user_by_external_account"].return_value  # the fully populated mock user
+        db["get_user_by_external_account"].return_value = None
+        db["create_consumer_user_from_external_account"].return_value = created
+        db["get_user_group_by_hash"].return_value = MagicMock(id="ug-1")
+        response = await _get_callback(client, state=oauth_state_factory())
+
+    assert response.status_code == 200, response.text
+
+    for name in ("get_user_by_external_account", "create_consumer_user_from_external_account"):
+        assert db[name].called, name
+        kwargs = db[name].call_args.kwargs
+        assert kwargs.get("identity_namespace") is None, f"{name} must use the provider-keyed procedure in env mode"
+        assert kwargs["provider"] == "google"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_provisioning_result_fails_closed_instead_of_erroring(
+    client,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
+    monkeypatch,
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "both")
+
+    with _patched_callback_seams(fake_google_token_exchange, fake_google_verifier, db_patcher) as db:
+        db["get_user_by_external_account"].return_value = None
+        db["get_user_group_by_hash"].return_value = MagicMock(id="ug-1")
+        db["create_consumer_user_from_external_account"].return_value = {"id": "usr-partial"}  # no hash, no name
+        response = await _get_callback(client, state=oauth_state_factory())
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "EXT_8024"
+    assert "session_token" not in response.cookies

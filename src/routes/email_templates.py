@@ -630,6 +630,7 @@ async def send_test_email_template(
         headers={**rendered.headers, "X-Email-Template-Test": "true"},
         tags={**rendered.tags, "test": "true"},
         idempotency_key=message_id,
+        reply_to=config.reply_to_address,
     )
     try:
         provider.send(send_request)

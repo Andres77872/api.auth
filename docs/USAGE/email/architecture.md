@@ -87,6 +87,7 @@ Templates have catalog metadata plus versioned bodies:
 
 - **`email_template_catalog`** — one row per template code. It stores purpose, allowed/required variables, built-in vs dynamic state, enabled/disabled state, revision, and disabled audit metadata.
 - **`email_templates`** — append-only version rows. One version is active per code.
+  The version-1 rows seeded by `schemas/tables/09_email_activation_tables.sql` are insert-only: `scripts/schema_sync.py` re-executes that file against existing databases, and a re-run never rewrites a body or re-activates version 1 beside a version saved since. A changed built-in body ships as a new version through the template API. A retired template code is deactivated and its catalog row removed; its version rows are kept.
 - **`code` defaults** — built-in fallback bodies in `src/Util/email/templates.py` for built-in codes only.
 
 The worker resolves templates immediately before rendering each claimed message with `fail_closed_on_db_error=True`. Guarantee: any template create/update/disable/rollback committed before render starts is honored. A send already rendering may finish with the version it resolved.
@@ -162,7 +163,7 @@ The limiter **fails closed** on a Redis error (`fail_closed_on_redis_error=True`
 `validate_email_readiness(config)` returns one of `disabled` / `not_ready` / `ready` without contacting the provider:
 
 - `disabled` — `EMAIL_DELIVERY_ENABLED=false`.
-- `not_ready` — missing required config (the `missing[]` list names the keys): `EMAIL_FROM_ADDRESS`; for `resend` also `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_SENDER_DOMAIN_VERIFIED` in prod; for `mailpit` host/port.
+- `not_ready` — missing or invalid config (the `missing[]` list names the keys): `EMAIL_FROM_ADDRESS`, or a set-but-malformed `EMAIL_REPLY_TO_ADDRESS`; for `resend` also `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_SENDER_DOMAIN_VERIFIED` in prod; for `mailpit` host/port.
 - `ready` — everything required is present.
 
 `send-test` refuses to send unless readiness is `ready`.

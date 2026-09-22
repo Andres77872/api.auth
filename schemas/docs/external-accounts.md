@@ -1,6 +1,6 @@
 # External Accounts Schema
 
-Documentation for external-account storage used by Google OAuth and Patreon account linking. Google remains a login/link provider; Patreon is entitlement/link only and never becomes a login provider.
+Documentation for external-account storage used by OAuth sign-in (Google and the other provider types in `oauth_provider_catalog`) and Patreon account linking. Patreon is entitlement/link only and never becomes a login provider. Connection and binding storage is documented with the [OAuth reference](../../docs/USAGE/oauth/reference.md).
 
 ## Purpose
 
@@ -17,7 +17,9 @@ Provider roles are deliberately different:
 | --- | --- | --- |
 | `id` | Internal external-account row ID | Not browser authority. |
 | `user_id` | Local `users(id)` owner | FK to local user. |
-| `provider` | Provider enum: `google` or `patreon` | Provider role determines whether the linked subject may login (`google`) or is entitlement/link only (`patreon`). |
+| `provider` | Provider type enum: `google`, `patreon`, `github`, `discord`, `microsoft`, `oidc` (append-only) | Must have a row in `oauth_provider_catalog`. Whether a type may log in is application policy; `patreon` is entitlement/link only. |
+| `identity_namespace` | Scope of the subject: `google`, `patreon`, `github`, `discord`, `microsoft:<tenant id>`, `oidc:<issuer>` | A separate column, never part of the HMAC input. Defaults to `provider` for rows written by provider-keyed procedures. Immutable after insert. |
+| `connection_id` | Optional `oauth_connections(id)` the identity was linked through | Informational; `NULL` for environment-configured and Patreon links. |
 | `provider_sub_hash` | HMAC-SHA256 of Google `sub` or Patreon `user.id` | Primary external identity authority; raw provider IDs are not persisted. |
 | `provider_sub_fingerprint` | Short non-reversible support fingerprint | Safe for redacted activity/audit correlation. |
 | `provider_email_hash` | Optional HMAC of provider email snapshot | Email is not durable link authority for either provider. |
@@ -28,8 +30,8 @@ Provider roles are deliberately different:
 | `last_seen_at` | Returning login refresh point or provider sync/proof observation | Updated only by provider-appropriate safe flows. |
 | `unlinked_at`, `unlinked_by`, `unlink_reason` | Soft-unlink metadata | Preserve history. |
 | `metadata` | Redacted operational JSON | Do not store provider tokens or strict hashes. |
-| `active_provider_sub_hash` | Generated uniqueness helper | Ensures one active user per provider subject. |
-| `active_user_provider` | Generated uniqueness helper | Ensures one active provider link per user/provider. |
+| `active_provider_sub_hash` | Generated uniqueness helper | With `identity_namespace`: one active user per subject within a namespace (`uk_external_accounts_active_namespace_sub`). |
+| `active_user_namespace` | Generated uniqueness helper | One active link per user and namespace (`uk_external_accounts_user_namespace`). Replaces the provider-keyed `active_user_provider`, which `scripts/schema_sync.py` drops after the index swap. |
 
 ## Forbidden Columns
 
@@ -47,9 +49,11 @@ Google access token, refresh token, and id token material is not persisted anywh
 The durable authority is the HMAC of the provider-owned stable subject:
 
 ```text
-provider='google' + provider_sub_hash
-provider='patreon' + provider_sub_hash
+identity_namespace='google'  + provider_sub_hash
+identity_namespace='patreon' + provider_sub_hash
 ```
+
+For `google` and `patreon` the namespace equals the provider, so every link created before the namespace column existed keeps resolving with the same hash.
 
 For Google, `provider_sub_hash` is the HMAC of Google's stable `sub` claim. For Patreon, `provider_sub_hash` is the HMAC of the Patreon `user.id` returned by trusted creator-owned API/webhook reconciliation. Raw provider identifiers stay server-only.
 
@@ -95,6 +99,8 @@ Auto-created users may get a pending `user_emails` row. That row remains pending
 
 ## Stored Procedures
 
+Provider-keyed procedures (unchanged signatures; used by Patreon and by environment-configured Google):
+
 | Procedure | Purpose |
 | --- | --- |
 | `sp_get_user_by_external_account` | Resolve active provider-sub link to active local consumer only. |
@@ -103,13 +109,16 @@ Auto-created users may get a pending `user_emails` row. That row remains pending
 | `sp_touch_external_account_last_seen` | Update last-seen/masked snapshots after returning linked Google login or safe Patreon observation. |
 | `sp_create_consumer_user_from_external_account` | Google-only consumer auto-create path with optional pending local email, optional group membership, and external link transactionally. |
 
+Namespace-keyed procedures in `schemas/stored_procedures/19_oauth_connections.sql` (used when configuration comes from the database): `sp_get_user_by_external_identity`, `sp_link_external_identity`, `sp_unlink_external_identity`, `sp_touch_external_identity_last_seen`, `sp_list_external_accounts_for_user`, `sp_create_consumer_user_from_external_identity`.
+
 Wrappers in `src/Util/db/db_external_accounts.py` accept only application-computed HMACs and masked snapshots; they do not accept raw Google token material or per-user Patreon token material.
 
 ## Triggers
 
 `trg_external_accounts_before_insert` and `trg_external_accounts_before_update` enforce:
 
-- provider is `google` or `patreon`,
+- provider has a row in `oauth_provider_catalog` (existence only; status and login flags are application policy),
+- `identity_namespace` defaults to the provider when absent and is immutable,
 - provider-sub hash is exactly 32 bytes,
 - fingerprint is exactly 12 characters,
 - terminal statuses require unlink time,

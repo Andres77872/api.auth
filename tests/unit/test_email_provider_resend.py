@@ -107,3 +107,33 @@ def test_resend_verify_webhook_uses_raw_body_and_headers(monkeypatch):
     webhook_cls.assert_called_once_with("whsec_test")
     webhook_instance.verify.assert_called_once_with(raw_body, headers)
     assert events == [{"type": "email.delivered", "data": {"email_id": "email_123"}}]
+
+
+def test_resend_send_forwards_configured_reply_to(monkeypatch):
+    from dataclasses import replace
+
+    _, ResendProvider = _provider_types()
+    provider = ResendProvider(api_key="re_test", webhook_secret="whsec_test")
+
+    import src.Util.email.resend_provider as resend_provider_module
+
+    send_mock = MagicMock(return_value={"id": "email_123"})
+    monkeypatch.setattr(resend_provider_module.resend.Emails, "send", send_mock)
+
+    provider.send(replace(_send_request(), reply_to="Support <support@example.com>"))
+
+    assert send_mock.call_args.kwargs["params"]["reply_to"] == "Support <support@example.com>"
+
+
+def test_resend_send_omits_reply_to_when_unset(monkeypatch):
+    _, ResendProvider = _provider_types()
+    provider = ResendProvider(api_key="re_test", webhook_secret="whsec_test")
+
+    import src.Util.email.resend_provider as resend_provider_module
+
+    send_mock = MagicMock(return_value={"id": "email_123"})
+    monkeypatch.setattr(resend_provider_module.resend.Emails, "send", send_mock)
+
+    provider.send(_send_request())
+
+    assert "reply_to" not in send_mock.call_args.kwargs["params"]

@@ -20,6 +20,11 @@ CALLBACK_PATH = "/auth/google/callback"
 pytestmark = pytest.mark.usefixtures("integration_env")
 
 
+@pytest.fixture(autouse=True)
+def _google_oauth_enabled(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+
+
 async def _callback(client, *, code: str = "fake-google-auth-code-not-real", state: str = "security-state"):
     return await client.get(
         CALLBACK_PATH,
@@ -114,6 +119,7 @@ def _consumer_user(user_type: str = "consumer"):
 )
 async def test_protocol_security_rejections_do_not_issue_local_session_or_persist_google_tokens(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     reason,
     oauth_assert_no_leaks,
@@ -121,7 +127,7 @@ async def test_protocol_security_rejections_do_not_issue_local_session_or_persis
     verifier = RejectingVerifier(reason)
 
     with _patched_security_seams(fake_google_token_exchange, verifier):
-        response = await _callback(client, state=f"security-{reason.replace(' ', '-')}")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
     assert response.status_code in {400, 401, 403, 502}
@@ -134,6 +140,7 @@ async def test_protocol_security_rejections_do_not_issue_local_session_or_persis
 @pytest.mark.parametrize("blocked_user_type", ["root", "admin", "platform"])
 async def test_root_admin_and_platform_google_oauth_are_refused_indistinguishably(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
@@ -141,7 +148,7 @@ async def test_root_admin_and_platform_google_oauth_are_refused_indistinguishabl
 ):
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = _consumer_user(blocked_user_type)
-        response = await _callback(client, state=f"state-for-{blocked_user_type}")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
     assert response.status_code in {401, 403, 404}
@@ -153,21 +160,28 @@ async def test_root_admin_and_platform_google_oauth_are_refused_indistinguishabl
 @pytest.mark.asyncio
 async def test_email_only_collision_blocks_account_takeover_without_auto_linking(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
     oauth_assert_no_leaks,
+    monkeypatch,
 ):
+    # Auto-create is ON: the collision itself -- not a disabled feature -- must stop provisioning.
+    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "both")
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = None
+        db["check_username_email_available"].return_value = False
         db["link_external_account"].side_effect = AssertionError("must not auto-link by email alone")
         db["create_consumer_user_from_external_account"].side_effect = AssertionError(
             "must not auto-create on email collision"
         )
-        response = await _callback(client, state="email-collision-state")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
-    assert response.status_code in {401, 403, 409}
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "EXT_8032", "verified-email collision must ask the user to sign in and link"
+    assert db["check_username_email_available"].called, "the collision check must actually run"
     assert not db["link_external_account"].called
     assert not db["create_consumer_user_from_external_account"].called
     oauth_assert_no_leaks(response, context="email-only collision response")
@@ -176,6 +190,7 @@ async def test_email_only_collision_blocks_account_takeover_without_auto_linking
 @pytest.mark.asyncio
 async def test_bound_project_access_denial_cannot_auto_pick_another_project(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
@@ -187,7 +202,7 @@ async def test_bound_project_access_denial_cannot_auto_pick_another_project(
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = user
         db["get_user_accessible_projects"].return_value = [accessible_other_project]
-        response = await _callback(client, state="project-access-denied-state")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
     assert response.status_code in {401, 403}
@@ -198,16 +213,19 @@ async def test_bound_project_access_denial_cannot_auto_pick_another_project(
 @pytest.mark.asyncio
 async def test_auto_create_missing_provider_init_group_binding_fails_closed(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
+    monkeypatch,
 ):
+    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "auto_create")
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = None
         db["create_consumer_user_from_external_account"].side_effect = AssertionError(
             "auto-create must not run without provider-init user group binding"
         )
-        response = await _callback(client, state="auto-create-no-group-binding-state")
+        response = await _callback(client, state=oauth_state_factory(user_group_hash=None))
 
     _assert_callback_route_exists(response)
     assert response.status_code in {400, 401, 403}
@@ -217,6 +235,7 @@ async def test_auto_create_missing_provider_init_group_binding_fails_closed(
 @pytest.mark.asyncio
 async def test_google_email_verified_does_not_activate_or_promote_local_email_state(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
@@ -224,7 +243,7 @@ async def test_google_email_verified_does_not_activate_or_promote_local_email_st
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = _consumer_user("consumer")
         db["update_user"].side_effect = AssertionError("Google email_verified must not mutate users.email")
-        response = await _callback(client, state="email-verified-no-local-activation-state")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
     assert response.status_code in {200, 401, 403}
@@ -234,13 +253,14 @@ async def test_google_email_verified_does_not_activate_or_promote_local_email_st
 @pytest.mark.asyncio
 async def test_callback_never_persists_google_code_access_refresh_or_id_token_material(
     client,
+    oauth_state_factory,
     fake_google_token_exchange,
     fake_google_verifier,
     db_patcher,
 ):
     with db_patcher() as db, _patched_security_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = _consumer_user("consumer")
-        response = await _callback(client, state="token-minimization-state")
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_callback_route_exists(response)
     assert response.status_code in {200, 400, 401, 403}

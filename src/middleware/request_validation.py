@@ -14,17 +14,16 @@ from starlette.responses import Response
 
 from src.Util.Seccurity import returnJson_422, returnJson_413
 from src.Util.activity_logger import set_request_context, clear_request_context
+from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.logger_ws import logger
 
 # Configure logging
 log = logging.getLogger(__name__)
 
-# CORS allowlist — kept in sync with main.py so early reject branches never emit
-# an invalid wildcard under the credentialed CORS policy (allow_credentials=True).
-_allowed_origins_env = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,http://localhost:5780,,http://localhost:5183,http://192.168.1.13:5173",
-)
+# CORS allowlist — same ALLOWED_ORIGINS value and shared default as the CORS
+# middleware in main.py, so early reject branches never emit an invalid wildcard
+# under the credentialed CORS policy (allow_credentials=True).
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
 ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
 
 

@@ -50,7 +50,6 @@ AUTH_CHANGE_PASSWORD_RATE_PREFIX = "auth_change_password_rate:"
 # Google OAuth/provider-init Redis key prefixes -------------------------------
 GOOGLE_OAUTH_STATE_PREFIX = "google_oauth_state:"
 GOOGLE_OAUTH_STATE_CONSUMED_PREFIX = "google_oauth_state_consumed:"
-GOOGLE_OAUTH_LINK_TOKEN_PREFIX = "google_oauth_link:"
 GOOGLE_OAUTH_RECENT_REAUTH_PREFIX = "google_oauth_reauth:"
 GOOGLE_OAUTH_JWKS_CACHE_PREFIX = "google_oauth_jwks:"
 GOOGLE_OAUTH_RATE_PREFIX = "google_oauth_rate:"
@@ -59,10 +58,18 @@ GOOGLE_OAUTH_CALLBACK_RATE_PREFIX = "google_oauth_rate:callback:"
 GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX = "google_oauth_rate:provider_init:"
 GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX = "google_oauth_rate:state_consume:"
 GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX = "google_oauth_rate:sub_collision:"
-GOOGLE_OAUTH_LINK_TOKEN_RATE_PREFIX = "google_oauth_rate:link_token:"
-GOOGLE_OAUTH_JWKS_FETCH_RATE_PREFIX = "google_oauth_rate:jwks_fetch:"
 GOOGLE_OAUTH_UNLINK_RATE_PREFIX = "google_oauth_rate:unlink:"
 PROVIDER_INIT_REDEEM_CACHE_PREFIX = "provider_init_redeem:"
+
+# Provider-agnostic OAuth Redis key prefixes (docs/agnostic_oauth) -------------
+# The google_oauth_* state prefixes above remain readable for one state-TTL
+# window after a deploy so in-flight transactions survive the rename.
+OAUTH_STATE_PREFIX = "oauth_state:"
+OAUTH_STATE_CONSUMED_PREFIX = "oauth_state_consumed:"
+OAUTH_RECENT_REAUTH_PREFIX = "oauth_reauth:"
+OAUTH_INIT_TOKEN_PREFIX = "oauth_init:"
+OAUTH_INIT_TOKEN_CONSUMED_PREFIX = "oauth_init_consumed:"
+OAUTH_RATE_PREFIX = "oauth_rate:"
 
 # Patreon account-link Redis key prefixes -------------------------------------
 # All Patreon rate-limit/storage helpers MUST append only pre-hashed bucket
@@ -121,6 +128,16 @@ STRIPE_SYNC_RATE_PREFIX = "stripe_rate:sync:"
 # TTL/config names ------------------------------------------------------------
 REFRESH_FAMILY_TTL_SECONDS = 72 * 60 * 60
 REMEMBER_ME_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60
+
+# Grace window in which re-presenting the refresh token that was *just* rotated
+# is treated as a benign duplicate (lost response, retry, second tab) instead of
+# a stolen-token replay. Only the immediately-previous token qualifies, and it
+# still fails closed with 401 — the grace only decides whether the whole family
+# is destroyed. Set to 0 to restore strict zero-tolerance reuse detection.
+REFRESH_REPLAY_GRACE_SECONDS_ENV = "REFRESH_REPLAY_GRACE_SECONDS"
+REFRESH_REPLAY_GRACE_SECONDS = max(
+    0, int(os.environ.get(REFRESH_REPLAY_GRACE_SECONDS_ENV, "10"))
+)
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES_ENV = "JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
 DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get(JWT_ACCESS_TOKEN_EXPIRE_MINUTES_ENV, "15")
@@ -197,16 +214,13 @@ GOOGLE_OAUTH_REDIRECT_URIS_ENV = "GOOGLE_OAUTH_REDIRECT_URIS"
 GOOGLE_OAUTH_RETURN_ORIGINS_ENV = "GOOGLE_OAUTH_RETURN_ORIGINS"
 GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS_ENV = "GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS"
 GOOGLE_OAUTH_PROVISIONING_MODE_ENV = "GOOGLE_OAUTH_PROVISIONING_MODE"
-GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH_ENV = "GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH"
 GOOGLE_OAUTH_STATE_TTL_SECONDS_ENV = "GOOGLE_OAUTH_STATE_TTL_SECONDS"
-GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS_ENV = "GOOGLE_OAUTH_LINK_TOKEN_TTL_SECONDS"
 GOOGLE_OAUTH_RECENT_REAUTH_SECONDS_ENV = "GOOGLE_OAUTH_RECENT_REAUTH_SECONDS"
 GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS_ENV = "GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS"
 GOOGLE_OAUTH_LEEWAY_SECONDS_ENV = "GOOGLE_OAUTH_LEEWAY_SECONDS"
 GOOGLE_OAUTH_STATE_PEPPER_ENV = "GOOGLE_OAUTH_STATE_PEPPER"
 GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV = "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER"
 GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV = "GOOGLE_OAUTH_EMAIL_HASH_PEPPER"
-GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET_ENV = "GOOGLE_OAUTH_PASSWORDLESS_HASH_SECRET"
 GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV = "GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR"
 PROVIDER_INIT_REDEEM_URL_ENV = "PROVIDER_INIT_REDEEM_URL"
 PROVIDER_INIT_REDEEM_TOKEN_ENV = "PROVIDER_INIT_REDEEM_TOKEN"
@@ -222,12 +236,42 @@ GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT_ENV = "GOOGLE_OAUTH_STATE_CONSUME_RATE_LIM
 GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV = "GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS"
 GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT_ENV = "GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT"
 GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV = "GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS"
-GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT_ENV = "GOOGLE_OAUTH_LINK_TOKEN_RATE_LIMIT"
-GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS_ENV = "GOOGLE_OAUTH_LINK_TOKEN_RATE_WINDOW_SECONDS"
-GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT_ENV = "GOOGLE_OAUTH_JWKS_FETCH_RATE_LIMIT"
-GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS_ENV = "GOOGLE_OAUTH_JWKS_FETCH_RATE_WINDOW_SECONDS"
 GOOGLE_OAUTH_UNLINK_RATE_LIMIT_ENV = "GOOGLE_OAUTH_UNLINK_RATE_LIMIT"
 GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV = "GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS"
+
+# Provider-agnostic OAuth deployment settings (docs/agnostic_oauth) -----------
+# Each OAUTH_* name falls back to its GOOGLE_OAUTH_* predecessor. Peppers MUST
+# keep identical values across the rename or every linked identity is orphaned.
+OAUTH_ENABLED_ENV = "OAUTH_ENABLED"
+OAUTH_CONFIG_SOURCE_ENV_NAME = "OAUTH_CONFIG_SOURCE"
+OAUTH_CONFIG_SOURCE_ENV = "env"
+OAUTH_CONFIG_SOURCE_DB = "db"
+OAUTH_STATE_PEPPER_ENV = "OAUTH_STATE_PEPPER"
+OAUTH_PROVIDER_SUB_PEPPER_ENV = "OAUTH_PROVIDER_SUB_PEPPER"
+OAUTH_EMAIL_HASH_PEPPER_ENV = "OAUTH_EMAIL_HASH_PEPPER"
+OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV = "OAUTH_FAIL_CLOSED_ON_REDIS_ERROR"
+OAUTH_LEEWAY_SECONDS_ENV = "OAUTH_LEEWAY_SECONDS"
+OAUTH_JWKS_CACHE_TTL_SECONDS_ENV = "OAUTH_JWKS_CACHE_TTL_SECONDS"
+OAUTH_RECENT_REAUTH_SECONDS_ENV = "OAUTH_RECENT_REAUTH_SECONDS"
+OAUTH_MAX_STATE_TTL_SECONDS_ENV = "OAUTH_MAX_STATE_TTL_SECONDS"
+OAUTH_TRUSTED_PROXY_CIDRS_ENV = "OAUTH_TRUSTED_PROXY_CIDRS"
+OAUTH_ALLOW_PRIVATE_IDP_HOSTS_ENV = "OAUTH_ALLOW_PRIVATE_IDP_HOSTS"
+OAUTH_SECRET_ENCRYPTION_KEY_ENV = "OAUTH_SECRET_ENCRYPTION_KEY"
+OAUTH_SECRET_ENCRYPTION_KEY_ID_ENV = "OAUTH_SECRET_ENCRYPTION_KEY_ID"
+OAUTH_SECRET_DECRYPTION_KEYS_JSON_ENV = "OAUTH_SECRET_DECRYPTION_KEYS_JSON"
+OAUTH_SECRET_HMAC_KEY_ENV = "OAUTH_SECRET_HMAC_KEY"
+
+OAUTH_PROVISIONING_DISABLED = "disabled"
+OAUTH_PROVISIONING_LINK_ONLY = "link_only"
+OAUTH_PROVISIONING_AUTO_CREATE = "auto_create"
+OAUTH_PROVISIONING_BOTH = "both"
+OAUTH_EXISTING_USER_DENY = "deny"
+OAUTH_EXISTING_USER_JOIN_DEFAULT_GROUP = "join_default_group"
+OAUTH_INIT_MODE_API = "api"
+OAUTH_INIT_MODE_LEGACY_REDEEM = "legacy_redeem"
+OAUTH_PURPOSE_LOGIN = "login"
+OAUTH_PURPOSE_LINK = "link"
+OAUTH_PURPOSE_REAUTH = "reauth"
 
 
 # Patreon account-link config names -------------------------------------------
@@ -325,7 +369,6 @@ RUN_PATREON_E2E_ENV = "RUN_PATREON_E2E"
 PATREON_LIVE_TEST_USER_HASH_ENV = "PATREON_LIVE_TEST_USER_HASH"
 PATREON_TEST_CAMPAIGN_ID_ENV = "PATREON_TEST_CAMPAIGN_ID"
 PATREON_TEST_MEMBER_EMAIL_ENV = "PATREON_TEST_MEMBER_EMAIL"
-PATREON_E2E_CREATOR_TOKEN_ENV = "PATREON_E2E_CREATOR_TOKEN"
 
 
 # Provider-agnostic billing / Stripe config names -----------------------------
@@ -375,7 +418,6 @@ STRIPE_WEBHOOK_SIGNATURE_FAILURE_RATE_WINDOW_SECONDS_ENV = (
     "STRIPE_WEBHOOK_SIGNATURE_FAILURE_RATE_WINDOW_SECONDS"
 )
 
-RUN_STRIPE_LOCAL_E2E_ENV = "RUN_STRIPE_LOCAL_E2E"
 RUN_STRIPE_E2E_ENV = "RUN_STRIPE_E2E"
 STRIPE_LIVE_TEST_USER_HASH_ENV = "STRIPE_LIVE_TEST_USER_HASH"
 STRIPE_LIVE_TEST_PROJECT_HASH_ENV = "STRIPE_LIVE_TEST_PROJECT_HASH"
@@ -868,6 +910,33 @@ BILLING_ACTIVITY_CATALOG_RANGE = {
 }
 BILLING_ACTIVITY_CATALOG_IDS = tuple(BILLING_ACTIVITY_CATALOG_RANGE)
 
+OAUTH_ACTIVITY_CATALOG_RANGE_START = 107
+OAUTH_ACTIVITY_CATALOG_RANGE_END = 127
+OAUTH_ACTIVITY_CATALOG_RANGE = {
+    "act-cat-107": "oauth_started",
+    "act-cat-108": "oauth_init_rejected",
+    "act-cat-109": "oauth_callback_received",
+    "act-cat-110": "oauth_state_rejected",
+    "act-cat-111": "oauth_token_exchange_failed",
+    "act-cat-112": "oauth_identity_rejected",
+    "act-cat-113": "oauth_login_succeeded",
+    "act-cat-114": "oauth_login_denied",
+    "act-cat-115": "oauth_external_account_linked",
+    "act-cat-116": "oauth_external_account_unlinked",
+    "act-cat-117": "oauth_reauth_succeeded",
+    "act-cat-118": "oauth_user_cancelled",
+    "act-cat-119": "oauth_connection_created",
+    "act-cat-120": "oauth_connection_updated",
+    "act-cat-121": "oauth_connection_credentials_set",
+    "act-cat-122": "oauth_connection_status_changed",
+    "act-cat-123": "oauth_binding_updated",
+    "act-cat-124": "oauth_binding_removed",
+    "act-cat-125": "oauth_binding_url_added",
+    "act-cat-126": "oauth_binding_url_removed",
+    "act-cat-127": "oauth_provider_catalog_updated",
+}
+OAUTH_ACTIVITY_CATALOG_IDS = tuple(OAUTH_ACTIVITY_CATALOG_RANGE)
+
 PATREON_REDACTION_FIELD_NAMES = (
     "patreon_email",
     "patreon_user_email",
@@ -1026,6 +1095,13 @@ OAUTH_REDACTION_FIELD_NAMES = (
     "google_email",
     "google_hd",
     "oauth_link_token",
+    "init_token",
+    "client_secret",
+    "signing_key",
+    "redeem_token",
+    "redeem_url",
+    "legacy_redeem_token",
+    "provider_email",
     "project_hash",
     "user_group_hash",
     *PATREON_REDACTION_FIELD_NAMES,
@@ -1078,6 +1154,19 @@ DEFAULT_EMAIL_WORKER_BACKOFF_SECONDS = (10, 30, 120, 600, 1800, 3600, 7200, 1440
 # Retention/PII purge cadence run by the long-running worker. 0 disables it.
 DEFAULT_EMAIL_RETENTION_PURGE_INTERVAL_SECONDS = int(
     os.environ.get(EMAIL_RETENTION_PURGE_INTERVAL_SECONDS_ENV, "3600")
+)
+
+
+# Browser origin defaults -----------------------------------------------------
+# Single source of truth for the fallback used when ALLOWED_ORIGINS is unset
+# (CORS middleware, early-reject headers, email link origins). It holds
+# localhost/LAN development origins plus the hosted auth UI origin, so
+# deployments must set ALLOWED_ORIGINS explicitly.
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000,http://192.168.1.13:5010,http://192.168.1.90:5010,"
+    "http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,"
+    "http://localhost:5780,http://localhost:5183,http://192.168.1.13:5173,"
+    "http://localhost:5177"
 )
 
 

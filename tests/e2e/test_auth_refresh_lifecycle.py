@@ -3,11 +3,14 @@
 This is intentionally RED before the true refresh-family implementation exists.
 """
 
+import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.Util.JWT_Security import JWTTokenHandler
+from src.Util.auth_constants import REFRESH_REPLAY_GRACE_SECONDS
 
 
 def _make_user():
@@ -104,18 +107,52 @@ async def test_login_refresh_retry_old_access_and_reuse_revocation_lifecycle(
         )
         assert new_access_validate.status_code == 200
 
-        reuse_response = await client.post(
+        # Re-presenting the token that was just consumed is refused, but inside
+        # the replay grace window it is treated as a duplicate request rather
+        # than as theft, so the family stays alive.
+        duplicate_response = await client.post(
             "/auth/refresh",
             data={"refresh_token": refresh_token},
             cookies={"refresh_token": refresh_token},
             headers={"User-Agent": "test"},
         )
-        assert reuse_response.status_code == 401
+        assert duplicate_response.status_code == 401
+        assert duplicate_response.json()["error"]["code"] == "AUTH_1022"
 
-        latest_child_after_reuse = await client.post(
+        latest_child_after_duplicate = await client.post(
             "/auth/refresh",
             data={"refresh_token": refreshed_data["refresh_token"]},
             cookies={"refresh_token": refreshed_data["refresh_token"]},
             headers={"User-Agent": "test"},
         )
+        assert latest_child_after_duplicate.status_code == 200
+        current_refresh_token = latest_child_after_duplicate.json()["refresh_token"]
+
+        # The same token replayed after the grace window is reuse: the family is
+        # revoked and the honest client's current token dies with it.
+        family_id = access_claims["family_id"]
+        stale_jti = JWTTokenHandler.decode_refresh_token(refreshed_data["refresh_token"])["jti"]
+        stale_key = f"refresh_token:{stale_jti}"
+        stale_record = json.loads(fake_redis.get(stale_key))
+        stale_record["used_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=REFRESH_REPLAY_GRACE_SECONDS + 60)
+        ).isoformat()
+        fake_redis.set(stale_key, json.dumps(stale_record))
+
+        reuse_response = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": refreshed_data["refresh_token"]},
+            cookies={"refresh_token": refreshed_data["refresh_token"]},
+            headers={"User-Agent": "test"},
+        )
+        assert reuse_response.status_code == 401
+        assert reuse_response.json()["error"]["code"] == "AUTH_1015"
+
+        latest_child_after_reuse = await client.post(
+            "/auth/refresh",
+            data={"refresh_token": current_refresh_token},
+            cookies={"refresh_token": current_refresh_token},
+            headers={"User-Agent": "test"},
+        )
         assert latest_child_after_reuse.status_code == 401
+        assert fake_redis.get(f"refresh_anchor:{family_id}") is None

@@ -45,13 +45,14 @@ omit it; current refresh and switch-project responses omit it as well.
 
 ## Current Route Modules
 
-API version `2.2.0` registers 217 method/path operations across 25 modules in
+API version `2.2.0` registers 245 method/path operations across 27 modules in
 `src/routes`:
 
 | Module | Operations | Surface |
 | --- | ---: | --- |
 | `auth.py` | 13 | Local login, registration, refresh, validation, password/email flows |
-| `auth_google.py` | 6 | Google OAuth/OIDC |
+| `auth_oauth.py` | 9 | Provider-agnostic OAuth (init, start, callback, link, reauth, unlink) |
+| `auth_google.py` | 5 | Deprecated Google aliases onto the OAuth pipeline |
 | `auth_patreon.py` | 4 | Patreon link proof/status/unlink |
 | `users.py` | 19 | Profile, lifecycle, email management, scoped administration |
 | `user_api_keys.py` | 5 | Self-service API keys |
@@ -63,6 +64,7 @@ API version `2.2.0` registers 217 method/path operations across 25 modules in
 | `global_roles.py` | 28 | Roles, permission groups, permissions, catalogs |
 | `permission_assignments.py` | 17 | Direct/group assignments and lookups |
 | `admin_billing.py` | 22 | Billing groups, credentials, catalog, metrics |
+| `admin_oauth.py` | 20 | OAuth provider catalog, connections, credentials, bindings, readiness |
 | `internal_billing.py` | 6 | Billing S2S facts, catalog, Checkout, Portal, resync |
 | `stripe_webhooks.py` | 2 | Global fallback and per-billing-group Stripe webhooks |
 | `admin_patreon.py` | 7 | Root-only Patreon operations |

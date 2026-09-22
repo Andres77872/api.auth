@@ -57,6 +57,9 @@ services:
       - ./schemas/stored_procedures/17_billing_provider_facts.sql:/docker-entrypoint-initdb.d/41_sp_17_billing_provider_facts.sql
       - ./schemas/stored_procedures/18_billing_groups.sql:/docker-entrypoint-initdb.d/42_sp_18_billing_groups.sql
       - ./schemas/triggers/07_billing_provider_facts_triggers.sql:/docker-entrypoint-initdb.d/43_tr_07_billing_provider_facts.sql
+      - ./schemas/tables/13_oauth_connections.sql:/docker-entrypoint-initdb.d/50_tb_13_oauth_connections.sql
+      - ./schemas/stored_procedures/19_oauth_connections.sql:/docker-entrypoint-initdb.d/51_sp_19_oauth_connections.sql
+      - ./schemas/triggers/08_oauth_connections_triggers.sql:/docker-entrypoint-initdb.d/52_tr_08_oauth_connections.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -164,7 +167,6 @@ services:
       STRIPE_SECRET_KEY: ""
       STRIPE_WEBHOOK_SECRET: ""
       RUN_STRIPE_E2E: "false"
-      RUN_STRIPE_LOCAL_E2E: "false"
     working_dir: /workspace
     volumes:
       - .:/workspace:ro

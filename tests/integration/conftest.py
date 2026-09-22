@@ -250,6 +250,7 @@ def patched_audit_logger():
 
     raw_body_excluded_paths = tuple(real_logger_cls.RAW_BODY_AUDIT_EXCLUDED_PATHS)
     mock_cls.is_google_oauth_path.side_effect = real_logger_cls.is_google_oauth_path
+    mock_cls.is_oauth_path.side_effect = real_logger_cls.is_oauth_path
     mock_cls.is_patreon_webhook_path.side_effect = lambda path: is_route_family(path, PATREON_WEBHOOK_ROUTE)
     mock_cls.is_raw_body_audit_excluded.side_effect = lambda path: any(
         is_route_family(path, excluded) for excluded in raw_body_excluded_paths
@@ -779,6 +780,46 @@ def fake_google_verifier(fake_google_claims):
     }
     return FakeGoogleIDTokenVerifier(sanitized_claims)
 
+
+
+@pytest.fixture
+def oauth_state_factory(fake_redis):
+    """Issue a genuine OAuth state through the production state store.
+
+    The callback has no test-only acceptance path: a state is valid only if the
+    store issued it. Tests that exercise the callback therefore start from a real
+    record, exactly as ``/start`` would have written it.
+    """
+
+    from src.Util.oauth.connections import ENV_BINDING_ID, ENV_CONNECTION_ID
+    from src.Util.oauth_state import OAuthStateStore
+
+    def _issue(
+        *,
+        purpose: str = "login",
+        project_hash: str = "project-hash-redacted-by-contract",
+        user_group_hash: Optional[str] = "group-hash-redacted-by-contract",
+        return_origin: str = "http://localhost:3000",
+        redirect_uri: str = "http://localhost:8000/auth/google/callback",
+        **extra: Any,
+    ) -> str:
+        binding = {
+            "provider": "google",
+            "purpose": purpose,
+            "connection_id": ENV_CONNECTION_ID,
+            "binding_id": ENV_BINDING_ID,
+            "config_source": "env",
+            "project_hash": project_hash,
+            "user_group_hash": user_group_hash,
+            "return_origin": return_origin,
+            "redirect_uri": redirect_uri,
+            "provider_init_fingerprint": "test-provider-init-fingerprint",
+            "scope_fingerprint": "test-scope-fingerprint",
+            **extra,
+        }
+        return OAuthStateStore(redis_client=fake_redis).create_state(provider_init_binding=binding).state
+
+    return _issue
 
 @pytest.fixture
 def oauth_audit_capture():

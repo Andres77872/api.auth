@@ -34,17 +34,17 @@ Auto-create must fail closed if the provider-init binding lacks the required gro
 
 **Then** `api.auth` must not auto-link by email alone. It returns a neutral denial/link-required posture, records only redacted details, and requires credential-first local proof before linking.
 
-No public response may reveal whether the email matched a local account.
+A response reveals an e-mail match only to a caller who has just proven, through the provider, that they control that verified address (`OAUTH_ACCOUNT_LINK_REQUIRED` / `EXT_8032`). For providers whose e-mail claim is administrator-controlled the answer stays the neutral provisioning denial. Accounts are never merged or linked by e-mail.
 
 ## Workspace `hd` Denial
 
-**Given** the Google ID token contains a hosted-domain `hd` claim.
+**Given** a hosted-domain allow-list is configured and the Google ID token carries an `hd` claim that is not on it.
 
-**When** the consumer-only policy evaluates the token.
+**When** the hosted-domain policy evaluates the token.
 
 **Then** the callback rejects it with neutral `EXT_8xxx` posture, emits ID-token rejection activity, and issues no local session.
 
-This system is consumer-only for Google OAuth. Root, admin, platform, Workspace, and non-consumer OAuth login are unsupported and intentionally indistinguishable from ineligible/not found outcomes.
+With an empty allow-list (the default) every Google account may sign in, including Workspace accounts; consumer Gmail carries no `hd` and is always allowed. Local account *types* remain restricted: root, admin, platform and other non-consumer OAuth login is unsupported and intentionally indistinguishable from ineligible/not found outcomes.
 
 ## Project Access Denial
 

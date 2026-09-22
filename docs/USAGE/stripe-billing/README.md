@@ -70,11 +70,17 @@ Every billing switch is default-off. Enable one narrow behavior at a time after 
 | `BILLING_PORTAL_ENABLED` | `false` | Enables restricted Portal creation after Portal configuration verification. |
 | `BILLING_SYNC_ENABLED` | `false` | Enables billing source-of-truth sync worker behavior. |
 | `BILLING_RAW_PAYLOAD_CAPTURE_ENABLED` | `false` | Enables encrypted raw-evidence quarantine only for approved diagnostics. Normal state is off. |
-| `STRIPE_BILLING_ENABLED` | `false` | Enables the Stripe provider adapter as part of billing readiness. |
+| `STRIPE_BILLING_ENABLED` | `false` | Required global Stripe gate for the Checkout/Portal S2S routes, not only adapter readiness. |
 | `STRIPE_WEBHOOKS_ENABLED` | `false` | Enables signed `/webhooks/stripe` processing. |
 | `STRIPE_CHECKOUT_ENABLED` | `false` | Enables Stripe Checkout adapter calls. |
 | `STRIPE_PORTAL_ENABLED` | `false` | Enables Stripe Customer Portal adapter calls. |
 | `STRIPE_SYNC_ENABLED` | `false` | Enables Stripe source-of-truth sync. |
+
+`BILLING_ENABLED` and `STRIPE_BILLING_ENABLED` are two separate global gates and
+both must be true. The Checkout/Portal S2S routes return `503` while either is
+false, even with `STRIPE_CHECKOUT_ENABLED=true` and a ready billing group, and
+Stripe readiness still reports `ready` because it ORs the switches. See
+[Reference → Kill switches / feature flags](reference.md#kill-switches--feature-flags).
 
 Required server-only setup when enabling the feature:
 

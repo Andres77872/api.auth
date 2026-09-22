@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from importlib import import_module
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -143,12 +144,32 @@ async def test_provider_init_redemption_shape_is_server_side_and_browser_respons
 @pytest.mark.asyncio
 async def test_callback_success_stays_login_response_compatible_for_companion_clients(
     client,
-    fake_redis,
+    oauth_state_factory,
+    fake_google_token_exchange,
+    fake_google_verifier,
+    db_patcher,
     oauth_assert_no_leaks,
+    monkeypatch,
 ):
-    fake_redis.set("google_oauth_state:companion-contract-state", "phase3-companion-contract", ex=600)
+    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
+    user = SimpleNamespace(
+        id="1", user_hash="usr-oauth-linked-001", username="oauthuser",
+        email="oauth-user@example.test", user_type="consumer", is_active=True,
+    )
+    project = SimpleNamespace(
+        id="1", project_hash="project-hash-redacted-by-contract", project_name="OAuth Project",
+        project_description="OAuth project", is_active=True, archived=False,
+    )
+    group = SimpleNamespace(id="1", group_hash="group-hash-redacted-by-contract", group_name="OAuth Consumers")
 
-    response = await _callback(client)
+    with db_patcher() as db, patch("src.routes.auth_google.oauth_client", fake_google_token_exchange), patch(
+        "src.routes.auth_google.verify_google_id_token", fake_google_verifier
+    ):
+        db["get_user_by_external_account"].return_value = user
+        db["get_user_accessible_projects"].return_value = [project]
+        db["get_project_by_hash"].return_value = project
+        db["get_user_groups_for_user"].return_value = [group]
+        response = await _callback(client, state=oauth_state_factory())
 
     _assert_oauth_route_exists(response, CALLBACK_PATH)
     assert response.status_code == 200

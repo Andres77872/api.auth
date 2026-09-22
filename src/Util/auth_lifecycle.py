@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -34,6 +35,7 @@ from src.Util.auth_constants import (
     REFRESH_ANCHOR_PREFIX,
     REFRESH_FAMILY_PREFIX,
     REFRESH_FAMILY_TTL_SECONDS,
+    REFRESH_REPLAY_GRACE_SECONDS,
     REFRESH_TOKEN_PREFIX,
     REFRESH_USED_PREFIX,
     REMEMBER_ME_REFRESH_TTL_SECONDS,
@@ -45,6 +47,14 @@ from src.Util.auth_constants import (
     USER_SESSIONS_PREFIX,
 )
 from src.Util.db_config import redis_client
+
+
+logger = logging.getLogger(__name__)
+
+
+def _id_prefix(value: Any) -> str:
+    """Short, non-reversible handle for correlating auth events in logs."""
+    return str(value or "")[:8]
 
 
 @dataclass
@@ -71,6 +81,7 @@ class RefreshRotation:
     family_payload: Dict[str, Any]
     old_access_jti: str
     old_refresh_jti: str
+    auth_context: Optional["AuthContext"] = None
 
 
 @dataclass
@@ -89,6 +100,11 @@ class AuthContext:
     permissions: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
     available_projects: List[Any] = field(default_factory=list)
+    # Raw group rows behind ``groups``. Only populated where real group records
+    # were loaded from the DB, so callers can emit true group hashes instead of
+    # echoing names into hash fields. Stays empty for the synthetic root/admin
+    # group labels, which have no corresponding row.
+    group_records: List[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -600,6 +616,7 @@ def reconstruct_auth_context(
         permissions=permissions,
         groups=_group_names(groups),
         available_projects=available_projects,
+        group_records=list(groups),
     )
 
 
@@ -1007,7 +1024,11 @@ def _build_rotated_pair(
 
     family_id = str(refresh_claims["family_id"])
     session_id = str(refresh_claims["session_id"])
-    scope = str(refresh_claims.get("scope") or old_session.get("scope") or AUTH_SCOPE_PROJECT)
+    # The session context wins over the presented token's scope claim. Without a
+    # project switch the two are identical (``_require_refresh_claim_session_match``
+    # compares them); with one, the caller has already re-scoped and re-authorized
+    # the context, so reading the claim here would silently ignore the switch.
+    scope = str(old_session.get("scope") or refresh_claims.get("scope") or AUTH_SCOPE_PROJECT)
     collection = (
         PLATFORM_COLLECTION_SENTINEL
         if scope == AUTH_SCOPE_PLATFORM
@@ -1116,6 +1137,21 @@ def _build_rotated_pair(
     )
 
 
+def _refresh_rotation_denial(family_id: str, refresh_jti: str) -> HTTPException:
+    """Classify a non-current refresh presentation and build its 401.
+
+    ``classify_refresh_token_state`` owns the side effects (family revocation on
+    genuine reuse); this only chooses the message, so a duplicate inside the
+    grace window is reported as retryable instead of as reuse.
+    """
+    state = classify_refresh_token_state(family_id, refresh_jti)
+    if state == "replayed":
+        return _auth_unauthorized(
+            "Refresh token already rotated; retry with the current refresh token"
+        )
+    return _auth_unauthorized("Refresh token reused or revoked")
+
+
 def rotate_refresh_family(
     refresh_token: str,
     *,
@@ -1153,8 +1189,7 @@ def rotate_refresh_family(
         raise _auth_unauthorized("Invalid refresh token")
 
     if family.get("current_refresh_jti") != refresh_jti or token_record.get("status") != "current":
-        classify_refresh_token_state(family_id, refresh_jti)
-        raise _auth_unauthorized("Refresh token reused or revoked")
+        raise _refresh_rotation_denial(family_id, refresh_jti)
 
     old_access_jti = str(family.get("current_access_jti") or "")
     old_session = _get_json(f"{SESSION_PREFIX}{old_access_jti}") if old_access_jti else None
@@ -1233,8 +1268,7 @@ def rotate_refresh_family(
                 or watched_token.get("token_hash") != hash_refresh_token(refresh_token)
             ):
                 pipe.unwatch()
-                classify_refresh_token_state(family_id, refresh_jti)
-                raise _auth_unauthorized("Refresh token reused or revoked")
+                raise _refresh_rotation_denial(family_id, refresh_jti)
 
             pipe.multi()
             pipe.set(token_key, json.dumps(old_token_record, default=_json_default), ex=refresh_cache_ttl)
@@ -1246,14 +1280,29 @@ def rotate_refresh_family(
             pipe.set(anchor_key, json.dumps(new_anchor, default=_json_default), ex=refresh_cache_ttl)
             pipe.delete(f"{SESSION_PREFIX}{old_access_jti}", f"{SESSION_FULL_PREFIX}{old_access_jti}")
             if user_id:
+                # Drop the jti this rotation just retired. Without it the index
+                # gains one dead member per refresh and never shrinks, and every
+                # bulk revocation pays a Redis GET for each of them.
+                if old_access_jti:
+                    pipe.srem(f"{USER_SESSIONS_PREFIX}{user_id}", old_access_jti)
                 pipe.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", new_access_jti)
                 pipe.expire(f"{USER_SESSIONS_PREFIX}{user_id}", refresh_cache_ttl)
                 pipe.sadd(f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}", family_id)
                 pipe.expire(f"{USER_REFRESH_FAMILIES_PREFIX}{user_id}", refresh_cache_ttl)
             pipe.execute()
     except WatchError:
-        classify_refresh_token_state(family_id, refresh_jti)
-        raise _auth_unauthorized("Refresh token reused or revoked")
+        raise _refresh_rotation_denial(family_id, refresh_jti)
+
+    logger.info(
+        "refresh_family_rotated",
+        extra={
+            "event": "refresh_family_rotated",
+            "family_prefix": _id_prefix(family_id),
+            "user_prefix": _id_prefix(user_id),
+            "scope": str(new_session.get("scope")),
+            "project_switched": target_project is not None,
+        },
+    )
 
     return RefreshRotation(
         token_pair=token_pair,
@@ -1262,6 +1311,7 @@ def rotate_refresh_family(
         family_payload=new_family,
         old_access_jti=old_access_jti,
         old_refresh_jti=refresh_jti,
+        auth_context=context,
     )
 
 
@@ -1348,6 +1398,16 @@ def revoke_refresh_family(family_id: str, reason: str = "revoked") -> None:
     _set_json(family_key, family, cache_ttl)
     _set_json(f"{REVOKED_FAMILY_PREFIX}{family_id}", {"family_id": family_id, "reason": reason, "revoked_at": now}, cache_ttl)
     redis_client.delete(_refresh_anchor_key(family_id))
+    logger.log(
+        logging.WARNING if reason == "refresh_reuse" else logging.INFO,
+        "refresh_family_revoked",
+        extra={
+            "event": "refresh_family_revoked",
+            "family_prefix": _id_prefix(family_id),
+            "user_prefix": _id_prefix(family.get("user_id")),
+            "reason": str(reason),
+        },
+    )
 
     access_jtis = set()
     if family.get("current_access_jti"):
@@ -1362,6 +1422,36 @@ def revoke_refresh_family(family_id: str, reason: str = "revoked") -> None:
             revoke_access_session(access_jti)
 
 
+def _is_benign_refresh_replay(family: Dict[str, Any], token: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Is this the token that was *just* rotated, re-presented moments later?
+
+    A dropped response, an offline-to-online retry, or a second tab all produce
+    the same wire event as a stolen-token replay: the previous refresh token,
+    presented again. They are distinguishable by two facts a thief replaying an
+    older token cannot fake together — the token's successor is still the
+    family's current token, and it was consumed seconds ago.
+
+    A benign replay is still refused (the caller gets 401 and no tokens); the
+    only thing this decides is whether the entire family is destroyed with it.
+    """
+    if REFRESH_REPLAY_GRACE_SECONDS <= 0:
+        return False
+    if token.get("status") != "used":
+        return False
+
+    child_jti = token.get("child_jti")
+    if not child_jti or str(child_jti) != str(family.get("current_refresh_jti") or ""):
+        # An older ancestor, or a token whose successor was itself rotated away.
+        # Only the immediately-previous token is ever treated as a duplicate.
+        return False
+
+    used_at = _parse_datetime(token.get("used_at"))
+    if used_at is None:
+        return False
+    elapsed = ((now or _utc_now()) - used_at).total_seconds()
+    return 0 <= elapsed <= REFRESH_REPLAY_GRACE_SECONDS
+
+
 def classify_refresh_token_state(family_id: str, refresh_jti: str) -> str:
     family = _get_json(f"{REFRESH_FAMILY_PREFIX}{family_id}")
     token = _get_json(f"{REFRESH_TOKEN_PREFIX}{refresh_jti}")
@@ -1374,6 +1464,28 @@ def classify_refresh_token_state(family_id: str, refresh_jti: str) -> str:
     if family.get("current_refresh_jti") == refresh_jti and token.get("status") == "current":
         return "current"
     if token.get("status") in {"used", "revoked"} or redis_client.sismember(used_key, refresh_jti):
+        if _is_benign_refresh_replay(family, token):
+            logger.warning(
+                "refresh_token_replayed_within_grace",
+                extra={
+                    "event": "refresh_token_replayed_within_grace",
+                    "family_prefix": _id_prefix(family_id),
+                    "refresh_jti_prefix": _id_prefix(refresh_jti),
+                    "user_prefix": _id_prefix(family.get("user_id")),
+                    "grace_seconds": REFRESH_REPLAY_GRACE_SECONDS,
+                },
+            )
+            return "replayed"
+        logger.warning(
+            "refresh_token_reuse_detected",
+            extra={
+                "event": "refresh_token_reuse_detected",
+                "family_prefix": _id_prefix(family_id),
+                "refresh_jti_prefix": _id_prefix(refresh_jti),
+                "user_prefix": _id_prefix(family.get("user_id")),
+                "token_status": str(token.get("status")),
+            },
+        )
         revoke_refresh_family(family_id, reason="refresh_reuse")
         return "reused"
     return "invalid"
