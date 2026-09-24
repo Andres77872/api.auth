@@ -53,7 +53,7 @@ The API uses a **true access/refresh token model**:
 3. Login (subsequent visits)        → POST /auth/login           → access + refresh token pair
 4. Validate access token            → GET  /auth/validate        → access cookie or Bearer access token
 5. Refresh access token             → POST /auth/refresh         → refresh cookie/body only; rotates refresh token
-6. Switch Project (optional)        → POST /auth/switch-project  → recent access token + current refresh token
+6. Switch Project (optional)        → POST /auth/switch-project  → recent sign-in + current refresh token
 7. Change Password (optional)       → POST /auth/password/change → access token + current password; no new session
 8. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked (an expired access token is accepted)
 ```
@@ -78,10 +78,14 @@ For detailed endpoint parameters and response shapes, see [Authentication Usage 
 
 `POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
 
-`POST /auth/switch-project` additionally requires a **recent** access token: one
-issued within `recent_reauth_seconds` (default 300s). Since access tokens live 15
-minutes, a session that has been idle for more than five minutes must call
-`/auth/refresh` first, or the switch returns `401 MFA_REQUIRED`.
+`POST /auth/switch-project` additionally requires **recent authentication**: the
+session must have signed in within `recent_reauth_seconds` (default 300s), or have
+completed an OAuth reauth (`POST /auth/oauth/{connection}/reauth/start`) within that
+window. The sign-in time travels in the access token's `auth_time` claim and is kept
+unchanged by `/auth/refresh` and by project switches, so refreshing does not renew
+it. Otherwise the switch returns `401 MFA_REQUIRED`: sign in again (or reauthenticate
+through OAuth) and retry. The same rule gates API-key create/update/revoke, OAuth
+link/unlink, and Patreon link/unlink.
 
 `POST /auth/refresh` returns `plan` for project-scoped consumers, like login.
 The switch-project response body still does not expose it; call
@@ -822,7 +826,7 @@ For the complete error code catalog, see [Error Reference](errors.md).
 | 401 | `REFRESH_TOKEN_INVALID` | Refresh token invalid/expired/revoked | Re-authenticate |
 | 401 | `REFRESH_TOKEN_REUSED` | Consumed refresh token replayed outside the grace window; family revoked | Clear tokens and re-authenticate |
 | 401 | `REFRESH_TOKEN_REPLAYED` | The refresh token you just rotated was sent again within the grace window; family left intact | Use the newer token from the refresh that already succeeded; re-authenticate only if you never received it |
-| 401 | `MFA_REQUIRED` | `/auth/switch-project` called with an access token older than 300s | Call `/auth/refresh`, then retry the switch |
+| 401 | `MFA_REQUIRED` | `/auth/switch-project` called more than 300s after the session signed in (and no OAuth reauth since) | Sign in again or complete an OAuth reauth, then retry the switch (`/auth/refresh` does not help) |
 | 401 | `TOKEN_TYPE_INVALID` | Refresh token used as access token, or access token used for refresh | Use the right token type |
 | 401 | `TOKEN_EXPIRED` | JWT `exp` elapsed | Refresh access token or re-authenticate |
 | 401 | `SESSION_REVOKED` | Access session or family revoked | Re-authenticate |

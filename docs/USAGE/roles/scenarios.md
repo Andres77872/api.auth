@@ -124,8 +124,7 @@ This is a two-step lookup: role → permission groups → permissions.
 # Attempt to delete a system role (will fail)
 curl -X DELETE "http://localhost:8000/roles/roles/ROLE_ADMIN" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# currently 500 INTERNAL_ERROR because ErrorCode.OPERATION_NOT_ALLOWED is missing
-#   (the intended behavior is a clean 403 block)
+# 403 OPERATION_NOT_ALLOWED (AUTHZ_2009): system roles cannot be deleted
 
 # Delete a user-created role (succeeds)
 curl -X DELETE "http://localhost:8000/roles/roles/ROLE_CONTENT_EDITOR" \
@@ -160,12 +159,11 @@ curl -X GET "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles" \
 # Remove from catalog
 curl -X DELETE "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
-# if the role was never cataloged (or already removed), this currently returns
-#   500 INTERNAL_ERROR instead of 404, because ErrorCode.NOT_FOUND is missing.
-#   Treat such a 500 on this delete as an idempotent no-op.
+# if the role was never cataloged (or already removed), this returns
+#   404 RESOURCE_NOT_FOUND (NF_4004); nothing is left to undo.
 ```
 
-**Reminder:** this is metadata only. It does not restrict which roles can be assigned to users of this project. Re-adding a role that is already cataloged currently returns 500 (intended 409) because `ErrorCode.ALREADY_EXISTS` is missing — see [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+**Reminder:** this is metadata only. It does not restrict which roles can be assigned to users of this project. Re-adding a role that is already cataloged returns 200 and re-activates the entry; omitted `catalog_purpose`/`notes` keep their previous values — see [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 ---
 

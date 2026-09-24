@@ -20,16 +20,25 @@ from tests.support import make_db_connection_mock
 
 
 def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
-                        session_token="test-admin-token"):
+                        session_token="test-admin-token", user_type="root"):
+    """Project creation is root-only, so the default caller is a root user."""
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
-    s.user_type = "admin"
+    s.user_type = user_type
     s.project_id = "1"
     s.project_hash = "prj-admin-001"
     s.permissions = ["admin"]
     s.session_token = session_token
     return s
+
+
+@pytest.fixture(autouse=True)
+def _caller_user_type():
+    """Answer the live user-type lookup the create route authorizes on."""
+    user_types = {}
+    with patch("src.Util.db.get_user_type", side_effect=lambda user_id: user_types.get(user_id, "root")):
+        yield user_types
 
 
 def _make_project(project_id="proj-new-001", project_hash="prj-new-001",
@@ -125,14 +134,15 @@ async def test_project_creation_passes_user_id_to_create_project(
 
 
 @pytest.mark.asyncio
-async def test_project_creation_requires_admin_permission(
+@pytest.mark.parametrize("user_type", ["admin", "consumer"])
+async def test_project_creation_requires_root(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,
-    patched_db_error_logger,
+    patched_db_error_logger, _caller_user_type, user_type,
 ):
-    """Project creation must reject non-admin users."""
-    non_admin_session = _make_admin_session()
-    non_admin_session.permissions = ["read"]
+    """Project creation must reject every non-root caller, whatever its session permissions."""
+    non_admin_session = _make_admin_session(user_type=user_type)
+    _caller_user_type[non_admin_session.user_id] = user_type
 
     with patch("src.routes.projects.validate_session", return_value=non_admin_session):
         response = await client.post(
@@ -147,7 +157,7 @@ async def test_project_creation_requires_admin_permission(
     data = response.json()
     assert data["status"] == "error"
     assert "error" in data
-    assert "admin" in data["error"]["message"].lower()
+    assert "root" in data["error"]["message"].lower()
 
 
 @pytest.mark.asyncio

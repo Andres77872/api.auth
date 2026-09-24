@@ -216,11 +216,15 @@ async def test_admin_reset_password_no_plaintext(client, fake_redis, patched_db_
          patch("src.routes.users.get_user_by_hash", side_effect=lambda h, **kw: admin_user if h == "usr-admin-001" else target_user), \
          patch("src.routes.users.get_user_type", return_value="admin"), \
          patch("src.routes.users.is_root_user", return_value=False), \
+         patch("src.Util.db.get_user_type", return_value="admin"), \
+         patch("src.Util.db.get_admin_assigned_projects", return_value=["proj-1"]), \
+         patch("src.Util.db.get_user_accessible_projects", return_value=[MagicMock(id="proj-1")]), \
          patch("src.routes.users.update_user", return_value={
              "success": True,
              "expires_at": "2026-04-16T00:00:00Z",
              "must_change_on_login": True,
          }):
+        # The admin is assigned to proj-1 and the target reaches proj-1.
         response = await client.post(
             "/users/usr-target-001/reset-password",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

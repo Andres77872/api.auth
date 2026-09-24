@@ -34,7 +34,7 @@ The roles system is the **baseline authorization layer** for this API. What matt
 | [request-flow.md](request-flow.md) | End-to-end runtime flows: create role, attach groups, assign to user, inspect, remove, catalog |
 | [scenarios.md](scenarios.md) | Concrete admin/user workflows with curl examples |
 | [reference.md](reference.md) | Endpoint tables and operational notes for all `/roles` endpoints |
-| [troubleshooting.md](troubleshooting.md) | Common failures, broken endpoints, caveats, and diagnostics |
+| [troubleshooting.md](troubleshooting.md) | Common failures, caveats, and diagnostics |
 
 ---
 
@@ -90,12 +90,11 @@ The roles system is the **baseline authorization layer** for this API. What matt
 
 - This suite documents the **active public route layer** under `src/routes/global_roles.py`
 - The **auth/session flow uses ROLE-ONLY permission resolution** — this is the most important caveat. See [permissions/resolution.md](../permissions/resolution.md) for the full explanation of the auth-vs-inspection gap
-- **Bulk role assignment is broken** — see [troubleshooting.md](troubleshooting.md)
+- **Bulk role assignment takes role names and leaves each user with one role** — with several `role_names`, the last one wins; see [troubleshooting.md](troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role)
 - **Pagination `total` is incorrect** — returns page count, not DB total
 - **Soft delete leaves orphans** — deleting a role does not clear `users.role_id`
 - **`is_system_role` is not settable via API** — system roles must be created via direct DB access
 - **`role_name` is immutable** — cannot be changed after creation
-- **Several error branches return 500 instead of their intended status** — four `ErrorCode` members referenced in `global_roles.py` (`OPERATION_NOT_ALLOWED`, `PERMISSION_GROUP_NOT_FOUND`, `ALREADY_EXISTS`, `NOT_FOUND`) are absent from the enum, so the system-role-delete (403), permission-group not-found (404), duplicate-catalog-add (409), and the three unlink/catalog-removal "not assigned" (404) paths all surface as generic 500s. See [troubleshooting.md](troubleshooting.md) and [reference.md](reference.md#error-responses).
 - Guard behavior differs between `/roles` (role-only check) and `/permissions` (extended check); see [architecture.md](architecture.md)
 
 ---

@@ -390,6 +390,7 @@ END$$
 -- 6. SP_UPDATE_API_KEY
 -- COALESCE-based UPDATE for name/description/expires_at
 -- Handles reactivation: if expires_at extended past NOW() and was expired, set is_active=TRUE
+-- Revocation is permanent: a revoked key (revoked_at set) is never updated or reactivated
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_update_api_key$$
 CREATE PROCEDURE sp_update_api_key(
@@ -399,18 +400,26 @@ CREATE PROCEDURE sp_update_api_key(
     IN p_expires_at DATETIME
 )
 BEGIN
-    DECLARE v_old_expires_at DATETIME;
+    DECLARE v_found BOOLEAN DEFAULT FALSE;
+    DECLARE v_revoked BOOLEAN DEFAULT FALSE;
     DECLARE v_was_expired BOOLEAN DEFAULT FALSE;
     DECLARE v_reactivated BOOLEAN DEFAULT FALSE;
 
-    -- Get current expires_at to check for reactivation
-    SELECT expires_at, (expires_at IS NOT NULL AND expires_at < NOW() AND is_active = FALSE)
-    INTO v_old_expires_at, v_was_expired
+    -- Get current expiry state to check for reactivation. expires_at is NULL for keys
+    -- that never expire, so existence is tracked separately.
+    SELECT TRUE, (revoked_at IS NOT NULL), (expires_at IS NOT NULL AND expires_at < NOW() AND is_active = FALSE)
+    INTO v_found, v_revoked, v_was_expired
     FROM user_project_api_keys
     WHERE id = p_key_id;
 
-    IF v_old_expires_at IS NULL THEN
+    IF NOT v_found THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'API key not found';
+    END IF;
+
+    -- A revoked key that has also expired is inactive and past its expiry, exactly like
+    -- a merely expired one; without this check a future expires_at would revive it.
+    IF v_revoked THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'API key revoked';
     END IF;
 
     -- Check if this update would reactivate an expired key

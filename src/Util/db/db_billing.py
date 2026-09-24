@@ -178,6 +178,19 @@ def get_current_by_user_project(*, user_hash: str, project_hash: str, provider: 
     )
 
 
+def get_purchase_status_by_ref(*, user_hash: str, project_hash: str, purchase_ref: str, provider: str = "stripe") -> dict[str, Any] | None:
+    """Call `sp_billing_get_purchase_status_by_ref` for the safe S2S purchase read.
+
+    Scoped to the user and the project the purchase was made in; None when no such purchase.
+    """
+
+    return _callproc_one(
+        "sp_billing_get_purchase_status_by_ref",
+        [user_hash, project_hash, purchase_ref, provider],
+        context="get_purchase_status_by_ref(user_hash=[REDACTED], project_hash=[REDACTED], purchase_ref=[REDACTED])",
+    )
+
+
 def get_session_plan(*, user_id: str, project_id: str, provider: str = "stripe") -> dict[str, Any] | None:
     """Call `sp_billing_get_session_plan` for the identity/session plan projection.
 
@@ -690,18 +703,26 @@ def billing_provider_exists(*, provider: str) -> bool:
 
 
 def _callproc_rows_and_total(proc_name: str, args: list[Any], *, context: str) -> tuple[list[dict[str, Any]], int]:
-    """Call a paginated proc returning a rows result set then a total_count scalar."""
+    """Call a paginated proc returning a rows result set then a total_count scalar.
+
+    Reads the page rows WITHOUT draining (``_fetch_all_dicts`` drains every remaining result
+    set, which would discard the trailing ``total_count`` set), then advances once to it.
+    """
 
     def _operation() -> tuple[list[dict[str, Any]], int]:
         with get_connection() as con:
             cur = con.cursor()
             cur.callproc(proc_name, args)
-            rows = _fetch_all_dicts(cur)
-            total = 0
-            if cur.description or cur.nextset():
-                scalar = _fetch_one_dict(cur)
-                if scalar:
+            if not _advance_to_result_set(cur):
+                return [], 0
+            description = cur.description
+            rows = [row for row in (_row_to_dict(item, description) for item in cur.fetchall()) if row is not None]
+            total = len(rows)
+            if cur.nextset() and cur.description:
+                scalar = _row_to_dict(cur.fetchone(), cur.description)
+                if scalar and scalar.get("total_count") is not None:
                     total = int(scalar.get("total_count") or 0)
+            _drain_remaining_result_sets(cur)
             return rows, total
 
     result = handle_db_operation(_operation, error_context=context, default_return=([], 0))
@@ -1148,6 +1169,7 @@ __all__ = [
     "get_catalog_item_by_hash",
     "get_catalog_operational_refs",
     "get_current_by_user_project",
+    "get_purchase_status_by_ref",
     "get_session_plan",
     "get_customer_operational_ref",
     "list_billing_group_projects",

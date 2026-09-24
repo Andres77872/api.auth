@@ -95,3 +95,43 @@ def test_group_bootstrap_is_redacted_and_dry_run_safe():
     assert "print(creds" not in source
     assert "sk_live" not in source and "whsec_" not in source and "cus_" not in source
     assert "output=redacted" in source
+
+
+def _procedure_select(sql: str, name: str) -> str:
+    """Return the lower-cased body of ``CREATE PROCEDURE <name>`` up to its ``END$$``."""
+
+    lowered = sql.lower()
+    start = lowered.find(f"create procedure {name.lower()}(")
+    assert start >= 0, f"missing procedure {name}"
+    end = lowered.find("end$$", start)
+    assert end > start, f"procedure {name} is not terminated"
+    return lowered[start:end]
+
+
+def test_group_reads_return_the_catalog_sync_fields():
+    sql = _read(GROUP_SP_SQL)
+    for proc in ("sp_billing_group_get_by_hash", "sp_billing_group_list"):
+        body = _procedure_select(sql, proc)
+        for column in ("catalog_sync_status", "last_catalog_synced_at"):
+            assert column in body, f"{proc} must select {column}"
+
+
+def test_group_list_returns_capability_flags_and_webhook_secret_presence():
+    body = _procedure_select(_read(GROUP_SP_SQL), "sp_billing_group_list")
+    for column in ("checkout_enabled", "portal_enabled", "provisioning_enabled", "webhooks_enabled", "has_webhook_secret"):
+        assert column in body, f"sp_billing_group_list must select {column}"
+    # presence only: the list must never return credential material
+    assert "ciphertext as" not in body and "_hmac," not in body
+
+
+def test_purchase_status_lookup_is_scoped_to_user_and_project_and_returns_safe_columns_only():
+    body = _procedure_select(_read(FACT_SP_SQL), "sp_billing_get_purchase_status_by_ref")
+    compact = _compact(body)
+    for param in ("p_user_hash", "p_project_hash", "p_purchase_ref", "p_provider"):
+        assert param in body, f"lookup must take {param}"
+    assert "u.user_hash=p_user_hash" in compact
+    assert "p.project_hash=p_project_hash" in compact
+    assert "bpe.user_id=u.id" in compact and "bpe.project_id=p.id" in compact
+    assert "bpe.purchase_ref=p_purchase_ref" in compact
+    for forbidden in ("ciphertext", "_hmac", "_fingerprint", "safe_metadata", "customer_id", "checkout_ref"):
+        assert forbidden not in body, f"purchase lookup must not select {forbidden}"

@@ -197,8 +197,94 @@ def _resolve_google_for_session(login_data: Any, connection_key: str) -> Resolve
     )
 
 
-@router.post("/start", deprecated=True)
+_REDIRECT_303_RESPONSE = {
+    "description": (
+        "Redirect (`Location`) to Google's authorization URL. Sets the short-lived HttpOnly "
+        "`oauth_state` browser-binding cookie (path `/auth/google`)."
+    ),
+}
+
+_RETURN_ORIGIN_REQUEST_BODY = {
+    "required": False,
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "return_origin": {
+                        "type": "string",
+                        "description": (
+                            "Origin to return to; must be on the binding's allow-list. Required "
+                            "when the binding lists more than one return origin."
+                        ),
+                    }
+                },
+            }
+        }
+    },
+}
+
+
+@router.post(
+    "/start",
+    deprecated=True,
+    responses={303: _REDIRECT_303_RESPONSE},
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["provider_init_token"],
+                        "properties": {
+                            "provider_init_token": {
+                                "type": "string",
+                                "maxLength": 4096,
+                                "description": "Opaque token minted by the companion backend; redeemed server-side.",
+                            },
+                            "redirect_uri": {
+                                "type": "string",
+                                "description": "Google callback URL; must be one of the binding's redirect URIs.",
+                            },
+                            "return_origin": {
+                                "type": "string",
+                                "description": "Origin to return to; must be on the binding's allow-list.",
+                            },
+                            "remember_me": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Issue a longer-lived refresh token at login.",
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
 async def start_google_oauth(request: Request) -> Response:
+    """Deprecated: start a Google login from a legacy provider-init token. Use `POST /auth/oauth/init` (from your backend) + `POST /auth/oauth/start` instead.
+
+    **Auth:** public; the `provider_init_token` minted by the companion backend is the
+    credential. This service redeems it server-side; the redeemed project and user
+    group must match the binding (only the environment-configured binding trusts the
+    backend's asserted scope).
+
+    **Request:** `application/json` with `provider_init_token`; optional `redirect_uri`,
+    `return_origin`, `remember_me`. Bodies containing `project_hash` or
+    `user_group_hash` are rejected.
+
+    **Responses:**
+    - `303` — redirect to Google. Google returns to the binding's redirect URI, which must
+      hand `code` and `state` to `GET /auth/google/callback` (or `GET /auth/oauth/callback`).
+    - `400` — invalid body, forbidden field or missing token (`EXT_8012`); redirect URI /
+      return origin not allowed or matching more than one binding (`EXT_8013`).
+    - `401` — provider-init token rejected or redemption failed (`EXT_8012`).
+    - `403` — Google connection disabled (`EXT_8011`).
+    - `429` — rate limited (`EXT_8030`); `Retry-After` is set.
+    - `503` — connection not configured (`EXT_8010`).
+    """
     redeem = redeem_provider_init_token if redeem_provider_init_token is not None else redeem_provider_init
     return await start_from_legacy_provider_init(
         request, pipeline=build_pipeline(), connection_key=DEFAULT_CONNECTION_KEY, redeem=redeem
@@ -209,16 +295,57 @@ async def start_google_oauth(request: Request) -> Response:
 async def google_oauth_callback(
     request: Request,
     response: Response,
-    code: str | None = Query(None),
-    state: str | None = Query(None),
-    error: str | None = Query(None),
-    error_description: str | None = Query(None),
+    code: str | None = Query(None, description="Authorization code issued by Google."),
+    state: str | None = Query(None, description="Opaque state issued at start; consumed on first use."),
+    error: str | None = Query(None, description="Provider error code (e.g. `access_denied` when the user cancelled)."),
+    error_description: str | None = Query(None, description="Accepted for compatibility and ignored."),
 ) -> Any:
+    """Deprecated: finish a Google round trip (login, link or reauth). Use `GET /auth/oauth/callback` instead.
+
+    Behaves like `GET /auth/oauth/callback` (it has no `iss` parameter).
+
+    **Auth:** public; the single-use `state` is the credential, and the `oauth_state`
+    cookie must match it when the browser sends one.
+
+    **Responses:**
+    - `200` — login: `LoginResponse` plus the `session_token`/`refresh_token` cookies;
+      link: `{success, message, external_identity}`; reauth:
+      `{success, message, reauthenticated: true}`.
+    - `400` — missing `state`/`code`, or user cancelled (`EXT_8031`).
+    - `401` — invalid or reused state, identity rejected, login/link not permitted, or
+      reauth identity not linked to the session's user.
+    - `403` — no access to the bound project (`EXT_8025`).
+    - `409` — local account with the same verified email must sign in and link
+      (`EXT_8032`), or identity linked to another user (`EXT_8027`).
+    - `429` — rate limited; `502` — Google error or code exchange failed; `503` — not
+      configured.
+    """
     return await build_pipeline().handle_callback(request, response, code=code, state=state, error=error)
 
 
-@router.post("/link/start", deprecated=True)
+@router.post(
+    "/link/start",
+    deprecated=True,
+    responses={303: _REDIRECT_303_RESPONSE},
+    openapi_extra={"requestBody": _RETURN_ORIGIN_REQUEST_BODY},
+)
 async def google_oauth_link_start(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Response:
+    """Deprecated: start linking a Google identity to the signed-in user. Use `POST /auth/oauth/google/link/start` instead.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
+    session, within the recent-reauthentication window; refreshing the session does not renew it). The session
+    project's `google` binding must allow linking.
+
+    **Request:** optional `application/json` body `{return_origin}`.
+
+    **Responses:**
+    - `303` — redirect to Google (sets the `oauth_state` cookie, path `/auth/google`).
+    - `400` — no single redirect URI, or `return_origin` not allowed/required (`EXT_8013`).
+    - `401` — invalid session, linking not allowed, no recent authentication
+      (`EXT_8024`), or state could not be created (`EXT_8014`).
+    - `404` — connection disabled (`EXT_8011`); `503` — not configured (`EXT_8010`).
+    """
     return await start_session_round_trip(
         request,
         pipeline=build_pipeline(),
@@ -229,8 +356,29 @@ async def google_oauth_link_start(request: Request, credentials: HTTPAuthorizati
     )
 
 
-@router.post("/reauth/start", deprecated=True)
+@router.post(
+    "/reauth/start",
+    deprecated=True,
+    responses={303: _REDIRECT_303_RESPONSE},
+    openapi_extra={"requestBody": _RETURN_ORIGIN_REQUEST_BODY},
+)
 async def google_oauth_reauth_start(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Response:
+    """Deprecated: start a Google step-up reauthentication (`prompt=login`). Use `POST /auth/oauth/google/reauth/start` instead.
+
+    A callback returning the Google identity already linked to the signed-in user marks
+    the session as recently authenticated.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie). No recent authentication is required to start.
+
+    **Request:** optional `application/json` body `{return_origin}`.
+
+    **Responses:**
+    - `303` — redirect to Google (sets the `oauth_state` cookie, path `/auth/google`).
+    - `400` — no single redirect URI, or `return_origin` not allowed/required (`EXT_8013`).
+    - `401` — invalid session (`EXT_8024`) or state could not be created (`EXT_8014`).
+    - `404` — connection disabled (`EXT_8011`); `503` — not configured (`EXT_8010`).
+    """
     return await start_session_round_trip(
         request,
         pipeline=build_pipeline(),
@@ -243,6 +391,23 @@ async def google_oauth_reauth_start(request: Request, credentials: HTTPAuthoriza
 
 @router.delete("/unlink", response_model=ExternalIdentityUnlinkResponse, deprecated=True)
 async def google_oauth_unlink(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Any:
+    """Deprecated: unlink the signed-in user's Google identity and sign the user out everywhere. Use `DELETE /auth/oauth/google/link` instead.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
+    session, within the recent-reauthentication window; refreshing the session does not renew it). The account must
+    keep a usable password to fall back on.
+
+    **Request:** no body.
+
+    **Responses:**
+    - `200` — `ExternalIdentityUnlinkResponse`; all of the user's sessions and refresh
+      tokens, including the current one, are revoked.
+    - `401` — invalid session or no recent authentication (`EXT_8028`).
+    - `404` — Google not available in the project, or nothing linked (`EXT_8028`).
+    - `409` — the account has no usable password (`EXT_8029`).
+    - `429` — too many unlink attempts (`EXT_8030`); `Retry-After` is set.
+    """
     try:
         login_data = validate_access_session(credentials.credentials)
         resolved = _resolve_google_for_session(login_data, DEFAULT_CONNECTION_KEY)

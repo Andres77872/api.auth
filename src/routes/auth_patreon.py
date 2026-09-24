@@ -15,7 +15,6 @@ import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -37,7 +36,7 @@ from src.Util.Models import (
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
 from src.Util.api_audit_logger import APIAuditLogger
-from src.Util.auth_flow import require_recent_reauthentication
+from src.Util.auth_flow import access_token_session_id, require_recent_reauthentication
 from src.Util.auth_lifecycle import validate_access_session
 from src.Util.db import db_patreon
 from src.Util.email.config import load_email_config
@@ -81,8 +80,6 @@ _LINK_UNLINKED_MESSAGE = "Patreon link unlinked."
 _LINK_ACTIVATION_SOURCE = "link_activation"
 _UNLINK_REASON = "user_requested"
 _SAFE_LINK_STATUS_VALUES = {"none", "pending", "linked", "unlinked", "revoked", "blocked"}
-_TEST_BEARER_TOKEN = "test-token"
-_TEST_REAUTH_HEADER = "x-test-recent-reauth"
 _PROOF_REQUEST_SURFACE = "proof_request"
 _CONFIRM_SURFACE = "confirm"
 _STATUS_SURFACE = "status"
@@ -561,52 +558,13 @@ def _rate_limited_public_response(surface: str, exc: PatreonRateLimitExceeded) -
 
 
 def _session_id_from_login_data(login_data: Any) -> str | None:
-    return _string_field(login_data, "session_id") or _string_field(login_data, "session_token")
+    """The session id OAuth reauth markers are keyed by: the access token's ``session_id`` claim."""
+    session_token = _string_field(login_data, "session_token")
+    return _string_field(login_data, "session_id") or access_token_session_id(session_token) or session_token
 
 
-def _test_runtime_session_allowed(
-    *,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials,
-    config: Any,
-) -> bool:
-    """Allow the existing RED harness token only inside explicit test runtime.
-
-    This is not a production auth path.  It is gated by the Patreon config test
-    runtime flag, a synthetic bearer token, and an explicit synthetic reauth
-    header used by the integration scaffold.
-    """
-
-    return bool(
-        _bool_field(config, "explicit_test_runtime")
-        and credentials.credentials == _TEST_BEARER_TOKEN
-        and request.headers.get(_TEST_REAUTH_HEADER, "").strip().lower() == "true"
-    )
-
-
-def _synthetic_test_login_data(credentials: HTTPAuthorizationCredentials) -> SimpleNamespace:
-    return SimpleNamespace(
-        user_id="1",
-        user_hash="usr-test-001",
-        username="testuser",
-        user_type="consumer",
-        session_id="test-session-001",
-        session_token=credentials.credentials,
-    )
-
-
-def _load_current_session(
-    *,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials,
-    config: Any,
-) -> Any:
-    try:
-        return validate_access_session(credentials.credentials)
-    except Exception:
-        if _test_runtime_session_allowed(request=request, credentials=credentials, config=config):
-            return _synthetic_test_login_data(credentials)
-        raise
+def _load_current_session(credentials: HTTPAuthorizationCredentials) -> Any:
+    return validate_access_session(credentials.credentials)
 
 
 def _require_local_user(login_data: Any) -> str:
@@ -1603,21 +1561,55 @@ async def _create_link_proof(
     await _maybe_await(_call_db_create_proof(kwargs=kwargs))
 
 
-@router.post("/link/request", response_model=PatreonProofRequestResponse, status_code=202)
+_PATREON_429_RESPONSE = {
+    "description": (
+        "Rate limited. The body keeps the same neutral shape plus `retry_after_seconds`; "
+        "the `Retry-After` header is set."
+    ),
+}
+
+
+@router.post(
+    "/link/request",
+    response_model=PatreonProofRequestResponse,
+    status_code=202,
+    response_description="Neutral accepted body, identical for every outcome.",
+    responses={429: _PATREON_429_RESPONSE},
+)
 async def request_patreon_link(
     link_request: PatreonLinkRequest,
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> JSONResponse:
-    """Begin a Patreon email-loop proof for an already-authenticated user.
+    """Start linking the signed-in user's Patreon membership by emailing a one-time proof link to the Patreon member's email.
 
-    The route returns the same generic public body for accepted/no-op provider
-    states and never returns proof, email, campaign, tier, provider, or local auth
-    token material.
+    Patreon linking only proves membership for entitlements; it never signs anyone in
+    or issues local tokens or cookies.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus recent authentication: a sign-in, or an OAuth reauth of this session,
+    within the recent-reauthentication window (refreshing the session does not renew
+    it); otherwise `401` (`AUTH_1008`).
+
+    **Request:** `application/json` `PatreonLinkRequest`. `explicit_user_intent` must be
+    `true` and `patreon_email_hint` must be the email on the user's Patreon account;
+    without either, nothing is sent. `confirm_email_match` is accepted but not used.
+    Unknown fields are rejected with `400`.
+
+    **Responses:**
+    - `202` — the same neutral body for every outcome (proof emailed, no matching
+      member, hidden email, feature disabled or provider error), so membership is never
+      revealed.
+    - `400` — body validation failed.
+    - `401` — missing/invalid access token, or no recent authentication (`AUTH_1008`).
+    - `429` — rate limited; `Retry-After` is set.
+
+    \f
+    Never returns proof, email, campaign, tier, provider, or local auth token material.
     """
 
     config = load_patreon_config()
-    login_data = _load_current_session(request=request, credentials=credentials, config=config)
+    login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
     try:
@@ -1739,22 +1731,50 @@ async def request_patreon_link(
             await _maybe_await(provider_client.close())
 
 
-@router.post("/link/confirm", response_model=PatreonLinkStatusResponse, status_code=202)
+@router.post(
+    "/link/confirm",
+    response_model=PatreonLinkStatusResponse,
+    status_code=202,
+    response_description="Neutral result (`link_status: pending`): nothing was linked.",
+    responses={
+        200: {
+            "model": PatreonLinkStatusResponse,
+            "description": "Proof consumed and membership linked: `link_status` is `linked` and `entitlement` is set.",
+        },
+        429: _PATREON_429_RESPONSE,
+    },
+)
 async def confirm_patreon_link(
     confirm_request: PatreonProofConfirmRequest,
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> JSONResponse:
-    """Consume a Patreon email-loop proof and activate entitlement-only link state.
+    """Consume the emailed Patreon proof and link that membership to the signed-in user.
 
-    This is not a login or OAuth callback. It requires an existing local session,
-    recent local reauthentication, atomic proof consume, provider-HMAC conflict
-    checks, and safe DTO serialization. All malformed/unknown/expired/replayed
-    proof outcomes return the same neutral public posture.
+    This is not a login or OAuth callback and issues no local tokens or cookies.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
+    session, within the recent-reauthentication window; refreshing the session does not renew it); otherwise `401`
+    (`AUTH_1008`). The proof must have been requested by the same user.
+
+    **Request:** `application/json` `PatreonProofConfirmRequest` with `token`
+    (`<lookup_id>.<secret>` from the emailed link) or `lookup_id` + `secret`.
+    `explicit_user_intent` is accepted but not checked. Unknown fields are rejected with
+    `400`.
+
+    **Responses:**
+    - `200` — linked; `link_status: linked` plus the safe `entitlement` summary.
+    - `202` — neutral `link_status: pending` for every unsuccessful outcome (malformed,
+      unknown, expired or reused proof, another user's proof, conflicting link, feature
+      disabled).
+    - `400` — body validation failed.
+    - `401` — missing/invalid access token, or no recent authentication (`AUTH_1008`).
+    - `429` — rate limited; `Retry-After` is set.
     """
 
     config = load_patreon_config()
-    login_data = _load_current_session(request=request, credentials=credentials, config=config)
+    login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
     try:
@@ -1937,21 +1957,35 @@ async def confirm_patreon_link(
         return _generic_confirm_response()
 
 
-@router.get("/link/status", response_model=PatreonLinkStatusResponse, status_code=200)
+@router.get(
+    "/link/status",
+    response_model=PatreonLinkStatusResponse,
+    status_code=200,
+    responses={429: _PATREON_429_RESPONSE},
+)
 async def get_patreon_link_status(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> JSONResponse:
-    """Return the authenticated user's safe Patreon link status.
+    """Return the signed-in user's Patreon link status and safe entitlement summary.
 
-    The route has no user selector and reads only the current local session's
-    user identifier/hash, so callers cannot probe another user's Patreon state.
-    DB rows are normalized through the Phase 4 safe DTO mapper before the final
-    response is serialized with ``model_dump_safe()``.
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie); no recent authentication needed. Only the caller's own state is readable.
+
+    **Responses:**
+    - `200` — `link_status` (`none`, `pending`, `linked`, `unlinked`, `revoked` or
+      `blocked`) and `entitlement`. If the status cannot be read, it degrades to `none`
+      with the free entitlement instead of failing.
+    - `401` — missing or invalid access token.
+    - `429` — rate limited; `Retry-After` is set.
+
+    \f
+    DB rows are normalized through the safe DTO mapper and serialized with
+    ``model_dump_safe()``.
     """
 
     config = load_patreon_config()
-    login_data = _load_current_session(request=request, credentials=credentials, config=config)
+    login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
     rate_limited = await _check_status_rate_limit(request=request, user_id=user_id)
@@ -1985,22 +2019,42 @@ async def get_patreon_link_status(
         )
 
 
-@router.delete("/link", response_model=PatreonUnlinkResponse, status_code=200)
+@router.delete(
+    "/link",
+    response_model=PatreonUnlinkResponse,
+    status_code=200,
+    responses={
+        202: {
+            "model": PatreonUnlinkResponse,
+            "description": "The unlink could not be completed; neutral body with `link_status: none`.",
+        },
+        429: _PATREON_429_RESPONSE,
+    },
+)
 async def unlink_patreon_link(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> JSONResponse:
-    """Soft-unlink the authenticated user's Patreon entitlement link.
+    """Soft-unlink the signed-in user's Patreon membership.
 
-    Patreon is not a login provider, so unlink never revokes local sessions,
-    JWTs, refresh-token state, cookies, API keys, or `/auth/validate` data.  The
-    only authority accepted by this route is the current local session user; no
-    caller-supplied user/provider selector exists, which prevents cross-user
-    Patreon-state probing.
+    Local sessions, tokens, cookies and API keys are not affected.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
+    session, within the recent-reauthentication window; refreshing the session does not renew it); otherwise `401`
+    (`AUTH_1008`). Only the caller's own link can be removed.
+
+    **Request:** no body.
+
+    **Responses:**
+    - `200` — unlinked; resulting `link_status` and `entitlement`.
+    - `202` — the unlink could not be completed; neutral body.
+    - `401` — missing/invalid access token, or no recent authentication (`AUTH_1008`).
+    - `429` — rate limited; `Retry-After` is set.
     """
 
     config = load_patreon_config()
-    login_data = _load_current_session(request=request, credentials=credentials, config=config)
+    login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
     try:

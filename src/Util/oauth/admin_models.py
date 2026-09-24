@@ -86,10 +86,13 @@ class ConnectionUpdate(_Model):
 
 
 class ConnectionCredentialsUpdate(_Model):
-    """Write-only. Sent as JSON so secrets never land in URL-encoded request logs."""
+    """Write-only. Sent as JSON so secrets never land in URL-encoded request logs.
 
-    client_secret: Optional[str] = Field(default=None, min_length=1, max_length=4096, repr=False)
-    signing_key: Optional[str] = Field(default=None, min_length=1, max_length=16384, repr=False)
+    On save, an omitted/null field keeps the stored secret and an empty string clears it.
+    """
+
+    client_secret: Optional[str] = Field(default=None, max_length=4096, repr=False)
+    signing_key: Optional[str] = Field(default=None, max_length=16384, repr=False)
 
 
 class BindingUpsert(_Model):

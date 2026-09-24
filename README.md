@@ -1,6 +1,6 @@
 # 🔐 Group-Based Multi-Project Authentication API
 
-`api.auth` is a FastAPI authentication and authorization service for multi-project products. It combines local username/password auth, Google OAuth/OIDC, hierarchical group access, global roles, permission groups, API keys, transactional email, Patreon entitlement linking, and provider-agnostic Stripe billing facts.
+`api.auth` is a FastAPI authentication and authorization service for multi-project products. It combines local username/password auth, provider-agnostic OAuth/OIDC sign-in, hierarchical group access, global roles, permission groups, API keys, transactional email, Patreon entitlement linking, and provider-agnostic Stripe billing facts.
 
 ## 🏗️ Access Model
 
@@ -30,11 +30,18 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 - True access/refresh JWT model with Redis-backed revocation authority.
 - Short-lived access tokens for protected requests and `/auth/validate`.
 - 72-hour sliding refresh-token families by default, or 30-day absolute refresh families when `remember_me=true`.
-- HttpOnly Secure cookies for both `session_token` (access alias) and `refresh_token`.
+- HttpOnly, Secure, `SameSite=Strict` cookies for both `session_token` (access alias, path `/`) and `refresh_token` (path `/auth`).
 - Multi-project login, project switching, root/admin platform login, strict refresh rotation, logout, and deactivation revocation.
-- Consumer Google OAuth/OIDC through opaque provider-init tokens; see [Google OAuth docs](docs/USAGE/google-oauth/README.md).
 - Self-service password recovery, email verification/activation, multi-email management, and username/email availability checks.
 - API-key validation through `POST /auth/validate-api-key` with the `X-API-Key` header.
+
+### 🌐 OAuth Sign-in
+- Provider-agnostic OAuth/OIDC sign-in under `/auth/oauth` with built-in adapters for Google, GitHub, Discord, Microsoft, and generic OIDC.
+- Provider connections (client id plus encrypted, write-only secret) are managed by root; each project binds a connection and owns its provisioning mode, default user group, and exact-match redirect URI / return-origin allow-lists.
+- A project backend lists its enabled providers and mints a single-use init token with its project API key; the project and provisioning group always come from server-side configuration, never from the request.
+- Signed-in users can link, re-authenticate with, list, and unlink external identities.
+- `GET /admin/oauth/projects/{project_hash}/readiness` explains why a provider is unavailable for a project.
+- `/auth/google/*` remains as deprecated aliases onto the same pipeline. See [OAuth docs](docs/USAGE/oauth/README.md) and [Google OAuth docs](docs/USAGE/google-oauth/README.md).
 
 ### 👥 Groups, Roles, Permissions, and Projects
 - User groups, project groups, and groups-of-groups access control.
@@ -45,7 +52,8 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 ### 🔑 API Keys
 - Self-service API keys under `/users/api-keys`.
 - Admin API-key management under `/api-keys`.
-- Split-token format (`sk_{public_id}.{secret}`), one-time secret reveal, HMAC-SHA-256 verification, and step-up re-auth on key mutations.
+- Split-token format (`sk_{public_id}.{secret}`), one-time secret reveal, HMAC-SHA-256 verification, and a recent-authentication check on key mutations.
+- "Recent authentication" here and on switch-project, OAuth link/unlink, and Patreon link means the session signed in (password, OAuth, or registration) within `OAUTH_RECENT_REAUTH_SECONDS` (300 seconds by default), or completed an OAuth re-authentication (`POST /auth/oauth/{connection}/reauth/start`) within that window. The sign-in time travels in the access token's `auth_time` claim and is kept unchanged by `/auth/refresh` and `/auth/switch-project`, so refreshing never renews it. It is not a password or MFA re-check.
 
 ### 📧 Email & Notifications
 - Per-user multi-email management and primary-email selection.
@@ -56,15 +64,19 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 ### 💳 Stripe Billing Facts
 - Provider-agnostic billing facts with Stripe as the provider adapter.
 - Billing groups own per-group encrypted Stripe credentials, per-group project membership, and catalog items.
-- Admin billing dashboard API for groups, credentials, capabilities, catalog reconciliation/import/sync, and metrics.
-- S2S billing API for status, public catalog, hosted Checkout, Customer Portal, purchase status, and resync requests.
-- Stripe webhook routes for global migration fallback and per-billing-group webhook secrets.
+- Admin billing dashboard API for groups, credentials, capabilities, catalog reconciliation/import/sync, and metrics. It requires the `admin` or `manage_billing` permission; writing credentials also requires a root user.
+- S2S billing API for status, public catalog, hosted Checkout (with `Idempotency-Key`), Customer Portal, purchase status, and resync requests, authenticated only by the dedicated `BILLING_S2S_BEARER_TOKEN`. Purchase status is read by `purchase_ref`, scoped to the user and the project the purchase was made in; a purchase appears once its Stripe webhook has been recorded.
+- Stripe webhook routes for global migration fallback and per-billing-group webhook secrets, verified with `Stripe-Signature` against the pinned Stripe API version.
+- Resync jobs queued by webhooks and the S2S resync route are processed by `src/workers/billing_sync_worker.py`, which the Docker entrypoint starts (see Docker below).
 
 ### 🟠 Patreon Entitlements
 - Patreon is entitlement/link proof only; it does not issue local sessions, JWTs, refresh tokens, cookies, or API keys.
-- Authenticated link lifecycle: request proof, confirm proof, read status, and unlink.
+- Authenticated link lifecycle: request proof, confirm proof, read status, and unlink. Request, confirm, and unlink also require a recent authentication.
 - ROOT-only Patreon admin status, entitlement, tier-map, sync-job, webhook, and resync APIs.
-- S2S entitlement read/resync routes for trusted consumers.
+- S2S entitlement read/resync routes for trusted consumers, authenticated only by the dedicated `PATREON_S2S_BEARER_TOKEN`.
+- Webhook intake at `/webhooks/patreon`, verified with `X-Patreon-Signature` over the raw body.
+- The Patreon sync worker drains webhook- and admin-triggered resync jobs; the Docker entrypoint starts it.
+- Every Patreon feature flag defaults to off; disabled surfaces answer with neutral or disabled responses.
 
 ### 🛡️ Security and Operations
 - UUID-style public identifiers such as `usr-{UUID4}` and `proj-{UUID4}`.
@@ -94,7 +106,16 @@ python -m uvicorn src.main:app --reload
 curl -H "User-Agent: local-smoke/1.0" http://localhost:8000/system/ping
 ```
 
-`src/__init__.py` loads the project `.env` before runtime imports. Use `scripts/recreate_database.py` only when you intentionally want to drop and rebuild `magic_auth`; it is destructive and asks for confirmation.
+`src/__init__.py` loads the project `.env` before runtime imports; variables already exported in the environment take precedence. Use `scripts/recreate_database.py` only when you intentionally want to drop and rebuild `magic_auth`; it is destructive and asks for confirmation.
+
+To bring an existing database up to the canonical schema without dropping anything, review and then apply the additive catch-up:
+
+```bash
+python scripts/schema_sync.py --env-file .env --dry-run
+python scripts/schema_sync.py --env-file .env --apply
+```
+
+For an isolated development tenant, copy `.env.dev.example` to `.env.dev` and run `python scripts/dev_env_setup.py --env-file .env.dev --dry-run`, then `--apply`. It seeds a local project, its default groups, and a Google OAuth connection and binding, and it refuses to run unless the database host is a loopback address and every configured URL is local.
 
 The canonical database scripts currently seed a legacy root row whose SHA-256
 password hash is incompatible with the active Argon2id-only verifier. Their
@@ -138,10 +159,22 @@ The app currently registers **245 route-module endpoint methods across 27 `src/r
 | System | `/system` | `system.py` | 7 | Info, health, ping, cache management |
 
 Detailed request/response examples live in the domain docs under [docs/USAGE](docs/USAGE/README.md). The running API also serves:
-- Swagger UI: `/docs`
-- ReDoc: `/redoc`
+- Swagger UI: `/docs` — tags collapsed by default, with a filter box.
+- ReDoc: `/redoc` — tags grouped into Sign-in, Users and Access, Billing, Integrations, Email, and Operations.
+- OpenAPI document: `/openapi.json`
 - Rendered markdown documentation: `/documentation`
 - Raw markdown documentation: add `?format=raw` to `/documentation/...`
+
+The OpenAPI document is generated from the code. Its description is [src/README.md](src/README.md); tag descriptions, ReDoc tag groups, security schemes, and the shared `ErrorResponse` schema live in [src/Util/openapi_metadata.py](src/Util/openapi_metadata.py); every operation's own description is its route docstring. It declares four security schemes:
+
+| Scheme | Credential | Used by |
+|--------|------------|---------|
+| `HTTPBearerOrCookie` | Access JWT as `Authorization: Bearer ...` or the `session_token` cookie | Authenticated user and admin routes |
+| `ProjectApiKey` | `X-API-Key: sk_{public_id}.{secret}` | `POST /auth/validate-api-key` (OAuth init/providers declare the same header as a parameter) |
+| `BillingS2SBearer` | Dedicated `BILLING_S2S_BEARER_TOKEN` | Billing internal routes |
+| `PatreonS2SBearer` | Dedicated `PATREON_S2S_BEARER_TOKEN` | Patreon internal routes |
+
+Webhooks are verified by provider signature headers over the raw body and declare no security scheme. [tests/integration/test_openapi_contract.py](tests/integration/test_openapi_contract.py) fails if an operation loses its description or tag, or references an undefined scheme.
 
 ## 💡 API Usage
 
@@ -150,7 +183,7 @@ Detailed request/response examples live in the domain docs under [docs/USAGE](do
 This release uses a **two-token model**:
 
 - `access_token`: short-lived JWT used for protected API requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
-- `refresh_token`: 72-hour sliding JWT by default, or a 30-day absolute JWT when `remember_me=true`; it is used only for `/auth/refresh` and returned in the JSON body and as an HttpOnly Secure `refresh_token` cookie.
+- `refresh_token`: 72-hour sliding JWT by default, or a 30-day absolute JWT when `remember_me=true`; it is used by `/auth/refresh` (and required alongside the access token by `/auth/switch-project`) and returned in the JSON body and as an HttpOnly Secure `refresh_token` cookie scoped to `/auth`.
 - `session_token`: deprecated compatibility alias for `access_token` in response bodies and the access cookie.
 
 `POST /auth/refresh` rejects legacy access/session tokens. Do not send `Authorization: Bearer <access_token>` to refresh; send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
@@ -199,14 +232,17 @@ curl -X POST "http://localhost:8000/auth/validate-api-key" \
 ### Request Format
 
 - A **`User-Agent` header is required on every request**. Missing it returns `422`.
-- Most legacy/admin mutating endpoints use `multipart/form-data` FastAPI `Form(...)` fields.
-- Major JSON-body surfaces include Google OAuth POST routes, Patreon link request/confirm, admin billing capabilities/catalog import, admin Patreon resync, internal billing, internal Patreon resync, internal email, email-template mutations, audit export, and bulk permission/user membership operations.
+- POST requests whose `Content-Length` exceeds 8 MiB are rejected with `413`.
+- Form fields (`application/x-www-form-urlencoded` or `multipart/form-data`): login, platform login, registration, refresh, switch-project, availability checks, the OAuth `form_post` callback, and most older CRUD/admin mutations, including `/admin` bulk operations (list fields are repeated).
+- JSON or form: email verification, forgot password, and reset password.
+- JSON: OAuth init/start, Patreon link request/confirm, OAuth administration, admin Patreon resync, internal billing, internal Patreon resync, internal email, email templates, audit export, and the user-group bulk assignment. Admin billing mixes JSON and form per route.
 - Webhook endpoints consume raw provider-signed request bodies.
-- Responses are JSON and use Pydantic response validation or explicit safe DTO serialization.
+- Emailed links point at `<public base>/auth/email/verify?token=...`, `/auth/password/reset?token=...`, and `/auth/patreon/link/confirm?token=...`. The API serves only `POST` on those paths, so the frontend must host the `GET` pages that submit the token.
+- Responses are JSON and use Pydantic response validation or explicit safe DTO serialization; the CSV audit export is the exception.
 
 ### Response Shape
 
-Most first-party responses follow this shape:
+Many first-party responses, especially older CRUD and auth routes, follow this shape:
 
 ```json
 {
@@ -216,7 +252,22 @@ Most first-party responses follow this shape:
 }
 ```
 
-Some webhook and internal routes intentionally return narrower provider-safe DTOs or empty success responses.
+Admin read views return their own objects (for example `{logs, pagination, filters, generated_at}` from the audit routes), and webhook, internal, and OAuth routes return narrower provider-safe DTOs or empty success responses. Each operation's OpenAPI response schema is authoritative.
+
+Errors use one envelope (the `ErrorResponse` schema in OpenAPI):
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "AUTH_1001",
+    "category": "authentication",
+    "message": "Invalid username or password"
+  }
+}
+```
+
+Request-validation failures return `400` with code `VAL_3001` and `error.details.validation_errors`; FastAPI's default `422 {"detail": [...]}` body is never produced. `422` is used only for deliberate route rejections, such as a missing `User-Agent` or semantically invalid internal email and billing requests. See the [Error Reference](docs/USAGE/errors.md) for every code.
 
 ## 📚 Documentation
 
@@ -226,7 +277,9 @@ Some webhook and internal routes intentionally return narrower provider-safe DTO
 |----------|-------------|
 | [Getting Started](docs/USAGE/getting-started.md) | Installation, env vars, first run |
 | [Authentication](docs/USAGE/authentication-usage-cases.md) | Login, sessions, project switching |
-| [Google OAuth/OIDC](docs/USAGE/google-oauth/README.md) | Provider-init, scope, request flow, scenarios, troubleshooting, reference |
+| [Client Authentication Guide](docs/USAGE/client-authentication-guide.md) | Browser, mobile, and service integration patterns |
+| [OAuth Sign-in](docs/USAGE/oauth/README.md) | Provider-agnostic sign-in: connections, project bindings, readiness, admin API |
+| [Google OAuth/OIDC](docs/USAGE/google-oauth/README.md) | Deprecated `/auth/google/*` aliases and the `GOOGLE_OAUTH_*` environment configuration |
 | [Patreon Link](docs/USAGE/patreon-link/README.md) | Entitlement-only Patreon link/proof, S2S read, webhooks, sync |
 | [Stripe Billing](docs/USAGE/stripe-billing/README.md) | Billing groups, catalog, credentials, S2S checkout/portal/status, webhooks |
 | [Users](docs/USAGE/users/README.md) | Profile, admin operations, bulk ops, multi-email management |
@@ -244,6 +297,7 @@ Some webhook and internal routes intentionally return narrower provider-safe DTO
 
 - [Database Schema](schemas/docs/README.md)
 - [External Accounts Schema](schemas/docs/external-accounts.md)
+- [OAuth Runbook](docs/RUNBOOKS/oauth.md)
 - [Google OAuth Runbook](docs/RUNBOOKS/google-oauth.md)
 - [Email Activation Runbook](docs/RUNBOOKS/email-activation.md)
 - [Patreon Link Runbook](docs/RUNBOOKS/patreon-link.md)
@@ -258,7 +312,9 @@ docker build -t api-auth .
 docker run --env-file .env -p 8000:8000 api-auth
 ```
 
-The container entrypoint starts the API server, the email outbox worker, and the Patreon sync worker. Set `PATREON_SYNC_WORKER_ENABLED=0` if the Patreon worker should not start in that container.
+The container entrypoint ([scripts/docker-entrypoint.sh](scripts/docker-entrypoint.sh)) starts the API server, the email outbox worker, the Patreon sync worker, and the billing sync worker. Set `PATREON_SYNC_WORKER_ENABLED=0` or `BILLING_SYNC_WORKER_ENABLED=0` if that worker should not start in the container, for example when it runs as its own deployment.
+
+The billing sync worker processes queued billing resync jobs and runs billing retention purges only while billing sync is enabled (`BILLING_SYNC_ENABLED` or `STRIPE_SYNC_ENABLED`); otherwise it only writes its heartbeat. Its heartbeat id defaults to `container-<HOSTNAME>-billing` (override with `BILLING_WORKER_ID`).
 
 For routine host-side tests, use the serial batch runner:
 
@@ -371,8 +427,16 @@ email-link origin validation share the built-in `DEFAULT_ALLOWED_ORIGINS` list i
 localhost/LAN development origins plus the hosted auth UI origin
 `https://auth-ui.arz.ai`, so set the variable explicitly in every deployment.
 
+OAuth configuration has two sources, selected by `OAUTH_CONFIG_SOURCE`:
+
+- `env` (default): the historical single Google connection configured by the `GOOGLE_OAUTH_*` and `PROVIDER_INIT_*` variables.
+- `db`: connections, project bindings, and URL allow-lists live in the database and are managed through `/admin/oauth/*`. Connection secrets are encrypted at rest, so `OAUTH_SECRET_ENCRYPTION_KEY`, `OAUTH_SECRET_ENCRYPTION_KEY_ID`, and `OAUTH_SECRET_HMAC_KEY` become required. Move an existing deployment with `scripts/schema_sync.py` and `scripts/migrations/oauth_env_import.py`, as described in the [OAuth runbook](docs/RUNBOOKS/oauth.md).
+
+Never change the OAuth peppers (`OAUTH_*_PEPPER` or their `GOOGLE_OAUTH_*_PEPPER` predecessors) on a live deployment: they key every linked identity.
+
 Provider-specific setup is intentionally documented outside this top-level README:
-- Google OAuth: [docs/USAGE/google-oauth/reference.md](docs/USAGE/google-oauth/reference.md) and [docs/RUNBOOKS/google-oauth.md](docs/RUNBOOKS/google-oauth.md)
+- OAuth sign-in: [docs/USAGE/oauth/reference.md](docs/USAGE/oauth/reference.md) and [docs/RUNBOOKS/oauth.md](docs/RUNBOOKS/oauth.md)
+- Google OAuth (deprecated aliases, `env` source): [docs/USAGE/google-oauth/reference.md](docs/USAGE/google-oauth/reference.md) and [docs/RUNBOOKS/google-oauth.md](docs/RUNBOOKS/google-oauth.md)
 - Patreon: [docs/USAGE/patreon-link/reference.md](docs/USAGE/patreon-link/reference.md) and [docs/RUNBOOKS/patreon-link.md](docs/RUNBOOKS/patreon-link.md)
 - Stripe billing: [docs/USAGE/stripe-billing/reference.md](docs/USAGE/stripe-billing/reference.md) and [docs/RUNBOOKS/stripe-billing.md](docs/RUNBOOKS/stripe-billing.md)
 - Email: [docs/USAGE/email/README.md](docs/USAGE/email/README.md) and [docs/RUNBOOKS/email-activation.md](docs/RUNBOOKS/email-activation.md)
@@ -390,19 +454,24 @@ Do not place real Google, Patreon, Stripe, Resend, provider-init, S2S bearer, en
 | Access denied | Check user group membership, project group access, and project archive state |
 | Permission denied | Verify the active guard first. Session/route enforcement is role-derived; user-group/direct assignments are visible through inspection APIs but are not part of the auth-time permission set. |
 | Database errors | Verify MySQL connection, schema, stored procedures, and triggers |
-| Cache/session issues | Check Redis connectivity and use `/system/cache/clear` when appropriate |
+| Cache/session issues | Check Redis connectivity first. `POST /system/cache/clear` (root/admin) deletes every cached access session, so every user, including the caller, must refresh or sign in again; prefer `/system/cache/invalidate/user/{user_hash}` for one user |
 | Provider feature returns neutral/disabled response | Confirm the feature flag, provider credentials, S2S bearer, encryption/HMAC secrets, and per-group readiness |
+| OAuth provider button missing or failing | Call `GET /admin/oauth/projects/{project_hash}/readiness`; it names the failing layer (global flag, catalog, connection, credentials, binding, project, allow-lists, default group) |
+| `400` with `VAL_3001` | Read `error.details.validation_errors`; the request did not match the operation's documented parameters or body |
 
 ### Quick Diagnostics
 
 Detailed system diagnostics require a valid access session; `/ping` and
-`/system/ping` remain public.
+`/system/ping` remain public and touch no database, Redis, or provider, so use
+them for container and load-balancer probes. `GET /system/health` answers `200`
+even when a component is degraded: read its `status` field (`healthy` or
+`degraded`) and per-component entries such as `email_worker`.
 
 ```bash
 curl http://localhost:8000/system/health \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "User-Agent: local-smoke/1.0"
-python -c "from src.Util.db import get_connection; print('DB connected')"
+python -c "from src.Util.db_config import get_connection; get_connection().cursor().execute('SELECT 1'); print('DB connected')"
 python -c "from src.Util.db_config import redis_client; redis_client.ping(); print('Redis OK')"
 ```
 

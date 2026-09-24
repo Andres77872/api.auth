@@ -42,7 +42,7 @@ Step 4: Attach permission group to role
           └─► INSERT INTO role_permission_groups (ON DUPLICATE KEY UPDATE — reactivates if soft-deleted)
 ```
 
-**Removal caveat:** `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` removes (soft-deletes) the junction row. If the group is **not currently assigned** to the role, the handler in `src/routes/global_roles.py` tries to raise `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so that "not assigned" branch surfaces as a **500** instead of a clean **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+**Removal:** `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` removes (soft-deletes) the junction row. If the group is **not currently assigned** to the role, it returns **404** `RESOURCE_NOT_FOUND` (`NF_4004`). See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 The full chain after all four steps:
 
@@ -122,7 +122,7 @@ DELETE /roles/roles/{role_hash}
 After the guard passes:
 
 1. Look up role by hash
-2. **INTENDED BLOCK** if `is_system_role = TRUE`; current code references missing `ErrorCode.OPERATION_NOT_ALLOWED`, so this path surfaces as generic 500 until the enum/source is fixed
+2. **BLOCK** if `is_system_role = TRUE` → 403 `OPERATION_NOT_ALLOWED` (`AUTHZ_2009`)
 3. Call `sp_global_delete_role` → `UPDATE roles SET is_active = FALSE WHERE id = ?`
 4. Return success message
 
@@ -142,10 +142,10 @@ POST /roles/projects/{project_hash}/catalog/roles/{role_hash}
   └─► global_roles.require_admin
         └─► resolve project + role
               └─► INSERT INTO role_project_catalog
-                    └─► duplicate → 500 (defect: see below)
+                    └─► already cataloged → ON DUPLICATE KEY UPDATE (re-activates) → 200
 ```
 
-**Defect caveat:** the duplicate-add branch in `src/routes/global_roles.py` raises `ConflictError(error_code=ErrorCode.ALREADY_EXISTS)`, but `ALREADY_EXISTS` is **absent from the `ErrorCode` enum**. Referencing it raises `AttributeError` before the `ConflictError` is built, so the request surfaces as a generic **500 INTERNAL_ERROR** rather than the intended **409 ConflictError**. This will become a clean 409 only once the enum member or handler is fixed. Mirrors the note in [usage.md](usage.md#project-role-catalog).
+The add is an idempotent upsert: re-adding a cataloged role returns 200, re-activates a removed entry, and keeps the previous `catalog_purpose`/`notes` when they are omitted. Mirrors the note in [usage.md](usage.md#project-role-catalog).
 
 ### List cataloged roles
 
@@ -161,10 +161,10 @@ GET /roles/projects/{project_hash}/catalog/roles
 DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}
   └─► global_roles.require_admin
         └─► DELETE from role_project_catalog
-              └─► not in catalog → 500 (defect: see below)
+              └─► not in catalog → 404 RESOURCE_NOT_FOUND
 ```
 
-**Removal caveat:** the "role is not in the project catalog" branch in `src/routes/global_roles.py` raises `NotFoundError(error_code=ErrorCode.NOT_FOUND)`, but `NOT_FOUND` is **absent from the `ErrorCode` enum**, so removing a role that was never cataloged (or already removed) surfaces as a **500** rather than the intended **404**. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+Removing a role that was never cataloged (or already removed) returns **404** `RESOURCE_NOT_FOUND` (`NF_4004`). See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 **None of these flows affect authorization.** They are purely organizational metadata. See also the parallel permission-group catalog flow in **[Flow 8: Catalog Metadata Flow](../permissions/request-flow.md#flow-8-catalog-metadata-flow)**.
 

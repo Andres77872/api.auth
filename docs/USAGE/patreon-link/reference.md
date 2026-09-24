@@ -239,6 +239,8 @@ surface:
 
 - `scope="user"` requires `user_hash` and enqueues a per-user member resync;
   a missing `user_hash` is `VAL_3001`.
+- A `reason` longer than 128 characters or a `user_hash` longer than 255 is
+  rejected with `400` / `VAL_3001`.
 - `scope="all"` enqueues one full-campaign job that the worker drains as a sweep
   over every configured campaign.
 - When sync is disabled the route still answers `200` with

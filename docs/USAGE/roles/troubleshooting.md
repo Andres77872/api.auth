@@ -27,7 +27,9 @@ UNION of:
 
 If a user has permissions from user-group or direct assignment, those show up
 in `/permissions/users/me/permissions` but are **NOT** recognized during login,
-session validation, or route authorization.
+session validation, or route authorization. The one exception is the
+`/permissions` admin guard, which accepts `manage_roles` from any source (see
+[below](#consumer-permission-guards-differ-between-permissions-and-roles)).
 
 **Fix:** assign the needed permissions through the user's role instead. Or use the inspection endpoints for audit purposes only.
 
@@ -35,16 +37,14 @@ See [../permissions/resolution.md](../permissions/resolution.md) for the full ex
 
 ---
 
-### Bulk role assignment always fails
+### Bulk role assignment returns 404 or leaves only one role
 
-The endpoint `POST /admin/projects/{hash}/bulk-assign-roles` has a parameter mismatch:
+`POST /admin/projects/{hash}/bulk-assign-roles` resolves every `role_names` value by role **name** before writing anything:
 
-- The route passes `role_name` to the utility function
-- The utility function expects `role_id`
-- The utility does `assignment.get('role_id')` which returns `None`
-- Every assignment fails with "Missing user_hash or role_id"
+- An unknown or inactive role name returns 404 `ROLE_NOT_FOUND` (`NF_4007`) with the offending names in `details.role_names`; nothing is assigned. Send role names, not role hashes.
+- A user holds a single global role, so when several `role_names` are listed each user ends up with the **last** one.
 
-**Workaround:** assign roles individually via `PUT /roles/users/{user_hash}/role`.
+**Fix:** send one role name per request. Per-user failures (unknown user hash, for example) are reported in `results` and `errors` of the 200 response.
 
 ---
 
@@ -85,9 +85,9 @@ curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
 
 ---
 
-### Removing an already-removed link/catalog entry returns 500 instead of 404
+### Removing an already-removed link/catalog entry returns 404
 
-Three "removal" endpoints try to return a clean 404 when the thing you are unlinking is not actually linked, but the `ErrorCode.NOT_FOUND` member they reference is **absent from the `ErrorCode` enum** (`src/Util/error_handler.py`). Referencing the missing member raises `AttributeError`, so the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended **404**:
+Three "removal" endpoints return **404** `RESOURCE_NOT_FOUND` (`NF_4004`) when the thing you are unlinking is not actually linked:
 
 | Endpoint | "Not found" branch |
 |----------|--------------------|
@@ -95,9 +95,9 @@ Three "removal" endpoints try to return a clean 404 when the thing you are unlin
 | `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | Permission is not assigned to this group |
 | `DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}` | Role is not in the project catalog |
 
-Note this only triggers when the **role/group/permission/project themselves DO exist** (those existence checks raise proper 404s with valid error codes) but the **link** does not. The duplicate-add counterpart (`POST /roles/projects/{hash}/catalog/roles/{role_hash}`) has the same class of defect via the missing `ErrorCode.ALREADY_EXISTS` — it returns 500 instead of the intended 409.
+This applies when the **role/group/permission/project themselves DO exist** but the **link** does not; a missing role, permission group, permission, or project returns its own 404 (`ROLE_NOT_FOUND`, `PERMISSION_GROUP_NOT_FOUND`, `PERMISSION_NOT_FOUND`, `PROJECT_NOT_FOUND`). The link was already gone, so there is nothing to undo — do not retry as if the operation failed.
 
-**Workaround:** treat a 500 on these three unlink/catalog-delete calls as an idempotent no-op — the link was already gone, so there is nothing to undo. Do not retry as if the operation failed. This will return a proper 404 once the missing `ErrorCode.NOT_FOUND` member is added.
+The add counterpart (`POST /roles/projects/{hash}/catalog/roles/{role_hash}`) is idempotent: re-adding a cataloged role returns 200 and re-activates the entry.
 
 ---
 
@@ -106,16 +106,15 @@ Note this only triggers when the **role/group/permission/project themselves DO e
 The two modules use different permission check functions:
 
 - `/roles` uses `check_user_has_permission()` → role-only resolver
-- `/permissions` uses `check_user_has_permission_extended()` → intended three-source resolver
+- `/permissions` uses `check_user_has_permission_extended()` → three-source resolver (`sp_check_user_has_permission_extended`)
 
-In a canonical fresh database, the extended helper calls `sp_check_user_has_permission`, but the schema defines `sp_check_user_has_permission_extended`. The DB wrapper catches that failure and returns `False`. Consequently:
+Consequently:
 
 - root and admin users pass both route guards before the consumer fallback
-- consumers with role-derived `manage_roles` can pass `/roles` guards
-- the intended `/permissions` consumer fallback fails closed until the stored-procedure name mismatch is fixed
-- user-group/direct grants remain inspection-only for current authorization behavior
+- consumers with role-derived `manage_roles` pass both `/roles` and `/permissions` guards
+- consumers with `manage_roles` only through a user group or direct assignment pass the `/permissions` admin guards but are denied by `/roles`
 
-**Workaround:** use a root/admin session for `/permissions/admin/...`; assign role-derived `manage_roles` for consumer access to `/roles`.
+**Fix:** assign role-derived `manage_roles` when a consumer needs `/roles` access.
 
 ---
 
@@ -199,9 +198,9 @@ When debugging "why does this user have that permission?", this endpoint breaks 
 
 After assigning or changing a user's role, communicate that they need to re-login or refresh for the change to take effect in their session.
 
-### 6. Do not rely on bulk role assignment
+### 6. Send one role per bulk role assignment
 
-The endpoint is broken. Use individual assignment or build your own bulk logic.
+A user holds a single global role, so listing several `role_names` leaves each user with the last one. Check `results` and `errors` in the response for per-user failures.
 
 ### 7. Catalog roles for organization, not enforcement
 

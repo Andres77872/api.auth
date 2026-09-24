@@ -198,7 +198,7 @@ Minimal safe response shape:
 | Subscription intent requires | `plan_code` and `tier_code`. |
 | Credit-purchase intent requires | `credit_product_code`. |
 | Success posture | `202` with hosted Checkout URL and opaque local refs only. Replay may return the previous safe result. |
-| Idempotency | `Idempotency-Key` header and/or `client_intent_ref`; same key + same canonical request replays, same key + different request conflicts. |
+| Idempotency | `Idempotency-Key` header and/or `client_intent_ref`; same key + same canonical request replays, same key + different request conflicts. The key must match `^[A-Za-z0-9._:-]{1,128}$` (without the header, `client_intent_ref` stands in for it and must match too); otherwise `422` with the route's `{"success": false, "message": ...}` envelope. |
 | Forbidden | Product-benefit definitions, credit amounts, raw provider refs, provider API idempotency keys. |
 
 The current route does not cross-check `price_ref`, `plan_code`, `tier_code`, or
@@ -233,6 +233,7 @@ Safe response fields: `success`, `message`, `checkout_ref`, `purchase_ref`, `sub
 | Caller | Trusted internal service. |
 | Body | `project_hash`, `provider`, `return_url`. |
 | Success posture | `202` with hosted Portal URL and opaque `portal_ref`. |
+| Idempotency | Optional `Idempotency-Key` header matching `^[A-Za-z0-9._:-]{1,128}$`; any other format returns `422` with the route's `{"success": false, "message": ...}` envelope. |
 | Portal limits | Cancellation and payment-method maintenance only. Plan changes are disabled. |
 | Readiness | Fails closed when Portal configuration cannot be verified as restricted. |
 

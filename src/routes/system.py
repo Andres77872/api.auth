@@ -7,8 +7,9 @@ for the group-based multi-project authentication system.
 
 import logging
 from datetime import datetime, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Path
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
@@ -36,16 +37,24 @@ router = APIRouter(prefix="/system", tags=["System Information"])
 security = HTTPBearerOrCookie()
 
 
-@router.get("/info", response_model=SystemInfoResponse)
+@router.get(
+    "/info",
+    response_model=SystemInfoResponse,
+    responses={401: {"description": "Missing, invalid, expired, or revoked access token."}},
+)
 async def get_system_info(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> SystemInfoResponse:
     """
-    Get system information and health status.
-    Requires a valid session token.
+    Return service identity, aggregate tenant counts, and the advertised feature list.
 
-    Returns:
-        System status and configuration information
+    **Auth:** requires a valid access session: `Authorization: Bearer <access JWT>` or the
+    `session_token` cookie. Any user type may call it; it is not a public endpoint.
+
+    **Responses:** 200 with `system` (name, version, architecture, status), `statistics`
+    (total users, projects, user groups, project groups) and `features`. Each count
+    falls back to `0` if its query fails. Use `GET /system/ping` for an unauthenticated
+    liveness probe.
     """
     # Require a valid session — tenant aggregate counts are not public.
     session_data = handle_db_operation(
@@ -116,16 +125,35 @@ async def get_system_info(
     )
 
 
-@router.get("/health", response_model=HealthCheckResponse)
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    responses={401: {"description": (
+        "Missing, invalid, expired, or revoked access token. Use `GET /system/ping` for credential-less probes."
+    )}},
+)
 async def system_health(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> HealthCheckResponse:
     """
-    Comprehensive system health check.
-    Requires a valid session token.
+    Report per-component health (database, Redis, groups, email, Patreon, billing) and an overall status.
 
-    Returns:
-        Detailed health status of all system components
+    **Auth:** requires a valid access session: `Authorization: Bearer <access JWT>` or the
+    `session_token` cookie. Any user type may call it; it is not a public endpoint, so it
+    cannot serve as a credential-less container/load-balancer probe (use `GET /system/ping`).
+
+    **Responses:** a completed check returns 200 with `status` = `healthy` or `degraded`;
+    component problems never change the HTTP status. `status` becomes `degraded` when:
+    - the database or group-system query fails (that component reports `unhealthy`);
+    - the Redis ping fails;
+    - email delivery is enabled and the provider is not ready, the outbox is not
+      `healthy`/`disabled`, or no email worker heartbeat is present (`email_worker`);
+    - Patreon, or enabled billing (Stripe provider, webhooks, sync), reports
+      `degraded`/`stale`/`retrying`/`unhealthy`/`not_ready`/`unknown`.
+
+    Disabled email, Patreon or billing never degrade the result. Because authenticating
+    the caller needs Redis and the database, an outage of either usually fails the request
+    during authentication, before any component is checked.
     """
     # Require a valid session — infra/billing/email component health is not public.
     session_data = handle_db_operation(
@@ -142,13 +170,14 @@ async def system_health(
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     components = {}
 
-    # Check database connectivity
-    db_check = handle_db_operation(
-        lambda: count_users(),
+    # Check database connectivity. default_return only applies when it is not None,
+    # so the fallback is False: an outage must be reported, not raised as a 500.
+    database_ok = handle_db_operation(
+        lambda: count_users() is not None,
         error_context="database health check",
-        default_return=None
+        default_return=False
     )
-    if db_check is not None:
+    if database_ok:
         components["database"] = {"status": "healthy", "message": "Database accessible"}
     else:
         components["database"] = {"status": "unhealthy", "message": "Database connection failed"}
@@ -180,7 +209,7 @@ async def system_health(
     group_stats = handle_db_operation(
         check_group_system,
         error_context="group system health check",
-        default_return=None
+        default_return={}
     )
     if group_stats:
         components["group_system"] = {
@@ -264,10 +293,14 @@ async def system_health(
 @router.get("/ping", response_model=PingResponse)
 async def ping() -> PingResponse:
     """
-    Simple health check endpoint.
-    
-    Returns:
-        Basic health status
+    Liveness probe: confirm the API process is answering.
+
+    **Auth:** public; no credentials needed. Like every route, it still requires a
+    `User-Agent` header (requests without one are rejected with 422 by middleware).
+
+    **Responses:** always 200 with a fixed message and the current UTC timestamp. It does
+    not touch the database, Redis, or any provider, so it is the right target for
+    container and load-balancer health checks.
     """
     return PingResponse(
         success=True,
@@ -287,11 +320,15 @@ async def get_cache_statistics(
     log_context: LogContext = None
 ) -> CacheStatsResponse:
     """
-    Get cache statistics and performance metrics.
-    Requires valid session token.
-    
-    Returns:
-        Cache statistics including hit rates and storage info
+    Return Redis key counts per authentication-cache namespace and the configured cache TTLs.
+
+    **Auth:** any valid access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie); no user-type or permission check.
+
+    **Responses:** 200 with `cache_statistics` (key counts for sessions, access checks,
+    permission checks, user types, role checks, API keys, and total keys) and a static
+    `cache_configuration` TTL summary. No hit-rate metrics are collected; if Redis cannot
+    be read, `cache_statistics` is `{}`.
     """
     # Get cache statistics
     cache_stats = cache_manager.get_cache_stats()
@@ -322,11 +359,17 @@ async def clear_cache(
     log_context: LogContext = None
 ) -> ClearCacheResponse:
     """
-    Clear entire authentication cache.
-    Requires admin permissions.
-    
-    Returns:
-        Cache clearing confirmation
+    Delete every authentication-cache and access-session key in Redis.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    of a root or admin user; other users get 403.
+
+    **Effect:** removes all `session:*`, `access:*`, `role:*`, `permission:*`, `user_info:*`
+    and `user_type:*` keys. Deleting `session:*` revokes every live access session,
+    including the caller's, so all clients must refresh or sign in again. Refresh
+    families, rate-limit counters and API keys are not touched.
+
+    **Responses:** 200 with a confirmation and warning; 500 if the Redis deletion fails.
     """
     # Check if user has admin permissions
     user_type = get_user_type(log_context.user_id)
@@ -365,19 +408,21 @@ async def clear_cache(
     log_success=True
 )
 async def invalidate_user_cache(
-        user_hash: str,
+        user_hash: Annotated[str, Path(description="Public hash of the user whose cache entries are removed.")],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> InvalidateCacheResponse:
     """
-    Invalidate cache for a specific user.
-    Requires admin permissions.
-    
-    Args:
-        user_hash: Hash of the user whose cache should be invalidated
-        
-    Returns:
-        Cache invalidation confirmation
+    Drop one user's cached access, permission, user-type and user-info entries, plus their access sessions.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    of a root or admin user; other users get 403.
+
+    **Effect:** the user's `session:*`/`session_full:*` records are deleted as well, so
+    their current access tokens stop validating until they refresh or sign in again.
+
+    **Responses:** 200 with a confirmation; 404 if no user has that hash; 500 if the
+    Redis operation fails.
     """
     # Check admin permissions
     user_type = get_user_type(log_context.user_id)
@@ -422,19 +467,23 @@ async def invalidate_user_cache(
     log_success=True
 )
 async def invalidate_project_cache(
-        project_id: int,
+        project_id: Annotated[int, Path(
+            description=(
+                "Project ID used to match cached `access:*`, `permission:*` and `role:*` keys. "
+                "Declared as an integer, so string project IDs (`proj-...`) are rejected with 400."
+            ),
+        )],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> InvalidateCacheResponse:
     """
-    Invalidate cache for a specific project.
-    Requires admin permissions.
-    
-    Args:
-        project_id: ID of the project whose cache should be invalidated
-        
-    Returns:
-        Cache invalidation confirmation
+    Drop cached access, permission and role-check entries whose keys reference a project ID.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    of a root or admin user; other users get 403.
+
+    **Responses:** 200 with a confirmation, even when no key matched (the project is not
+    looked up); 500 if the Redis operation fails.
     """
     # Check admin permissions
     user_type = get_user_type(log_context.user_id)

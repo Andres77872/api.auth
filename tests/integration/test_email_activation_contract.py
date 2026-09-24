@@ -99,11 +99,15 @@ async def test_public_forgot_password_known_and_unknown_are_byte_stable(client, 
 
 @pytest.mark.asyncio
 async def test_rate_limited_public_email_flow_returns_429_retry_after(client, integration_env):
-    response = await client.post(
-        "/auth/password/forgot",
-        json={"email_or_username": "person@example.com"},
-        headers={"X-Force-Email-Rate-Limit-Test": "true"},
-    )
+    from src.Util.email.rate_limit import RateLimitExceeded
+
+    limiter = MagicMock()
+    limiter.return_value.check_send_request.side_effect = RateLimitExceeded(bucket="send", retry_after=60, limit=1)
+    with patch("src.routes.auth.EmailRateLimiter", limiter):
+        response = await client.post(
+            "/auth/password/forgot",
+            json={"email_or_username": "person@example.com"},
+        )
 
     assert response.status_code == 429
     assert int(response.headers["Retry-After"]) > 0

@@ -191,7 +191,9 @@ the DB selected one:
 
 Removing an email **revokes the user's other sessions** (reason
 `email_removed`) while preserving the current authenticated session when
-possible.
+possible. An `email_id` that is not one of the caller's current addresses
+returns `404` `RESOURCE_NOT_FOUND` (`NF_4004`); nothing is removed and no
+session is revoked.
 
 ### Set the primary email
 
@@ -213,6 +215,10 @@ current session when possible. Response:
   "status": "primary_changed"
 }
 ```
+
+If the address is not activated, has been removed, or is not the caller's, the
+route returns `409` `STATE_CONFLICT` (`CONF_5005`) with the database's reason as
+`error.message`, and no session is revoked.
 
 > Session note: because changing or removing the primary email alters the
 > account's recovery identity, the route deliberately invalidates every other

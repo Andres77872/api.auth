@@ -28,9 +28,9 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -74,42 +74,59 @@ security = HTTPBearerOrCookie()
 _SEND_TEST_PURPOSE = "email_template_test"
 _TEMPLATE_CODE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _injected_log_context() -> None:
-    """Placeholder default for ``log_context``; ``log_and_handle_errors`` injects the real one.
-
-    A bare ``LogContext = None`` default is a pydantic model, so FastAPI would read it
-    as a second JSON body field and expect the request model nested under ``"body"``
-    instead of the flat JSON documented in docs/USAGE/email/reference.md.
-    """
-    return None
+_TEMPLATE_CODE_DESCRIPTION = (
+    "Template code, built-in (for example `email_activation`) or dynamic; matched case-insensitively."
+)
 
 
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
 class TemplateDraft(BaseModel):
-    subject_template: str
-    html_template: str
-    text_template: str
+    subject_template: str = Field(
+        description="Single-line subject (max 255 chars); `$name` / `${name}` placeholders from the allowlist only.",
+    )
+    html_template: str = Field(
+        description=(
+            "HTML body (max 100,000 chars). Only an email-safe tag allowlist is accepted: no scripts, "
+            "forms, embeds, `on*` handlers, or URL schemes other than http, https and mailto."
+        ),
+    )
+    text_template: str = Field(description="Plain-text body (max 40,000 chars).")
 
 
 class TemplateCreateRequest(TemplateDraft):
-    template_code: str = Field(min_length=1, max_length=100)
-    purpose: str = Field(min_length=1, max_length=64)
-    allowed_variables: list[str] = Field(default_factory=list)
-    required_variables: list[str] = Field(default_factory=list)
+    template_code: str = Field(
+        min_length=1,
+        max_length=100,
+        description="New lowercase snake_case code; must not collide with a built-in template code.",
+    )
+    purpose: str = Field(
+        min_length=1,
+        max_length=64,
+        description="`delivery_operation` or `security_notification` (the only purposes allowed for dynamic templates).",
+    )
+    allowed_variables: list[str] = Field(
+        default_factory=list,
+        description="Placeholder names the template may use (identifier syntax, de-duplicated).",
+    )
+    required_variables: list[str] = Field(
+        default_factory=list,
+        description="Subset of `allowed_variables` that every version must reference.",
+    )
 
 
 class TemplatePreviewRequest(BaseModel):
-    subject_template: Optional[str] = None
-    html_template: Optional[str] = None
-    text_template: Optional[str] = None
+    subject_template: Optional[str] = Field(
+        default=None,
+        description="Draft subject. If any draft field is sent, all three are validated as a complete draft.",
+    )
+    html_template: Optional[str] = Field(default=None, description="Draft HTML body.")
+    text_template: Optional[str] = Field(default=None, description="Draft plain-text body.")
 
 
 class TemplateRollbackRequest(BaseModel):
-    version: int
+    version: int = Field(description="Existing version number of this template to re-activate.")
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +305,18 @@ def _normalize_variable_names(
 )
 async def list_email_templates(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """List every transactional template with its active source/version."""
+    """List every template code, built-in and dynamic, with its active version and state.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Responses:** 200 with `templates` sorted by code. Each entry has `source` (`db` for a
+    stored version, `code` for the in-code default), `version`, `revision`, `is_enabled`,
+    `is_dynamic`, disable metadata and the allowed/required variable lists. Bodies are
+    not included; fetch one code for those. 400 if template state cannot be read.
+    """
 
     _require_root(log_context)
     rows = db_email_templates.list_active_templates() or []
@@ -309,9 +335,22 @@ async def list_email_templates(
 async def create_email_template(
     body: TemplateCreateRequest,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Create a dynamic internal template code and activate version 1."""
+    """Create a dynamic (non-built-in) template code and activate its version 1.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Request:** flat JSON `TemplateCreateRequest`. The draft is validated (placeholder
+    allowlist, required variables referenced, HTML safety, test render) before saving.
+
+    **Responses:** 200 with the code, `version: 1`, `revision` and `used_variables`.
+    400 for a code that is not snake_case or collides with a built-in, a purpose other
+    than `delivery_operation`/`security_notification`, invalid variable names,
+    `required_variables` not within `allowed_variables`, or a failing draft. 409 if the
+    code already exists.
+    """
 
     _require_root(log_context)
     code = _normalize_template_code(body.template_code)
@@ -377,11 +416,21 @@ async def create_email_template(
     log_success=False,
 )
 async def get_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return the active body for a code plus its allowlist and version history."""
+    """Return a template's active subject, HTML and text, variable lists, default and version history.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Responses:** 200 with the active parts, `source`, `version`, `revision`,
+    `is_enabled`, `default` (the in-code parts for built-in codes, `null` for dynamic
+    ones) and `versions` (each stored version's subject, `is_active` and `created_at`).
+    Disabled templates are returned too. 404 for an unknown code; 400 if template state
+    cannot be read.
+    """
 
     _require_root(log_context)
     code = _require_known_code(template_code)
@@ -429,12 +478,27 @@ async def get_email_template(
     log_success=True,
 )
 async def update_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     body: TemplateDraft,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Validate, sanitize-check and save a new active version of a template."""
+    """Validate a complete draft and save it as the new active version of a template.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Request:** flat JSON `TemplateDraft` with all three parts, checked against this
+    code's variable allowlist and required variables, the HTML safety rules and a test
+    render.
+
+    **Effect:** stores the next version number and activates it. For a built-in code this
+    creates a stored customization (`source` becomes `db`). Saving re-enables a disabled
+    template.
+
+    **Responses:** 200 with the new `version`, `revision` and `used_variables`; 400 on
+    validation failure; 404 for an unknown code.
+    """
 
     _require_root(log_context)
     code = _require_known_code(template_code)
@@ -491,15 +555,26 @@ async def update_email_template(
     log_success=False,
 )
 async def preview_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     body: TemplatePreviewRequest | None = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Render a draft (or the active version) with sample data for preview.
+    """Render a draft, or the active version, with server-side sample variables; nothing is saved or sent.
 
-    The returned HTML is what the worker would actually send; the dashboard
-    renders it inside a script-less sandboxed iframe.
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Request:** optional JSON body. With no body, or no draft fields, the active version
+    is rendered. If any of `subject_template`, `html_template` or `text_template` is sent,
+    it is treated as a complete draft: all three parts must be present and valid.
+
+    **Responses:** 200 with the rendered `subject`, `html`, `text` and the
+    `sample_variables` used; the output matches what the email worker would send.
+    Disabled templates can still be previewed. 400 on validation or render failure; 404
+    for an unknown code.
+    \f
+    The dashboard renders the returned HTML inside a script-less sandboxed iframe.
     """
 
     _require_root(log_context)
@@ -527,11 +602,24 @@ async def preview_email_template(
     log_success=True,
 )
 async def disable_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Disable a template code while preserving catalog/version history."""
+    """Disable a template code while keeping its catalog entry and version history.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Effect:** the code stays listed with `is_enabled: false`. The email worker cancels
+    queued messages that use it (`EMAIL_TEMPLATE_DISABLED`) instead of sending them, and
+    `POST /internal/email/send-template` and send-test reject it. Built-in codes (for
+    example activation or password reset) can be disabled as well, which stops those
+    emails. `PUT` or rollback re-enables the code.
+
+    **Responses:** 200 with `is_enabled: false` and the new `revision`; 404 for an unknown
+    code.
+    """
 
     _require_root(log_context)
     code = _require_known_code(template_code)
@@ -565,12 +653,28 @@ async def disable_email_template(
     log_success=True,
 )
 async def send_test_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     body: TemplatePreviewRequest | None = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Send a rendered test email to the ROOT user's OWN verified address."""
+    """Send a rendered test of a draft or the active version to the caller's own verified email address.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Request:** optional JSON body with the same draft semantics as preview. The
+    recipient cannot be chosen: it is the caller's first activated email address.
+
+    **Effect:** sent immediately through the configured provider, bypassing the outbox,
+    with subject prefix `[TEST] ` and header `X-Email-Template-Test: true`, using the
+    template's sample variables. The audit entry redacts the recipient.
+
+    **Responses:** 200 with the masked recipient and provider. 400 when the template is
+    disabled, the caller has no activated email, email delivery is not ready, the draft is
+    invalid, the provider rejects the send, or the shared email send rate limits are
+    exhausted (error code `INT_7005`). 404 for an unknown code.
+    """
 
     _require_root(log_context)
     code = _require_known_code(template_code)
@@ -673,12 +777,24 @@ async def send_test_email_template(
     log_success=True,
 )
 async def rollback_email_template(
-    template_code: str,
+    template_code: Annotated[str, Path(description=_TEMPLATE_CODE_DESCRIPTION)],
     body: TemplateRollbackRequest,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = Depends(_injected_log_context),
+    log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Re-activate a prior version of a template."""
+    """Re-activate an earlier stored version of a template.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; other users get 403.
+
+    **Request:** JSON `{"version": <int>}`.
+
+    **Effect:** the stored version is re-validated against the code's current variable
+    rules, becomes the only active version, and the template is re-enabled.
+
+    **Responses:** 200 with the activated `version` and new `revision`; 404 if the code
+    or version does not exist; 400 if that version no longer passes validation.
+    """
 
     _require_root(log_context)
     code = _require_known_code(template_code)

@@ -95,24 +95,6 @@ def rate_limited_response(exc: RateLimitExceeded) -> JSONResponse:
     )
 
 
-def forced_rate_limit_response_for_test(request: Request | None) -> JSONResponse | None:
-    """Deterministic test seam for public email rate-limit contracts.
-
-    The integration RED contracts use this header to prove `429 + Retry-After`
-    without burning real Redis buckets or depending on call order. It is inert
-    unless explicitly set by tests.
-    """
-
-    if request is None:
-        return None
-    value = request.headers.get("x-force-email-rate-limit-test", "")
-    if value.strip().lower() not in {"1", "true", "yes", "on"}:
-        return None
-    return rate_limited_response(
-        RateLimitExceeded(bucket="forced_test", retry_after=60, limit=0)
-    )
-
-
 def client_ip(request: Request | None) -> str:
     if request is None:
         return "unknown"

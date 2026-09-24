@@ -9,9 +9,9 @@ Provides endpoints for the admin dashboard including:
 
 from datetime import datetime, timezone
 import re
-from typing import Optional, Dict, Any
+from typing import Annotated, Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.activity_logger import get_recent_activity, count_activity_logs, ActivityType, get_activity_by_id
@@ -27,7 +27,8 @@ from src.Util.db import (
     is_root_user, get_user_type, count_user_groups
 )
 from src.Util.db.db_project_groups import count_project_groups
-from src.Util.system_metrics import get_user_statistics, get_project_statistics, get_system_overview
+# Imported as a module: the route handlers below reuse these helpers' names.
+from src.Util import system_metrics
 
 # Create router
 router = APIRouter(prefix="/admin", tags=["Admin Dashboard"])
@@ -45,12 +46,16 @@ async def get_dashboard_stats(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get main dashboard statistics
-    
-    Returns comprehensive statistics for the admin dashboard including:
-    - Total counts (users, projects, sessions)
-    - Recent activity counts
-    - System health status
+    Return headline counts for the admin dashboard.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `totals` (users, projects, user groups, project groups,
+    active sessions, activities in the last 7 days), `recent_activity` and `growth`
+    (new users/projects in the last 7 days, as counts rather than percentages),
+    `user_breakdown` by user type, `groups_summary` averages and `system_health`
+    (database and Redis status; `overall_status` is `healthy` only when both are healthy).
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -137,19 +142,28 @@ async def get_dashboard_stats(
 async def get_activity_feed(
         limit: int = Query(50, ge=1, le=500, description="Number of activities to return"),
         offset: int = Query(0, ge=0, description="Number of activities to skip"),
-        activity_type_filter: Optional[str] = Query(None, description="Filter by activity type"),
-        user_id: Optional[str] = Query(None, description="Filter by user ID"),
-        project_id: Optional[str] = Query(None, description="Filter by project ID"),
+        activity_type_filter: Optional[str] = Query(
+            None, description="Exact activity type (see `GET /admin/activity/types`)"
+        ),
+        user_id: Optional[str] = Query(None, description="Filter by acting user's internal ID (`usr-...`)"),
+        project_id: Optional[str] = Query(None, description="Filter by internal project ID (`proj-...`)"),
         days: int = Query(30, ge=1, le=365, description="Days to look back"),
         search: Optional[str] = Query(None, description="Free-text search across activity_type, details, and username"),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get activity feed for the dashboard
-    
-    Returns recent activities with pagination and filtering options.
-    Supports filtering by activity type, user, project, time range, and free-text search.
+    List activity-log entries, newest first, with filters and offset pagination.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Request:** the activity-type filter is the `activity_type_filter` query parameter;
+    an empty `search` is ignored.
+
+    **Responses:** 200 with `activities` (each with `user`, `project` and `target_user`
+    summaries or `null`), `pagination` (`total`, `has_more`, `next_offset`) and the echoed
+    `filters`.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -246,9 +260,13 @@ async def get_activity_types(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get available activity types for filtering
-    
-    Returns list of all activity types that have been logged in the system.
+    List every activity type the service defines, for building activity filters.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `activity_types`: all values of the server's activity-type
+    enum, whether or not any entry of that type has been logged.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -276,15 +294,19 @@ async def get_activity_types(
     log_success=False
 )
 async def get_activity_detail(
-        activity_id: str,
+        activity_id: Annotated[str, Path(description="Activity log ID: `act-` followed by 32 hex characters.")],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get detailed information for a single activity log entry.
-    
-    Returns full metadata for the specified activity including user info,
-    project info, target user info, and all enriched fields.
+    Return one activity-log entry with all stored and enriched fields.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `activity` (type, details, severity, user/project/target
+    summaries, IP, user agent, metadata and activity-type name/category/description);
+    400 if the ID is not `act-` plus 32 hex characters; 404 if no entry has that ID.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -366,12 +388,15 @@ async def get_system_health(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get detailed system health information
-    
-    Returns comprehensive system health data including:
-    - Database connectivity and status
-    - Redis connectivity and status
-    - System metrics and performance indicators
+    Check database and Redis health and return a simple score for the admin dashboard.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `components` (database, redis), `metrics` (total users,
+    projects, active sessions) and `health_score`: 100, minus 50 if the database check
+    fails and 30 if Redis fails. `overall_status` is `healthy` at 100, `degraded` at 70
+    or more, otherwise `unhealthy`. For the full component report see `GET /system/health`.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -435,15 +460,15 @@ async def get_user_statistics(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get detailed user statistics for admin dashboard
-    
-    Phase 2 Implementation: User statistics with breakdown and growth rates
-    
-    Args:
-        days: Number of days to look back for growth calculations
-        
-    Returns:
-        Comprehensive user statistics including type breakdown and growth
+    Return active-user counts by type plus new and active users over the last `days` days.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `statistics`: `total_users` and `user_types` (active users
+    only), `new_users`, `active_users` (distinct users with activity-log entries),
+    `growth_rate` and `activity_rate` (percentages). If the query fails, `statistics`
+    holds only an `error` message.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -455,7 +480,7 @@ async def get_user_statistics(
             error_code=ErrorCode.ACCESS_DENIED
         )
     
-    stats = get_user_statistics(days)
+    stats = system_metrics.get_user_statistics(days)
 
     return {
         "success": True,
@@ -476,15 +501,15 @@ async def get_project_statistics(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get detailed project statistics for admin dashboard
-    
-    Phase 2 Implementation: Project statistics and health metrics
-    
-    Args:
-        days: Number of days to look back for analytics
-        
-    Returns:
-        Project counts, member averages, most active projects
+    Return active-project counts, new and activity-bearing projects over the last `days` days, and average membership.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `statistics`: `total_projects` (active only), `new_projects`,
+    `active_projects` (distinct projects with activity-log entries),
+    `avg_members_per_project` and `utilization_rate` (percentage). If the query fails,
+    `statistics` holds only an `error` message.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -496,7 +521,7 @@ async def get_project_statistics(
             error_code=ErrorCode.ACCESS_DENIED
         )
     
-    stats = get_project_statistics(days)
+    stats = system_metrics.get_project_statistics(days)
 
     return {
         "success": True,
@@ -516,12 +541,16 @@ async def get_system_overview(
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Get comprehensive system health and performance overview
-    
-    Phase 2 Implementation: System health with uptime, database status, cache status, API metrics
-    
-    Returns:
-        Complete system overview including health scores and performance metrics
+    Return host resource usage, database/Redis health, application metrics, and Patreon and billing status.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `system_overview`: `health_score` and `status` (`healthy` at
+    80 or more, `degraded` at 60 or more, otherwise `unhealthy`), host CPU, memory, disk
+    and uptime, database and Redis details, application metrics, and the Patreon and
+    billing summaries. CPU usage is sampled over one second, so the call takes at least
+    that long. On an internal failure the overview is `{"status": "error", "health_score": 0, ...}`.
     """
     # Check admin access
     user_type = get_user_type(log_context.user_id)
@@ -533,7 +562,7 @@ async def get_system_overview(
             error_code=ErrorCode.ACCESS_DENIED
         )
     
-    overview = get_system_overview()
+    overview = system_metrics.get_system_overview()
 
     return {
         "success": True,

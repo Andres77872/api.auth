@@ -235,10 +235,85 @@ def _apply_event(event: Mapping[str, Any], request: Request) -> None:
         )
 
 
-@router.post("/resend", status_code=204)
-async def resend_email_webhook(request: Request) -> Response:
-    """Verify and apply Resend/Svix email delivery webhooks.
+_RESEND_WEBHOOK_REQUEST_BODY: dict[str, Any] = {
+    "required": True,
+    "description": (
+        "Raw Resend event JSON exactly as delivered by Resend through Svix. The Svix signature "
+        "covers these exact bytes, so relays must forward the body unmodified (no re-serialization)."
+    ),
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "description": (
+                            "Event type (`event` / `event_type` are also read). Applied: `email.sent`, "
+                            "`email.delivered`, `email.bounced`, `email.complained` and their short aliases "
+                            "(`sent`, `delivered`, `bounced`, `hard_bounce`, `complained`, ...). "
+                            "Other types are acknowledged with 204 and ignored."
+                        ),
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Provider event ID used for deduplication; falls back to the `svix-id` header.",
+                    },
+                    "created_at": {"type": "string", "format": "date-time"},
+                    "data": {
+                        "type": "object",
+                        "description": "Event payload. Only the fields below are read.",
+                        "properties": {
+                            "email_id": {"type": "string", "description": "Resend message ID of the delivery."},
+                            "to": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Recipient(s); only a peppered hash of the first address is stored.",
+                            },
+                        },
+                        "additionalProperties": True,
+                    },
+                },
+                "additionalProperties": True,
+            },
+            "example": {
+                "type": "email.delivered",
+                "created_at": "2026-01-01T12:00:00.000Z",
+                "data": {"email_id": "4ef9a417-02e9-4d39-ad75-9611e0fcc33c", "to": ["user@example.com"]},
+            },
+        }
+    },
+}
 
+
+@router.post(
+    "/resend",
+    status_code=204,
+    summary="Receive Resend delivery webhook",
+    openapi_extra={"requestBody": _RESEND_WEBHOOK_REQUEST_BODY},
+    responses={
+        204: {"description": "Event verified; applied, or ignored as a duplicate or unsupported type."},
+        400: {"description": "Missing Svix headers, bad or stale signature, or webhook secret not configured."},
+    },
+)
+async def resend_email_webhook(request: Request) -> Response:
+    """Ingest a Resend email event (sent, delivered, bounced, complained) and update delivery state.
+
+    **Auth:** no access token. Every request must carry the Svix signature headers
+    `svix-id`, `svix-timestamp` and `svix-signature`, which are verified over the raw
+    request body with the configured Resend webhook secret.
+
+    **Request:** raw `application/json` event body, forwarded byte-for-byte.
+
+    **Effect:** events are deduplicated by event ID, then applied to the matching outbox
+    message (events for unknown messages are ignored). Bounces and complaints also
+    suppress the recipient: later sends are blocked and a matching account email is
+    marked `suppressed`. Recipients are stored and logged only as hashes.
+
+    **Responses:** 204 with an empty body on success (including duplicates and ignored
+    event types); 400 `Invalid webhook signature` for any verification failure; 500 if
+    the delivery-state update fails, so the provider retries.
+    \f
     The raw request body is passed directly to the provider verifier. Do not JSON
     parse and reserialize before verification; that breaks Svix signatures and is
     exactly the kind of shortcut that creates a security hole.

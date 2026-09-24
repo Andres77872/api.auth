@@ -385,3 +385,71 @@ async def test_s2s_response_contract_fixtures_are_allow_listed_and_free_of_raw_p
         payload = _contract_fixture(fixture_name)
         _assert_contract_shape(payload, context=f"fixture {fixture_name}")
         _assert_no_raw_provider_internals(payload, context=f"fixture {fixture_name}")
+
+
+RESYNC_PATH = "/internal/users/{user_hash}/entitlements/patreon/resync"
+
+
+class _NoRateLimit:
+    def check_s2s(self, **_kwargs):
+        return None
+
+    def check_sync_enqueue(self, **_kwargs):
+        return None
+
+
+def _enable_resync(monkeypatch) -> list[dict[str, Any]]:
+    monkeypatch.setenv("PATREON_S2S_ENTITLEMENT_ENABLED", "true")
+    monkeypatch.setenv("PATREON_S2S_BEARER_TOKEN", S2S_TOKEN)
+    monkeypatch.setenv("PATREON_SYNC_ENABLED", "true")
+    monkeypatch.setattr(internal_patreon, "rate_limiter", _NoRateLimit())
+    jobs: list[dict[str, Any]] = []
+    monkeypatch.setattr(internal_patreon.db_patreon, "enqueue_patreon_sync_job", lambda **kwargs: jobs.append(kwargs))
+    return jobs
+
+
+def _user_lookup(known: dict[str, str]):
+    from types import SimpleNamespace
+
+    return lambda user_hash, *args, **kwargs: (
+        SimpleNamespace(id=known[user_hash], user_hash=user_hash, is_active=True) if user_hash in known else None
+    )
+
+
+# `sp_patreon_get_entitlement_by_user_hash` returns user_hash and entitlement columns, never user_id.
+_ENTITLEMENT_ROW_WITHOUT_USER_ID = {"user_hash": "usr_resync_001", "entitlement_status": "active", "plan_code": "plus"}
+
+
+@pytest.mark.asyncio
+async def test_s2s_resync_enqueues_a_job_the_worker_can_act_on(client, monkeypatch):
+    """The job used to carry no user_id, member id or campaign, so the worker closed it as a no-op."""
+
+    jobs = _enable_resync(monkeypatch)
+    monkeypatch.setattr(internal_patreon, "get_user_by_hash", _user_lookup({"usr_resync_001": "usr-id-001"}), raising=False)
+
+    with _patched_entitlement_result(dict(_ENTITLEMENT_ROW_WITHOUT_USER_ID)):
+        response = await client.post(
+            RESYNC_PATH.format(user_hash="usr_resync_001"), headers=_auth_headers(), json={"reason": "contract_test"}
+        )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["accepted"] is True and payload["status"] == "queued"
+    [job] = jobs
+    assert job["user_id"] == "usr-id-001"
+    assert job["job_type"] == "user_member"
+    assert payload["correlation_id"] == job["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_s2s_resync_for_an_unknown_or_inactive_user_queues_nothing(client, monkeypatch):
+    jobs = _enable_resync(monkeypatch)
+    monkeypatch.setattr(internal_patreon, "get_user_by_hash", _user_lookup({}), raising=False)
+
+    with _patched_entitlement_result(dict(_ENTITLEMENT_ROW_WITHOUT_USER_ID)):
+        response = await client.post(RESYNC_PATH.format(user_hash="usr_resync_001"), headers=_auth_headers())
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["accepted"] is False and payload["status"] == "degraded"
+    assert jobs == []

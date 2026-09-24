@@ -180,13 +180,17 @@ This table clarifies the disconnect:
 | `GET /permissions/users/me/permissions` | All permissions from all 3 sources | Path B (comprehensive) |
 | `GET /permissions/users/me/permission-groups` | Direct permission groups assigned to user | Direct assignments only |
 | `GET /permissions/users/me/permission-sources` | Breakdown of permission sources | Path B (comprehensive) |
+| `GET /permissions/users/me/permissions/check/{name}` | Whether one permission resolves from any source | All 3 sources (`sp_check_user_has_permission_extended`) |
 | `GET /roles/users/me/role` | Current user's assigned role | Role only |
 | **Auth during login/session** | **Only role permissions** | **Path A (role-only)** |
 
 **Practical implication**: A user may see permissions listed by
 `GET /permissions/users/me/permissions` that are **not actually effective**
 during authenticated API calls, because those permissions come from user-group
-or direct assignments that the auth flow does not evaluate.
+or direct assignments that the auth flow does not evaluate. The exception is
+the `/permissions` admin guard, which checks `manage_roles` through
+`sp_check_user_has_permission_extended` and therefore accepts it from any of
+the three sources.
 
 ---
 

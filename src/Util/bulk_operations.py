@@ -29,6 +29,43 @@ def _unsupported_forced_password_fields(updates: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _bulk_results(total_requested: int, **extra: Any) -> Dict[str, Any]:
+    """Result shape the bulk routes read: counts, per-item ``results`` and ``errors``.
+
+    ``successful``/``failed`` mirror the counts for older callers.
+    """
+    return {
+        "total_requested": total_requested,
+        "successful": 0,
+        "failed": 0,
+        "success_count": 0,
+        "error_count": 0,
+        "errors": [],
+        "results": [],
+        **extra,
+    }
+
+
+def _record_success(results: Dict[str, Any], item: Dict[str, Any]) -> None:
+    results["successful"] += 1
+    results["success_count"] += 1
+    results["results"].append({**item, "success": True})
+
+
+def _record_failure(results: Dict[str, Any], item: Dict[str, Any], error: str) -> None:
+    results["failed"] += 1
+    results["error_count"] += 1
+    results["errors"].append({"user": item.get("user_hash") or "unknown", "error": error})
+    results["results"].append({**item, "success": False, "error": error})
+
+
+def _record_operation_failure(results: Dict[str, Any], operation: str, error: str) -> None:
+    """Record a failure that stopped the whole batch rather than one item."""
+    results["failed"] += 1
+    results["error_count"] += 1
+    results["errors"].append({"operation": operation, "error": error})
+
+
 class BulkOperations:
     """
     Bulk operations for efficient mass management
@@ -244,38 +281,33 @@ class BulkOperations:
             deleted_by: ID of user performing the operation
             
         Returns:
-            Operation results with success/failure counts
+            Operation results with success/failure counts; root users are skipped and
+            counted in ``protected_count``
         """
-        results = {
-            "total_requested": len(user_hashes),
-            "successful": 0,
-            "failed": 0,
-            "errors": [],
-            "deleted_users": []
-        }
+        results = _bulk_results(len(user_hashes), deleted_users=[], protected_count=0)
 
         try:
             with get_connection() as con:
                 con.begin()
 
                 for user_hash in user_hashes:
+                    item = {"user_hash": user_hash}
                     try:
                         # Get user
                         user = get_user_by_hash(user_hash)
                         if not user:
-                            results["errors"].append({"user": user_hash, "error": "User not found"})
-                            results["failed"] += 1
+                            _record_failure(results, item, "User not found")
                             continue
 
                         # Prevent deletion of root users in bulk
                         if user.user_type == 'root':
-                            results["errors"].append({"user": user_hash, "error": "Cannot bulk delete root users"})
-                            results["failed"] += 1
+                            results["protected_count"] += 1
+                            _record_failure(results, item, "Cannot bulk delete root users")
                             continue
 
                         # Delete user
                         if delete_user(user.id, deleted_by=deleted_by):
-                            results["successful"] += 1
+                            _record_success(results, item)
                             results["deleted_users"].append({
                                 "user_hash": user_hash,
                                 "username": user.username,
@@ -294,19 +326,17 @@ class BulkOperations:
                                 target_user_id=user.id
                             )
                         else:
-                            results["errors"].append({"user": user_hash, "error": "Delete failed"})
-                            results["failed"] += 1
+                            _record_failure(results, item, "Delete failed")
 
                     except Exception as e:
-                        results["errors"].append({"user": user_hash, "error": str(e)})
-                        results["failed"] += 1
+                        _record_failure(results, item, str(e))
                         logger.error(f"Bulk delete error for user {user_hash}: {e}")
 
                 con.commit()
 
         except Exception as e:
             logger.error(f"Bulk delete users error: {e}")
-            results["errors"].append({"operation": "bulk_delete", "error": str(e)})
+            _record_operation_failure(results, "bulk_delete", str(e))
 
         return results
 
@@ -318,48 +348,35 @@ class BulkOperations:
         
         Args:
             project_hash: Project identifier
-            role_assignments: List of {"user_hash": str, "role_id": int} assignments
+            role_assignments: List of {"user_hash": str, "role_id": str} assignments; an
+                optional "role_name" is echoed in the per-assignment results
             assigned_by: ID of user performing the operation
             
         Returns:
             Operation results with success/failure counts
         """
-        results = {
-            "total_requested": len(role_assignments),
-            "successful": 0,
-            "failed": 0,
-            "errors": [],
-            "assignments": []
-        }
+        results = _bulk_results(len(role_assignments), assignments=[])
 
         try:
             # Get project
             project = get_project_by_hash(project_hash)
             if not project:
-                results["errors"].append({"operation": "bulk_assign_roles", "error": "Project not found"})
+                _record_operation_failure(results, "bulk_assign_roles", "Project not found")
                 return results
 
             for assignment in role_assignments:
+                user_hash = assignment.get('user_hash')
+                role_id = assignment.get('role_id')
+                item = {"user_hash": user_hash, "role_name": assignment.get('role_name')}
                 try:
-                    user_hash = assignment.get('user_hash')
-                    role_id = assignment.get('role_id')
-
                     if not user_hash or not role_id:
-                        results["errors"].append({
-                            "assignment": assignment,
-                            "error": "Missing user_hash or role_id"
-                        })
-                        results["failed"] += 1
+                        _record_failure(results, item, "Missing user_hash or role_id")
                         continue
 
                     # Get user
                     user = get_user_by_hash(user_hash)
                     if not user:
-                        results["errors"].append({
-                            "user": user_hash,
-                            "error": "User not found"
-                        })
-                        results["failed"] += 1
+                        _record_failure(results, item, "User not found")
                         continue
 
                     # Assign role (global role system - project-agnostic)
@@ -369,7 +386,7 @@ class BulkOperations:
                     )
 
                     if assignment_result:
-                        results["successful"] += 1
+                        _record_success(results, item)
                         results["assignments"].append({
                             "user_hash": user_hash,
                             "username": user.username,
@@ -391,23 +408,15 @@ class BulkOperations:
                             target_user_id=user.id
                         )
                     else:
-                        results["errors"].append({
-                            "user": user_hash,
-                            "error": "Role assignment failed"
-                        })
-                        results["failed"] += 1
+                        _record_failure(results, item, "Role assignment failed")
 
                 except Exception as e:
-                    results["errors"].append({
-                        "assignment": assignment,
-                        "error": str(e)
-                    })
-                    results["failed"] += 1
+                    _record_failure(results, item, str(e))
                     logger.error(f"Bulk role assignment error: {e}")
 
         except Exception as e:
             logger.error(f"Bulk assign roles error: {e}")
-            results["errors"].append({"operation": "bulk_assign_roles", "error": str(e)})
+            _record_operation_failure(results, "bulk_assign_roles", str(e))
 
         return results
 
@@ -425,13 +434,7 @@ class BulkOperations:
         Returns:
             Operation results with success/failure counts
         """
-        results = {
-            "total_requested": len(user_hashes),
-            "successful": 0,
-            "failed": 0,
-            "errors": [],
-            "assignments": []
-        }
+        results = _bulk_results(len(user_hashes), assignments=[])
 
         try:
             # Get user group
@@ -439,16 +442,16 @@ class BulkOperations:
 
             user_group = get_user_group_by_hash(user_group_hash)
             if not user_group:
-                results["errors"].append({"operation": "bulk_add_to_group", "error": "User group not found"})
+                _record_operation_failure(results, "bulk_add_to_group", "User group not found")
                 return results
 
             for user_hash in user_hashes:
+                item = {"user_hash": user_hash, "group_name": user_group.group_name}
                 try:
                     # Get user
                     user = get_user_by_hash(user_hash)
                     if not user:
-                        results["errors"].append({"user": user_hash, "error": "User not found"})
-                        results["failed"] += 1
+                        _record_failure(results, item, "User not found")
                         continue
 
                     # Add to group
@@ -459,7 +462,7 @@ class BulkOperations:
                     )
 
                     if assignment_result:
-                        results["successful"] += 1
+                        _record_success(results, item)
                         results["assignments"].append({
                             "user_hash": user_hash,
                             "username": user.username,
@@ -479,17 +482,15 @@ class BulkOperations:
                             target_user_id=user.id
                         )
                     else:
-                        results["errors"].append({"user": user_hash, "error": "Group assignment failed"})
-                        results["failed"] += 1
+                        _record_failure(results, item, "Group assignment failed")
 
                 except Exception as e:
-                    results["errors"].append({"user": user_hash, "error": str(e)})
-                    results["failed"] += 1
+                    _record_failure(results, item, str(e))
                     logger.error(f"Bulk group assignment error for user {user_hash}: {e}")
 
         except Exception as e:
             logger.error(f"Bulk add to group error: {e}")
-            results["errors"].append({"operation": "bulk_add_to_group", "error": str(e)})
+            _record_operation_failure(results, "bulk_add_to_group", str(e))
 
         return results
 

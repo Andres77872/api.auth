@@ -110,8 +110,14 @@ class JWTTokenHandler:
         scope: Optional[str] = None,
         jti: Optional[str] = None,
         family_id: Optional[str] = None,
+        auth_time: Optional[int] = None,
     ) -> str:
-        """Create a short-lived signed access JWT."""
+        """Create a short-lived signed access JWT.
+
+        ``auth_time`` is when the user last proved their credentials for this session
+        (the sign-in that started it). It is the proof recent-authentication checks
+        read, so token rotation must carry it forward unchanged, never reset it.
+        """
         ttl = expires_delta or timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = JWTTokenHandler._base_payload(
             token_type=ACCESS_TOKEN_TYPE,
@@ -123,6 +129,8 @@ class JWTTokenHandler:
             family_id=family_id,
             scope=scope,
         )
+        if auth_time is not None:
+            payload["auth_time"] = int(auth_time)
         return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
     @staticmethod

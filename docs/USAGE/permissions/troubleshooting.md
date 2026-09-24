@@ -76,17 +76,20 @@ Practical fix order:
 
 ### Extended permission check returns false unexpectedly
 
-Why:
+`check_user_has_permission_extended()` calls
+`sp_check_user_has_permission_extended`, which answers from the caller's role,
+the user groups the caller directly belongs to, and direct assignments.
 
-- `check_user_has_permission_extended()` calls
-  `sp_check_user_has_permission`
-- the canonical schema defines
-  `sp_check_user_has_permission_extended` instead
-- the wrapper fails closed to `false` when that call fails
+Common causes of `false`:
+
+- none of the three sources links the permission
+- the permission, the permission-in-group link, the group membership, or the
+  assignment row is inactive
+- the caller is `root` / `admin` and expected a bypass; this check has none
 
 Use `/permissions/users/me/permissions` and `/permission-sources` to inspect the
-union. Do not rely on direct/user-group assignments to authorize the admin
-guards until the procedure wiring is fixed and verified.
+union. The same helper backs the `/permissions` admin guard, so a consumer who
+gets `true` for `manage_roles` here can use the `/permissions` admin routes.
 
 ---
 

@@ -37,19 +37,54 @@ _INTERNAL_SEND_PURPOSES = {"delivery_operation", "security_notification"}
 
 
 class ResolveEmailIdentityRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+        description="Email address to look up; trimmed and lower-cased before matching.",
+    )
 
 
 class SendTemplateEmailRequest(BaseModel):
-    recipient_email: str = Field(min_length=3, max_length=320)
-    template_code: str = Field(min_length=1, max_length=100)
-    variables: dict[str, Any] = Field(default_factory=dict)
-    provider_idempotency_key: str | None = Field(default=None, max_length=128)
-    priority: int = Field(default=4, ge=0, le=9)
+    recipient_email: str = Field(
+        min_length=3,
+        max_length=320,
+        description="Recipient address; trimmed and lower-cased. It does not need to belong to a user.",
+    )
+    template_code: str = Field(
+        min_length=1,
+        max_length=100,
+        description=(
+            "Enabled template whose purpose is `delivery_operation` or `security_notification` "
+            "(built-in or dynamic); case-insensitive."
+        ),
+    )
+    variables: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Render variables. Keys outside the template's allowlist are silently dropped and values "
+            "are stringified. `app_name` and `recipient_masked` are pre-filled by the server; an "
+            "`action_url`, when present, must be an absolute http(s) URL with a usable host."
+        ),
+    )
+    provider_idempotency_key: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional caller key; must be unique per provider (reuse returns 409). Defaults to one derived from the new message ID.",
+    )
+    priority: int = Field(
+        default=4,
+        ge=0,
+        le=9,
+        description="Outbox priority; lower values are sent first.",
+    )
 
 
 class EmailMessageStatusRequest(BaseModel):
-    email_message_id: str = Field(min_length=1, max_length=128)
+    email_message_id: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Outbox message ID (`em-...`) returned by `POST /internal/email/send-template`, or any other outbox message ID.",
+    )
 
 
 def _normalize_email_or_422(email: str) -> str:
@@ -95,12 +130,37 @@ def _template_variables(allowed: tuple[str, ...] | None, variables: dict[str, An
     return merged
 
 
-@router.post("/resolve-identity", status_code=status.HTTP_200_OK)
+_INTERNAL_EMAIL_AUTH_ERRORS = {
+    400: {"description": "Request body failed schema validation (missing field, length or range)."},
+    401: {"description": "Missing or invalid access token."},
+    403: {"description": "Caller is not a root user."},
+}
+
+
+@router.post(
+    "/resolve-identity",
+    status_code=status.HTTP_200_OK,
+    responses={
+        **_INTERNAL_EMAIL_AUTH_ERRORS,
+        422: {"description": "The email is not a plausible address."},
+    },
+)
 async def resolve_email_identity(
     payload: ResolveEmailIdentityRequest,
     _root_user=Depends(require_root_user),
 ) -> dict[str, Any]:
-    """Return active auth identity projection for an activated linked email."""
+    """Map an email address to the active user who owns it as an activated email.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; intended for trusted companion services.
+
+    **Request:** JSON `{"email": "..."}`.
+
+    **Responses:** always 200 for a well-formed address. `matched: false` (with the
+    normalized and masked email) when no active user has it as an activated, non-removed
+    email; otherwise `matched: true` plus `user_hash`, `username` and `user_type`. When
+    several accounts match, the primary email wins, then the earliest activation.
+    """
 
     email = _normalize_email_or_422(payload.email)
     row = db_email.resolve_activated_email_identity(email_normalized=email)
@@ -120,12 +180,38 @@ async def resolve_email_identity(
     }
 
 
-@router.post("/send-template", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/send-template",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        **_INTERNAL_EMAIL_AUTH_ERRORS,
+        409: {"description": "`provider_idempotency_key` was already used for this provider."},
+        422: {
+            "description": (
+                "Invalid recipient; unknown, disabled or non-internal `template_code`; or variables "
+                "that fail rendering (including a bad `action_url`)."
+            )
+        },
+        503: {"description": "Template state could not be read, or email delivery is not configured."},
+    },
+)
 async def send_template_email(
     payload: SendTemplateEmailRequest,
     _root_user=Depends(require_root_user),
 ) -> dict[str, Any]:
-    """Queue a known transactional template to one recipient."""
+    """Queue one transactional email, rendered from an internal-purpose template, in the outbox.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user; intended for trusted companion services.
+
+    **Request:** JSON body; only templates with purpose `delivery_operation` or
+    `security_notification` are allowed (activation and password-reset templates are not).
+    Variables are filtered to the template allowlist and render-checked before queuing.
+
+    **Responses:** 202 with `email_message_id` and `lifecycle_status: template_email_enqueued`.
+    Nothing is sent synchronously: the email outbox worker delivers it later (a suppressed
+    recipient ends as `suppressed`). Poll `POST /internal/email/message-status` for the outcome.
+    """
 
     recipient_email = _normalize_email_or_422(payload.recipient_email)
     template_code = str(payload.template_code or "").strip().lower()
@@ -199,12 +285,31 @@ async def send_template_email(
     }
 
 
-@router.post("/message-status", status_code=status.HTTP_200_OK)
+@router.post(
+    "/message-status",
+    status_code=status.HTTP_200_OK,
+    responses={
+        **_INTERNAL_EMAIL_AUTH_ERRORS,
+        404: {"description": "No outbox message has that ID."},
+    },
+)
 async def email_message_status(
     payload: EmailMessageStatusRequest,
     _root_user=Depends(require_root_user),
 ) -> dict[str, Any]:
-    """Return redacted delivery state for one queued transactional email."""
+    """Return the redacted delivery state of one outbox email message.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Request:** JSON `{"email_message_id": "..."}`.
+
+    **Responses:** 200 with purpose, template, masked recipient, provider and provider
+    message ID, `status` (`pending`, `processing`, `retry`, `sent`, `delivered`,
+    `bounced`, `complained`, `suppressed`, `dead`, `cancelled`), attempt counts,
+    timestamps and the last error code. Plaintext recipient, body and variables are
+    never returned.
+    """
 
     email_message_id = str(payload.email_message_id or "").strip()
     row = db_email.get_email_delivery_log(email_message_id)

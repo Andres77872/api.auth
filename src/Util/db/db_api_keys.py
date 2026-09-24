@@ -13,7 +13,7 @@ from typing import Optional, Any, Dict, List
 
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection
-from src.Util.db_error_wrapper import handle_db_operation
+from src.Util.db_error_wrapper import handle_db_operation, is_procedure_signal
 
 
 def _fetch_dict_row(cur) -> Optional[Dict[str, Any]]:
@@ -220,16 +220,22 @@ def revoke_api_key(
         revoke_reason: Optional reason for revocation (max 255 chars)
 
     Returns:
-        Number of affected rows (1 if revoked, None on error).
+        Number of affected rows: 1 if revoked, 0 if no active key has this id
+        (already revoked, deactivated after expiring, or unknown).
 
     Raises:
         DatabaseError: On database errors
-        AppException: If key is already revoked or does not exist (from SIGNAL)
     """
     def _revoke():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc("sp_revoke_api_key", [key_id, revoked_by, revoke_reason])
+            try:
+                cur.callproc("sp_revoke_api_key", [key_id, revoked_by, revoke_reason])
+            except Exception as error:
+                # The procedure SIGNALs when no active key matched: nothing was revoked.
+                if is_procedure_signal(error):
+                    return 0
+                raise
 
             row = cur.fetchone()
             result = row[0] if row else None
@@ -380,7 +386,8 @@ def update_api_key(
 
     Uses COALESCE-based UPDATE — only provided fields are changed.
     If expires_at is extended past NOW() and the key was expired, is_active is
-    set back to TRUE (reactivation).
+    set back to TRUE (reactivation). A revoked key is never updated: the
+    procedure SIGNALs 'API key revoked', which surfaces as ConflictError.
 
     After updating expires_at, invalidates the Redis cache entry for this key.
 

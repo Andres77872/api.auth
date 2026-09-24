@@ -70,6 +70,20 @@ def get_role_by_hash(role_hash: str):
     )
 
 
+def get_role_by_name(role_name: str):
+    """Get an active role by its unique name (same row shape as get_role_by_hash)"""
+    def _get():
+        with get_connection() as con:
+            cur = con.cursor(pymysql.cursors.DictCursor)
+            cur.execute("SELECT * FROM roles WHERE role_name = %s AND is_active = TRUE", (role_name,))
+            return cur.fetchone()
+
+    return handle_db_operation(
+        _get,
+        error_context=f"get_role_by_name(role_name='{role_name}')"
+    )
+
+
 def list_roles(limit: int = 50, offset: int = 0):
     """List all roles using stored procedure"""
     def _list():

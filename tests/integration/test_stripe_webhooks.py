@@ -218,3 +218,47 @@ def test_audit_contract_declares_stripe_webhook_raw_body_exclusion_before_route_
 
     assert "/webhooks/stripe" in APIAuditLogger.RAW_BODY_AUDIT_EXCLUDED_PATHS
     assert "stripe-signature" in {header.lower() for header in APIAuditLogger.SENSITIVE_HEADERS}
+
+
+def _stale_signature(route_module, raw_body: bytes, *, age_seconds: int = 3600) -> str:
+    """Sign ``raw_body`` with the configured webhook secret as a delivery captured an hour ago."""
+
+    import time
+
+    from src.Util.stripe.security import compute_stripe_webhook_signature
+
+    timestamp = int(time.time()) - age_seconds
+    secret = str(route_module.load_stripe_config().webhook_secret)
+    signature = compute_stripe_webhook_signature(raw_body=raw_body, timestamp=timestamp, webhook_secret=secret)
+    return f"t={timestamp},v1={signature}"
+
+
+@pytest.mark.asyncio
+async def test_debug_mode_alone_does_not_disable_the_signature_timestamp_check(monkeypatch):
+    """A replayed delivery signed an hour ago is outside Stripe's tolerance. Only the pytest process
+    may verify signatures at their own timestamp; ``DEBUG_MODE`` on a running server must not."""
+
+    monkeypatch.setenv("STRIPE_WEBHOOKS_ENABLED", "true")
+    monkeypatch.setenv("BILLING_ENABLED", "true")
+    monkeypatch.setenv("DEBUG_MODE", "true")
+    route_module = _future_route_module()
+    monkeypatch.setattr(route_module, "record_webhook_delivery", lambda **_: {"delivery_status": "accepted"})
+    raw = _raw_fixture("unsupported_customer_updated.json")
+    headers = _headers("unsupported_customer_updated.json", signature=_stale_signature(route_module, raw))
+
+    async with _webhook_client() as client:
+        under_pytest = await client.post(WEBHOOK_PATH, content=raw, headers=headers)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        debug_server = await client.post(WEBHOOK_PATH, content=raw, headers=headers)
+
+    assert under_pytest.status_code == 200, "control: the signature itself is valid"
+    assert debug_server.status_code == 401, "a stale signature must be rejected when only DEBUG_MODE is set"
+    _assert_no_session_or_raw_provider_leaks(debug_server, context="stale signature under DEBUG_MODE")
+
+
+def test_debug_fixture_clock_is_pytest_only(monkeypatch):
+    route_module = _future_route_module()
+    header = _fixture_meta("unsupported_customer_updated.json")["stripe_signature"]
+    monkeypatch.setenv("DEBUG_MODE", "true")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert route_module._debug_fixture_now(header, 300) is None

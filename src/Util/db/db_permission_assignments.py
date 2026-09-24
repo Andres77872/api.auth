@@ -453,7 +453,7 @@ def check_user_has_permission_extended(user_id: str, permission_name: str) -> bo
         with get_connection() as con:
             cur = con.cursor(pymysql.cursors.DictCursor)
             
-            cur.callproc('sp_check_user_has_permission', (user_id, permission_name))
+            cur.callproc('sp_check_user_has_permission_extended', (user_id, permission_name))
             row = cur.fetchone()
             return row['has_permission'] == 1 if row else False
     

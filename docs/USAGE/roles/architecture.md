@@ -107,10 +107,10 @@ require_admin(session_data)
   ├─► allow if user_type in {root, admin}
   └─► if user_type == consumer:
         └─► check_user_has_permission_extended(user_id, "manage_roles")
-              └─► intended extended check (ROLE + USER-GROUP + DIRECT)
+              └─► sp_check_user_has_permission_extended (ROLE + USER-GROUP + DIRECT)
 ```
 
-**This is an inconsistency and a current schema integration defect.** The extended DB helper calls `sp_check_user_has_permission`, while the canonical schema defines `sp_check_user_has_permission_extended`; the wrapper returns `False` on that database error. Root/admin users pass before this fallback, but the `/permissions` consumer fallback fails closed in a canonical fresh database.
+**This is an inconsistency between the two guards.** A consumer with `manage_roles` granted via user-group or direct assignment passes this guard (the `/permissions` admin routes) but is denied by the `/roles` guard above. Root/admin users pass both before the fallback.
 
 ### Read endpoints
 
@@ -166,20 +166,7 @@ The gap means permissions assigned via user groups or directly to users are visi
 
 - The create endpoint does not expose `is_system_role`
 - System roles must be created via direct DB access
-- System roles are intended to be blocked from API deletion, but the current route references missing `ErrorCode.OPERATION_NOT_ALLOWED`; until the enum/source is fixed, that path surfaces as a generic 500 rather than a clean 403
-
-### Missing `ErrorCode` members cause 500s on several branches
-
-`global_roles.py` references four `ErrorCode` members that are **absent from the `ErrorCode` enum** in `src/Util/error_handler.py`. Because the code reads the enum attribute while constructing the error, the missing attribute raises `AttributeError` and the request surfaces as a generic **500 INTERNAL_ERROR** instead of the intended status:
-
-| Missing member | Affected branch | Intended status |
-|----------------|-----------------|-----------------|
-| `OPERATION_NOT_ALLOWED` | System-role delete | 403 |
-| `PERMISSION_GROUP_NOT_FOUND` | Permission-group not-found lookups | 404 |
-| `ALREADY_EXISTS` | Duplicate project-catalog add | 409 |
-| `NOT_FOUND` | Unlink/catalog-removal "not assigned" branches | 404 |
-
-Note that `ErrorCode.NOT_FOUND` must not be confused with `ErrorCategory.NOT_FOUND` (which does exist); only the `ErrorCode` member is missing. These are runtime defects, not documented behaviors — see [troubleshooting.md](troubleshooting.md) and [reference.md](reference.md#error-responses).
+- System roles are blocked from API deletion: `DELETE /roles/roles/{hash}` returns 403 `OPERATION_NOT_ALLOWED` (`AUTHZ_2009`)
 
 ### Project catalog is metadata only
 

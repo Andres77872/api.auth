@@ -20,21 +20,27 @@ from src.routes import (
 from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
 from src.Util.oauth.registry import register_default_adapters
+from src.Util.openapi_metadata import OPENAPI_TAGS, SWAGGER_UI_PARAMETERS, install_openapi_metadata
 
-# Read description from README file
-with open('./src/README.md', 'r', encoding='utf-8') as f:
-    description = f.read()
+# The OpenAPI description is src/README.md, resolved relative to this file so
+# the app does not depend on the working directory it is started from.
+description = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
 app = FastAPI(
-    title='3-Tier User Type Multi-Project Authentication API',
+    title='Group-Based Multi-Project Authentication API',
+    summary='Authentication, authorization, OAuth sign-in, API keys, transactional email, '
+            'and billing/entitlement facts for multi-project products.',
     description=description,
     version='2.2.0',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",
         "email": "andres@arz.ai",
-    }
+    },
+    openapi_tags=OPENAPI_TAGS,
+    swagger_ui_parameters=SWAGGER_UI_PARAMETERS,
 )
+install_openapi_metadata(app)
 
 # Register exception handlers for enhanced error handling
 register_exception_handlers(app)
@@ -42,36 +48,38 @@ register_exception_handlers(app)
 # OAuth provider adapters are registered explicitly at start-up (no import-time side effects).
 register_default_adapters()
 
-# 3-TIER USER TYPE AUTHENTICATION ROUTES
-app.include_router(auth.router, tags=['Authentication'])
-app.include_router(auth_oauth.router, tags=['OAuth'])
-app.include_router(auth_google.router, tags=['Google OAuth'])
-app.include_router(auth_patreon.router, tags=['Patreon Link'])
-app.include_router(email_webhooks.router, tags=["Email Webhooks"])
-app.include_router(patreon_webhooks.router, tags=["Patreon Webhooks"])
-app.include_router(stripe_webhooks.router, tags=["Stripe Webhooks"])
+# ROUTES
+# Each router declares its own OpenAPI tag; tag descriptions and ordering live in
+# src/Util/openapi_metadata.py.
+app.include_router(auth.router)
+app.include_router(auth_oauth.router)
+app.include_router(auth_google.router)
+app.include_router(auth_patreon.router)
+app.include_router(email_webhooks.router)
+app.include_router(patreon_webhooks.router)
+app.include_router(stripe_webhooks.router)
 # NOTE: user_api_keys must be registered BEFORE users to avoid /users/{user_hash}
 # catching /users/api-keys as a user_hash parameter
-app.include_router(user_api_keys.router, tags=["API Keys - User"])
-app.include_router(users.router, tags=['User Management'])
-app.include_router(user_types_auth.router, tags=['User Type Management'])
-app.include_router(projects.router, tags=['Project Management'])
-app.include_router(admin_user_groups.router, tags=['Admin - User Groups'])
-app.include_router(admin_project_groups.router, tags=['Admin - Project Groups'])
-app.include_router(admin_dashboard.router, tags=['Admin Dashboard'])
-app.include_router(admin_patreon.router, tags=['Admin - Patreon'])
-app.include_router(admin_billing.router, tags=['Admin - Billing'])
-app.include_router(admin_oauth.router, tags=['Admin - OAuth'])
-app.include_router(email_templates.router, tags=['Admin - Email Templates'])
-app.include_router(system.router, tags=['System Information'])
-app.include_router(internal_patreon.router, tags=['Patreon Internal'])
-app.include_router(internal_billing.router, tags=['Billing Internal'])
-app.include_router(internal_email.router, tags=['Internal Email'])
-app.include_router(bulk_operations.router, tags=['Bulk Operations'])
-app.include_router(global_roles.router, tags=['Global Role System'])
-app.include_router(permission_assignments.router, tags=['Permission Assignments'])
-app.include_router(audit_logs.router, tags=['Audit Logs'])
-app.include_router(api_keys.router, tags=["API Keys - Admin"])
+app.include_router(user_api_keys.router)
+app.include_router(users.router)
+app.include_router(user_types_auth.router)
+app.include_router(projects.router)
+app.include_router(admin_user_groups.router)
+app.include_router(admin_project_groups.router)
+app.include_router(admin_dashboard.router)
+app.include_router(admin_patreon.router)
+app.include_router(admin_billing.router)
+app.include_router(admin_oauth.router)
+app.include_router(email_templates.router)
+app.include_router(system.router)
+app.include_router(internal_patreon.router)
+app.include_router(internal_billing.router)
+app.include_router(internal_email.router)
+app.include_router(bulk_operations.router)
+app.include_router(global_roles.router)
+app.include_router(permission_assignments.router)
+app.include_router(audit_logs.router)
+app.include_router(api_keys.router)
 
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
@@ -222,9 +230,20 @@ async def serve_usage_docs_legacy(
     return await serve_documentation(f"USAGE/{filename}", format=format, raw=raw)
 
 
-@app.get('/ping', status_code=204)
+@app.get(
+    '/ping',
+    status_code=204,
+    tags=["System Information"],
+    responses={204: {"description": "The API process is up."}},
+)
 async def ping():
-    """Health check endpoint"""
+    """
+    Public liveness probe.
+
+    Returns `204 No Content`. The handler performs no database, Redis, or session
+    checks, so it only proves the process is serving requests; use
+    `GET /system/health` (access token required) for component health.
+    """
     return Response(status_code=204)
 
 

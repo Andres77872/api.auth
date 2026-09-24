@@ -151,3 +151,128 @@ def test_provision_missing_price_fails_fast(billing_config):
     )
     assert result.provisioning_status == "failed"
     assert db.failed is not None
+
+
+class _IdempotentStripe:
+    """Stripe double that enforces idempotency-key semantics for 24h (i.e. for the whole test).
+
+    Same key + same request replays the stored response; same key + different request raises the
+    ``idempotency_error`` Stripe returns. Tracks each price's ``active`` flag.
+    """
+
+    def __init__(self, *, fail_price_amounts: tuple[int, ...] = ()):
+        self._keys: dict[str, tuple[tuple, dict]] = {}
+        self.products: list[str] = []
+        self.prices: dict[str, dict] = {}
+        self.fail_price_amounts = fail_price_amounts
+
+    def _idempotent(self, key, request: tuple, create):
+        if key in self._keys:
+            stored_request, response = self._keys[key]
+            if stored_request != request:
+                raise StripeAPIError(message="Stripe provider request failed", status_code=400, code="idempotency_error")
+            return response
+        response = create()
+        self._keys[key] = (request, response)
+        return response
+
+    def create_product(self, *, name, metadata=None, idempotency_key=None):
+        def _create():
+            product_id = f"prod_T{len(self.products) + 1}"
+            self.products.append(product_id)
+            return {"id": product_id}
+
+        return self._idempotent(idempotency_key, ("product", name, tuple(sorted((metadata or {}).items()))), _create)
+
+    def create_price(self, *, product, currency, unit_amount, idempotency_key=None, **extra):
+        def _create():
+            if unit_amount in self.fail_price_amounts:
+                raise StripeAPIError(message="Stripe provider request failed", status_code=400, code="invalid_request")
+            price_id = f"price_T{len(self.prices) + 1}"
+            self.prices[price_id] = {"product": product, "unit_amount": unit_amount, "active": True}
+            return {"id": price_id}
+
+        request = ("price", product, currency, unit_amount, tuple(sorted((k, str(v)) for k, v in extra.items())))
+        return self._idempotent(idempotency_key, request, _create)
+
+    def update_price(self, price_id, *, active=None, idempotency_key=None, **_extra):
+        def _update():
+            self.prices[price_id]["active"] = bool(active)
+            return {"id": price_id}
+
+        return self._idempotent(idempotency_key, ("price_update", price_id, active), _update)
+
+    def active_prices(self) -> list[str]:
+        return [price_id for price_id, price in self.prices.items() if price["active"]]
+
+
+class _CatalogDB:
+    """Keeps the item's stored (encrypted) refs so a reprice can read what the last provision wrote."""
+
+    def __init__(self):
+        self.refs: dict | None = None
+        self.failed = None
+
+    def set_catalog_item_provisioned(self, **kwargs):
+        self.refs = {
+            "provider_product_id_ciphertext": kwargs["provider_product_id_ciphertext"],
+            "provider_price_id_ciphertext": kwargs["provider_price_id_ciphertext"],
+            "provider_ref_key_id": kwargs["provider_ref_key_id"],
+        }
+        self.failed = None
+        return {"id": kwargs["id"], "provisioning_status": "active", "active": True}
+
+    def set_catalog_item_failed(self, **kwargs):
+        self.failed = kwargs
+        return {"id": kwargs["id"], "provisioning_status": "failed", "active": False}
+
+    def get_catalog_operational_refs(self, *, id):
+        return dict(self.refs or {}, id=id)
+
+    def stored_price_id(self, billing_config) -> str:
+        from src.Util.billing.security import decrypt_provider_ref
+
+        return decrypt_provider_ref(
+            ciphertext=self.refs["provider_price_id_ciphertext"],
+            key_id=self.refs["provider_ref_key_id"],
+            keys_by_id=billing_config.decryption_keys_by_id,
+        )
+
+
+_ITEM = dict(
+    billing_group_id="bg-1",
+    catalog_item_id="bcat-eeeeee555555",
+    item_type="subscription_plan",
+    display_name="Plus",
+    currency="usd",
+    recurring_interval="month",
+    lookup_key="plus_monthly",
+)
+
+
+def test_repricing_twice_within_the_idempotency_window_rotates_each_time(billing_config):
+    stripe = _IdempotentStripe()
+    db = _CatalogDB()
+    created = prov.provision_catalog_item(**_ITEM, unit_amount=999, client=stripe, db=db)
+    assert created.provisioning_status == "active"
+
+    first = prov.reprovision_price(**_ITEM, unit_amount=1299, client=stripe, db=db)
+    second = prov.reprovision_price(**_ITEM, unit_amount=1499, client=stripe, db=db)
+
+    assert (first.provisioning_status, second.provisioning_status) == ("active", "active"), db.failed
+    latest = db.stored_price_id(billing_config)
+    assert stripe.prices[latest]["unit_amount"] == 1499
+    assert stripe.active_prices() == [latest], "exactly the newest price stays active"
+    assert stripe.products == ["prod_T1"], "a reprice reuses the item's Stripe product"
+
+
+def test_a_failed_reprice_leaves_the_old_price_active(billing_config):
+    stripe = _IdempotentStripe(fail_price_amounts=(1299,))
+    db = _CatalogDB()
+    prov.provision_catalog_item(**_ITEM, unit_amount=999, client=stripe, db=db)
+    original = db.stored_price_id(billing_config)
+
+    result = prov.reprovision_price(**_ITEM, unit_amount=1299, client=stripe, db=db)
+
+    assert result.provisioning_status == "failed"
+    assert stripe.active_prices() == [original], "the old price must not be deactivated before its replacement exists"

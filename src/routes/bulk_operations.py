@@ -7,9 +7,9 @@ for efficient mass management in the authentication system.
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Form
+from fastapi import APIRouter, HTTPException, Depends, Form, Path
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -20,7 +20,9 @@ from src.Util.bulk_operations import (
     bulk_update_users, bulk_delete_users,
     bulk_assign_roles, bulk_add_users_to_group
 )
-from src.Util.db import validate_session, get_user_by_hash, is_root_user
+from src.Util.db import validate_session, get_user_by_hash, get_user_group_by_name, is_root_user
+from src.Util.db import db_global_roles
+from src.Util.admin_scope import RESERVED_PERMISSION_NAMES, role_grants_reserved_permission
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, InternalError, ErrorCode, mask_uuid,
@@ -52,26 +54,34 @@ def _revoke_bulk_deactivated_auth_state(result: Dict[str, Any]) -> None:
 
 @router.post("/users/bulk-update")
 async def bulk_update_users_endpoint(
-        user_hashes: List[str] = Form(...),
-        is_active: Optional[bool] = Form(None),
-        user_type: Optional[str] = Form(None),
-        force_password_reset: Optional[bool] = Form(None),
+        user_hashes: List[str] = Form(..., description="Public hashes of the users to update (1-100; repeat the field)."),
+        is_active: Optional[bool] = Form(None, description="Set every listed user active (`true`) or inactive (`false`)."),
+        user_type: Optional[str] = Form(
+            None, description="Set every listed user's type: `root`, `admin` or `consumer`. Root callers only."
+        ),
+        force_password_reset: Optional[bool] = Form(
+            None, description="Unsupported; any value is rejected with 400. Use reset-link password recovery instead."
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
-    Update multiple users at once.
-    
-    **Admin access required**: Only admin users can perform bulk updates.
-    **Phase 2 Implementation**: Bulk user updates with transaction support
-    
-    Args:
-        user_hashes: List of user hashes to update
-        is_active: Set active status for all users
-        user_type: Set user type for all users
-        force_password_reset: Unsupported compatibility field; rejected when present
-        
-    Returns:
-        Success/error count with details
+    Apply the same `is_active` and/or `user_type` change to up to 100 users.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) whose session permissions include `admin` or `manage_users`; otherwise
+    403. Root and admin sessions carry these permissions by default. Changing
+    `user_type` additionally requires a root user.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
+    list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
+    At least one of `is_active` or `user_type` is required.
+
+    **Effect:** users are processed one by one. Deactivated users have their sessions
+    and refresh families revoked.
+
+    **Responses:** 200 even when some users fail: see `summary`, per-user `results` and
+    `errors`. 400 for an empty or oversized list, no update field, an invalid
+    `user_type`, or `force_password_reset`.
     """
     session_token = credentials.credentials
     session_data = handle_db_operation(
@@ -196,22 +206,28 @@ async def bulk_update_users_endpoint(
 
 @router.post("/users/bulk-delete")
 async def bulk_delete_users_endpoint(
-        user_hashes: List[str] = Form(...),
-        confirm_deletion: bool = Form(False),
+        user_hashes: List[str] = Form(..., description="Public hashes of the users to delete (1-50; repeat the field)."),
+        confirm_deletion: bool = Form(False, description="Must be `true`; otherwise the request is rejected with 400."),
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
-    Delete multiple users.
-    
-    **Admin access required**: Only admin users can perform bulk deletions.  
-    **Phase 2 Implementation**: Bulk user deletions with safety checks
-    
-    Args:
-        user_hashes: List of user hashes to delete
-        confirm_deletion: Explicit confirmation required for deletion
-        
-    Returns:
-        Deletion count and any errors
+    Delete up to 50 users in one request.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) whose session permissions include `admin` or `manage_users`; otherwise
+    403. Root and admin sessions carry these permissions by default.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
+    list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
+    `confirm_deletion=true` is required.
+
+    **Effect:** users are deleted one by one; root users are never deleted and are
+    reported as errors instead.
+
+    **Responses:** 200 with `summary` (`success_count`, `error_count`, and
+    `protected_count` for root users skipped), per-user `results`, `errors` and
+    `warnings`, even when some deletions fail. 400 without confirmation or for an empty or
+    oversized list.
     """
     session_token = credentials.credentials
     session_data = handle_db_operation(
@@ -297,24 +313,35 @@ async def bulk_delete_users_endpoint(
 
 @router.post("/projects/{project_hash}/bulk-assign-roles")
 async def bulk_assign_roles_to_project_users(
-        project_hash: str,
-        user_hashes: List[str] = Form(...),
-        role_names: List[str] = Form(...),
+        project_hash: Annotated[str, Path(description="Public hash of the project the request is scoped to.")],
+        user_hashes: List[str] = Form(..., description="Public hashes of the users to update (1-100; repeat the field)."),
+        role_names: List[str] = Form(
+            ..., description="Names of the roles to grant to every listed user (repeat the field)."
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
-    Bulk assign roles to users in a project.
-    
-    **Admin access required**: Only admin users can perform bulk role assignments.
-    **Phase 2 Implementation**: Bulk role assignments with validation
-    
-    Args:
-        project_hash: Project identifier
-        user_hashes: List of user hashes to assign roles to
-        role_names: List of role names to assign
-        
-    Returns:
-        Assignment results with success/error counts
+    Grant the listed roles, by name, to each listed user, recorded against a project.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) whose session permissions include `admin`; otherwise 403. Root and
+    admin sessions carry this permission by default.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
+    list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
+
+    **Effect:** roles belong to the global role system, so a grant is not limited to the
+    project; the project is used for validation and the audit trail. A user holds a single
+    global role, so when several roles are listed each user ends up with the last one.
+
+    Only root may assign a role whose permission groups contain a reserved permission name
+    (`admin`, `manage_users`, ...; see `POST /roles/permissions`), and non-root callers may not
+    list themselves; either returns 403 and nothing is assigned.
+
+    **Responses:** 200 with `summary`, per-assignment `results` and `errors`. 400 for
+    missing lists or more than 100 users; 403 as above; 404 if the project does not exist or
+    any role name is unknown (`NF_4007`, `details.role_names`), in which case nothing is
+    assigned.
     """
     session_token = credentials.credentials
     session_data = handle_db_operation(
@@ -366,9 +393,41 @@ async def bulk_assign_roles_to_project_users(
         not_found_message=f"Project not found: {mask_uuid(project_hash)}"
     )
 
+    # Roles are requested by name; the helper assigns by id. Resolve every name before
+    # writing so an unknown role fails the request instead of part of it.
+    roles = {role_name: db_global_roles.get_role_by_name(role_name) for role_name in dict.fromkeys(role_names)}
+    unknown_roles = [role_name for role_name, role in roles.items() if not role]
+    if unknown_roles:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_names": unknown_roles}
+        )
+
+    # Same rules as PUT /roles/users/{user_hash}/role: routers trust reserved permission
+    # names in session permissions, so only root may hand out a role granting one, and
+    # non-root callers may not change their own role.
+    if not is_root_user(current_user.id):
+        reserved_roles = [name for name, role in roles.items() if role_grants_reserved_permission(db_global_roles, role)]
+        if reserved_roles:
+            raise AuthorizationError(
+                message="Only root users may assign roles granting reserved permissions",
+                error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+                details={"role_names": reserved_roles, "reserved_permissions": sorted(RESERVED_PERMISSION_NAMES)}
+            )
+        if current_user.user_hash in user_hashes:
+            raise AuthorizationError(
+                message="You cannot change your own role",
+                error_code=ErrorCode.OPERATION_NOT_ALLOWED,
+                details={"reason": "own_role"}
+            )
+
     # Perform bulk role assignment
-    role_assignments = [{"user_hash": user_hash, "role_name": role_name} for user_hash in user_hashes for role_name
-                        in role_names]
+    role_assignments = [
+        {"user_hash": user_hash, "role_id": roles[role_name]["id"], "role_name": role_name}
+        for user_hash in user_hashes
+        for role_name in role_names
+    ]
     result = handle_db_operation(
         lambda: bulk_assign_roles(project.project_hash, role_assignments, current_user.id),
         error_context="bulk role assignment operation"
@@ -406,22 +465,27 @@ async def bulk_assign_roles_to_project_users(
 
 @router.post("/user-groups/bulk-assign")
 async def bulk_assign_users_to_groups(
-        user_hashes: List[str] = Form(...),
-        group_names: List[str] = Form(...),
+        user_hashes: List[str] = Form(..., description="Public hashes of the users to add (1-100; repeat the field)."),
+        group_names: List[str] = Form(
+            ...,
+            description="Names of the user groups to add the users to (repeat the field).",
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
-    Bulk assign users to user groups.
-    
-    **Admin access required**: Only admin users can perform bulk group assignments.
-    **Phase 2 Implementation**: Bulk user group assignments
-    
-    Args:
-        user_hashes: List of user hashes to assign to groups
-        group_names: List of group names to assign users to
-        
-    Returns:
-        Assignment results with success/error counts
+    Add every listed user to every listed user group.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) whose session permissions include `admin`; otherwise 403. Root and
+    admin sessions carry this permission by default.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
+    list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
+
+    **Responses:** 200 with `summary`, per-user-per-group `results` and `errors`, even
+    when some assignments fail. 400 for missing lists or more than 100 users; 404 if any
+    group name is unknown or inactive (`NF_4003`, `details.group_names`), in which case
+    nothing is assigned.
     """
     session_token = credentials.credentials
     session_data = handle_db_operation(
@@ -465,18 +529,28 @@ async def bulk_assign_users_to_groups(
             details={"max_length": 100, "provided_length": len(user_hashes)}
         )
 
-    # Perform bulk group assignment
-    result = {}
-    for group_name in group_names:
-        group_result = handle_db_operation(
-            lambda: bulk_add_users_to_group(group_name, user_hashes, current_user.id),
-            error_context=f"bulk assignment to group {group_name}"
+    # Groups are requested by name; the helper looks them up by hash. Resolve every
+    # name before writing so an unknown group fails the request instead of part of it.
+    groups = {group_name: get_user_group_by_name(group_name) for group_name in dict.fromkeys(group_names)}
+    unknown_groups = [group_name for group_name, group in groups.items() if not group]
+    if unknown_groups:
+        raise NotFoundError(
+            message="User group not found",
+            error_code=ErrorCode.GROUP_NOT_FOUND,
+            details={"group_names": unknown_groups}
         )
-        if not result:
-            result = group_result
-        else:
-            result['success_count'] += group_result.get('success_count', 0)
-            result['error_count'] += group_result.get('error_count', 0)
+
+    # Perform bulk group assignment
+    result = {"success_count": 0, "error_count": 0, "results": [], "errors": []}
+    for group in groups.values():
+        group_result = handle_db_operation(
+            lambda: bulk_add_users_to_group(group.group_hash, user_hashes, current_user.id),
+            error_context=f"bulk assignment to group {group.group_name}"
+        )
+        result['success_count'] += group_result.get('success_count', 0)
+        result['error_count'] += group_result.get('error_count', 0)
+        result['results'].extend(group_result.get('results', []))
+        result['errors'].extend(group_result.get('errors', []))
 
     # Log the activity
     ActivityLogger.log_bulk_group_assignment(

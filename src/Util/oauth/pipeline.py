@@ -977,7 +977,15 @@ class OAuthPipeline:
 # ─────────────────────────────────────────────────────────────── module helpers
 
 def session_id_of(login_data: Any) -> str | None:
-    return text_of(login_data, "session_id") or text_of(login_data, "session_token")
+    """The session id reauth markers are recorded and looked up under.
+
+    ``validate_access_session`` results carry no ``session_id``, so use the access
+    token's ``session_id`` claim -- the id every other step-up check uses.
+    """
+    from src.Util.auth_flow import access_token_session_id
+
+    session_token = text_of(login_data, "session_token")
+    return text_of(login_data, "session_id") or access_token_session_id(session_token) or session_token
 
 
 def has_usable_fallback_auth(user: Any) -> bool:

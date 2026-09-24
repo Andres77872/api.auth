@@ -206,7 +206,7 @@ curl -X DELETE "http://localhost:8000/user-types/admin/$ADMIN_HASH/projects/4" \
   -H "Authorization: Bearer $ROOT_TOKEN"
 ```
 
-This removes the admin user from the matching admin group membership for that project.
+This removes the admin user from the matching admin group membership for that project. If the admin is not assigned to that project, the route returns `404` `RESOURCE_NOT_FOUND` (`NF_4004`).
 
 ---
 

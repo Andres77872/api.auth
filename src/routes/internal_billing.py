@@ -17,9 +17,9 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Annotated, Any, Mapping
 
-from fastapi import APIRouter, Body, Query, Request
+from fastapi import APIRouter, Body, Path, Query, Request
 from fastapi.responses import JSONResponse
 
 from src.Util import auth_constants as constants
@@ -86,7 +86,7 @@ complete_checkout_intent = db_billing.complete_checkout_intent
 enqueue_sync_job = billing_sync.enqueue_sync_job
 create_checkout_session = stripe_checkout.create_checkout_session
 create_portal_session = stripe_portal.create_portal_session
-get_purchase_status_by_ref = None
+get_purchase_status_by_ref = db_billing.get_purchase_status_by_ref
 
 _GENERIC_DENIAL_MESSAGE = "Request could not be processed."
 _GENERIC_UNAUTHORIZED_MESSAGE = "Unauthorized."
@@ -109,6 +109,45 @@ _FORBIDDEN_AUTH_CONTEXT_GLOBALS = frozenset(
 )
 _AUTH_BILLING_DRIFT_FRAGMENTS = ("billing", "stripe", "checkout", "portal", "purchase")
 _IDEMPOTENCY_CACHE: dict[tuple[str, str, str, str], tuple[bytes, dict[str, Any]]] = {}
+
+
+# --------------------------------------------------------------------------- OpenAPI documentation
+# The bearer is read from the request inside each handler (no FastAPI security dependency), so
+# every route declares the centrally defined ``BillingS2SBearer`` scheme through ``openapi_extra``.
+_UserHash = Annotated[str, Path(description="`user_hash` of the end user the request is for.")]
+
+
+def _s2s_openapi_extra(*, idempotency_header: bool = False) -> dict[str, Any]:
+    extra: dict[str, Any] = {"security": [{"BillingS2SBearer": []}]}
+    if idempotency_header:
+        extra["parameters"] = [
+            {
+                "name": constants.BILLING_IDEMPOTENCY_KEY_HEADER,
+                "in": "header",
+                "required": False,
+                "schema": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+                "description": (
+                    "Optional retry key, 1-128 characters from `A-Z a-z 0-9 . _ : -`. A repeat with the "
+                    "same key and body returns the stored response; the same key with a different body "
+                    "returns 409. A key in any other format is rejected with 422."
+                ),
+            }
+        ]
+    return extra
+
+
+def _s2s_responses(overrides: Mapping[int, str] | None = None) -> dict[int | str, dict[str, Any]]:
+    descriptions: dict[int, str] = {
+        400: "The request failed schema validation (standard error envelope; checked before the bearer).",
+        401: (
+            "`{\"success\": false, \"message\": \"Unauthorized.\"}`: the bearer is missing or wrong, or S2S "
+            "billing is disabled or not fully configured on the server."
+        ),
+        422: "`{\"success\": false, ...}`: the `User-Agent` header is missing or empty.",
+        429: "Rate limited; retry after the `Retry-After` header.",
+    }
+    descriptions.update(overrides or {})
+    return {code: {"description": text} for code, text in sorted(descriptions.items())}
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -392,6 +431,7 @@ def _stored_safe_response(value: Any) -> dict[str, Any] | None:
 
 
 def _idempotency_cache_key(*, route: str, user_id: str, project_id: str, request: Request, body_ref: str | None = None) -> tuple[str, str, str, str]:
+    """Raises BillingIdempotencyError when the header (or ``body_ref`` standing in for it) is malformed."""
     raw = request.headers.get(constants.BILLING_IDEMPOTENCY_KEY_HEADER) or body_ref or ""
     key = billing_idempotency.validate_idempotency_key(raw)
     if not key:
@@ -744,14 +784,34 @@ def _provider_api_idempotency_key(internal_ref: str, operation: str) -> str:
         return f"api-auth-stripe-{operation}-{digest}"
 
 
-@router.get(_BILLING_PATH, response_model=BillingS2SResponse, status_code=200)
+@router.get(
+    _BILLING_PATH,
+    response_model=BillingS2SResponse,
+    status_code=200,
+    responses=_s2s_responses(),
+    openapi_extra=_s2s_openapi_extra(),
+)
 async def get_internal_billing_status(
-    user_hash: str,
+    user_hash: _UserHash,
     request: Request,
-    project_hash: str = Query(..., min_length=1),
-    provider: str = Query(constants.STRIPE_PROVIDER_NAME),
+    project_hash: str = Query(..., min_length=1, description="Project whose billing group scopes the status."),
+    provider: str = Query(constants.STRIPE_PROVIDER_NAME, description="Billing provider; `stripe` is the only supported value."),
 ) -> JSONResponse:
-    """Return normalized billing facts for an authenticated S2S caller."""
+    """Return a user's normalized billing status (plan, subscription state, period dates) in one project.
+
+    Status is held per user and billing group, so every project attached to the same group
+    sees the same subscription.
+
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Responses:** `200` with `billing`. No billing facts, an unknown user or project, a project
+    without a billing group, or a database failure all return the free default (`status` and
+    `plan_code` `free`) instead of an error. `purchases` is always empty. Only opaque refs
+    (`customer_ref`, `subscription_ref`) are returned, never raw Stripe ids.
+    """
 
     config_or_response = await _authorize_s2s(request)
     if isinstance(config_or_response, JSONResponse):
@@ -825,17 +885,31 @@ def _catalog_response_from_rows(project_hash: str, rows: Any, provider: str) -> 
     )
 
 
-@router.get(_CATALOG_PATH, response_model=PublicCatalogResponse, status_code=200)
+@router.get(
+    _CATALOG_PATH,
+    response_model=PublicCatalogResponse,
+    status_code=200,
+    responses=_s2s_responses(),
+    openapi_extra=_s2s_openapi_extra(),
+)
 async def get_internal_project_catalog(
-    project_hash: str,
+    project_hash: Annotated[str, Path(description="`project_hash` of the project whose catalog is returned.")],
     request: Request,
-    provider: str = Query(constants.STRIPE_PROVIDER_NAME),
-    item_type: str = Query(None),
+    provider: str = Query(constants.STRIPE_PROVIDER_NAME, description="Billing provider; `stripe` is the only supported value."),
+    item_type: str = Query(None, description="Filter by `subscription_plan` or `credit_package`; omit for both."),
 ) -> JSONResponse:
-    """Return the active per-project catalog (subscriptions + credit packages).
+    """Return a project's purchasable catalog: the active, provisioned plans and credit packages of its billing group.
 
-    Resolves project -> billing group -> catalog. A project with no billing group (or no
-    active catalog) returns empty lists rather than an error.
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Responses:** `200` with `subscriptions`, `credit_packs`, and `billing_group_hash`. A
+    project with no billing group or no active items, or a database failure, returns empty
+    lists with `billing_group_hash` null. Credit packages expose their plan code as
+    `credit_product_code` and `features.credits` as `credits`. `provider_price_lookup_key` can
+    be sent to checkout as a `lookup_key` price ref. Not gated by the checkout or portal flags.
     """
 
     config_or_response = await _authorize_s2s(request)
@@ -862,13 +936,62 @@ async def get_internal_project_catalog(
     return _safe_json_response_from_model(response, status_code=200)
 
 
-@router.post(_CHECKOUT_PATH, response_model=BillingCheckoutSessionResponse, status_code=202)
+@router.post(
+    _CHECKOUT_PATH,
+    response_model=BillingCheckoutSessionResponse,
+    status_code=202,
+    responses=_s2s_responses(
+        {
+            200: "Replay of an earlier request with the same idempotency key and body; returns the stored session.",
+            409: "`{\"success\": false, ...}`: the idempotency key was already used with a different body.",
+            422: (
+                "`{\"success\": false, ...}`: missing `User-Agent`; `plan_code`/`tier_code` missing for a "
+                "subscription or `credit_product_code` missing for a credit purchase; a return URL outside the "
+                "allowlist; a malformed `Idempotency-Key` (or, without the header, a `client_intent_ref` outside "
+                "that format); or the project's billing group is not ready (no group, group or credentials not "
+                "active, no secret key, group checkout off)."
+            ),
+            503: (
+                "`{\"success\": false, ...}`: `BILLING_CHECKOUT_ENABLED`, `STRIPE_BILLING_ENABLED`, or "
+                "`STRIPE_CHECKOUT_ENABLED` is off, or the group's Stripe account, customer, or session could not "
+                "be used or created. Stripe errors that carry their own HTTP status are returned with that status."
+            ),
+        }
+    ),
+    openapi_extra=_s2s_openapi_extra(idempotency_header=True),
+)
 async def create_internal_billing_checkout(
-    user_hash: str,
+    user_hash: _UserHash,
     request: Request,
-    checkout_request: BillingCheckoutIntentRequest = Body(...),
+    checkout_request: BillingCheckoutIntentRequest = Body(
+        ...,
+        description=(
+            "Checkout intent. `price_ref` selects the Stripe price by `price_id` or `lookup_key`; plan, tier, "
+            "and credit codes are consumer-owned labels copied into Stripe metadata."
+        ),
+    ),
 ) -> JSONResponse:
-    """Create a hosted Checkout session from trusted consumer-owned intent."""
+    """Create a Stripe-hosted Checkout session for a user in a project and return its URL.
+
+    The caller redirects the user to `url`; the outcome arrives later through the Stripe
+    webhook, and the caller reads it back with the billing status route.
+
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Request:** JSON. `intent_type` `subscription` requires `plan_code` and `tier_code`;
+    `credit_purchase` requires `credit_product_code`. A `lookup_key` price ref is resolved on the
+    billing group's own Stripe account. The price and codes are not checked against the
+    catalog. When a return-URL allowlist is configured, `success_url` and `cancel_url` must use
+    an allowed origin. For safe retries send `Idempotency-Key` (or `client_intent_ref`, used
+    when the header is absent); either must match the key format, 1-128 characters from
+    `A-Z a-z 0-9 . _ : -`, or the request is rejected with `422`.
+
+    **Responses:** `202` with `checkout_ref`, `subscription_ref` or `purchase_ref`, and the hosted
+    `url`. The user's Stripe customer in the billing group is created on first use.
+    """
 
     config_or_response = await _authorize_s2s(request)
     if isinstance(config_or_response, JSONResponse):
@@ -894,13 +1017,16 @@ async def create_internal_billing_checkout(
     subscription_ref = _new_ref("bsub") if checkout_request.intent_type == "subscription" else None
     purchase_ref = _new_ref("bpur") if checkout_request.intent_type == "credit_purchase" else None
     request_hash = billing_idempotency.canonical_request_hash(payload=checkout_request.model_dump(mode="json"))
-    idem_cache_key = _idempotency_cache_key(
-        route="checkout",
-        user_id=str(scope["user_id"]),
-        project_id=str(scope["project_id"]),
-        request=request,
-        body_ref=checkout_request.client_intent_ref,
-    )
+    try:
+        idem_cache_key = _idempotency_cache_key(
+            route="checkout",
+            user_id=str(scope["user_id"]),
+            project_id=str(scope["project_id"]),
+            request=request,
+            body_ref=checkout_request.client_intent_ref,
+        )
+    except billing_idempotency.BillingIdempotencyError:
+        return _generic_error_response(status_code=422)
     local_decision, cached_response = _local_idempotency_decision(idem_cache_key, request_hash)
     if local_decision == "conflict":
         return _generic_error_response(status_code=409)
@@ -1028,13 +1154,51 @@ async def create_internal_billing_checkout(
     return _safe_json_response_from_model(response_model, status_code=202)
 
 
-@router.post(_PORTAL_PATH, response_model=BillingPortalSessionResponse, status_code=202)
+@router.post(
+    _PORTAL_PATH,
+    response_model=BillingPortalSessionResponse,
+    status_code=202,
+    responses=_s2s_responses(
+        {
+            200: "Replay of an earlier request with the same `Idempotency-Key` and body (kept in this server process's memory only).",
+            409: "`{\"success\": false, ...}`: the `Idempotency-Key` was already used with a different body.",
+            422: (
+                "`{\"success\": false, ...}`: missing `User-Agent`; `return_url` outside the allowlist; a "
+                "malformed `Idempotency-Key`; the project's billing group is not ready (no group, group or credentials not active, no secret key, "
+                "group portal off, no portal configuration); or the user has no Stripe customer in the group yet."
+            ),
+            503: (
+                "`{\"success\": false, ...}`: `BILLING_PORTAL_ENABLED`, `STRIPE_BILLING_ENABLED`, or "
+                "`STRIPE_PORTAL_ENABLED` is off, or the Stripe call failed. Stripe errors that carry their own HTTP "
+                "status are returned with that status."
+            ),
+        }
+    ),
+    openapi_extra=_s2s_openapi_extra(idempotency_header=True),
+)
 async def create_internal_billing_portal(
-    user_hash: str,
+    user_hash: _UserHash,
     request: Request,
-    portal_request: BillingPortalSessionRequest = Body(...),
+    portal_request: BillingPortalSessionRequest = Body(
+        ..., description="Portal request: `project_hash`, `return_url`, and optional `provider` (`stripe`)."
+    ),
 ) -> JSONResponse:
-    """Create an MVP-limited hosted Customer Portal session for S2S callers."""
+    """Create a Stripe Customer Portal session for a user and return its URL.
+
+    The user must already have a Stripe customer in the project's billing group (created by
+    an earlier checkout). The session uses the group's own restricted portal configuration;
+    there is no fallback to a global one.
+
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Request:** JSON. When a return-URL allowlist is configured, `return_url` must use an
+    allowed origin. Without an `Idempotency-Key` header every call creates a new session.
+
+    **Responses:** `202` with `portal_ref` and the hosted `url` to redirect the user to.
+    """
 
     config_or_response = await _authorize_s2s(request)
     if isinstance(config_or_response, JSONResponse):
@@ -1051,13 +1215,16 @@ async def create_internal_billing_portal(
     scope = await _resolve_scope(user_hash, portal_request.project_hash)
     portal_ref = _new_ref("bpo")
     request_hash = billing_idempotency.canonical_request_hash(payload=portal_request.model_dump(mode="json"))
-    idem_cache_key = _idempotency_cache_key(
-        route="portal",
-        user_id=str(scope["user_id"]),
-        project_id=str(scope["project_id"]),
-        request=request,
-        body_ref=portal_ref,
-    )
+    try:
+        idem_cache_key = _idempotency_cache_key(
+            route="portal",
+            user_id=str(scope["user_id"]),
+            project_id=str(scope["project_id"]),
+            request=request,
+            body_ref=portal_ref,
+        )
+    except billing_idempotency.BillingIdempotencyError:
+        return _generic_error_response(status_code=422)
     local_decision, cached_response = _local_idempotency_decision(idem_cache_key, request_hash)
     if local_decision == "conflict":
         return _generic_error_response(status_code=409)
@@ -1105,15 +1272,44 @@ async def create_internal_billing_portal(
     return _safe_json_response_from_model(response_model, status_code=202)
 
 
-@router.get(_PURCHASE_PATH, response_model=BillingPurchaseStatusResponse, status_code=200)
+@router.get(
+    _PURCHASE_PATH,
+    response_model=BillingPurchaseStatusResponse,
+    status_code=200,
+    responses=_s2s_responses(
+        {
+            404: (
+                "`{\"success\": false, \"message\": \"Resource not found.\"}`: no purchase with this ref for this user "
+                "in this project (including one not yet recorded from Stripe), or the lookup failed."
+            ),
+        }
+    ),
+    openapi_extra=_s2s_openapi_extra(),
+)
 async def get_internal_billing_purchase_status(
-    user_hash: str,
-    purchase_ref: str,
+    user_hash: _UserHash,
+    purchase_ref: Annotated[str, Path(description="Opaque purchase reference (`bpur-...`) returned by checkout.")],
     request: Request,
-    project_hash: str = Query(..., min_length=1),
-    provider: str = Query(constants.STRIPE_PROVIDER_NAME),
+    project_hash: str = Query(..., min_length=1, description="Project the purchase was made in."),
+    provider: str = Query(constants.STRIPE_PROVIDER_NAME, description="Billing provider; `stripe` is the only supported value."),
 ) -> JSONResponse:
-    """Read a safe purchase fact for pull-only consumer credit decisions."""
+    """Look up a one-time purchase (credit package) by its opaque `purchase_ref`, for pull-only credit fulfilment.
+
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Lookup:** the purchase must belong to `user_hash` and to `project_hash`, the project it
+    was bought in; a ref of another user or project reads as not found. The purchase row is
+    written from Stripe webhooks, so a checkout that Stripe has not yet reported is also not
+    found.
+
+    **Responses:** `200` with `purchase`: `status` (such as `pending`, `paid`, `refunded`,
+    `disputed`; a pending or paid fact past its `stale_after` reads `stale`), `credit_product_code`, `quantity`,
+    and paid/refunded/disputed/last-synced timestamps. Never raw Stripe ids. `404` when there
+    is no such purchase or the lookup fails.
+    """
 
     config_or_response = await _authorize_s2s(request)
     if isinstance(config_or_response, JSONResponse):
@@ -1147,13 +1343,39 @@ async def get_internal_billing_purchase_status(
     return _generic_error_response(status_code=404, message=_GENERIC_NOT_FOUND_MESSAGE)
 
 
-@router.post(_RESYNC_PATH, response_model=BillingResyncAcceptedResponse, status_code=202)
+@router.post(
+    _RESYNC_PATH,
+    response_model=BillingResyncAcceptedResponse,
+    status_code=202,
+    responses=_s2s_responses(
+        {422: "`{\"success\": false, ...}`: missing `User-Agent`, or the body has no `project_hash`."}
+    ),
+    openapi_extra=_s2s_openapi_extra(),
+)
 async def enqueue_internal_billing_resync(
-    user_hash: str,
+    user_hash: _UserHash,
     request: Request,
-    resync_request: Mapping[str, Any] | None = Body(default=None),
+    resync_request: Mapping[str, Any] | None = Body(
+        default=None,
+        description=(
+            "JSON object with `project_hash` (required), optional `reason` (string, default "
+            "`internal_manual_resync`), and optional `force` (boolean; queues the job at higher priority)."
+        ),
+    ),
 ) -> JSONResponse:
-    """Accept a safe source-of-truth billing resync request."""
+    """Queue a resync of a user's billing facts from Stripe (the source of truth) for one project.
+
+    **Auth:** dedicated billing S2S bearer, `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>`;
+    user access tokens, cookies, and API keys are not accepted. A non-empty `User-Agent` header
+    is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
+    `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
+
+    **Responses:** `202` in every accepted case; read `status`:
+    - `queued` (`accepted` true, with `correlation_id`): the job is in the billing sync queue.
+      Jobs are processed only by the billing sync worker, which runs as a separate process.
+    - `disabled` (`accepted` false): `BILLING_SYNC_ENABLED` is off; nothing is queued.
+    - `degraded` (`accepted` false): the job could not be queued.
+    """
 
     config_or_response = await _authorize_s2s(request)
     if isinstance(config_or_response, JSONResponse):

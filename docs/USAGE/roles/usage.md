@@ -114,7 +114,7 @@ curl -X DELETE "http://localhost:8000/roles/roles/ROLE_HASH" \
 ```
 
 - **SOFT DELETE** — sets `is_active = FALSE`
-- **INTENDED BLOCK** if `is_system_role = TRUE` — current code references missing `ErrorCode.OPERATION_NOT_ALLOWED`, so this path currently surfaces as generic 500 until the enum/source is fixed
+- **BLOCKED** if `is_system_role = TRUE` — returns 403 `OPERATION_NOT_ALLOWED` (`AUTHZ_2009`)
 - Does **NOT** cascade-delete user role assignments — `users.role_id` remains pointing to the deleted role
 - Does **NOT** remove permission group assignments from `role_permission_groups`
 
@@ -155,7 +155,7 @@ curl -X DELETE "http://localhost:8000/roles/roles/ROLE_HASH/permission-groups/PG
 ```
 
 - **SOFT DELETE** — sets `is_active = FALSE, removed_at = NOW()` on the junction row
-- **Defect:** if the group is **not currently assigned** to the role, the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+- If the group is **not currently assigned** to the role, returns 404 `RESOURCE_NOT_FOUND` (`NF_4004`). See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 ### List permission groups
 
@@ -207,7 +207,7 @@ curl -X DELETE "http://localhost:8000/roles/permission-groups/PG_HASH/permission
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-- **Defect:** if the permission is **not currently assigned** to the group, the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+- If the permission is **not currently assigned** to the group, returns 404 `RESOURCE_NOT_FOUND` (`NF_4004`). See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 ### List / get / update / delete permissions
 
@@ -261,9 +261,20 @@ curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
 - Returns `previous_role` in the response
 - Blocked if user is inactive
 
-### Bulk role assignment (BROKEN)
+### Bulk role assignment
 
-The endpoint `POST /admin/projects/{hash}/bulk-assign-roles` **does not work**. There is a parameter mismatch between the route and the utility function. See [troubleshooting.md](troubleshooting.md#bulk-role-assignment-always-fails).
+```bash
+curl -X POST "http://localhost:8000/admin/projects/PROJ_HASH/bulk-assign-roles" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_hashes=USER_HASH_1&user_hashes=USER_HASH_2&role_names=editor"
+```
+
+- Requires `admin` in session permissions; up to 100 `user_hashes`
+- `role_names` are role **names**, resolved before anything is written; an unknown or inactive name returns 404 `ROLE_NOT_FOUND` (`NF_4007`) with `details.role_names`, and nothing is assigned
+- A user holds a single global role, so when several `role_names` are listed each user ends up with the **last** one
+- The project is used for validation and the audit trail; the assigned role is global
+- Returns 200 with `summary`, per-assignment `results` (`user_hash`, `role_name`, `success`, and `error` on failure), and `errors` — check them for per-user failures. See [troubleshooting.md](troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role).
 
 ---
 
@@ -282,7 +293,7 @@ curl -X POST "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROLE_
 
 - Returns a `"note"` field in the response: `"This is METADATA ONLY"`
 - `catalog_purpose` and `notes` are optional metadata fields
-- Duplicate catalog entry currently references missing `ErrorCode.ALREADY_EXISTS`, so that path surfaces as generic 500 until the enum/source is fixed
+- Idempotent: re-adding a role that is already cataloged returns 200 and re-activates a removed entry; omitted `catalog_purpose`/`notes` keep their previous values
 
 ### List cataloged roles for a project
 
@@ -298,7 +309,7 @@ curl -X DELETE "http://localhost:8000/roles/projects/PROJ_HASH/catalog/roles/ROL
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-- **Defect:** if the role is **not in the project catalog** (never added, or already removed), the handler references the missing `ErrorCode.NOT_FOUND`, so that branch surfaces as a generic 500 instead of the intended 404. See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-500-instead-of-404).
+- If the role is **not in the project catalog** (never added, or already removed), returns 404 `RESOURCE_NOT_FOUND` (`NF_4004`). See [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
 
 ---
 

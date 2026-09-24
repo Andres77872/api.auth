@@ -12,6 +12,20 @@ import pytest
 from tests.integration.conftest import make_session_payload, create_test_session
 
 
+@pytest.fixture(autouse=True)
+def project_admin_directory():
+    """User "1" is an admin user assigned to administer project "1".
+
+    Project routes authorize on the caller's live user type and admin assignments,
+    not on session permission names. Tests may change a user's type in the mapping.
+    """
+    user_types = {"1": "admin"}
+    assignments = {"1": ["1"]}
+    with patch("src.Util.db.get_user_type", side_effect=lambda user_id: user_types.get(str(user_id), "consumer")), \
+         patch("src.Util.db.get_admin_assigned_projects", side_effect=lambda user_id: assignments.get(str(user_id), [])):
+        yield user_types
+
+
 @pytest.mark.asyncio
 async def test_cors_headers_not_wildcard(client, fake_redis, patched_cache_manager, patched_activity_logger, patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger):
     """CORS should NOT use allow_origins=['*'] with credentials."""

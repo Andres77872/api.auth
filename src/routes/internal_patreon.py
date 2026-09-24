@@ -14,9 +14,9 @@ import inspect
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Annotated, Any, Mapping
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Path, Request
 from fastapi.responses import JSONResponse
 
 from src.Util import auth_constants as constants
@@ -34,7 +34,7 @@ from src.Util.Models import (
 )
 from src.Util.activity_logger import ActivityType
 from src.Util.api_audit_logger import APIAuditLogger
-from src.Util.db import db_patreon
+from src.Util.db import db_patreon, get_user_by_hash
 from src.Util.email.route_support import client_ip, user_agent
 from src.Util.error_handler import rate_limit_headers
 from src.Util.patreon import sync as patreon_sync
@@ -526,60 +526,86 @@ def _job_id() -> str:
     return f"psj-{uuid.uuid4().hex}"
 
 
+async def _resolve_local_user_id(user_hash: str) -> str | None:
+    """Map the public user hash to the local user id the sync worker scans Patreon for.
+
+    Only active users resolve. The S2S entitlement read never returns ``user_id``, so it
+    cannot be used here: a job without a user id is closed by the worker as a no-op.
+    """
+    user = await _maybe_await(get_user_by_hash(user_hash))
+    user_id = getattr(user, "id", None) if user is not None else None
+    return str(user_id) if user_id else None
+
+
 async def _enqueue_user_hash_resync(
     *,
     user_hash: str,
-    row: Any,
+    user_id: str,
     resync_request: PatreonResyncRequest | None,
 ) -> PatreonResyncAcceptedResponse:
-    row_map = _plain_mapping(row)
-    local_user_id = _string_field(row_map, "user_id", "id")
     job_id = _job_id()
     reason = _string_field(resync_request, "reason", default="internal_manual_resync") if resync_request else "internal_manual_resync"
     metadata = {"source": "internal_s2s", "reason": reason, "user_hash": user_hash}
-
-    if local_user_id:
-        return await _maybe_await(
-            enqueue_member_resync(
-                user_id=local_user_id,
-                user_hash=user_hash,
-                job_type=patreon_sync.JOB_TYPE_USER_MEMBER,
-                job_id=job_id,
-                priority=1 if bool(getattr(resync_request, "force", False)) else 5,
-                source=constants.PATREON_SYNC_SOURCE_MANUAL_RESYNC,
-                sanitized_metadata=metadata,
-                db_module=db_patreon,
-            )
+    return await _maybe_await(
+        enqueue_member_resync(
+            user_id=user_id,
+            user_hash=user_hash,
+            job_type=patreon_sync.JOB_TYPE_USER_MEMBER,
+            job_id=job_id,
+            priority=1 if bool(getattr(resync_request, "force", False)) else 5,
+            source=constants.PATREON_SYNC_SOURCE_MANUAL_RESYNC,
+            sanitized_metadata=metadata,
+            db_module=db_patreon,
         )
-
-    db_patreon.enqueue_patreon_sync_job(
-        job_id=job_id,
-        job_type=patreon_sync.JOB_TYPE_USER_MEMBER,
-        campaign_id=None,
-        member_id_hash=None,
-        user_id=None,
-        dedupe_key_hash=patreon_sync.sync_job_dedupe_hash(
-            patreon_sync.JOB_TYPE_USER_MEMBER,
-            user_hash,
-        ),
-        priority=1 if bool(getattr(resync_request, "force", False)) else 5,
-        not_before=None,
-        source="manual",
-        sanitized_metadata=metadata,
-    )
-    return PatreonResyncAcceptedResponse(
-        accepted=True,
-        status="queued",
-        user_hash=user_hash,
-        correlation_id=job_id,
-        contract_version=constants.PATREON_DEFAULT_CONTRACT_VERSION,
-        message=_GENERIC_RESYNC_ACCEPTED_MESSAGE,
     )
 
 
-@router.get(_INTERNAL_ENTITLEMENTS_PATH, response_model=PatreonEntitlementS2SResponse, status_code=200)
-async def get_internal_patreon_entitlement(user_hash: str, request: Request) -> JSONResponse:
-    """Return a normalized Patreon entitlement for an authenticated S2S caller."""
+# OpenAPI documentation for the two S2S routes. Authentication is enforced manually
+# (the dedicated bearer is compared in ``_authorized_internal_bearer``), so each route
+# declares its security requirement through ``openapi_extra``.
+_S2S_USER_HASH_DESCRIPTION = "Public hash of the local user (not a Patreon identifier)."
+_S2S_401 = {
+    "description": (
+        "Missing or wrong Patreon S2S bearer, or the S2S entitlement feature is disabled / has no "
+        "bearer configured. Generic body."
+    )
+}
+_S2S_429 = {"description": "Rate limited; see `Retry-After`."}
+
+
+@router.get(
+    _INTERNAL_ENTITLEMENTS_PATH,
+    response_model=PatreonEntitlementS2SResponse,
+    status_code=200,
+    responses={
+        401: _S2S_401,
+        404: {"description": "The entitlement could not be read (generic failure body)."},
+        429: _S2S_429,
+    },
+    openapi_extra={"security": [{"PatreonS2SBearer": []}]},
+)
+async def get_internal_patreon_entitlement(
+    user_hash: Annotated[str, Path(description=_S2S_USER_HASH_DESCRIPTION)], request: Request
+) -> JSONResponse:
+    """Return a user's normalized Patreon entitlement to a trusted backend (service-to-service).
+
+    Patreon is entitlement/link proof only: this read never issues user tokens or sessions and
+    never accepts them as authority.
+
+    **Auth:** the dedicated Patreon S2S bearer — `Authorization: Bearer <Patreon S2S token>`.
+    User access tokens, `session_token` cookies and API keys are not accepted. The route answers
+    `401` whenever the S2S entitlement feature is disabled or no S2S token is configured.
+
+    **Responses:**
+    - `200` with `user_hash`, `entitlement` (`external_source`, `status`, `plan_code`,
+      `tier_code`, `tier_name`, `link_status`, `next_renewal_at`, `grace_period_until`,
+      `last_synced_at`, `stale_after`, `classification_version`) and `contract_version`. Users
+      without Patreon data, and unknown or inactive user hashes, get a `free` projection
+      (`status: free`, `plan_code: free`, `link_status: none`) instead of an error.
+    - `401` bearer missing or wrong, or feature off; `429` rate limited per user hash, calling
+      client and IP (`Retry-After`); `404` the entitlement could not be read. Error bodies are
+      generic (`{"success": false, "message": ...}`).
+    """
 
     config = load_patreon_config()
     if not _authorized_internal_bearer(request, config):
@@ -635,13 +661,45 @@ async def get_internal_patreon_entitlement(user_hash: str, request: Request) -> 
     _INTERNAL_RESYNC_PATH,
     response_model=PatreonResyncAcceptedResponse,
     status_code=202,
+    responses={
+        401: _S2S_401,
+        429: {
+            "description": (
+                "Rate limited; see `Retry-After`. The S2S request limit returns a generic body; the "
+                "resync enqueue limit returns `accepted: false`, `status: rate_limited` and "
+                "`retry_after_seconds`."
+            )
+        },
+    },
+    openapi_extra={"security": [{"PatreonS2SBearer": []}]},
 )
 async def enqueue_internal_patreon_resync(
-    user_hash: str,
+    user_hash: Annotated[str, Path(description=_S2S_USER_HASH_DESCRIPTION)],
     request: Request,
-    resync_request: PatreonResyncRequest | None = Body(default=None),
+    resync_request: PatreonResyncRequest | None = Body(
+        default=None,
+        description="Optional. `force` queues at higher priority; `reason` (1-128 characters) is stored with the job.",
+    ),
 ) -> JSONResponse:
-    """Accept an authenticated internal/manual Patreon entitlement resync enqueue."""
+    """Ask api.auth to re-read one user's Patreon membership from Patreon (queued for the sync worker).
+
+    **Auth:** the dedicated Patreon S2S bearer — `Authorization: Bearer <Patreon S2S token>`.
+    User access tokens, `session_token` cookies and API keys are not accepted; `401` whenever the
+    S2S entitlement feature is disabled or no S2S token is configured.
+
+    **Request:** optional JSON body `{"force": bool, "reason": str}`; it may be omitted.
+
+    **Responses:** `202` with `accepted` and `status`:
+    - `accepted: true`, `status: queued`, `correlation_id` — a job keyed to this local user was
+      queued. The Patreon sync worker scans the configured campaigns for the member linked to the
+      user and updates the entitlement; it runs only while the worker process is running.
+    - `accepted: false`, `status: disabled` — Patreon sync is turned off; nothing is queued.
+    - `accepted: false`, `status: degraded` — unknown or inactive user, or the job could not be queued.
+
+    `401` bearer missing or wrong, or feature off. `429` rate limited (`Retry-After`): the S2S
+    request limit answers with a generic body, the resync enqueue limit with `accepted: false`,
+    `status: rate_limited` and `retry_after_seconds`.
+    """
 
     config = load_patreon_config()
     if not _authorized_internal_bearer(request, config):
@@ -692,8 +750,8 @@ async def enqueue_internal_patreon_resync(
         return _resync_response(accepted=False, status="disabled", status_code=202)
 
     try:
-        row = await _read_current_entitlement_row(user_hash)
-        if row is None:
+        user_id = await _resolve_local_user_id(user_hash)
+        if user_id is None:
             await record_patreon_internal_activity(
                 ActivityType.PATREON_SYNC_FAILED,
                 event="s2s_resync_degraded",
@@ -706,7 +764,7 @@ async def enqueue_internal_patreon_resync(
 
         accepted = await _enqueue_user_hash_resync(
             user_hash=user_hash,
-            row=row,
+            user_id=user_id,
             resync_request=resync_request,
         )
         await record_patreon_internal_activity(

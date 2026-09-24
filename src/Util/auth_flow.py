@@ -184,6 +184,32 @@ def _recent_reauth_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
         return 300
 
 
+def _access_token_claims(session_token: Optional[str], decode_access_token_fn=None) -> Optional[Mapping[str, Any]]:
+    if not session_token:
+        return None
+    try:
+        if decode_access_token_fn is None:
+            from src.Util.JWT_Security import JWTTokenHandler
+
+            decode_access_token_fn = JWTTokenHandler.decode_access_token
+        return decode_access_token_fn(session_token)
+    except Exception:
+        return None
+
+
+def access_token_session_id(session_token: Optional[str]) -> Optional[str]:
+    """The ``session_id`` claim of an access token: the id reauth markers are keyed by.
+
+    It is stable across refreshes and project switches of one sign-in, unlike the token
+    itself or its ``jti``, so a marker recorded by an OAuth reauth is found by every
+    later sensitive operation of the same session.
+    """
+
+    claims = _access_token_claims(session_token)
+    session_id = claims.get("session_id") if claims else None
+    return str(session_id) if session_id not in (None, "") else None
+
+
 def access_token_has_recent_auth(
     session_token: Optional[str],
     *,
@@ -191,20 +217,18 @@ def access_token_has_recent_auth(
     now_epoch: Optional[int] = None,
     decode_access_token_fn=None,
 ) -> bool:
-    """Return True when the access token carries a recent auth/reauth timestamp."""
+    """Return True when the access token carries a recent sign-in (or reauth) time.
 
-    if not session_token:
-        return False
-    try:
-        if decode_access_token_fn is None:
-            from src.Util.JWT_Security import JWTTokenHandler
+    Only ``auth_time`` (set when the user signed in, carried unchanged through refresh
+    and project switches) or ``reauth_at`` count. ``iat`` does not: every refresh mints
+    a new token, so a recent ``iat`` proves nothing about the user.
+    """
 
-            decode_access_token_fn = JWTTokenHandler.decode_access_token
-        claims = decode_access_token_fn(session_token)
-    except Exception:
+    claims = _access_token_claims(session_token, decode_access_token_fn)
+    if not claims:
         return False
 
-    proof_timestamp = claims.get("reauth_at") or claims.get("auth_time") or claims.get("iat")
+    proof_timestamp = claims.get("reauth_at") or claims.get("auth_time")
     try:
         proof_epoch = int(proof_timestamp)
     except (TypeError, ValueError):
@@ -241,8 +265,10 @@ def require_recent_reauthentication(
 
     Password-verified operations may pass ``credential_proof_present=True`` after
     validating the current password. Other sensitive operations accept either a
-    recent auth/reauth timestamp embedded in the local session token or a Redis
-    reauth marker created by a future OAuth/local step-up flow.
+    recent sign-in time (``auth_time``) embedded in the access token or a Redis
+    reauth marker recorded by an OAuth reauth for the same session. ``session_id``
+    must be the access token's ``session_id`` claim (``access_token_session_id``);
+    when omitted it is taken from ``session_token``.
     """
 
     if not sensitive_operation:
@@ -251,6 +277,7 @@ def require_recent_reauthentication(
         return True
     if access_token_has_recent_auth(session_token, ttl_seconds=ttl_seconds):
         return True
+    session_id = session_id or access_token_session_id(session_token)
     if user_id and _has_recent_reauth_marker(user_id=str(user_id), session_id=session_id, reauth_store=reauth_store):
         return True
 

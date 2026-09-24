@@ -43,7 +43,7 @@ status — to confirm a kill took effect.
 Operational isolation controls:
 
 - Block `/webhooks/stripe` at ingress during active webhook incidents.
-- Stop `src/workers/billing_sync_worker.py` to pause source-of-truth repair and retention cadence.
+- Stop `src/workers/billing_sync_worker.py` to pause source-of-truth repair and retention cadence. The Docker entrypoint starts it in every API container: turn off `BILLING_SYNC_ENABLED` and `STRIPE_SYNC_ENABLED` (the worker then only writes heartbeats), or redeploy with `BILLING_SYNC_WORKER_ENABLED=0`.
 - Disable consumer S2S pulls in the companion service if `api.auth` billing needs isolation.
 
 Do not use destructive schema rollback after live or test billing evidence exists.
@@ -65,19 +65,23 @@ more projects. Provision a group in this order (all behind disabled-by-default f
    with the group's own `secret_key` + `webhook_secret` (+ optional portal config). Sent as
    JSON, encrypted server-side immediately, never echoed (responses show presence flags +
    fingerprints only). Requires `BILLING_PROVIDER_REF_ENCRYPTION_KEY/_ID` +
-   `BILLING_ID_HMAC_SECRET`.
+   `BILLING_ID_HMAC_SECRET`. Later saves and `POST .../credentials/rotate` keep a stored
+   `webhook_secret`, portal configuration id, or label that the body omits (re-encrypted
+   under the current key); send `""` to remove one.
 4. **Author the catalog** — `POST /admin/billing/{hash}/catalog` (subscription_plan /
    credit_package). When the group is enabled + has active credentials, this provisions a
    Stripe `Product`+`Price` on the group's account and stores encrypted refs; otherwise the
    row stays `pending` and provisions on a later enable. `features` JSON is opaque (api.auth
-   never interprets it). Price changes create a new Stripe `Price` and archive the old one.
+   never interprets it). Price changes create a new Stripe `Price` on the item's Product and
+   deactivate the old one once the new one is stored; a failed reprice leaves the old one live.
 5. **Point Stripe at the per-account webhook endpoint** — each account's webhook destination
    is `POST /webhooks/stripe/{billing_group_hash}` (its own signing secret is selected by the
    URL; verification is single-attempt). The legacy global `POST /webhooks/stripe` remains as
    a single-account migration fallback that resolves the group from event metadata.
 6. **Enable group capabilities** — `checkout_enabled`/`portal_enabled`/`provisioning_enabled`/
    `webhooks_enabled` are gated server-side: they only take effect when the group is `active`
-   with `credential_status='active'`. Effective enablement =
+   with `credential_status='active'`. The per-group webhook endpoint answers `503` (Stripe
+   retries) while the group is not `active` or `webhooks_enabled` is off. Effective enablement =
    global provider flag AND global config flag AND group flag AND active credentials.
 
 Consumers read the catalog from `GET /internal/projects/{project_hash}/billing/catalog`
@@ -286,7 +290,7 @@ Run these steps in order. Do not skip from disabled config to broad production e
 6. **Enable Stripe webhook processing in test mode**: set `STRIPE_BILLING_ENABLED=true` and `STRIPE_WEBHOOKS_ENABLED=true` only in a controlled test environment. Process only approved MVP events.
 7. **Enable Checkout for one controlled project**: set `BILLING_CHECKOUT_ENABLED=true` and `STRIPE_CHECKOUT_ENABLED=true` after encryption/HMAC/redaction/idempotency/return-origin checks pass. Require the trusted consumer to select `price_ref` and opaque labels from the project catalog; the current route does not enforce that binding server-side.
 8. **Enable Portal after restricted-config proof**: set `BILLING_PORTAL_ENABLED=true` and `STRIPE_PORTAL_ENABLED=true` only after Portal configuration verification proves plan changes are disabled.
-9. **Enable sync worker**: set `BILLING_SYNC_ENABLED=true` and `STRIPE_SYNC_ENABLED=true`; start `src/workers/billing_sync_worker.py` after provider readiness, decrypt key map, rate limits, and rollback drills pass.
+9. **Enable sync worker**: set `BILLING_SYNC_ENABLED=true` and `STRIPE_SYNC_ENABLED=true`; start `src/workers/billing_sync_worker.py` after provider readiness, decrypt key map, rate limits, and rollback drills pass. In Docker the entrypoint already runs it, and it starts claiming jobs once these flags are on.
 10. **Coordinate consumers separately**: consuming projects update their own S2S
     client, membership projection, and credit ledger. `api.auth` owns catalog
     Product/Price mappings; consumers own their interpretation and benefits.
@@ -350,6 +354,8 @@ Long-running worker:
 ```bash
 ./.venv/bin/python -m src.workers.billing_sync_worker
 ```
+
+In the Docker image, `scripts/docker-entrypoint.sh` runs the long-running worker with `--worker-id container-<HOSTNAME>-billing` (override with `BILLING_WORKER_ID`). Set `BILLING_SYNC_WORKER_ENABLED=0` to leave it out of a container.
 
 Rules:
 
@@ -471,7 +477,7 @@ Preferred rollback disables behavior and preserves evidence:
 1. **Stop new provider actions**: set `STRIPE_CHECKOUT_ENABLED=false`, `STRIPE_PORTAL_ENABLED=false`, `STRIPE_WEBHOOKS_ENABLED=false`, and `STRIPE_SYNC_ENABLED=false`.
 2. **Close generic billing if needed**: set `BILLING_CHECKOUT_ENABLED=false`, `BILLING_PORTAL_ENABLED=false`, `BILLING_SYNC_ENABLED=false`, `BILLING_S2S_ENABLED=false`, and finally `BILLING_ENABLED=false` if isolation requires it.
 3. **Disable ingress/webhook intake**: block `/webhooks/stripe` at ingress and/or rotate Stripe webhook secret to stop new deliveries.
-4. **Stop sync execution**: stop `src/workers/billing_sync_worker.py` and any scheduler/one-shot job that can claim billing sync jobs.
+4. **Stop sync execution**: stop `src/workers/billing_sync_worker.py` (in Docker, the sync flags from steps 1-2 already idle it; `BILLING_SYNC_WORKER_ENABLED=0` removes the process) and any scheduler/one-shot job that can claim billing sync jobs.
 5. **Disable consumer consumption**: consuming projects stop billing S2S pulls and fall back to local product behavior/free-default policy.
 6. **Clear only billing/Stripe Redis namespaces when approved**: clean rate-limit, replay, idempotency, sync lock, and heartbeat keys in billing/Stripe namespaces only. Never clear local auth/session/refresh namespaces.
 7. **Preserve additive schema and history**: leave `billing_*` schema, normalized current/history, purchase history, webhook ledger within retention, encrypted refs needed for evidence, raw quarantine until retention, audit, and activity rows intact once evidence exists.

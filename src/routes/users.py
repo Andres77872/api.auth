@@ -8,23 +8,34 @@ Endpoints:
 - GET /profile - Get current user's profile
 - PUT /profile - Update current user's profile
 - GET /access-summary - Get user's hierarchical access summary
-- GET /list - List all users with filters (admin only)
-- GET /search/query - Search users by username/email (admin only)
+- GET /list - List all users with filters (root/admin)
+- GET /me/emails, POST /me/emails - List / add the caller's email addresses
+- POST /me/emails/{email_id}/resend - Resend activation for the caller's pending email
+- DELETE /me/emails/{email_id} - Remove one of the caller's email addresses
+- POST /me/emails/{email_id}/primary - Make an activated email the primary one
+- GET /{user_hash}/emails - Admin view of a user's email addresses (root/admin)
+- POST /{user_hash}/emails/{email_id}/resend - Admin activation resend (root/admin)
+- GET /search/query - Search users by username/email (root/admin)
 - GET /{user_hash} - Get user details
-- PUT /{user_hash}/status - Update user active status
-- POST /{user_hash}/reset-password - Reset user password (admin only)
-- DELETE /{user_hash} - Delete user (soft delete, admin only)
+- PUT /{user_hash}/status - Update user active status (root/admin)
+- POST /{user_hash}/reset-password - Queue a password reset link (root/admin)
+- DELETE /{user_hash} - Delete user (soft delete, root/admin)
 - DELETE /{user_hash}/hard - Permanently hard delete a user (root only, deep clean)
 - PATCH /{user_hash}/type - Change user type (root only)
+- PUT /{user_hash} - Update user details (root/admin)
+
+Route order matters: literal paths (/profile, /list, /me/...) are registered
+before the /{user_hash} catch-alls, and main.py registers the /users/api-keys
+router before this one.
 """
 
 import logging
 import json
 import secrets
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Annotated, Optional, Dict, Any, List
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Path, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.Models import (
@@ -41,6 +52,7 @@ from src.Util.error_handler import (
     ErrorCode, mask_uuid, create_profile_password_rejection_error
 )
 from src.Util.db_error_wrapper import handle_db_operation
+from src.Util.admin_scope import AdminScope, require_user_in_scope, resolve_admin_scope, user_in_scope
 from src.Util.db import (
     db_email,
     get_user_by_hash, update_user,
@@ -58,7 +70,6 @@ from src.Util.email.route_support import (
     EmailIdempotencyPlan,
     client_ip,
     complete_idempotency,
-    forced_rate_limit_response_for_test,
     generic_accepted_response,
     hash_route_value,
     idempotency_kwargs,
@@ -77,6 +88,40 @@ logger = logging.getLogger(__name__)
 # Initialize router and security
 router = APIRouter(prefix="/users", tags=["User Management"])
 security = HTTPBearerOrCookie()
+
+# OpenAPI fragments for routes that read headers/bodies themselves.
+_USER_HASH_DESCRIPTION = "Hash of the target user."
+_EMAIL_ID_DESCRIPTION = "Email address row ID (`id` from the email list)."
+_IDEMPOTENCY_KEY_HEADER_PARAMETER = {
+    "name": "Idempotency-Key",
+    "in": "header",
+    "required": False,
+    "schema": {"type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "description": (
+        "Optional client key. A repeat with the same key replays the stored `202` "
+        "response without sending another email; malformed keys are ignored."
+    ),
+}
+_ACCEPTED_202_RESPONSE = {
+    "description": (
+        "Neutral accepted body (`success`, `message`). The same body is returned for "
+        "every outcome so callers cannot learn whether the address or row exists."
+    ),
+}
+_EMAIL_RATE_LIMITED_429_RESPONSE = {
+    "description": "Rate limited or resend cooldown active (`INT_7005`); see the `Retry-After` header.",
+}
+_ADD_EMAIL_SCHEMA = {
+    "type": "object",
+    "required": ["email"],
+    "properties": {
+        "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Address to add; trimmed and lower-cased before use.",
+        },
+    },
+}
 
 _PROFILE_PASSWORD_MUTATION_FIELDS = {
     "password",
@@ -143,9 +188,6 @@ def _new_email_message_id() -> str:
 
 
 def _check_email_send_rate_limit(*, request: Request, purpose: str, recipient_hash_hex_value: str, user_id: str | None = None):
-    forced = forced_rate_limit_response_for_test(request)
-    if forced is not None:
-        return forced
     try:
         EmailRateLimiter().check_send_request(
             purpose=purpose,
@@ -204,15 +246,19 @@ def _current_user_from_context(log_context: LogContext):
     )
 
 
-def _require_admin_or_root(current_user) -> bool:
-    is_root = is_root_user(current_user.id)
-    user_type = get_user_type(current_user.id)
-    if not is_root and user_type != "admin":
+def _require_admin_or_root(current_user) -> AdminScope:
+    """The caller's admin scope; refuses callers that are neither root nor admin users.
+
+    Pair it with ``require_user_in_scope`` once the target user is known: admin users
+    may only manage themselves and users who reach one of their assigned projects.
+    """
+    scope = resolve_admin_scope(current_user.id)
+    if not scope.is_admin:
         raise AuthorizationError(
             message="Admin or root access required",
             error_code=ErrorCode.ACCESS_DENIED,
         )
-    return is_root
+    return scope
 
 
 def _owner_email_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -267,10 +313,15 @@ async def get_user_profile(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None
 ) -> UserProfileResponse:
-    """Get the current user's profile
+    """Return the caller's own profile.
 
-    Returns the current user's profile information including
-    their group memberships, hierarchical access structure, and accessible projects.
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Responses:** `200` with account fields, `user_type_info`, group
+    memberships, and accessible projects with the caller's effective
+    permissions in each; `401` when the access token is missing, invalid, or
+    expired.
     """
     # Get user data
     user_data = handle_db_operation(
@@ -340,22 +391,36 @@ async def get_user_profile(
 )
 async def update_user_profile(
         request: Request,
-        username: Optional[str] = Form(None),
-        email: Optional[str] = Form(None),
-        password: Optional[str] = Form(None),
+        username: Optional[str] = Form(None, description="New username (must be unique)."),
+        email: Optional[str] = Form(
+            None,
+            description="New value for the account's legacy `email` field (not verified; not a login identifier).",
+        ),
+        password: Optional[str] = Form(
+            None,
+            description="Not supported: any value is rejected with `400`; use `POST /auth/password/change`.",
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> UpdateProfileResponse:
     """
-    Update current user's profile information.
-    
-    Args:
-        username: Username
-        email: Email
-        password: Password
-        
-    Returns:
-        Updated user profile
+    Update the caller's own `username` and/or legacy `email` field.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`); send at least one of `username`, `email`. `email`
+    overwrites the account's compatibility `email` field directly: it is not
+    verified, is not used for sign-in, and does not touch the addresses managed
+    under `/users/me/emails`.
+
+    **Responses:**
+    - `200` — the updated user.
+    - `400` — no field provided, or a password field was submitted
+      (`password`, `current_password`, `new_password`, `password_confirmation`,
+      `password_hash`); password changes must use `POST /auth/password/change`.
+    - `409` — username already taken (`CONF_5004`).
     """
     payload = await read_request_payload(request)
     password_field = _submitted_profile_password_field(payload, password)
@@ -434,10 +499,16 @@ async def get_user_access_summary(
         log_context: LogContext = None
 ) -> AccessSummaryResponse:
     """
-    Get comprehensive summary of user's hierarchical group memberships, project access, and effective permissions.
-    
-    Returns:
-        Detailed access summary with hierarchical groups, projects, and effective permissions
+    Summarize the caller's group memberships, accessible projects, and effective permissions.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Responses:** `200` with `access_summary`: `user`, `user_groups` (with
+    per-group `projects_count`), `accessible_projects` (access groups and
+    `effective_permissions` per project), `current_session`, and `summary`.
+    `current_session` only carries the session's `project_hash` (other fields
+    are `null`/empty) and `summary.is_admin` is always `false`.
     """
     user_data = get_user_by_hash(log_context.user_hash)
     if not user_data:
@@ -536,37 +607,36 @@ async def get_user_access_summary(
     log_success=False
 )
 async def list_all_users(
-        limit: int = 100,
-        offset: int = 0,
-        sort_by: str = 'username',
-        sort_order: str = 'asc',
-        search: Optional[str] = None,
-        user_type_filter: Optional[str] = None,
-        group_filter: Optional[str] = None,
-        project_filter: Optional[str] = None,
-        include_inactive: bool = False,
-        include_group_info: bool = True,
-        include_project_access: bool = True,
+        limit: Annotated[int, Query(description="Maximum number of users to fetch for this page.")] = 100,
+        offset: Annotated[int, Query(description="Number of users to skip.")] = 0,
+        sort_by: Annotated[str, Query(
+            description="`username` (default), `created_at`, `email`, `user_type`, or `last_login`; other values sort by username.",
+        )] = 'username',
+        sort_order: Annotated[str, Query(description="`asc` (default) or `desc`; other values sort ascending.")] = 'asc',
+        search: Annotated[Optional[str], Query(description="Substring match on username or email.")] = None,
+        user_type_filter: Annotated[Optional[str], Query(description="Only this user type: `root`, `admin`, or `consumer`.")] = None,
+        group_filter: Annotated[Optional[str], Query(description="Only members of this user group (group name or hash).")] = None,
+        project_filter: Annotated[Optional[str], Query(description="Only users with access to this project (project name or hash).")] = None,
+        include_inactive: Annotated[bool, Query(description="Also return deactivated users.")] = False,
+        include_group_info: Annotated[bool, Query(description="Include each user's `groups`.")] = True,
+        include_project_access: Annotated[bool, Query(
+            description="Include each user's `projects` with effective permissions.",
+        )] = True,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None) -> ListUsersResponse:
     """
-    List all users with optional filters, group/project info, and pagination.
-    
-    Args:
-        limit: Maximum number of users to return
-        offset: Offset for pagination
-        sort_by: Field to sort by
-        sort_order: Sort order (asc or desc)
-        search: Search term for username or email
-        user_type_filter: Filter by user type (root, admin, consumer)
-        group_filter: Filter by user group (by hash or name)
-        project_filter: Filter by project access (by hash or name) 
-        include_inactive: Include inactive users
-        include_group_info: Include group membership information
-        include_project_access: Include project access information
-        
-    Returns:
-        List of users matching the filters with their group memberships and project access
+    List users with filtering, sorting, and pagination.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`. Root
+    sees all users; admins see themselves plus users who share at least one
+    accessible project with them.
+
+    **Responses:** `200` with `users`, `pagination`, and the applied `filters`.
+    `pagination.total` counts only by `user_type_filter` and `include_inactive`
+    (not `search`, group/project filters, or admin scoping), and admin
+    scoping is applied after the page is fetched, so an admin's page can hold
+    fewer than `limit` users.
     """
     # Check if user has permission to list users (root or admin)
     current_user = handle_db_operation(
@@ -697,7 +767,16 @@ async def list_current_user_emails(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ) -> Dict[str, Any]:
-    """List the authenticated user's authoritative email states."""
+    """List the caller's email addresses and their lifecycle state.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Responses:** `200` with `emails`; each row has `id`, the full `email`,
+    `email_masked`, `status` (`pending`, `activated`, or `suppressed`),
+    `is_primary`, and timestamps. Removed addresses are omitted and the primary
+    address comes first. Only `activated` addresses can be used to sign in.
+    """
 
     rows = db_email.list_user_emails(log_context.user_id)
     return {
@@ -706,7 +785,21 @@ async def list_current_user_emails(
     }
 
 
-@router.post("/me/emails")
+@router.post(
+    "/me/emails",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={
+        "parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": _ADD_EMAIL_SCHEMA},
+                "application/x-www-form-urlencoded": {"schema": _ADD_EMAIL_SCHEMA},
+                "multipart/form-data": {"schema": _ADD_EMAIL_SCHEMA},
+            },
+        },
+    },
+)
 @log_and_handle_errors(
     operation_name="add_current_user_email",
     activity_type=ActivityType.USER_EMAIL_ACTIVATION_REQUESTED,
@@ -717,7 +810,28 @@ async def add_current_user_email(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ):
-    """Add/reuse a pending email row and enqueue an activation link."""
+    """Add an email address to the caller's account and email it an activation link.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Request:** `email` in a JSON body or as a form field
+    (`application/x-www-form-urlencoded` or `multipart/form-data`). Optional
+    `Idempotency-Key` header.
+
+    **Responses:**
+    - `202` — neutral body for every accepted outcome: new address (a fresh
+      link is sent), already pending (earlier links are replaced), already
+      activated or suppressed on this account (nothing is sent), or refused
+      (e.g. the account already has five pending/activated addresses). The
+      address stays `pending` until the emailed token is submitted to
+      `POST /auth/email/verify`.
+    - `400` — missing or malformed `email`.
+    - `429` — rate limited; `Retry-After` is set.
+    \f
+    Link origin: the configured public base URL, else an allow-listed
+    `X-Public-Base-Url` header relayed by a BFF, else the request origin.
+    """
 
     payload = await read_request_payload(request)
     raw_email = str(payload.get("email") or "").strip()
@@ -792,19 +906,35 @@ async def add_current_user_email(
     return generic_accepted_response()
 
 
-@router.post("/me/emails/{email_id}/resend")
+@router.post(
+    "/me/emails/{email_id}/resend",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={"parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER]},
+)
 @log_and_handle_errors(
     operation_name="resend_current_user_email_activation",
     activity_type=ActivityType.USER_EMAIL_ACTIVATION_RESENT,
     log_success=True,
 )
 async def resend_current_user_email_activation(
-        email_id: str,
+        email_id: Annotated[str, Path(description=_EMAIL_ID_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ):
-    """Resend activation for an owned pending email row with generic `202`."""
+    """Resend the activation link for one of the caller's pending email addresses.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Request:** no body. Optional `Idempotency-Key` header.
+
+    **Responses:**
+    - `202` — neutral body, also when `email_id` is unknown, not the caller's,
+      or no longer pending; nothing is sent in those cases.
+    - `429` — rate limited, or an activation email for this address was sent
+      within the resend cooldown; `Retry-After` is set.
+    """
 
     config = load_route_email_config()
     recipient_hash = hash_route_value(f"{log_context.user_id}:{email_id}", config)
@@ -878,11 +1008,27 @@ async def resend_current_user_email_activation(
     log_success=True,
 )
 async def remove_current_user_email(
-        email_id: str,
+        email_id: Annotated[str, Path(description=_EMAIL_ID_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ) -> Dict[str, Any]:
+    """Remove one of the caller's email addresses.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Request:** no body.
+
+    **Effects:** unused activation links for the address are revoked. If it
+    was the primary address, the earliest-activated remaining address becomes
+    primary (or the account is left without one). All of the caller's other
+    sessions and refresh tokens are revoked; the current session stays valid.
+
+    **Responses:** `200` with `email_id` and `new_primary_email_id` (or
+    `null`); `404` (`NF_4004`) when `email_id` is not one of the caller's
+    current addresses, in which case nothing is removed or revoked.
+    """
     row = db_email.remove_user_email(
         user_id=log_context.user_id,
         user_email_id=email_id,
@@ -904,11 +1050,26 @@ async def remove_current_user_email(
     log_success=True,
 )
 async def set_current_user_primary_email(
-        email_id: str,
+        email_id: Annotated[str, Path(description=_EMAIL_ID_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ) -> Dict[str, Any]:
+    """Make one of the caller's activated email addresses the primary address.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie); any user type.
+
+    **Request:** no body.
+
+    **Effects:** the account's `email` field becomes this address, and all of
+    the caller's other sessions and refresh tokens are revoked; the current
+    session stays valid.
+
+    **Responses:** `200` with `email_id` and `status` (`primary_changed`);
+    `409` (`CONF_5005`) when the address is not `activated`, has been removed,
+    or is not owned by the caller, in which case no session is revoked.
+    """
     row = db_email.set_primary_user_email(
         user_id=log_context.user_id,
         user_email_id=email_id,
@@ -929,18 +1090,31 @@ async def set_current_user_primary_email(
     log_success=False,
 )
 async def admin_list_user_emails(
-        user_hash: str,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ) -> Dict[str, Any]:
+    """List a user's email addresses for administration, with addresses masked.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; others get `403`. Admins
+    may only view themselves and users who reach one of the projects they are
+    assigned to administer; other users return `403`.
+
+    **Responses:** `200` with `user_hash` and `emails`; each row has `id`,
+    `user_id`, `email_masked`, `email_hash` (hex), `status`, `is_primary`, and
+    timestamps. Removed addresses are included; plain addresses are never
+    returned. `404` for an unknown or inactive `user_hash`.
+    """
     current_user = _current_user_from_context(log_context)
-    _require_admin_or_root(current_user)
+    scope = _require_admin_or_root(current_user)
     target_user = handle_db_operation(
         lambda: get_user_by_hash(user_hash),
         error_context="target user email lookup",
         not_found_message=f"User not found: {mask_uuid(user_hash)}",
     )
+    require_user_in_scope(scope, target_user)
     rows = db_email.list_admin_user_emails(target_user.id)
     return {
         "success": True,
@@ -949,26 +1123,47 @@ async def admin_list_user_emails(
     }
 
 
-@router.post("/{user_hash}/emails/{email_id}/resend")
+@router.post(
+    "/{user_hash}/emails/{email_id}/resend",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+)
 @log_and_handle_errors(
     operation_name="admin_resend_user_email_activation",
     activity_type=ActivityType.USER_EMAIL_ACTIVATION_RESENT,
     log_success=True,
 )
 async def admin_resend_user_email_activation(
-        user_hash: str,
-        email_id: str,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        email_id: Annotated[str, Path(description=_EMAIL_ID_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context = None,
 ):
+    """Resend the activation link for a user's pending email address, as an administrator.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; others get `403`. Admins
+    may only act on themselves and users who reach one of the projects they are
+    assigned to administer; other users return `403`.
+
+    **Request:** no body; `Idempotency-Key` is not supported on this route.
+
+    **Responses:**
+    - `202` — neutral body, also when `email_id` is unknown, belongs to
+      another user, or is no longer pending; nothing is sent in those cases.
+    - `403` — not root/admin, or the user is outside the admin's projects.
+    - `404` — unknown or inactive `user_hash`.
+    - `429` — rate limited, or an activation email for this address was sent
+      within the resend cooldown; `Retry-After` is set.
+    """
     current_user = _current_user_from_context(log_context)
-    _require_admin_or_root(current_user)
+    scope = _require_admin_or_root(current_user)
     target_user = handle_db_operation(
         lambda: get_user_by_hash(user_hash),
         error_context="target user email resend lookup",
         not_found_message=f"User not found: {mask_uuid(user_hash)}",
     )
+    require_user_in_scope(scope, target_user)
 
     config = load_route_email_config()
     recipient_hash = hash_route_value(f"{target_user.id}:{email_id}", config)
@@ -1025,25 +1220,23 @@ async def admin_resend_user_email_activation(
     log_success=False
 )
 async def get_user_details(
-        user_hash: str,
-        include_group_hierarchy: bool = True,
-        include_permission_details: bool = True,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        include_group_hierarchy: Annotated[bool, Query(description="Add `projects_count` to each group.")] = True,
+        include_permission_details: Annotated[bool, Query(
+            description="Add `effective_permissions` and `access_groups` to each project.",
+        )] = True,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None) -> GetUserDetailsResponse:
     """
-    Get detailed information about a specific user including hierarchical group memberships and permissions.
-    
-    Admin users can view details of any user in their assigned projects.
-    Root users can view details of any user.
-    Regular users can only view their own details.
-    
-    Args:
-        user_hash: The user hash to get details for
-        include_group_hierarchy: Whether to include hierarchical group information
-        include_permission_details: Whether to include detailed permission information
-        
-    Returns:
-        Comprehensive user information including hierarchical groups, permissions, and projects
+    Get a user's account fields, type info, group memberships, and accessible projects.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie). Any user may read their own record. Root may read
+    any user; admins may read users who share at least one accessible project
+    with them; everyone else gets `403`.
+
+    **Responses:** `200` with `user`; `403` outside the caller's scope; `404`
+    for an unknown or inactive `user_hash`.
     """
     # Get current user
     current_user = handle_db_operation(
@@ -1177,23 +1370,31 @@ async def get_user_details(
     log_success=True
 )
 async def update_user_status(
-        user_hash: str,
-        is_active: bool,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        is_active: Annotated[bool, Query(description="`true` to activate, `false` to deactivate.")],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> UpdateUserStatusResponse:
     """
-    Activate or deactivate a user account based on hierarchical permissions.
-    
-    Root users can change status of any user.
-    Admin users can only change status of users within their assigned projects.
-    
-    Args:
-        user_hash: Hash of the user to update
-        is_active: New status (true=active, false=inactive)
-        
-    Returns:
-        Updated user status with confirmation message
+    Activate or deactivate a user account.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`.
+    Admins may only change users who share at least one accessible project with
+    them, and may not deactivate root users.
+
+    **Request:** `is_active` is a required query parameter; there is no body.
+
+    **Effects:** deactivation revokes the user's sessions, refresh tokens, and
+    cached auth state.
+
+    **Responses:**
+    - `200` — new status.
+    - `400` — deactivating your own account.
+    - `403` — not root/admin, target outside the admin's projects, or an admin
+      deactivating a root user.
+    - `404` — unknown or inactive `user_hash`. Inactive users are not found, so
+      this endpoint cannot currently reactivate an account.
     """
     # Get current user
     current_user = handle_db_operation(
@@ -1301,30 +1502,42 @@ async def update_user_status(
     )
 
 
-@router.post("/{user_hash}/reset-password")
+@router.post(
+    "/{user_hash}/reset-password",
+    responses={429: {"description": "Rate limited (`INT_7005`); see the `Retry-After` header."}},
+)
 @log_and_handle_errors(
     operation_name="reset_user_password",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=True
 )
 async def reset_user_password(
-        user_hash: str,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
         request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Accept an admin-triggered secure password reset link request.
-    
-    **Admin access required**: Only admin users can reset passwords.
-    **Phase 2 Implementation**: Admin password reset functionality
-    
-    Args:
-        user_hash: Hash of the user whose password to reset
-        
-    Returns:
-        Reset-link acceptance metadata without plaintext password, full email,
-        reset URL, token, or provider payload.
+    Queue a password-reset link to a user's activated email address.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`.
+    Admins may only reset themselves and users who reach one of the projects
+    they are assigned to administer.
+
+    **Request:** no body. No password is set or returned: the user finishes
+    the reset by submitting the emailed token to `POST /auth/password/reset`.
+    The link goes to the primary activated address, else the earliest-activated
+    one.
+
+    **Responses:**
+    - `200` — accepted. `reset_data.has_delivery_target` is `false` when the
+      user has no activated address (nothing is sent). The response never
+      includes the token, link, or full address.
+    - `400` — the target is a root user.
+    - `403` — not root/admin, or the user is outside the admin's projects.
+    - `404` — unknown or inactive `user_hash`.
+    - `429` — rate limited; `Retry-After` is set.
     """
     # Get current user
     current_user = handle_db_operation(
@@ -1334,10 +1547,8 @@ async def reset_user_password(
     )
 
     # Check admin permissions
-    user_type = get_user_type(current_user.id)
-    is_root = is_root_user(current_user.id)
-    
-    if not is_root and user_type != 'admin':
+    scope = resolve_admin_scope(current_user.id)
+    if not scope.is_admin:
         raise AuthorizationError(
             message="Admin permission required to reset passwords",
             error_code=ErrorCode.ACCESS_DENIED
@@ -1356,6 +1567,9 @@ async def reset_user_password(
             message="Cannot reset root user passwords",
             error_code=ErrorCode.INVALID_INPUT
         )
+
+    # Admin users only manage users in the projects they are assigned to
+    require_user_in_scope(scope, target_user)
 
     # The shared assert_password_policy(...) gate is enforced when this
     # admin_password_reset link is consumed by /auth/password/reset; this
@@ -1444,22 +1658,30 @@ async def reset_user_password(
     log_success=True
 )
 async def delete_user_endpoint(
-        user_hash: str,
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Soft delete a user account (deactivates user).
-    
-    **Admin access required**: Only root or admin users can delete users.
-    Root users can delete any user except themselves.
-    Admin users can only delete users in their assigned projects.
-    
-    Args:
-        user_hash: Hash of the user to delete
-        
-    Returns:
-        Deletion confirmation with user details
+    Soft-delete a user: deactivate the account and its group memberships.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`.
+    Root may delete any other user. Admins may delete non-root users who share
+    at least one accessible project with them.
+
+    **Request:** no body. The user row is kept (see `DELETE /users/{user_hash}/hard`
+    for permanent removal); sessions, refresh tokens, and cached auth state are
+    revoked.
+
+    **Responses:**
+    - `200` — deleted (`user_hash`, `username`, `deleted_at`).
+    - `400` — deleting your own account.
+    - `403` — not root/admin, admin targeting a root user, or target outside
+      the admin's projects.
+    - `404` — unknown or already inactive `user_hash`.
+    - For a user with no active group memberships the request currently
+      returns `500` even though the account is deactivated.
     """
     from src.Util.db import delete_user
     
@@ -1568,28 +1790,29 @@ async def delete_user_endpoint(
     log_success=True
 )
 async def hard_delete_user_endpoint(
-        user_hash: str,
+        user_hash: Annotated[str, Path(description="Hash of the user to delete permanently (active or inactive).")],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
-    Permanently HARD delete a user account (ROOT-only debug deep clean).
+    Permanently delete a user account and everything it owns (irreversible).
 
-    Unlike the soft delete (DELETE /{user_hash}), this permanently removes the user
-    row and all owned/identity content via foreign-key cascade, and unlinks (frees)
-    all of the user's emails for re-registration. Shared resources the user created
-    (projects, user groups) are preserved with ownership cleared.
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root user; others get `403`.
 
-    **ROOT access required.** Guards:
-    - Only root users may call this endpoint.
-    - You cannot hard-delete your own account.
-    - Works on inactive (already soft-deleted) users too.
+    **Request:** no body. Unlike `DELETE /users/{user_hash}`, the user row is
+    removed; owned and identity data go with it through foreign-key cascades,
+    and the user's email addresses are freed for re-registration. Shared
+    resources the user created (projects, user groups) are kept with the
+    ownership cleared. Works on already soft-deleted users, and any other user
+    (including root) can be targeted. Sessions and cached auth state are
+    revoked.
 
-    Args:
-        user_hash: Hash of the user to permanently delete
-
-    Returns:
-        Deletion confirmation with a summary of what was removed
+    **Responses:**
+    - `200` — deleted, with a `removed` summary.
+    - `400` — deleting your own account.
+    - `403` — caller is not root.
+    - `404` — unknown `user_hash`.
     """
     from src.Util.db import hard_delete_user, invalidate_user_sessions
     from src.Util.cache_manager import cache_manager
@@ -1641,7 +1864,7 @@ async def hard_delete_user_endpoint(
         # Idempotency: the user disappeared between lookup and delete
         raise NotFoundError(
             message=f"User not found: {mask_uuid(user_hash)}",
-            error_code=ErrorCode.NOT_FOUND
+            error_code=ErrorCode.USER_NOT_FOUND
         )
 
     # Revoke auth state, sessions, and cache (clears any lingering Redis/derived state)
@@ -1690,24 +1913,28 @@ async def hard_delete_user_endpoint(
     log_success=False
 )
 async def search_users_endpoint(
-        q: str,
-        user_type_filter: Optional[str] = None,
-        limit: int = 50,
+        q: Annotated[str, Query(description="Search term matched against username and email.")],
+        user_type_filter: Annotated[Optional[str], Query(
+            description="Only this user type: `root`, `admin`, or `consumer`.",
+        )] = None,
+        limit: Annotated[int, Query(
+            description="Maximum results; values above 100 are capped to 100 and values below 1 become 50.",
+        )] = 50,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> Dict[str, Any]:
     """
     Search users by username or email.
-    
-    **Admin access required**: Only root or admin users can search users.
-    
-    Args:
-        q: Search term (searches username and email)
-        user_type_filter: Optional filter by user type (root, admin, consumer)
-        limit: Maximum results to return (default 50, max 100)
-        
-    Returns:
-        List of users matching the search criteria
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`. Root
+    searches every user. Admins only get themselves and users who reach one of
+    the projects they are assigned to administer; that filter runs after the
+    `limit` is applied, so an admin can receive fewer than `limit` results.
+
+    **Responses:** `200` with `users`, `search_term`, `total_results` (the
+    number of users returned), and `filters`; `400` for an invalid
+    `user_type_filter`.
     """
     from src.Util.db import search_users
     
@@ -1719,10 +1946,8 @@ async def search_users_endpoint(
     )
 
     # Check admin permissions
-    is_root = is_root_user(current_user.id)
-    user_type = get_user_type(current_user.id)
-    
-    if not is_root and user_type != 'admin':
+    scope = resolve_admin_scope(current_user.id)
+    if not scope.is_admin:
         raise AuthorizationError(
             message="Admin permission required to search users",
             error_code=ErrorCode.ACCESS_DENIED
@@ -1747,9 +1972,11 @@ async def search_users_endpoint(
         error_context="user search"
     )
 
-    # Build response
+    # Build response data; admin users only see users in their assigned projects
     users_list = []
     for user in users:
+        if not scope.is_root and not user_in_scope(scope, user.id):
+            continue
         user_info = {
             "user_hash": user.user_hash,
             "username": user.username,
@@ -1780,23 +2007,24 @@ async def search_users_endpoint(
     log_success=True
 )
 async def change_user_type_endpoint(
-        user_hash: str,
-        user_type: str = Form(...),
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        user_type: str = Form(..., description="New user type: `root`, `admin`, or `consumer`."),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> ChangeUserTypeResponse:
     """
-    Change a user's type (promote/demote users).
-    
-    **Root users only**: Only root users can change user types.
-    This is a sensitive operation that changes user privileges.
-    
-    Args:
-        user_hash: Hash of the user to update
-        user_type: New user type (root, admin, consumer)
-        
-    Returns:
-        Updated user type information
+    Change a user's type (promote or demote).
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root user; others get `403` (`AUTHZ_2002`).
+
+    **Request:** form field `user_type` (`application/x-www-form-urlencoded` or
+    `multipart/form-data`). No project is assigned when promoting to `admin`;
+    use `PUT /user-types/{user_hash}/type` to set one.
+
+    **Responses:** `200` with `previous_type` and `new_type`; `400` for an
+    invalid `user_type` (`VAL_3012`); `404` for an unknown or inactive
+    `user_hash`.
     """
     # Get current user
     current_user = handle_db_operation(
@@ -1883,28 +2111,39 @@ async def change_user_type_endpoint(
     log_success=True
 )
 async def update_user_details_endpoint(
-        user_hash: str,
-        username: Optional[str] = Form(None),
-        email: Optional[str] = Form(None),
-        user_type: Optional[str] = Form(None),
+        user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        username: Optional[str] = Form(None, description="New username (must be unique)."),
+        email: Optional[str] = Form(
+            None,
+            description="New value for the legacy `email` field (not verified; not a login identifier).",
+        ),
+        user_type: Optional[str] = Form(
+            None,
+            description="New user type (`root`, `admin`, `consumer`); root callers only.",
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> UpdateUserResponse:
     """
-    Update user details (admin/root operation).
-    
-    **Root/Admin access required**:
-    - Root users can update any user including user_type changes
-    - Admin users can update users in their projects (except user_type)
-    
-    Args:
-        user_hash: Hash of the user to update
-        username: New username (optional)
-        email: New email (optional)
-        user_type: New user type (optional, ROOT only)
-        
-    Returns:
-        Updated user information
+    Update another user's username, legacy `email` field, or user type.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
+    `session_token` cookie) of a root or admin user; consumers get `403`.
+    Root may update any user, including `user_type`. Admins may update users
+    who share at least one accessible project with them, but not `user_type`.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`); send at least one field. `email` only overwrites
+    the compatibility `email` field; verified addresses live under the
+    `/users/me/emails` lifecycle.
+
+    **Responses:**
+    - `200` — the updated user.
+    - `400` — no field provided, or invalid `user_type` (`VAL_3012`).
+    - `403` — not root/admin, admin sending `user_type` (`AUTHZ_2002`), or
+      target outside the admin's projects.
+    - `404` — unknown or inactive `user_hash`.
+    - `409` — username already taken (`CONF_5004`).
     """
     # Get current user
     current_user = handle_db_operation(

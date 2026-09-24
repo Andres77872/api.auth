@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import httpx
 import pymysql
 import pytest
+
+from src.Util.admin_scope import AdminScope
 from fastapi import FastAPI
 
 from src.middleware.error_handler import register_exception_handlers
@@ -43,6 +45,8 @@ async def _client(module, monkeypatch):
         return SimpleNamespace(user_id="usr-admin", permissions=["admin"])
 
     app.dependency_overrides[module.require_billing_admin] = _billing_admin
+    # Root billing scope: these tests exercise route behavior, not group ownership.
+    app.dependency_overrides[module.require_billing_scope] = lambda: AdminScope(user_id="usr-admin", user_type="root")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://test",

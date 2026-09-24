@@ -78,7 +78,6 @@ from src.Util.email.route_support import (
     client_ip,
     complete_idempotency,
     db_bool,
-    forced_rate_limit_response_for_test,
     generic_accepted_response,
     hash_route_value,
     idempotency_kwargs,
@@ -376,9 +375,6 @@ def _safe_log_email_activity(
 
 
 def _check_email_send_rate_limit(*, request: Request, purpose: str, recipient_hash_hex_value: str, user_id: str | None = None):
-    forced = forced_rate_limit_response_for_test(request)
-    if forced is not None:
-        return forced
     try:
         EmailRateLimiter().check_send_request(
             purpose=purpose,
@@ -392,9 +388,6 @@ def _check_email_send_rate_limit(*, request: Request, purpose: str, recipient_ha
 
 
 def _check_email_consume_rate_limit(*, request: Request, purpose: str, lookup_id: str):
-    forced = forced_rate_limit_response_for_test(request)
-    if forced is not None:
-        return forced
     try:
         EmailRateLimiter().check_consume_request(
             purpose=purpose,
@@ -508,7 +501,70 @@ def _token_hash_for_presented_token(*, purpose: str, lookup_id: str, secret: str
     )
 
 
-@router.post("/email/verify")
+_IDEMPOTENCY_KEY_HEADER_PARAMETER = {
+    "name": "Idempotency-Key",
+    "in": "header",
+    "required": False,
+    "schema": {"type": "string"},
+    "description": (
+        "Optional client key. A repeat with the same key replays the stored `202` "
+        "response without repeating side effects; malformed keys are ignored."
+    ),
+}
+
+_ACCEPTED_202_RESPONSE = {
+    "description": (
+        "Neutral accepted body (`success`, `message`). The same body is returned for "
+        "every outcome so callers cannot learn whether an account or token exists."
+    ),
+}
+
+_EMAIL_RATE_LIMITED_429_RESPONSE = {
+    "description": "Rate limited (`INT_7005`); see the `Retry-After` header.",
+}
+
+_LINK_TOKEN_PROPERTIES = {
+    "token": {
+        "type": "string",
+        "description": "Link token from the emailed URL (`?token=`), in the form `<lookup_id>.<secret>`.",
+    },
+    "lookup_id": {
+        "type": "string",
+        "description": "Alternative to `token`: the part before the last `.`; send together with `secret`.",
+    },
+    "secret": {
+        "type": "string",
+        "description": "Alternative to `token`: the part after the last `.`; send together with `lookup_id`.",
+    },
+}
+
+
+def _json_or_form_request_body(schema: dict, *, required: bool = True) -> dict:
+    """OpenAPI requestBody for routes that parse JSON or form bodies themselves."""
+    return {
+        "required": required,
+        "content": {
+            "application/json": {"schema": schema},
+            "application/x-www-form-urlencoded": {"schema": schema},
+            "multipart/form-data": {"schema": schema},
+        },
+    }
+
+
+@router.post(
+    "/email/verify",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={
+        "parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER],
+        "requestBody": _json_or_form_request_body(
+            {
+                "type": "object",
+                "required": ["token"],
+                "properties": _LINK_TOKEN_PROPERTIES,
+            }
+        ),
+    },
+)
 @log_unauthenticated_operation(
     operation_name="email_activation_verify",
     activity_type=ActivityType.USER_EMAIL_ACTIVATED,
@@ -518,7 +574,20 @@ async def verify_email_activation(
     request: Request,
     log_context = None,
 ):
-    """Consume an email activation token with generic public `202` posture."""
+    """Activate a pending email address using the token from an activation email.
+
+    **Auth:** public; possession of the emailed token is the credential.
+
+    **Request:** `application/json`, `application/x-www-form-urlencoded` or
+    `multipart/form-data` with `token` (or `lookup_id` + `secret`). Optional
+    `Idempotency-Key` header.
+
+    **Responses:**
+    - `202` — neutral body for every outcome: activated, unknown, expired, already
+      used, or missing token. When activation changes the account's sign-in
+      identity, all of the user's sessions and refresh tokens are revoked.
+    - `429` — too many attempts for this token or client IP; `Retry-After` is set.
+    """
 
     payload = await read_request_payload(request)
     token = token_from_request_payload(payload)
@@ -585,7 +654,41 @@ async def verify_email_activation(
     return generic_accepted_response()
 
 
-@router.post("/password/forgot")
+@router.post(
+    "/password/forgot",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={
+        "parameters": [
+            _IDEMPOTENCY_KEY_HEADER_PARAMETER,
+            {
+                "name": "X-Public-Base-Url",
+                "in": "header",
+                "required": False,
+                "schema": {"type": "string"},
+                "description": (
+                    "Browser origin to build the emailed link from (for BFFs). Used only when "
+                    "it is a well-formed http(s) origin on the allowed-origins list and no "
+                    "public base URL is pinned by configuration."
+                ),
+            },
+        ],
+        "requestBody": _json_or_form_request_body(
+            {
+                "type": "object",
+                "required": ["email_or_username"],
+                "properties": {
+                    "email_or_username": {
+                        "type": "string",
+                        "description": "Email address or username of the account to reset.",
+                    },
+                    "identifier": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
+                    "email": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
+                    "username": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
+                },
+            }
+        ),
+    },
+)
 @log_unauthenticated_operation(
     operation_name="password_reset_request",
     activity_type=ActivityType.PASSWORD_RESET_REQUESTED,
@@ -595,7 +698,21 @@ async def forgot_password_link(
     request: Request,
     log_context = None,
 ):
-    """Request a password reset link without disclosing account existence."""
+    """Email a password-reset link to an account without revealing whether it exists.
+
+    **Auth:** public.
+
+    **Request:** `application/json`, `application/x-www-form-urlencoded` or
+    `multipart/form-data` with `email_or_username` (aliases: `identifier`, `email`,
+    `username`). Optional `Idempotency-Key` and `X-Public-Base-Url` headers. The
+    emailed link points at `/auth/password/reset?token=…` on the public base URL, so
+    the frontend must serve that page and POST the token here.
+
+    **Responses:**
+    - `202` — neutral body whether or not a matching account exists.
+    - `400` — no identifier supplied (`VAL_3002`).
+    - `429` — too many requests for this recipient or client IP; `Retry-After` is set.
+    """
 
     payload = await read_request_payload(request)
     identifier = str(
@@ -673,7 +790,28 @@ async def forgot_password_link(
     return generic_accepted_response()
 
 
-@router.post("/password/reset")
+@router.post(
+    "/password/reset",
+    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={
+        "parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER],
+        "requestBody": _json_or_form_request_body(
+            {
+                "type": "object",
+                "required": ["new_password", "token"],
+                "properties": {
+                    "new_password": {
+                        "type": "string",
+                        "format": "password",
+                        "description": "New password; must satisfy the password policy.",
+                    },
+                    "password": {"type": "string", "format": "password", "description": "Alias accepted in place of `new_password`."},
+                    **_LINK_TOKEN_PROPERTIES,
+                },
+            }
+        ),
+    },
+)
 @log_unauthenticated_operation(
     operation_name="password_reset_consume",
     activity_type=ActivityType.PASSWORD_RESET_CONSUMED,
@@ -683,7 +821,23 @@ async def reset_password_with_link(
     request: Request,
     log_context = None,
 ):
-    """Consume a password reset token, update password, and create no session."""
+    """Set a new password using the token from a password-reset email.
+
+    **Auth:** public; possession of the emailed token is the credential. Tokens from
+    user-requested and admin-issued reset links are both accepted.
+
+    **Request:** `application/json`, `application/x-www-form-urlencoded` or
+    `multipart/form-data` with `new_password` (alias `password`) and `token` (or
+    `lookup_id` + `secret`). Optional `Idempotency-Key` header.
+
+    **Responses:**
+    - `202` — neutral body for every token outcome (reset, unknown, expired, already
+      used, or missing). On a successful reset all of the user's sessions and refresh
+      tokens are revoked; no new session is issued, so the user must log in again.
+    - `400` — `new_password` missing (`VAL_3002`) or rejected by the password policy
+      (`VAL_3007`); checked before the token.
+    - `429` — too many attempts for this token or client IP; `Retry-After` is set.
+    """
 
     payload = await read_request_payload(request)
     new_password = str(payload.get("new_password") or payload.get("password") or "")
@@ -760,7 +914,37 @@ async def reset_password_with_link(
     return generic_accepted_response()
 
 
-@router.post("/password/change", response_model=ChangePasswordResponse)
+@router.post(
+    "/password/change",
+    response_model=ChangePasswordResponse,
+    responses={429: {"description": "Too many attempts (`INT_7005`); see the `Retry-After` header."}},
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                content_type: {
+                    "schema": {
+                        "type": "object",
+                        "required": ["current_password", "new_password"],
+                        "properties": {
+                            "current_password": {"type": "string", "format": "password"},
+                            "new_password": {
+                                "type": "string",
+                                "format": "password",
+                                "description": "Must satisfy the password policy.",
+                            },
+                        },
+                    }
+                }
+                for content_type in (
+                    "application/json",
+                    "application/x-www-form-urlencoded",
+                    "multipart/form-data",
+                )
+            },
+        }
+    },
+)
 @log_and_handle_errors(
     operation_name="change_password",
     activity_type=None,
@@ -771,7 +955,22 @@ async def change_password(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None,
 ) -> ChangePasswordResponse:
-    """Change the authenticated user's password without issuing a new session."""
+    """Change the signed-in user's password after verifying the current one.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie). The current password is the step-up proof; no separate recent
+    re-authentication is needed.
+
+    **Request:** `current_password` and `new_password` as a JSON object or as form fields.
+
+    **Responses:**
+    - `200` — password changed. Every other session and refresh family of the user is
+      revoked; the calling session stays valid and no new tokens are issued.
+    - `400` — a field is missing (`VAL_3002`) or the new password fails the policy
+      (`VAL_3007`).
+    - `401` — invalid/expired access token, or wrong current password (`AUTH_1001`).
+    - `429` — too many attempts for this user, session or client IP; `Retry-After` is set.
+    """
 
     payload = await read_request_payload(request)
     missing_fields = []
@@ -857,26 +1056,42 @@ async def change_password(
 )
 async def login(
         response: Response,
-        username: str = Form(...),
-        password: str = Form(...),
-        remember_me: bool = Form(False),
+        username: str = Form(..., description="Username or email address."),
+        password: str = Form(..., description="Account password."),
+        remember_me: bool = Form(False, description="Issue a longer-lived refresh token."),
         project_hash: Optional[str] = Form(
             None,
-            description="Required for all users. Root users bypass group-based access validation and may access any project by role.",
+            description=(
+                "Project to scope the session to. Required for every user type (omitting it "
+                "returns 400). Root may target any active project; admins only assigned "
+                "projects; consumers only projects reachable through their user groups."
+            ),
         ),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
 ) -> LoginResponse:
-    """
-    Authenticate user and return session token.
+    """Sign in with username/email and password and get a project-scoped access/refresh token pair.
 
-    The project context is mandatory for all users:
-    - Root users MUST provide a project_hash but bypass group-based access validation.
-    - Root may access any project by role.
-    - Non-root users MUST provide a project_hash and are validated through group access.
-    - Billing must not be added to this identity/session response.
-    - The complete list of accessible projects is always returned so clients may 
-      switch context later with the `/auth/switch-project` endpoint.
+    **Auth:** public.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`): `username`, `password`, `project_hash`, optional
+    `remember_me`.
+
+    **Responses:**
+    - `200` — `LoginResponse` with `access_token`, `refresh_token`, user, project,
+      `accessible_projects` (for later `/auth/switch-project`), `user_groups` (empty
+      for root/admin) and `plan` (consumers). Also sets the HttpOnly `session_token`
+      (access token, path `/`) and `refresh_token` (path `/auth`) cookies.
+    - `400` — missing `username`, `password` or `project_hash`.
+    - `401` — wrong username/email or password (`AUTH_1001`).
+    - `403` — no access to the project, or the project is inactive/archived.
+    - `404` — project not found (root and admin accounts).
+    - `429` — too many failed attempts for this client IP and identifier; `Retry-After`
+      is set.
+
+    \f
+    Billing must not be added to this identity/session response.
     """
     if not username or not password:
         raise ValidationError(
@@ -1132,13 +1347,28 @@ async def login(
 )
 async def platform_login(
         response: Response,
-        username: str = Form(...),
-        password: str = Form(...),
-        remember_me: bool = Form(False),
+        username: str = Form(..., description="Username or email address of a root or admin account."),
+        password: str = Form(..., description="Account password."),
+        remember_me: bool = Form(False, description="Issue a longer-lived refresh token."),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
 ) -> LoginResponse:
-    """Authenticate root/admin users for platform dashboard access without project scope."""
+    """Sign in a root or admin user with a platform-scoped (no project) token pair for dashboard use.
+
+    **Auth:** public; only root and admin accounts can complete it.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`): `username`, `password`, optional `remember_me`.
+
+    **Responses:**
+    - `200` — `LoginResponse` with tokens; `project` is null and `accessible_projects`
+      and `user_groups` are empty. Sets the `session_token` and `refresh_token` cookies.
+    - `400` — missing `username` or `password`.
+    - `401` — wrong username/email or password (`AUTH_1001`).
+    - `403` — the account is a consumer (`AUTHZ_2002`).
+    - `429` — too many failed attempts for this client IP and identifier; `Retry-After`
+      is set.
+    """
     if not username or not password:
         raise ValidationError(
             message="Username and password are required",
@@ -1220,25 +1450,28 @@ async def platform_login(
 )
 async def register(
         response: Response,
-        username: str = Form(...),
-        password: str = Form(...),
-        email: Optional[str] = Form(None),
-        user_group_hash: str = Form(...),
+        username: str = Form(..., description="Desired username; must not match any existing username or email."),
+        password: str = Form(..., description="Password; must satisfy the password policy."),
+        email: Optional[str] = Form(None, description="Optional email address; must not already be in use."),
+        user_group_hash: str = Form(..., description="User group the new consumer account joins."),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
 ) -> RegisterResponse:
-    """
-    Register new user with automatic group assignment.
-    Sets HTTP-only cookie with JWT token.
-    
-    Args:
-        username: Desired username
-        password: User's password
-        email: User's email address (optional)
-        user_group_hash: User group hash for registration
-        
-    Returns:
-        Registration result with user information
+    """Create a consumer account in a user group and sign it in to that group's first project.
+
+    **Auth:** public; anyone who knows a `user_group_hash` can register into that group.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`): `username`, `password`, `user_group_hash`, optional `email`.
+
+    **Responses:**
+    - `200` — `RegisterResponse`. The account is always a consumer. When the group
+      reaches an active project, the session is scoped to the first one (by name), the
+      token fields are filled and the `session_token`/`refresh_token` cookies are set;
+      otherwise the token fields are null and no cookies are set.
+    - `400` — missing field, or password rejected by the policy (`VAL_3007`).
+    - `404` — user group not found (`NF_4003`).
+    - `409` — username (`CONF_5001`) or email (`CONF_5002`) already in use.
     """
     if not username or not password or not user_group_hash:
         missing_fields = []
@@ -1356,11 +1589,18 @@ async def validate_user_session(
         response: Response = None,
         background_tasks: BackgroundTasks = None,
 ) -> ValidateSessionResponse:
-    """
-    Validate session token and return user information with group context.
-    
-    Returns:
-        Current user and session information
+    """Check the caller's access token and return its user, project and session context.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie). API keys are not accepted here; use `POST /auth/validate-api-key`.
+
+    **Request:** no parameters or body.
+
+    **Responses:**
+    - `200` — `ValidateSessionResponse`: user (without email), project (null for
+      platform-scoped sessions), `user_groups` (group names), session expiry data and
+      `plan` (may be null). Adds an `X-Auth-Process-Time` header (milliseconds).
+    - `401` — missing, malformed, expired or revoked access token, or inactive user.
     """
     _t_start = time.monotonic()
     session_token = credentials.credentials
@@ -1436,16 +1676,33 @@ async def validate_user_session(
         raise
 
 
-@router.post("/validate-api-key", response_model=ValidateApiKeyResponse)
+@router.post(
+    "/validate-api-key",
+    response_model=ValidateApiKeyResponse,
+    openapi_extra={"security": [{"ProjectApiKey": []}]},
+)
 async def validate_user_api_key(
         request: Request,
         response: Response = None,
 ) -> ValidateApiKeyResponse:
-    """Validate user-created API keys through an enforcing X-API-Key adapter.
+    """Check a user API key sent in `X-API-Key` and return its owner, project, key IDs and permissions.
 
-    This route is intentionally separate from GET /auth/validate so the
-    session/JWT contract stays session-only. It never returns the raw API key or
-    its secret component.
+    **Auth:** API key in `X-API-Key` (`sk_{public_id}.{secret}`). Do not also send an
+    `Authorization` header.
+
+    **Request:** no body; the key is read from the header.
+
+    **Responses:**
+    - `200` — `ValidateApiKeyResponse` with `auth_method: "api_key"`, the owner, the
+      key's project, key `key_id`/`public_id`, groups, permissions and `plan` (consumer
+      owners). Never echoes the key or its secret. Adds `X-Auth-Process-Time`.
+    - `400` — both `Authorization` and `X-API-Key` were sent (`ambiguous_credentials`).
+    - `401` — key missing, malformed, unknown, revoked or expired, or owner inactive.
+    - `403` — the key owner no longer has access to the key's project.
+
+    \f
+    Kept separate from GET /auth/validate so that route's contract stays
+    access-token-only.
     """
     _t_start = time.monotonic()
     api_key = request.headers.get("X-API-Key")
@@ -1529,12 +1786,26 @@ async def logout(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> LogoutResponse:
-    """
-    Logout user and invalidate session.
-    Clears the session cookie.
-    
-    Returns:
-        Logout confirmation
+    """End the caller's session: revoke its refresh family and clear the auth cookies.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie). The token must currently be valid; an expired access token is rejected
+    with `401`.
+
+    **Request:** no body.
+
+    **Responses:**
+    - `200` — `LogoutResponse`. The session's refresh family and access session are
+      revoked (other sessions of the user are untouched) and the `session_token` and
+      `refresh_token` cookies are cleared.
+    - `401` — missing, invalid, expired or already-revoked access token.
+
+    \f
+    The handler decodes with ``decode_access_token_allow_expired`` so an idle tab
+    could log itself out, but ``@log_and_handle_errors`` (require_auth=True) first
+    calls ``validate_session``, which enforces ``exp`` and raises 401 "Token expired"
+    before the handler runs. Integration tests mask this by patching
+    ``src.Util.decorators.validate_session``.
     """
     session_token = credentials.credentials
 
@@ -1566,15 +1837,34 @@ async def logout(
 async def refresh_token(
         response: Response,
         request: Request,
-        refresh_token_value: Optional[str] = Form(None, alias="refresh_token"),
+        refresh_token_value: Optional[str] = Form(
+            None,
+            alias="refresh_token",
+            description=(
+                "Refresh token; the form field name is `refresh_token`. Optional when the "
+                "`refresh_token` cookie is sent; if both are sent they must be identical."
+            ),
+        ),
         log_context: LogContext = None
 ) -> LoginResponse:
-    """
-    Refresh JWT token and extend session.
-    Creates a new token with updated expiration while maintaining the same session context.
-    
-    Returns:
-        New session token with same user and project context
+    """Rotate a refresh token into a new access/refresh token pair with the same user and scope.
+
+    **Auth:** refresh token only — the HttpOnly `refresh_token` cookie (path `/auth`)
+    and/or the `refresh_token` form field. `Authorization` headers are ignored, so an
+    access token cannot refresh itself.
+
+    **Request:** optional form field `refresh_token` (`application/x-www-form-urlencoded`
+    or `multipart/form-data`); JSON bodies are not read.
+
+    **Responses:**
+    - `200` — `LoginResponse` for the same project (or platform) scope with fresh
+      tokens; new `session_token`/`refresh_token` cookies are set. The presented refresh
+      token is single-use.
+    - `401` — refresh token missing (`AUTH_1014`), invalid (`AUTH_1013`), expired
+      (`AUTH_1019`), cookie/field mismatch (`AUTH_1016`), family revoked (`AUTH_1017`),
+      user/project context inactive (`AUTH_1020`), an already-rotated token replayed
+      within the grace window (`AUTH_1022`, retry with the current token), or reused
+      after it (`AUTH_1015`, which also revokes the whole family).
     """
     try:
         presented_refresh_token = extract_refresh_token_from_request(request, refresh_token_value)
@@ -1603,20 +1893,40 @@ async def refresh_token(
 async def switch_project(
         response: Response,
         request: Request,
-        project_hash: str = Form(...),
-        refresh_token_value: Optional[str] = Form(None, alias="refresh_token"),
+        project_hash: str = Form(..., description="Project to move the session to."),
+        refresh_token_value: Optional[str] = Form(
+            None,
+            alias="refresh_token",
+            description=(
+                "Refresh token of the current session; the form field name is `refresh_token`. "
+                "Optional when the `refresh_token` cookie is sent; if both are sent they must "
+                "be identical."
+            ),
+        ),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> SwitchProjectResponse:
-    """
-    Switch to a different project that the user's group has access to.
-    Updates the session cookie with new JWT token.
-    
-    Args:
-        project_hash: Hash of the project to switch to
-        
-    Returns:
-        New session token with updated project context
+    """Move the current session to another project by rotating it into a new project-scoped token pair.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    cookie) plus the refresh token of the same session (`refresh_token` cookie or form
+    field). Requires recent authentication: the session's sign-in, or a provider reauth
+    (`/auth/oauth/{connection}/reauth/start`) of this session, within the
+    recent-reauthentication window. Refreshing or switching projects keeps the original
+    sign-in time, so it never renews this proof.
+    Root may switch to any active project, admins to assigned projects, consumers to
+    projects reachable through their user groups.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`): `project_hash`, optional `refresh_token`.
+
+    **Responses:**
+    - `200` — `SwitchProjectResponse` with the new tokens; new `session_token` and
+      `refresh_token` cookies are set.
+    - `401` — invalid access token, no recent authentication (`AUTH_1008`), or a
+      missing, mismatched or already-rotated refresh token.
+    - `403` — no access to the project, or the project is inactive/archived.
+    - `404` — project not found.
     """
     session_token = credentials.credentials
     try:
@@ -1710,18 +2020,20 @@ async def switch_project(
 
 @router.post("/check-availability", response_model=CheckAvailabilityResponse)
 async def check_availability(
-        username: Optional[str] = Form(None),
-        email: Optional[str] = Form(None)
+        username: Optional[str] = Form(None, description="Username to check."),
+        email: Optional[str] = Form(None, description="Email address to check.")
 ) -> CheckAvailabilityResponse:
-    """
-    Check if username or email is available globally.
-    
-    Args:
-        username: Username to check
-        email: Email to check
-        
-    Returns:
-        Availability status for username and email
+    """Report whether a username and/or email address is still unused by any account.
+
+    **Auth:** public.
+
+    **Request:** form fields (`application/x-www-form-urlencoded` or
+    `multipart/form-data`): `username` and/or `email` (at least one).
+
+    **Responses:**
+    - `200` — `username_available` / `email_available`; a field is null when it was not
+      sent.
+    - `400` — neither `username` nor `email` was sent (`VAL_3002`).
     """
     check_username = username
     check_email = email

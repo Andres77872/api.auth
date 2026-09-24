@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from src.Util.admin_scope import AdminScope
 from fastapi import FastAPI
 
 
@@ -51,6 +53,8 @@ async def _client(module):
         return SimpleNamespace(user_id="usr-1", permissions=["admin"])
 
     app.dependency_overrides[module.require_billing_admin] = _billing_admin
+    # Root billing scope: these tests exercise route behavior, not group ownership.
+    app.dependency_overrides[module.require_billing_scope] = lambda: AdminScope(user_id="usr-admin", user_type="root")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         yield client
 

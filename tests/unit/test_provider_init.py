@@ -307,3 +307,81 @@ def test_binding_and_errors_redact_tokens_and_strict_hashes_from_repr():
     error_repr = f"{exc.value!r} {exc.value}"
     for secret in (OPAQUE_TOKEN, PROJECT_HASH, USER_GROUP_HASH, "payload-secret-never-log"):
         assert secret not in error_repr
+
+
+def _runtime_config(url: str):
+    from src.Util.provider_init import LegacyRedeemRuntimeConfig
+
+    return LegacyRedeemRuntimeConfig(
+        provider_init_redeem_url=url,
+        provider_init_redeem_token=REDEEM_BEARER,
+        provider_init_return_origins=(RETURN_ORIGIN,),
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://companion.internal/internal/provider-init/redeem",
+        "http://10.0.0.5/internal/provider-init/redeem",
+        "ftp://companion.example.test/redeem",
+        "https://user:pass@companion.example.test/redeem",
+        "companion.example.test/redeem",
+    ],
+)
+def test_redeem_refuses_to_send_the_bearer_to_an_unsafe_url(url):
+    post = MagicMock(return_value=StubResponse(payload=_payload()))
+
+    with pytest.raises(ProviderInitRedeemError) as exc:
+        redeem_provider_init_token_sync(OPAQUE_TOKEN, config=_runtime_config(url), http_post=post)
+
+    post.assert_not_called()
+    assert exc.value.reason == "provider_init_redeem_url_unsafe"
+    rendered = f"{exc.value!r} {exc.value}"
+    assert REDEEM_BEARER not in rendered and url not in rendered
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://companion.example.test/internal/provider-init/redeem",
+        "https://10.0.0.5/internal/provider-init/redeem",
+        "https://companion.internal:8443/internal/provider-init/redeem",
+        "http://localhost:8010/internal/auth/provider-init/redeem",
+        "http://127.0.0.1:8010/internal/auth/provider-init/redeem",
+    ],
+)
+def test_redeem_allows_https_including_internal_hosts_and_plain_http_on_localhost(url):
+    post = MagicMock(return_value=StubResponse(payload=_payload()))
+
+    binding = redeem_provider_init_token_sync(OPAQUE_TOKEN, config=_runtime_config(url), http_post=post)
+
+    post.assert_called_once()
+    assert binding.project_hash == PROJECT_HASH
+
+
+def test_default_redeem_transport_never_follows_redirects(monkeypatch):
+    import requests
+
+    captured: dict = {}
+
+    def _post(url, **kwargs):
+        captured.update(kwargs, url=url)
+        return StubResponse(payload=_payload())
+
+    monkeypatch.setattr(requests, "post", _post)
+
+    redeem_provider_init_token_sync(OPAQUE_TOKEN, config=_config())
+
+    assert captured["url"] == REDEEM_URL
+    assert captured.get("allow_redirects") is False
+
+
+@pytest.mark.parametrize("status_code", [301, 302, 307, 308])
+def test_redeem_treats_a_redirect_answer_as_rejected(status_code):
+    post = MagicMock(return_value=StubResponse(status_code=status_code, payload=_payload()))
+
+    with pytest.raises(ProviderInitRedeemError) as exc:
+        redeem_provider_init_token_sync(OPAQUE_TOKEN, config=_config(), http_post=post)
+
+    assert exc.value.reason == "provider_init_http_rejected"

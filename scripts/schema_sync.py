@@ -30,9 +30,13 @@ PATCH_FILES = (
     # OAuth catalog/connections/bindings. Listed before the procedure and trigger files:
     # the external-account triggers validate the provider against oauth_provider_catalog.
     "tables/13_oauth_connections.sql",
+    # sp_update_api_key: keys without an expiry used to be reported as "API key not found".
+    "stored_procedures/13_api_keys.sql",
     "stored_procedures/14_email_activation.sql",
     "stored_procedures/15_external_accounts.sql",
     "stored_procedures/16_patreon_entitlements.sql",
+    # sp_billing_get_purchase_status_by_ref: the S2S purchase-status read.
+    "stored_procedures/17_billing_provider_facts.sql",
     "stored_procedures/18_billing_groups.sql",
     "stored_procedures/19_oauth_connections.sql",
     "triggers/04_email_activation_triggers.sql",

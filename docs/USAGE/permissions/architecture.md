@@ -51,7 +51,7 @@ The stored procedures in `05_global_roles.sql` and `06_permission_assignments.sq
 
 ## The Three Permission Sources
 
-The extended resolver in `src/Util/db/db_permission_assignments.py` calls `sp_get_user_all_permissions` and `sp_get_user_permission_sources` directly. Its permission-check helper is intended to use the extended permission-check stored procedure, but the Python wrapper currently calls `sp_check_user_has_permission` while `schemas/stored_procedures/06_permission_assignments.sql` defines `sp_check_user_has_permission_extended`.
+The extended resolver in `src/Util/db/db_permission_assignments.py` calls `sp_get_user_all_permissions`, `sp_get_user_permission_sources`, and (for single-permission checks) `sp_check_user_has_permission_extended`, all defined in `schemas/stored_procedures/06_permission_assignments.sql`.
 
 Those procedures resolve permissions from exactly three sources:
 
@@ -122,30 +122,18 @@ Admin guards are not uniform across route files.
 ### Important consequence: permission source coverage is not identical
 
 - `/roles` uses the **role-only** checker from `db_global_roles.py`
-- `/permissions` calls the helper named `check_user_has_permission_extended()`,
-  but that helper calls a procedure name absent from the canonical schema and
-  fails closed for a consumer
+- `/permissions` uses `check_user_has_permission_extended()`, which calls
+  `sp_check_user_has_permission_extended` and resolves all three sources
 - `/admin/user-groups` and `/admin/project-groups` read **session permissions** from `validate_session()`
 
 For consumer users, `validate_session()` currently rebuilds `permissions` with `db_global_roles.get_user_permissions()` — that is the **role-derived** path, not the extended three-source union.
 
-Operationally, a direct or user-group `manage_roles` assignment is visible in
-inspection results but does not authorize the active route guards in a fresh
-canonical deployment. Root/admin user types still pass the `/permissions`
-guard before its broken consumer fallback is needed.
-
-### Procedure-name caveat in the extended checker
-
-There is a concrete fresh-bootstrap mismatch:
-
-- `db_permission_assignments.py` calls `sp_check_user_has_permission`
-- `06_permission_assignments.sql` defines `sp_check_user_has_permission_extended`
-
-No compatibility procedure named `sp_check_user_has_permission` exists in the
-canonical SQL tree. The wrapper uses `default_return=False`, so this path denies
-rather than granting access when the call fails. A separately evolved database
-could contain an alias, but that is not part of this repository's bootstrap
-contract.
+Operationally, a direct or user-group `manage_roles` assignment authorizes a
+consumer for the `/permissions` admin routes, but not for `/roles`,
+`/admin/user-groups`, or `/admin/project-groups`. Root/admin user types pass
+the `/permissions` guard before the consumer fallback is consulted. The
+wrapper uses `default_return=False`, so a database error during the check
+denies rather than grants access.
 
 ---
 

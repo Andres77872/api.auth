@@ -13,6 +13,20 @@ import pytest
 from tests.integration.conftest import make_session_payload, create_test_session
 
 
+@pytest.fixture(autouse=True)
+def project_admin_directory():
+    """User "1" is an admin user assigned to administer project "1".
+
+    Project routes authorize on the caller's live user type and admin assignments,
+    not on session permission names. Tests may change a user's type in the mapping.
+    """
+    user_types = {"1": "admin"}
+    assignments = {"1": ["1"]}
+    with patch("src.Util.db.get_user_type", side_effect=lambda user_id: user_types.get(str(user_id), "consumer")), \
+         patch("src.Util.db.get_admin_assigned_projects", side_effect=lambda user_id: assignments.get(str(user_id), [])):
+        yield user_types
+
+
 def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
                   session_token="test-token"):
@@ -91,8 +105,9 @@ async def test_admin_list_projects_returns_200(client, fake_redis, patched_db_co
 async def test_admin_create_project_returns_200(client, fake_redis, patched_db_connection,
                                                  patched_db_error_logger, patched_audit_logger,
                                                  patched_audit_ids, patched_cache_manager,
-                                                 patched_activity_logger):
-    """Admin can POST /projects to create a new project."""
+                                                 patched_activity_logger, project_admin_directory):
+    """Root can POST /projects to create a new project (creation is root-only)."""
+    project_admin_directory["1"] = "root"
     token = "test-admin-create-token"
     session = _make_session(session_token=token)
     create_test_session(fake_redis, token, make_session_payload(session_token=token))

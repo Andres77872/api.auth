@@ -26,7 +26,7 @@ All errors follow this standardized shape:
 {
   "status": "error",
   "error": {
-    "code": "INVALID_CREDENTIALS",
+    "code": "AUTH_1001",
     "category": "authentication",
     "message": "Invalid username or password"
   }
@@ -36,7 +36,7 @@ All errors follow this standardized shape:
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | Always `"error"` for error responses |
-| `error.code` | string | Machine-readable ErrorCode enum name (e.g., `INVALID_CREDENTIALS`, `ACCESS_DENIED`) |
+| `error.code` | string | Machine-readable `ErrorCode` value in `CATEGORY_NNNN` form (e.g., `AUTH_1001` for `INVALID_CREDENTIALS`); see the [catalog](#error-code-catalog) |
 | `error.category` | string | Error category (e.g., `authentication`, `authorization`, `validation`) |
 | `error.message` | string | Human-readable description |
 
@@ -60,7 +60,7 @@ When `DEBUG_MODE=true`, the error object includes two additional fields:
 {
   "status": "error",
   "error": {
-    "code": "INVALID_CREDENTIALS",
+    "code": "AUTH_1001",
     "category": "authentication",
     "message": "Invalid username or password",
     "details": {
@@ -95,14 +95,35 @@ When `DEBUG_MODE=true`, the error object includes two additional fields:
 | `401` | Authentication | Invalid credentials, expired/invalid session, inactive account |
 | `403` | Authorization | Insufficient permissions, access denied, project access denied |
 | `404` | Not Found | User, project, group, role, or permission not found |
-| `409` | Conflict | Username/email already exists, duplicate entry |
+| `409` | Conflict | Username/email already exists, duplicate entry, a request the database refused for the current state (`STATE_CONFLICT`) |
 | `413` | Payload Too Large | POST body exceeds 8MB limit |
 | `429` | Rate Limited | Email send/resend/consume/login/change-password buckets exceeded; honor `Retry-After` |
-| `422` | Unprocessable Entity | Missing `User-Agent` header, malformed form data |
+| `422` | Unprocessable Entity | Missing `User-Agent` header, malformed form data, route-level input checks (internal email recipient/`action_url`, billing S2S request details and `Idempotency-Key`) |
 | `500` | Internal Server Error | Server errors, database failures, generic external-service failures |
 | `501` | Not Implemented | `PATCH /projects/{hash}/owner`, `PATCH /projects/{hash}/archive` |
 | `502` | Bad Gateway | OAuth authorization-code exchange with the provider failed (`OAUTH_CODE_EXCHANGE_FAILED`) |
-| `503` | Service Unavailable | OAuth provider not configured/unhealthy (`OAUTH_PROVIDER_NOT_CONFIGURED`) |
+| `503` | Service Unavailable | OAuth provider not configured/unhealthy (`OAUTH_PROVIDER_NOT_CONFIGURED`); internal template email not configured or template state unavailable (`SERVICE_UNAVAILABLE`) |
+
+### Plain HTTP errors
+
+Some checks raise a bare HTTP status instead of a catalog error (for example an invalid or expired bearer token, which is `401` on every route). The handler fills in `code` and `category` from the status:
+
+| Status | `category` | `code` |
+|--------|------------|--------|
+| `400` | `validation` | `VAL_3001` (`INVALID_INPUT`) |
+| `401` | `authentication` | `AUTH_1003` (`SESSION_INVALID`) |
+| `403` | `authorization` | `AUTHZ_2001` (`ACCESS_DENIED`) |
+| `404` | `not_found` | `NF_4004` (`RESOURCE_NOT_FOUND`) |
+| `409` | `conflict` | `CONF_5004` (`DUPLICATE_ENTRY`) |
+| `422` | `validation` | `VAL_3001` (`INVALID_INPUT`) |
+| `503` | `internal` | `INT_7003` (`SERVICE_UNAVAILABLE`) |
+| any other | `internal` | `INT_7001` (`INTERNAL_ERROR`) |
+
+Routes that answer with their own `{"success": false, ...}` envelope (billing S2S, Patreon S2S, webhooks) are not reshaped.
+
+### Stored-procedure refusals
+
+Stored procedures reject some requests with `SIGNAL SQLSTATE '45000'` (for example "Email row does not exist for user"). These are not database failures: the procedure's message is returned as `error.message`, with `404` / `NF_4004` (`RESOURCE_NOT_FOUND`) when it says a row is not found or does not exist, and `409` / `CONF_5005` (`STATE_CONFLICT`) otherwise. A route may translate a refusal into a more specific error; revoking an API key that is already inactive, for instance, answers `400` / `AUTH_1012`.
 
 ---
 
@@ -119,7 +140,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `AUTH_1003` | `SESSION_INVALID` | Session is invalid | Token malformed or not found | Re-authenticate via login |
 | `AUTH_1004` | `TOKEN_INVALID` | Token invalid | JWT malformed or failed validation | Use a valid access/refresh token for the endpoint |
 | `AUTH_1005` | `ACCOUNT_INACTIVE` | Account is inactive | User status is `inactive` | Contact admin to reactivate |
-| `AUTH_1008` | `MFA_REQUIRED` | Recent reauthentication required | A step-up-gated operation (`/auth/switch-project`, Patreon link/unlink) was called with an access token issued more than `recent_reauth_seconds` ago (default 300s). MFA itself is not implemented; this is a recency gate | Call `/auth/refresh` and retry with the new access token |
+| `AUTH_1008` | `MFA_REQUIRED` | Recent reauthentication required | A step-up-gated operation (API-key create/update/revoke, `/auth/switch-project`, OAuth link/unlink, Patreon link/unlink) was called more than `recent_reauth_seconds` (default 300s) after the session signed in, with no OAuth reauth of the session in that window. The sign-in time (`auth_time`) survives `/auth/refresh` and project switches, so refreshing does not help. MFA itself is not implemented; this is a recency gate | Sign in again, or complete `POST /auth/oauth/{connection}/reauth/start` for the current session, then retry |
 | `AUTH_1010` | `API_KEY_INVALID` | Invalid API key | `X-API-Key` malformed, fails HMAC verification, or owner is inactive (raised via the API-key validation adapter/middleware) | Use a valid, active API key |
 | `AUTH_1011` | `API_KEY_EXPIRED` | API key has expired | Key's `expires_at` has elapsed | Rotate or recreate the API key |
 | `AUTH_1012` | `API_KEY_REVOKED` | API key has been revoked | Key was revoked by owner/admin | Create a new key |
@@ -146,6 +167,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `AUTHZ_2006` | `ROLE_ASSIGNMENT_DENIED` | Role assignment denied | Cannot assign/remove role | Check role management permissions |
 | `AUTHZ_2007` | `PERMISSION_DENIED` | Permission denied | Generic permission failure | Check specific permission requirements |
 | `AUTHZ_2008` | `API_KEY_NO_ACCESS` | API key has no project access | API-key-authenticated admin is not assigned to the requested project | Verify the API key admin's project assignment |
+| `AUTHZ_2009` | `OPERATION_NOT_ALLOWED` | Operation not allowed | The target is protected regardless of the caller's permissions (deleting a system role) | Do not retry; system roles cannot be deleted |
 
 ### Validation Errors (400)
 
@@ -171,13 +193,14 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `NF_4001` | `USER_NOT_FOUND` | User not found | User hash does not exist | Verify user hash |
 | `NF_4002` | `PROJECT_NOT_FOUND` | Project not found | Project hash does not exist | Verify project hash |
 | `NF_4003` | `GROUP_NOT_FOUND` | Group not found | Group hash does not exist | Verify group hash |
-| `NF_4004` | `RESOURCE_NOT_FOUND` | Resource not found | Generic resource not found | Verify resource identifier |
+| `NF_4004` | `RESOURCE_NOT_FOUND` | Resource not found | Generic resource not found, a link that does not exist (permission group not on the role, role not in the project catalog), or a stored-procedure refusal saying a row is missing | Verify resource identifier |
 | `NF_4005` | `PERMISSION_NOT_FOUND` | Permission not found | Permission hash does not exist | Verify permission hash |
 | `NF_4006` | `SESSION_NOT_FOUND` | Session not found | Session hash does not exist | Verify session or re-authenticate |
 | `NF_4007` | `ROLE_NOT_FOUND` | Role not found | Role hash does not exist | Verify role hash |
 | `NF_4008` | `ENDPOINT_NOT_FOUND` | Endpoint not found | Route does not exist | Check API documentation |
 | `NF_4009` | `USER_TYPE_NOT_FOUND` | User type not found | User type does not exist | Use valid user type (root, admin, consumer) |
 | `NF_4010` | `API_KEY_NOT_FOUND` | API key not found | API key id/public id does not exist or is not owned by the caller | Verify the key id; list your keys via `GET /users/api-keys` |
+| `NF_4011` | `PERMISSION_GROUP_NOT_FOUND` | Permission group not found | Permission group hash does not exist or the group is soft-deleted (`/roles/...`, `/permissions/...`) | Verify permission group hash |
 
 ### Conflict Errors (409)
 
@@ -187,7 +210,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 | `CONF_5002` | `EMAIL_EXISTS` | Email already exists | Registration or user creation with duplicate email | Use `POST /auth/check-availability` first |
 | `CONF_5003` | `RESOURCE_EXISTS` | Resource already exists | Attempting to create a resource that already exists | Use the existing resource or choose a different identifier |
 | `CONF_5004` | `DUPLICATE_ENTRY` | Duplicate entry | Database-level duplicate constraint violation | Check for existing records |
-| `CONF_5005` | `STATE_CONFLICT` | State conflict | Operation conflicts with current resource state | Check resource state before operation |
+| `CONF_5005` | `STATE_CONFLICT` | State conflict | Operation conflicts with current resource state, including a stored-procedure refusal (see [Stored-procedure refusals](#stored-procedure-refusals)) | Read `error.message`; check resource state before retrying |
 | `CONF_5006` | `VERSION_CONFLICT` | Version conflict | Optimistic locking version mismatch | Refresh and retry |
 
 ### Database Errors (500)
@@ -207,7 +230,7 @@ Error codes are defined in `src/Util/error_handler.py` as the `ErrorCode` enum. 
 |------|-----------|---------|-------|------------|
 | `INT_7001` | `INTERNAL_ERROR` | Internal server error | Unhandled exception | Check server logs; report with DEBUG_MODE context |
 | `INT_7002` | `CONFIGURATION_ERROR` | Configuration error | Invalid or missing configuration | Check environment variables |
-| `INT_7003` | `SERVICE_UNAVAILABLE` | Service unavailable | Dependent service is down | Check service health |
+| `INT_7003` | `SERVICE_UNAVAILABLE` | Service unavailable | Redis cache error during a database/cache operation (`500`), or a route's explicit `503` | Check service health |
 | `INT_7004` | `TIMEOUT` | Request timeout | Operation timed out | Check network and service performance |
 | `INT_7005` | `RATE_LIMIT_EXCEEDED` | Rate limit exceeded | Email send/resend/consume/login/change-password buckets exceeded | Wait and retry after the `Retry-After` header |
 | `INT_7006` | `FEATURE_NOT_IMPLEMENTED` | Feature not implemented | Endpoint is a reserved stub | Do not call; reserved for future use (`PATCH /projects/{hash}/owner`, `PATCH /projects/{hash}/archive`) |
@@ -341,19 +364,7 @@ The following codes exist in the `ErrorCode` enum but are **not currently raised
 | `AUTH_1006` | `ACCOUNT_LOCKED` | Defined but not used (no account-lockout flow) |
 | `AUTH_1007` | `PASSWORD_RESET_REQUIRED` | Defined but not used |
 | `AUTH_1009` | `MFA_INVALID` | Defined but not used (MFA not implemented) |
-| `INT_7003` | `SERVICE_UNAVAILABLE` | Defined but not used |
 | `EXT_8026` | `EXTERNAL_IDENTITY_ALREADY_LINKED` | Reserved/latent — defined and mapped (409) but not currently emitted by any route |
-
-### Known Route References to Missing Enum Members
-
-Some route paths currently reference names that are **not** defined in `ErrorCode`. Those paths surface as generic `INTERNAL_ERROR` until source code or the enum is fixed:
-
-| Missing name | Known impact |
-|--------------|--------------|
-| `ALREADY_EXISTS` | Duplicate project-catalog role entry path |
-| `NOT_FOUND` | Some generic not-found paths in roles/user-type/group helpers |
-| `OPERATION_NOT_ALLOWED` | System-role delete path |
-| `PERMISSION_GROUP_NOT_FOUND` | Permission-group not-found paths in roles/permissions routes |
 
 ---
 
@@ -562,7 +573,7 @@ Look at the `category` field in the error response:
 | `authorization` | Permission or access scope issues |
 | `validation` | Missing/invalid input |
 | `not_found` | Resource does not exist |
-| `conflict` | Duplicate resource |
+| `conflict` | Duplicate resource, or the database refused the change for the current state |
 | `database` | DB connectivity or query issues |
 | `internal` | Server-side bug, rate limits, unimplemented stubs |
 | `external` | OAuth, Patreon, or billing provider failure (`EXT_8xxx`) |

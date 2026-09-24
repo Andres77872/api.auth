@@ -1,9 +1,10 @@
-"""ROOT-only admin API for Patreon operational status.
+"""ROOT-only admin API for Patreon operations.
 
-The endpoint in this module is intentionally read-only. Patreon remains an
-entitlement/link integration only; this route never returns provider secrets,
-raw provider identifiers, raw payloads, hashes, fingerprints, or login/session
-material.
+Read-only status, entitlement, tier-map, sync-job and webhook-delivery views plus
+one write (``POST /admin/patreon/resync``, which only queues sync jobs). Patreon
+remains an entitlement/link integration only; these routes never return provider
+secrets, raw provider identifiers, raw payloads, hashes (tier-map rows carry
+non-reversible fingerprints only), or login/session material.
 """
 
 from __future__ import annotations
@@ -11,9 +12,9 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Mapping, Optional
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util import auth_constants as constants
@@ -77,6 +78,12 @@ _SECRET_ENV_NAME_FRAGMENTS = (
     "BEARER",
     "ENCRYPTION_KEY",
 )
+
+
+# OpenAPI notes shared by every route below (descriptions only).
+_ROOT_ONLY_403 = {403: {"description": "The caller is not a root user."}}
+_LIMIT_DESCRIPTION = "Page size (1-500)."
+_OFFSET_DESCRIPTION = "Number of rows to skip."
 
 
 def _require_root(log_context: LogContext) -> None:
@@ -158,7 +165,7 @@ def _admin_list_response(model: Any) -> Dict[str, Any]:
     return _sanitize_patreon_admin_value(model.model_dump_safe(mode="json"))
 
 
-@router.get("/status")
+@router.get("/status", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="get_admin_patreon_status",
     activity_type=ActivityType.ADMIN_ACTION,
@@ -168,7 +175,17 @@ async def get_admin_patreon_status(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return non-secret Patreon operational status for the ROOT dashboard."""
+    """Return the Patreon integration's operational health for the root dashboard, with secrets redacted.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with overall `status` (`healthy`, `degraded`, `disabled` or `unknown`),
+    `generated_at`, and component groups `readiness`, `creator_token`, `webhooks`, `snapshots`,
+    `tier_map`, `proof_delivery`, `s2s`, `worker` (sync-worker heartbeat) and `sync_queue`, plus
+    flat `metrics`. Provider secrets, raw Patreon identifiers, payloads and error text are never
+    included. `403` for non-root callers.
+    """
 
     _require_root(log_context)
     metrics = _sanitize_patreon_admin_value(SystemMetrics.get_patreon_metrics())
@@ -182,21 +199,35 @@ async def get_admin_patreon_status(
     }
 
 
-@router.get("/entitlements")
+@router.get("/entitlements", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="list_admin_patreon_entitlements",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=False,
 )
 async def list_admin_patreon_entitlements(
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, max_length=32),
-    plan_code: Optional[str] = Query(None, max_length=64),
+    limit: int = Query(50, ge=1, le=500, description=_LIMIT_DESCRIPTION),
+    offset: int = Query(0, ge=0, description=_OFFSET_DESCRIPTION),
+    status: Optional[str] = Query(
+        None,
+        max_length=32,
+        description="Exact entitlement status: `active`, `free`, `pending`, `former`, `revoked` or `stale`.",
+    ),
+    plan_code: Optional[str] = Query(None, max_length=64, description="Exact internal plan code, e.g. `free`."),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return a paginated, sanitized list of current Patreon entitlements (ROOT)."""
+    """List users' current Patreon entitlement snapshots, paginated and sanitized.
+
+    Only users that have a stored entitlement snapshot are listed.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `items[]` (`user_hash`, `display_name`, entitlement `status`,
+    `link_status`, `plan_code`, `tier_code`, `tier_name`, `last_synced_at`, `updated_at`) and
+    `pagination`. No raw Patreon identifiers, emails or payloads. `403` for non-root callers.
+    """
 
     _require_root(log_context)
     rows, total = db_patreon.list_patreon_entitlements_admin(
@@ -224,18 +255,31 @@ async def list_admin_patreon_entitlements(
     )
 
 
-@router.get("/entitlements/{user_hash}")
+@router.get(
+    "/entitlements/{user_hash}",
+    responses={**_ROOT_ONLY_403, 404: {"description": "No active user has this `user_hash`."}},
+)
 @log_and_handle_errors(
     operation_name="get_admin_patreon_entitlement",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=False,
 )
 async def get_admin_patreon_entitlement(
-    user_hash: str,
+    user_hash: Annotated[str, Path(description="Public hash of the local user (not a Patreon identifier).")],
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return a single user's normalized Patreon entitlement detail (ROOT)."""
+    """Return one user's normalized Patreon entitlement, in the same shape as the service-to-service read.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `user_hash`, `entitlement` (`external_source`, `status`,
+    `plan_code`, `tier_code`, `tier_name`, `link_status`, `next_renewal_at`,
+    `grace_period_until`, `last_synced_at`, `stale_after`, `classification_version`) and
+    `contract_version`. An active user without Patreon data gets the `free` projection. `404`
+    unknown or inactive user; `403` for non-root callers.
+    """
 
     _require_root(log_context)
     safe_hash = str(user_hash or "").strip()
@@ -248,20 +292,29 @@ async def get_admin_patreon_entitlement(
     return _sanitize_patreon_admin_value(response.model_dump_safe(mode="json"))
 
 
-@router.get("/tier-map")
+@router.get("/tier-map", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="list_admin_patreon_tier_map",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=False,
 )
 async def list_admin_patreon_tier_map(
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    active: Optional[bool] = Query(None),
+    limit: int = Query(100, ge=1, le=500, description=_LIMIT_DESCRIPTION),
+    offset: int = Query(0, ge=0, description=_OFFSET_DESCRIPTION),
+    active: Optional[bool] = Query(None, description="Only active (`true`) or inactive (`false`) entries; omit for both."),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return the configured tier-map entries (fingerprints + codes only, ROOT)."""
+    """List the stored Patreon tier map that turns campaign tiers into internal plan and tier codes.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `items[]` ordered by priority — `campaign_fingerprint`,
+    `campaign_name`, `tier_fingerprint`, `plan_code`, `tier_code`, `tier_name`, `priority`,
+    `active`, `effective_from`, `effective_until` — and `pagination`. Campaign and tier ids appear
+    only as fingerprints, never raw. `403` for non-root callers.
+    """
 
     _require_root(log_context)
     rows, total = db_patreon.list_patreon_tier_map_admin(active=active, limit=limit, offset=offset)
@@ -285,20 +338,32 @@ async def list_admin_patreon_tier_map(
     )
 
 
-@router.get("/sync-jobs")
+@router.get("/sync-jobs", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="list_admin_patreon_sync_jobs",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=False,
 )
 async def list_admin_patreon_sync_jobs(
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, max_length=32),
+    limit: int = Query(50, ge=1, le=500, description=_LIMIT_DESCRIPTION),
+    offset: int = Query(0, ge=0, description=_OFFSET_DESCRIPTION),
+    status: Optional[str] = Query(
+        None,
+        max_length=32,
+        description="Exact job status: `pending`, `running`, `retry`, `completed`, `failed` or `cancelled`.",
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return a paginated list of sync jobs (errors reduced to a flag, ROOT)."""
+    """List Patreon sync jobs queued for the sync worker, paginated.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `items[]` (`job_id`, `job_type`, `status`, `priority`, `attempts`,
+    `max_attempts`, `not_before`, `source`, timestamps and `has_error`) and `pagination`. Error
+    text is reduced to the `has_error` flag. `403` for non-root callers.
+    """
 
     _require_root(log_context)
     rows, total = db_patreon.list_patreon_sync_jobs_admin(status=status, limit=limit, offset=offset)
@@ -324,20 +389,37 @@ async def list_admin_patreon_sync_jobs(
     )
 
 
-@router.get("/webhooks")
+@router.get("/webhooks", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="list_admin_patreon_webhooks",
     activity_type=ActivityType.ADMIN_ACTION,
     log_success=False,
 )
 async def list_admin_patreon_webhooks(
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, max_length=32),
+    limit: int = Query(50, ge=1, le=500, description=_LIMIT_DESCRIPTION),
+    offset: int = Query(0, ge=0, description=_OFFSET_DESCRIPTION),
+    status: Optional[str] = Query(
+        None,
+        max_length=32,
+        description=(
+            "Exact delivery status: `received`, `processing`, `processed`, `rejected`, `replay`, "
+            "`failed` or `ignored`."
+        ),
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return a paginated list of webhook deliveries (no raw payloads, ROOT)."""
+    """List recorded Patreon webhook deliveries, paginated, without payloads.
+
+    Only deliveries whose signature verified are recorded; rejected signatures show up in the
+    status endpoint's webhook counters instead.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `items[]` (`delivery_id`, `event_type`, `status`,
+    `signature_valid`, `received_at`, `processed_at`) and `pagination`. `403` for non-root callers.
+    """
 
     _require_root(log_context)
     rows, total = db_patreon.list_patreon_webhooks_admin(status=status, limit=limit, offset=offset)
@@ -357,26 +439,56 @@ async def list_admin_patreon_webhooks(
     )
 
 
-@router.post("/resync")
+@router.post(
+    "/resync",
+    responses={
+        **_ROOT_ONLY_403,
+        404: {"description": "`scope` is `user` and no user has this `user_hash`."},
+        429: {"description": "Resync enqueue rate limit exceeded; see `Retry-After`."},
+    },
+)
 @log_and_handle_errors(
     operation_name="enqueue_admin_patreon_resync",
     activity_type=ActivityType.PATREON_SYNC_STARTED,
     log_success=True,
 )
 async def enqueue_admin_patreon_resync(
-    scope: Literal["user", "all"] = Body("user"),
-    user_hash: Optional[str] = Body(None),
-    reason: Optional[str] = Body(None),
-    force: bool = Body(False),
+    scope: Literal["user", "all"] = Body(
+        "user",
+        description="`user` re-syncs one user's membership; `all` queues one full sweep of every configured campaign.",
+    ),
+    # Limits mirror PatreonAdminResyncRequest so they are enforced as request validation (400)
+    # before the handler builds the model.
+    user_hash: Optional[str] = Body(
+        None, max_length=255, description="Public hash of the local user; required when `scope` is `user`."
+    ),
+    reason: Optional[str] = Body(
+        None, max_length=128, description="Free-text note stored with the job (at most 128 characters)."
+    ),
+    force: bool = Body(False, description="Queue the job at higher priority."),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Enqueue an admin-triggered Patreon resync (scope=user or scope=all, ROOT).
+    """Queue a Patreon source-of-truth resync for one user or for every configured campaign.
 
-    Reuses the same enqueue path as the worker/S2S surface. scope='user' enqueues a
-    per-user member resync; scope='all' enqueues a single full-campaign job (no
-    campaign id) which the worker drains as a full sweep over every configured
-    campaign. The job is only processed if the Patreon sync worker is running.
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Request:** JSON object; every field is optional (`scope` defaults to `user`).
+
+    **Responses:**
+    - `200` `accepted: true`, `status: queued`, `correlation_id` (the job id). Queued jobs run
+      only while the Patreon sync worker process is running.
+    - `200` `accepted: false`, `status: disabled` when Patreon sync is turned off; nothing is queued.
+    - `400` `scope: user` without `user_hash`, a `reason` over 128 characters, or a `user_hash`
+      over 255; `404` unknown `user_hash`; `429` enqueue rate limit exceeded (`Retry-After`
+      header); `403` for non-root callers.
+    \f
+    ``scope='user'`` goes through ``patreon_sync.enqueue_member_resync`` with the local user
+    id (the worker scans configured campaigns for that user's linked membership).
+    ``scope='all'`` writes a single full-campaign job with no campaign id, which the worker
+    drains as a full sweep over every configured campaign. A limiter backend failure fails
+    open (root-only route).
     """
 
     _require_root(log_context)

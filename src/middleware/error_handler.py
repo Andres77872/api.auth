@@ -245,9 +245,11 @@ async def http_exception_handler(request: Request, exc: Union[HTTPException, Sta
         403: ErrorCategory.AUTHORIZATION,
         404: ErrorCategory.NOT_FOUND,
         409: ErrorCategory.CONFLICT,
+        422: ErrorCategory.VALIDATION,
         500: ErrorCategory.INTERNAL,
+        503: ErrorCategory.INTERNAL,
     }
-    
+
     # Map HTTP status codes to error codes
     error_code_map = {
         400: ErrorCode.INVALID_INPUT,
@@ -255,7 +257,9 @@ async def http_exception_handler(request: Request, exc: Union[HTTPException, Sta
         403: ErrorCode.ACCESS_DENIED,
         404: ErrorCode.RESOURCE_NOT_FOUND,
         409: ErrorCode.DUPLICATE_ENTRY,
+        422: ErrorCode.INVALID_INPUT,
         500: ErrorCode.INTERNAL_ERROR,
+        503: ErrorCode.SERVICE_UNAVAILABLE,
     }
     
     status_code = exc.status_code

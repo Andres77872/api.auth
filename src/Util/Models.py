@@ -2537,7 +2537,8 @@ class StripeAccountCredentialsUpdate(BaseModelConfig):
     """Write-only request body for setting/rotating a group's Stripe credentials.
 
     Sent as JSON (not form) so secrets never land in URL-encoded request logs. The server
-    encrypts these immediately and never echoes them back.
+    encrypts these immediately and never echoes them back. ``secret_key`` is always replaced;
+    an omitted/null optional field keeps the stored value and an empty string clears it.
     """
     secret_key: str = Field(..., min_length=1, repr=False)
     webhook_secret: Optional[str] = Field(default=None, repr=False)

@@ -28,6 +28,7 @@ Both endpoints:
 - require session permissions containing `admin` or `manage_users`
 - use `application/x-www-form-urlencoded`
 - expect repeated `user_hashes=...` fields
+- return `401` for an invalid or expired bearer token
 
 ---
 
@@ -107,12 +108,13 @@ Behavior from the utility layer:
 - delete is soft-delete via `delete_user()`
 - the utility aggregates per-user failures instead of failing the whole request immediately
 
-Response fields include:
+The endpoint returns `200` with:
 
+- `summary.total_requested`
 - `summary.success_count`
 - `summary.error_count`
-- `summary.protected_count`
-- `results`
+- `summary.protected_count` (root users skipped)
+- `results` (per user: `user_hash`, `success`, and `error` on failure)
 - `errors`
 - `warnings`
 

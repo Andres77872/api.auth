@@ -53,19 +53,31 @@ async def _extract_project_hash_from_call(kwargs: Dict[str, Any]) -> Optional[st
     return candidate if isinstance(candidate, str) and candidate else None
 
 
+# Parameter the decorators inject themselves; it is never a request input.
+INJECTED_LOG_CONTEXT_PARAMETER = "log_context"
+
+
 def _resolved_signature(func: Callable):
-    """Return ``func``'s signature with string annotations evaluated in its own module.
+    """Return ``func``'s signature as FastAPI should see it.
 
     FastAPI resolves string annotations (``from __future__ import annotations``)
     against the endpoint's ``__globals__``; for a ``@wraps`` wrapper that is this
     module, so route-local request models become unresolved ForwardRefs, get
     treated as query params, and break ``/openapi.json``. Publishing the resolved
     signature as ``__signature__`` makes FastAPI see the real types.
+
+    ``log_context`` is left out because the decorators inject it. Published, a
+    ``LogContext = None`` default becomes an optional JSON body (even on GET), an
+    untyped default becomes a query parameter, and form bodies gain a field.
     """
     try:
-        return signature(func, eval_str=True)
+        resolved = signature(func, eval_str=True)
     except Exception:
-        return signature(func)
+        resolved = signature(func)
+    return resolved.replace(parameters=[
+        parameter for parameter in resolved.parameters.values()
+        if parameter.name != INJECTED_LOG_CONTEXT_PARAMETER
+    ])
 
 
 def log_and_handle_errors(
@@ -106,6 +118,8 @@ def log_and_handle_errors(
             return result
     """
     def decorator(func: Callable) -> Callable:
+        accepts_log_context = INJECTED_LOG_CONTEXT_PARAMETER in signature(func).parameters
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             log_context = None
@@ -194,6 +208,11 @@ def log_and_handle_errors(
                     }
                 )
                 
+                # FastAPI never supplies log_context (see _resolved_signature); without
+                # an authenticated context the handler gets None unless a caller passed one.
+                if accepts_log_context:
+                    kwargs.setdefault(INJECTED_LOG_CONTEXT_PARAMETER, log_context)
+
                 # Execute the function
                 result = await func(*args, **kwargs)
                 

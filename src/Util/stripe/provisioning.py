@@ -2,10 +2,15 @@
 
 api.auth owns the catalog (LOCKED DECISION 2): creating/updating a catalog item drives a
 Stripe ``Product``/``Price`` on the group's account (per-account key resolved via
-``stripe.account``). Stripe prices are immutable, so a price change creates a new Price and
-deactivates the old one. All Stripe ids are stored encrypted (+ HMAC/fingerprint); failures
-are recorded as ``provisioning_status='failed'`` with a redacted reason — never raising into
-the admin request beyond a neutral result.
+``stripe.account``). Stripe prices are immutable, so a price change creates a new Price on
+the item's existing Product and then deactivates the old one. All Stripe ids are stored
+encrypted (+ HMAC/fingerprint); failures are recorded as ``provisioning_status='failed'``
+with a redacted reason — never raising into the admin request beyond a neutral result.
+
+Idempotency keys: the first provisioning of an item is keyed by the item id. Each price
+rotation gets its own keys (item id + a per-rotation nonce), because Stripe keeps a key's
+first result for 24 hours: reusing the item-id keys for a new price would replay the old
+request or fail with ``idempotency_error``.
 
 Gating: Stripe is only contacted when the global kill switch is on AND the group has
 ``provisioning_enabled`` AND ``credential_status='active'``. Otherwise the catalog row is
@@ -15,13 +20,14 @@ left ``pending`` (authorable offline; re-provision once enabled).
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from src.Util.billing.config import load_billing_config
 from src.Util.billing.idempotency import derive_stripe_api_idempotency_key
 from src.Util.billing.redaction import sanitize_billing_sensitive_text
-from src.Util.billing.security import encrypt_provider_ref, hmac_provider_ref, provider_ref_fingerprint
+from src.Util.billing.security import decrypt_provider_ref, encrypt_provider_ref, hmac_provider_ref, provider_ref_fingerprint
 from src.Util.db import db_billing
 from src.Util.stripe.account import StripeAccountNotReadyError, get_stripe_client_for_group
 from src.Util.stripe.client import StripeAPIError, StripeBillingClient
@@ -98,6 +104,45 @@ def provision_catalog_item(
     Stripe error into the caller.
     """
 
+    return _provision(
+        billing_group_id=billing_group_id,
+        catalog_item_id=catalog_item_id,
+        item_type=item_type,
+        display_name=display_name,
+        currency=currency,
+        unit_amount=unit_amount,
+        recurring_interval=recurring_interval,
+        lookup_key=lookup_key,
+        metadata=metadata,
+        client=client,
+        db=db,
+        idempotency_ref=catalog_item_id,
+    )
+
+
+def _provision(
+    *,
+    billing_group_id: str,
+    catalog_item_id: str,
+    item_type: str,
+    display_name: str,
+    currency: str | None,
+    unit_amount: int | None,
+    recurring_interval: str | None,
+    lookup_key: str | None,
+    metadata: Mapping[str, Any] | None,
+    client: StripeBillingClient | None,
+    db: Any,
+    idempotency_ref: str,
+    reprice: bool = False,
+) -> CatalogProvisionResult:
+    """Create a Price (and, unless repricing onto an existing Product, a Product) and store the refs.
+
+    ``idempotency_ref`` scopes every Stripe idempotency key of this attempt. With ``reprice``
+    the item's stored Product is reused and its previous Price is deactivated only after the
+    new one is stored, so a failed reprice leaves the old price live.
+    """
+
     try:
         key, key_id, hmac_secret = _encryption_material()
     except CatalogProvisioningConfigError as exc:
@@ -117,27 +162,35 @@ def provision_catalog_item(
             db=db,
         )
 
-        safe_metadata = {"catalog_item_id_fp": provider_ref_fingerprint(
-            digest=hmac_provider_ref(provider=_PROVIDER, kind="catalog_item", raw_id=catalog_item_id, secret=hmac_secret)
-        )}
-        if metadata:
-            # Opaque consumer metadata is not forwarded to Stripe verbatim to stay agnostic.
-            safe_metadata["has_features"] = "1"
+        product_id: str | None = None
+        old_price_id: str | None = None
+        if reprice:
+            refs = db.get_catalog_operational_refs(id=catalog_item_id) or {}
+            product_id = _decrypt_stored_ref(refs, "provider_product_id_ciphertext", billing_config, catalog_item_id)
+            old_price_id = _decrypt_stored_ref(refs, "provider_price_id_ciphertext", billing_config, catalog_item_id)
 
-        product = stripe_client.create_product(
-            name=display_name,
-            metadata=safe_metadata,
-            idempotency_key=derive_stripe_api_idempotency_key(internal_ref=catalog_item_id, operation="product_create"),
-        )
-        product_id = str(product.get("id") or "")
         if not product_id:
-            raise StripeAPIError(message="Stripe product create returned no id")
+            safe_metadata = {"catalog_item_id_fp": provider_ref_fingerprint(
+                digest=hmac_provider_ref(provider=_PROVIDER, kind="catalog_item", raw_id=catalog_item_id, secret=hmac_secret)
+            )}
+            if metadata:
+                # Opaque consumer metadata is not forwarded to Stripe verbatim to stay agnostic.
+                safe_metadata["has_features"] = "1"
+
+            product = stripe_client.create_product(
+                name=display_name,
+                metadata=safe_metadata,
+                idempotency_key=derive_stripe_api_idempotency_key(internal_ref=idempotency_ref, operation="product_create"),
+            )
+            product_id = str(product.get("id") or "")
+            if not product_id:
+                raise StripeAPIError(message="Stripe product create returned no id")
 
         price_kwargs: dict[str, Any] = {
             "product": product_id,
             "currency": str(currency).lower(),
             "unit_amount": int(unit_amount),
-            "idempotency_key": derive_stripe_api_idempotency_key(internal_ref=catalog_item_id, operation="price_create"),
+            "idempotency_key": derive_stripe_api_idempotency_key(internal_ref=idempotency_ref, operation="price_create"),
         }
         if lookup_key:
             price_kwargs["lookup_key"] = lookup_key
@@ -164,6 +217,8 @@ def provision_catalog_item(
             lookup_key=lookup_key,
             activate=True,
         )
+        if old_price_id and old_price_id != price_id:
+            _deactivate_price(stripe_client, old_price_id, idempotency_ref=idempotency_ref, catalog_item_id=catalog_item_id)
         return CatalogProvisionResult(
             catalog_item_id,
             "active",
@@ -195,40 +250,16 @@ def reprovision_price(
     client: StripeBillingClient | None = None,
     db: Any = db_billing,
 ) -> CatalogProvisionResult:
-    """Rotate to a new Stripe Price (immutability): deactivate the old, create a new one.
+    """Rotate to a new Stripe Price (immutability): create the new one, store it, then deactivate the old.
 
-    The old price is deactivated best-effort using the stored encrypted ref; failure to
-    deactivate is non-fatal (the new active price is what checkout uses).
+    The new Price goes on the item's existing Product (a new Product is created only when
+    the stored one is missing or unreadable). Every rotation uses fresh idempotency keys, so
+    repricing again within Stripe's 24h key window works. If the new Price cannot be created
+    the item is marked ``failed`` and the old Price stays active in Stripe; deactivating the
+    old Price is best-effort once the new one is stored.
     """
 
-    try:
-        billing_config = load_billing_config()
-        refs = db.get_catalog_operational_refs(id=catalog_item_id)
-        if refs and refs.get("provider_price_id_ciphertext") and refs.get("provider_ref_key_id"):
-            try:
-                from src.Util.billing.security import decrypt_provider_ref
-
-                old_price_id = decrypt_provider_ref(
-                    ciphertext=refs.get("provider_price_id_ciphertext"),
-                    key_id=refs.get("provider_ref_key_id"),
-                    keys_by_id=billing_config.decryption_keys_by_id,
-                )
-                stripe_client = client or get_stripe_client_for_group(
-                    billing_group_id=billing_group_id,
-                    decryption_keys_by_id=billing_config.decryption_keys_by_id,
-                    db=db,
-                )
-                stripe_client.update_price(
-                    old_price_id,
-                    active=False,
-                    idempotency_key=derive_stripe_api_idempotency_key(internal_ref=catalog_item_id, operation="price_deactivate"),
-                )
-            except Exception:
-                logger.debug("old price deactivate skipped for item %s", catalog_item_id)
-    except Exception:
-        logger.debug("reprovision_price pre-step degraded for item %s", catalog_item_id)
-
-    return provision_catalog_item(
+    return _provision(
         billing_group_id=billing_group_id,
         catalog_item_id=catalog_item_id,
         item_type=item_type,
@@ -237,9 +268,35 @@ def reprovision_price(
         unit_amount=unit_amount,
         recurring_interval=recurring_interval,
         lookup_key=lookup_key,
+        metadata=None,
         client=client,
         db=db,
+        idempotency_ref=f"{catalog_item_id}:{secrets.token_hex(8)}",
+        reprice=True,
     )
+
+
+def _decrypt_stored_ref(refs: Mapping[str, Any], field: str, billing_config: Any, catalog_item_id: str) -> str | None:
+    ciphertext = refs.get(field)
+    key_id = refs.get("provider_ref_key_id")
+    if not ciphertext or not key_id:
+        return None
+    try:
+        return decrypt_provider_ref(ciphertext=ciphertext, key_id=key_id, keys_by_id=billing_config.decryption_keys_by_id)
+    except Exception:
+        logger.warning("Stored Stripe ref %s unreadable for catalog item %s", field, catalog_item_id)
+        return None
+
+
+def _deactivate_price(stripe_client: StripeBillingClient, price_id: str, *, idempotency_ref: str, catalog_item_id: str) -> None:
+    try:
+        stripe_client.update_price(
+            price_id,
+            active=False,
+            idempotency_key=derive_stripe_api_idempotency_key(internal_ref=idempotency_ref, operation="price_deactivate"),
+        )
+    except Exception as exc:
+        logger.warning("Old price deactivate failed for catalog item %s: %s", catalog_item_id, type(exc).__name__)
 
 
 __all__ = [

@@ -14,6 +14,7 @@ import json
 from contextlib import ExitStack, contextmanager
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 from unittest.mock import MagicMock, patch
 
@@ -135,16 +136,24 @@ def _assert_no_raw_patreon_leaks(response, *, context: str) -> None:
     assert not leaked, f"raw Patreon provider data leaked in {context}: {leaked[:3]}"
 
 
+# The signed-in user every request below authenticates as (validate_access_session is
+# patched in _patched_link_seams). Recent-auth proof is controlled by the
+# require_recent_reauthentication seam, never by a request header.
+SIGNED_IN_USER = SimpleNamespace(
+    user_id="1",
+    user_hash="usr-test-001",
+    username="testuser",
+    user_type="consumer",
+    session_id="test-session-001",
+    session_token="test-token",
+)
+
+
 def _auth_headers(*, reauth: bool = True) -> dict[str, str]:
-    headers = {
+    return {
         "Authorization": "Bearer test-token",
         "User-Agent": "patreon-link-proof-red-test",
     }
-    if reauth:
-        # Future route code may accept this only as a test seam.  Real production
-        # must use local password/MFA/session proof, not a browser-controlled flag.
-        headers["X-Test-Recent-Reauth"] = "true"
-    return headers
 
 
 async def _post_link_request(client, payload: Mapping[str, Any] | None = None, *, reauth: bool = True, headers=None):
@@ -262,6 +271,9 @@ def _patched_link_seams(harness: PatreonProofHarness, *, recent_reauth: bool = T
             "src.Util.patreon.config.load_patreon_config",
         ),
         MagicMock(return_value=MagicMock(linking_enabled=True, sync_enabled=True, explicit_test_runtime=True)),
+    ), _optional_patch_targets(
+        ("src.routes.auth_patreon.validate_access_session",),
+        MagicMock(return_value=SIGNED_IN_USER),
     ), _optional_patch_targets(
         (
             "src.routes.auth_patreon.require_recent_reauthentication",

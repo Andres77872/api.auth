@@ -7,7 +7,10 @@ to learn the project binding. It survives only as a compatibility bridge
 
 The redeem URL is operator/root-managed and is typically an internal service
 address, so it is deliberately exempt from the public-address SSRF guard that
-protects tenant-supplied provider endpoints.
+protects tenant-supplied provider endpoints. It still receives the companion
+bearer, so it must be HTTPS (plain http only on localhost), must not embed
+credentials, and redirects are never followed; see
+``src.Util.oauth.url_safety.validate_redeem_url``.
 
 Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 6.5.
 
@@ -27,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from src.Util.google_oauth_config import GoogleOAuthConfig, load_google_oauth_config
+from src.Util.oauth.url_safety import UnsafeURLError, validate_redeem_url
 
 
 redis_client = None  # patched by integration fixtures when future routes import this module
@@ -191,7 +195,9 @@ def validate_provider_init_binding(
 def _default_http_post(url: str, *, headers: Mapping[str, str], json: Mapping[str, Any], timeout: float):
     import requests
 
-    return requests.post(url, headers=dict(headers), json=dict(json), timeout=timeout)
+    # Never follow redirects: a redirect answer is rejected as non-2xx instead of forwarding
+    # the bearer (or the provider-init token) to wherever the Location header points.
+    return requests.post(url, headers=dict(headers), json=dict(json), timeout=timeout, allow_redirects=False)
 
 
 def _response_to_payload(response: Any) -> Mapping[str, Any]:
@@ -226,6 +232,10 @@ def redeem_provider_init_token_sync(
     config = config or load_google_oauth_config()
     if not config.provider_init_redeem_url or not config.provider_init_redeem_token:
         raise ProviderInitRedeemError("provider_init_not_configured", token_fingerprint=token_fingerprint)
+    try:
+        validate_redeem_url(config.provider_init_redeem_url)
+    except UnsafeURLError as exc:
+        raise ProviderInitRedeemError("provider_init_redeem_url_unsafe", token_fingerprint=token_fingerprint) from exc
 
     post = http_post or _default_http_post
     headers = {

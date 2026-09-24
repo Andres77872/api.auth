@@ -11,6 +11,7 @@ from typing import Callable, TypeVar, Any, Optional, Dict, Tuple
 from functools import wraps
 import pymysql
 from redis.exceptions import RedisError
+from starlette.exceptions import HTTPException
 
 from src.Util.error_handler import (
     AppException,
@@ -27,6 +28,42 @@ from src.Util.error_handler import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+# errno MySQL reports for SIGNAL SQLSTATE '45000' raised by a stored procedure or trigger.
+MYSQL_SIGNAL_EXCEPTION = 1644
+_MISSING_ROW_SIGNAL = re.compile(r"\b(?:not found|does not exist)\b", re.IGNORECASE)
+
+
+def procedure_rejection_error(error: pymysql.OperationalError, error_context: Optional[str] = None) -> AppException:
+    """Map a stored-procedure SIGNAL to the client error its message describes.
+
+    Procedures SIGNAL to refuse a request against the current data ("Email row does not
+    exist for user", "User cannot have more than five active email rows"); the database
+    is healthy. Every message is a literal, so it is safe to return. A message saying a
+    row is missing becomes 404; any other refusal conflicts with the current state (409).
+    """
+    message = str(error.args[1]) if len(error.args) > 1 else "Request rejected by the database"
+    details = {"mysql_error_code": MYSQL_SIGNAL_EXCEPTION, "error_type": "ProcedureSignal"}
+    if _MISSING_ROW_SIGNAL.search(message):
+        return NotFoundError(
+            message=message,
+            error_code=ErrorCode.RESOURCE_NOT_FOUND,
+            details=details,
+            original_error=error,
+            error_context=error_context,
+        )
+    return ConflictError(
+        message=message,
+        error_code=ErrorCode.STATE_CONFLICT,
+        details=details,
+        original_error=error,
+        error_context=error_context,
+    )
+
+
+def is_procedure_signal(error: BaseException) -> bool:
+    """True for the error MySQL raises when a procedure runs SIGNAL SQLSTATE '45000'."""
+    return isinstance(error, pymysql.OperationalError) and bool(error.args) and error.args[0] == MYSQL_SIGNAL_EXCEPTION
 
 
 def parse_duplicate_entry_error(error_msg: str) -> Dict[str, str]:
@@ -96,8 +133,11 @@ def handle_db_operation(
         
     Raises:
         DatabaseError: For database-related errors (unless default_return is provided)
-        NotFoundError: When resource is not found (unless default_return is provided)
-        ConflictError: For constraint violations (unless default_return is provided)
+        NotFoundError: When resource is not found, including a stored-procedure SIGNAL
+            whose message says a row is missing (unless default_return is provided)
+        ConflictError: For constraint violations and any other stored-procedure SIGNAL
+            (unless default_return is provided)
+        AppException / HTTPException: Re-raised unchanged (unless default_return is provided)
     """
     try:
         result = operation()
@@ -125,7 +165,15 @@ def handle_db_operation(
             logger.warning(f"Application error, returning default: {error_context}", exc_info=True)
             return default_return() if callable(default_return) else default_return
         raise
-        
+
+    except HTTPException:
+        # validate_session rejects a bad or expired bearer with HTTPException(401).
+        # Rewrapping it as InternalError would turn that 401 into a 500.
+        if default_return is not None:
+            logger.warning(f"HTTP error, returning default: {error_context}", exc_info=True)
+            return default_return() if callable(default_return) else default_return
+        raise
+
     except pymysql.IntegrityError as e:
         # If default_return is provided, return it instead of raising
         if default_return is not None:
@@ -209,7 +257,10 @@ def handle_db_operation(
         if default_return is not None:
             logger.warning(f"Database operational error, returning default: {error_context}", exc_info=True)
             return default_return() if callable(default_return) else default_return
-        
+
+        if is_procedure_signal(e):
+            raise procedure_rejection_error(e, error_context)
+
         # Handle connection and operational errors
         error_code = e.args[0] if e.args else 0
         error_msg = e.args[1] if len(e.args) > 1 else str(e)

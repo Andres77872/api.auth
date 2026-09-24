@@ -29,30 +29,27 @@ If validation fails, the route usually returns an auth error before any permissi
 
 ## Flow 2: Extended Permission Check (`/permissions/users/me/permissions/check/{name}`)
 
-This endpoint is intended to check the three-source union, but its current DB
-wiring is incomplete in a fresh canonical deployment.
+This endpoint checks the three-source union.
 
 ```
 GET /permissions/users/me/permissions/check/{permission_name}
   └─► permission_assignments.require_valid_session
         └─► check_user_has_permission_extended(user_id, permission_name)
-              └─► calls sp_check_user_has_permission
-                    └─► procedure absent from canonical SQL
-                          └─► wrapper fails closed to false
+              └─► sp_check_user_has_permission_extended
+                    ├─► permission groups from the caller's role
+                    ├─► permission groups from user groups the caller directly belongs to
+                    └─► permission groups directly assigned to the caller
+                          └─► has_permission: true if any source grants it
 ```
 
-### Why this matters
+### What to expect
 
-- the intended procedure is
-  `sp_check_user_has_permission_extended`, which resolves role, user-group, and
-  direct permission groups
-- the Python helper currently calls the different, undefined name
-  `sp_check_user_has_permission`
-- use `GET /permissions/users/me/permissions` or
-  `/permission-sources` to inspect what the DB union currently resolves
-
-A separately evolved database could contain a compatibility alias, but the
-repository's bootstrap does not create one.
+- there is no root/admin bypass: the answer comes only from the three sources
+- like `GET /permissions/users/me/permissions`, the procedure does not check
+  whether the role, permission group, or user group itself is soft-deleted, so
+  a permission reachable only through one of those can still count
+- use `/permission-sources` to see which source granted the permission (it
+  skips soft-deleted roles and groups, so it can list fewer sources)
 
 ---
 
@@ -91,8 +88,10 @@ POST /permissions/admin/user-groups/{group_hash}/permission-groups
   └─► permission_assignments.require_admin
         ├─► valid session required
         ├─► allow if user_type in {root, admin}
-        └─► otherwise call the intended extended `manage_roles` helper
-              └─► current procedure-name mismatch fails closed
+        └─► otherwise check `manage_roles` through the extended resolver
+              └─► check_user_has_permission_extended
+                    └─► sp_check_user_has_permission_extended
+                          └─► role, user-group, or direct assignment
 ```
 
 After the guard passes:

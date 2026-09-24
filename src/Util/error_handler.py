@@ -92,7 +92,8 @@ class ErrorCode(str, Enum):
     ROLE_ASSIGNMENT_DENIED = "AUTHZ_2006"
     PERMISSION_DENIED = "AUTHZ_2007"
     API_KEY_NO_ACCESS = "AUTHZ_2008"
-    
+    OPERATION_NOT_ALLOWED = "AUTHZ_2009"
+
     # Validation errors (3xxx)
     INVALID_INPUT = "VAL_3001"
     MISSING_REQUIRED_FIELD = "VAL_3002"
@@ -118,6 +119,7 @@ class ErrorCode(str, Enum):
     ENDPOINT_NOT_FOUND = "NF_4008"
     USER_TYPE_NOT_FOUND = "NF_4009"
     API_KEY_NOT_FOUND = "NF_4010"
+    PERMISSION_GROUP_NOT_FOUND = "NF_4011"
     
     # Conflict errors (5xxx)
     USERNAME_EXISTS = "CONF_5001"

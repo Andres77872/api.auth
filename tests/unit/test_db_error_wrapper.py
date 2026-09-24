@@ -5,6 +5,7 @@ Pure parsing logic + decorator behavior with mocked pymysql/Redis.
 
 import pymysql
 import pytest
+from fastapi import HTTPException
 from redis.exceptions import RedisError
 
 from src.Util.db_error_wrapper import (
@@ -229,6 +230,63 @@ class TestHandleDbOperation:
         with pytest.raises(DatabaseError) as exc_info:
             handle_db_operation(raise_fk)
         assert "referenced record does not exist" in exc_info.value.message
+
+    def test_http_exception_propagates_without_rewrap(self):
+        """validate_session signals a bad bearer with HTTPException(401); keep its status."""
+        def raise_401():
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        with pytest.raises(HTTPException) as exc_info:
+            handle_db_operation(raise_401, error_context="session validation")
+        assert exc_info.value.status_code == 401
+
+    def test_http_exception_with_default_return(self):
+        def raise_401():
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        assert handle_db_operation(raise_401, default_return="fallback") == "fallback"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Email row does not exist for user",
+            "API key not found",
+            "OAuth connection not found",
+        ],
+    )
+    def test_procedure_signal_for_missing_row_raises_not_found(self, message):
+        def raise_signal():
+            raise pymysql.OperationalError(1644, message)
+
+        with pytest.raises(NotFoundError) as exc_info:
+            handle_db_operation(raise_signal, error_context="procedure call")
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.error_code.value == "NF_4004"
+        assert exc_info.value.message == message
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "User cannot have more than five active email rows",
+            "Cannot delete billing group with active subscriptions",
+            "Owner user does not have access to the specified project",
+        ],
+    )
+    def test_procedure_signal_for_rejected_state_raises_conflict(self, message):
+        def raise_signal():
+            raise pymysql.OperationalError(1644, message)
+
+        with pytest.raises(ConflictError) as exc_info:
+            handle_db_operation(raise_signal, error_context="procedure call")
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.error_code.value == "CONF_5005"
+        assert exc_info.value.message == message
+
+    def test_procedure_signal_with_default_return(self):
+        def raise_signal():
+            raise pymysql.OperationalError(1644, "API key not found")
+
+        assert handle_db_operation(raise_signal, default_return="fallback") == "fallback"
 
 
 # ─── db_operation decorator ─────────────────────────────────────────────────

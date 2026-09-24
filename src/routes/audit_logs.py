@@ -5,7 +5,7 @@ Provides HTTP API surface for the Magic Auth Dashboard's audit-log monitor featu
 exposing both logging systems (activity_logs and api_audit_log) as queryable,
 filterable, and exportable endpoints.
 
-All endpoints require root or admin user type with global scope.
+All endpoints require an access token of a root or admin user (any session scope).
 """
 
 import csv
@@ -13,9 +13,9 @@ import io
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Annotated, Optional, Dict, Any, List
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from fastapi import APIRouter, HTTPException, Depends, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
@@ -128,13 +128,34 @@ def _derive_event_type_from_audit_log(audit_entry: Dict[str, Any]) -> str:
 async def list_admin_email_logs(
     limit: int = Query(50, ge=1, le=500, description="Number of email delivery logs to return"),
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
-    status: Optional[str] = Query(None, description="Filter by outbox status"),
-    purpose: Optional[str] = Query(None, description="Filter by transactional purpose"),
-    provider: Optional[str] = Query(None, description="Filter by provider"),
+    status: Optional[str] = Query(
+        None,
+        description=(
+            "Exact outbox status: pending, processing, retry, sent, delivered, bounced, "
+            "complained, suppressed, dead or cancelled."
+        ),
+    ),
+    purpose: Optional[str] = Query(
+        None,
+        description=(
+            "Exact purpose: email_activation, password_reset, admin_password_reset, "
+            "security_notification, delivery_operation or patreon_link_proof."
+        ),
+    ),
+    provider: Optional[str] = Query(None, description="Exact provider name, e.g. `resend` or `mailpit`."),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
-    """Return email delivery logs with recipient hash + masked email only."""
+    """List transactional email outbox messages, newest first, with redacted recipients.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `logs` and offset `pagination`. There is no total count:
+    `has_more` is true whenever a full page came back. Rows expose `recipient_hash` (hex)
+    and `recipient_masked` only; plaintext recipients, bodies and template variables are
+    never returned.
+    """
 
     _check_admin_access(log_context)
     logs = db_email.list_email_delivery_logs(
@@ -174,10 +195,10 @@ async def list_admin_email_logs(
 async def list_audit_logs(
     limit: int = Query(50, ge=1, le=1000, description="Number of logs to return"),
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
-    user_id: Optional[str] = Query(None, description="Filter by user ID"),
-    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    user_id: Optional[str] = Query(None, description="Filter by internal user ID (`usr-...`), not user hash"),
+    project_id: Optional[str] = Query(None, description="Filter by internal project ID (`proj-...`)"),
     endpoint_path: Optional[str] = Query(None, description="Filter by endpoint path (partial match)"),
-    http_method: Optional[str] = Query(None, description="Filter by HTTP method"),
+    http_method: Optional[str] = Query(None, description="Filter by HTTP method, e.g. `GET`"),
     status_code: Optional[int] = Query(None, description="Filter by response status code"),
     is_success: Optional[bool] = Query(None, description="Filter by success/failure"),
     security_event: Optional[bool] = Query(None, description="Filter by security event flag"),
@@ -186,7 +207,13 @@ async def list_audit_logs(
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
     """
-    Get paginated, filtered API audit logs from the api_audit_log table.
+    List per-request API audit records (written by the API audit middleware), newest first.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `logs`, `pagination` (`total`, `has_more`, `next_offset`) and
+    the echoed `filters`. Out-of-range `limit` or `days` is rejected with 400.
     """
     _check_admin_access(log_context)
 
@@ -258,14 +285,27 @@ async def list_audit_logs(
 async def list_security_events(
     limit: int = Query(100, ge=1, le=500, description="Maximum events to return"),
     days: int = Query(30, ge=1, le=365, description="Days to look back"),
-    severity: Optional[str] = Query(None, description="Filter by severity (critical/warning)"),
-    source: Optional[str] = Query(None, description="Filter by source (api_audit/activity_log)"),
+    severity: Optional[str] = Query(None, description="Keep only this severity: `critical`, `warning` or `info`"),
+    source: Optional[str] = Query(
+        None,
+        description="`api_audit` or `activity_log` to read one source only; omit for both (any other value returns no events)",
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
     """
-    Get combined security events from both api_audit_log and activity_logs,
-    normalized to a common shape with source indicator.
+    List recent security events from the API audit log and the activity log, merged into one shape.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Behavior:** up to `limit` events are read from each source, filtered by `severity`,
+    merged newest first and cut to `limit`. API-audit severity is derived from the HTTP
+    status (403 = `critical`; 401 and 5xx = `warning`; otherwise `info`); activity-log
+    events keep their stored severity. Each event carries `source`.
+
+    **Responses:** 200 with `events` and a `summary` (counts by source and severity,
+    `period_hours`).
     """
     _check_admin_access(log_context)
 
@@ -379,8 +419,13 @@ async def get_statistics(
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
     """
-    Get audit statistics from sp_get_audit_statistics.
-    Returns 4 sections: overview, by_method, top_endpoints, status_distribution.
+    Summarize API audit traffic over the last `days` days.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `overview` (request totals, success/failure counts and
+    duration stats), `by_method`, `top_endpoints` (up to 20) and `status_distribution`.
     """
     _check_admin_access(log_context)
 
@@ -404,7 +449,60 @@ async def get_statistics(
 
 # =================== POST /admin/audit/export ===================
 
-@router.post("/audit/export")
+# The handler parses the JSON body itself, so the real body is documented here.
+_EXPORT_REQUEST_BODY: Dict[str, Any] = {
+    "required": True,
+    "description": "Export selection, sent as a JSON object.",
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "required": ["source", "format"],
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "enum": ["activity", "api_audit", "audit"],
+                        "description": "`activity` = activity log; `api_audit` (alias `audit`) = per-request API audit log.",
+                    },
+                    "format": {"type": "string", "enum": ["csv", "json"]},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": EXPORT_HARD_LIMIT,
+                        "default": 1000,
+                        "description": "Maximum rows to export.",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": (
+                            "Optional filters. Both sources: `user_id`, `project_id` (internal IDs) and `days` "
+                            "(default 30). `activity` also accepts `activity_type`; `api_audit` also accepts "
+                            "`endpoint_path` (partial match), `http_method`, `status_code`, `is_success` and "
+                            "`security_event`. Unknown keys are ignored."
+                        ),
+                        "additionalProperties": True,
+                    },
+                },
+            },
+            "example": {"source": "api_audit", "format": "csv", "limit": 500, "filters": {"days": 7, "is_success": False}},
+        }
+    },
+}
+
+
+@router.post(
+    "/audit/export",
+    openapi_extra={"requestBody": _EXPORT_REQUEST_BODY},
+    responses={
+        200: {
+            "description": "Streamed file attachment (`Content-Disposition: attachment`).",
+            "content": {
+                "text/csv": {"schema": {"type": "string"}},
+                "application/json": {"schema": {"type": "array", "items": {"type": "object"}}},
+            },
+        },
+    },
+)
 @log_and_handle_errors(
     operation_name="export_audit_logs",
     activity_type=None,
@@ -416,8 +514,19 @@ async def export_logs(
     log_context: LogContext = None,
 ) -> StreamingResponse:
     """
-    Export activity logs or API audit logs in CSV or JSON format.
-    Enforces hard limit of 10,000 records.
+    Download activity-log or API-audit records as a CSV or JSON file attachment.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Request:** JSON body `{"source", "format", "limit"?, "filters"?}`; see the request
+    body schema. `limit` defaults to 1,000 and may not exceed 10,000.
+
+    **Responses:** 200 streamed attachment `audit_export_<source>_<UTC timestamp>.<format>`:
+    `text/csv` (header row plus one row per record; an empty result is a blank line) or
+    `application/json` (a JSON array of records). 400 for a missing or invalid field, a
+    non-positive or too-large `limit`, or when more than 10,000 records match `filters`
+    (regardless of `limit`; narrow the filters, e.g. `days`).
     """
     _check_admin_access(log_context)
 
@@ -497,14 +606,21 @@ async def export_logs(
     log_success=False,
 )
 async def get_user_activity(
-    user_id: str,
+    user_id: Annotated[str, Path(description="Internal user ID (`usr-...`), not the public user hash.")],
     days: int = Query(30, ge=1, le=365, description="Days to look back"),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
     """
-    Get combined user activity summary and timeline from both
-    activity_logs and api_audit_log sources.
+    Summarize one user's recent activity-log and API-audit history with a merged timeline.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root or admin user; other users get 403.
+
+    **Responses:** 200 with `summary` (activity counts grouped by category and name from the
+    user's latest 500 activity-log rows, plus API-audit totals and per-endpoint activity)
+    and `timeline` (up to 50 entries from each source, newest first). 404 if the user ID
+    does not exist.
     """
     _check_admin_access(log_context)
 

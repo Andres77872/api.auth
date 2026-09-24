@@ -879,9 +879,54 @@ async def _process_verified_member_payload(
     )
 
 
-@router.post(_WEBHOOK_PATH, status_code=200)
+@router.post(
+    _WEBHOOK_PATH,
+    status_code=200,
+    responses={
+        401: {"description": "`X-Patreon-Signature` is missing or does not match the raw body."},
+        429: {"description": "Too many signature failures from this client; see `Retry-After`."},
+        500: {"description": (
+            "The verified delivery could not be recorded (safe to redeliver) or failed after it was "
+            "recorded (a source-of-truth resync is queued instead)."
+        )},
+        503: {"description": "Patreon webhooks are disabled or no webhook secret is configured."},
+    },
+    # The handler reads the raw bytes itself (the signature covers them exactly), so
+    # FastAPI cannot infer the body; document it here.
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "description": (
+                "The Patreon webhook event (JSON:API member document) exactly as Patreon sent it. "
+                "`X-Patreon-Signature` is verified against these raw bytes before any parsing, so "
+                "the body must not be re-serialized."
+            ),
+            "content": {"application/json": {"schema": {"type": "object", "additionalProperties": True}}},
+        }
+    },
+)
 async def receive_patreon_webhook(request: Request) -> JSONResponse:
-    """Receive a Patreon webhook without requiring or creating local sessions."""
+    """Receive a signed Patreon webhook delivery and apply it to Patreon entitlement snapshots.
+
+    Webhooks are an entitlement fast path only; they never require or create a local session.
+
+    **Auth:** no bearer token or cookie. Each delivery must carry `X-Patreon-Signature`, the hex
+    HMAC-MD5 of the exact raw request body keyed with the configured Patreon webhook secret.
+    `X-Patreon-Event` names the event (for example `members:pledge:update`); by default only the
+    `members:*` and `members:pledge:*` create/update/delete events are processed.
+
+    **Request:** the raw JSON event body as delivered by Patreon.
+
+    **Responses:** bodies are generic and never echo provider data.
+    - `200` `{"success": true, "status": "accepted"}` for every verified delivery. That includes
+      events outside the allow-list (recorded as ignored), duplicate deliveries (not reprocessed),
+      and payloads that trigger a source-of-truth resync instead of a direct update (partial or
+      invalid payloads, unknown members or tiers, deletes, out-of-order events, downgrades).
+    - `401` missing or invalid signature; `429` too many signature failures (`Retry-After`).
+    - `503` webhooks disabled or no webhook secret configured.
+    - `500` the delivery could not be recorded (safe to redeliver), or processing failed after it
+      was recorded (a source-of-truth resync is queued instead).
+    """
 
     raw_body = await request.body()
     event_type = _safe_event_type(request.headers.get(constants.PATREON_WEBHOOK_EVENT_HEADER))

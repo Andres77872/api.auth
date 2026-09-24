@@ -83,6 +83,28 @@ async def test_authenticated_change_password_success_preserves_current_session_a
 
 
 @pytest.mark.asyncio
+async def test_authenticated_change_password_accepts_form_fields(client, integration_env):
+    token = "change-access-token-form"
+    session = _authenticated_session(integration_env["redis"], token)
+
+    with patch("src.Util.Seccurity.validate_session", return_value=session), \
+         patch("src.Util.decorators.validate_session", return_value=session), \
+         patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-f", "family_id": "family-f"}), \
+         patch("src.routes.auth.change_user_password", create=True, return_value={"password_changed": True}) as change_user_password, \
+         patch("src.routes.auth.revoke_user_auth_state_except_current", create=True):
+        response = await client.post(
+            "/auth/password/change",
+            data={"current_password": CURRENT_PASSWORD, "new_password": NEW_PASSWORD},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": "pytest"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["success"] is True
+    change_user_password.assert_called_once()
+    _assert_response_has_no_password_material(response)
+
+
+@pytest.mark.asyncio
 async def test_change_password_requires_authentication(client, integration_env):
     response = await client.post(
         "/auth/password/change",

@@ -86,8 +86,9 @@ curl -X PUT "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
 ### 5. Revoke a key — `DELETE /users/api-keys/{key_id}`
 
 Requires step-up re-auth. Ownership enforced. Revocation **immediately invalidates the Redis
-cache** so the key stops authenticating at once. Re-revoking an already-revoked or nonexistent key
-returns `API_KEY_REVOKED`. The user route has **no** `revoke_reason` field.
+cache** so the key stops authenticating at once. Revoking a key that is already inactive returns
+`400 API_KEY_REVOKED`; an unknown or non-owned key returns `404`. The user route has **no**
+`revoke_reason` field.
 
 ```bash
 curl -X DELETE "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
@@ -116,7 +117,9 @@ Form fields:
 
 Requires step-up re-auth. Scope rules: root unrestricted; admin must have project access **and**
 the `manage_users` effective permission when the target is **another** user (creating a key for
-**yourself** is always allowed). Response includes the one-time token at `data.api_key`.
+**yourself** is always allowed). Response includes the one-time token at `data.api_key`. For a
+non-root caller, an inactive owner or an owner without access to the project returns
+`409 STATE_CONFLICT`; an unknown `user_hash` or `project_hash` returns `404`.
 
 ```bash
 curl -X POST "http://localhost:8000/api-keys" \
@@ -157,7 +160,7 @@ Admin must have project scope. Extending `expires_at` reactivates an expired key
 
 Requires step-up re-auth. Admin must have project scope. Takes an **optional** `revoke_reason`
 form field (the user route has none). Immediate Redis cache invalidation; re-revoking returns
-`API_KEY_REVOKED`.
+`400 API_KEY_REVOKED`.
 
 ```bash
 curl -X DELETE "http://localhost:8000/api-keys/$PUBLIC_ID" \

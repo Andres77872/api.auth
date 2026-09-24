@@ -353,7 +353,7 @@ curl -X GET "http://localhost:8000/system/health" \
 }
 ```
 
-**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails. This endpoint never returns `"unhealthy"` — its worst top-level status is `"degraded"`. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
+**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails; the failing component reports `"unhealthy"` and the response is still `200`. This endpoint never returns `"unhealthy"` — its worst top-level status is `"degraded"`. An invalid or expired bearer token returns `401` here and on `/system/info`; a Redis or database outage usually fails the request during authentication before any check runs. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
 
 ### Admin Email Operations
 
@@ -588,10 +588,26 @@ Start here:
 
 ### Bulk Assign Roles in Project
 
-> **WARNING**: This endpoint is **currently broken** and returns `500 INTERNAL_ERROR`. Do not use it in production. The route (`src/routes/bulk_operations.py`) builds assignments keyed by `role_name`, but the utility (`src/Util/bulk_operations.py`) reads `role_id`; the utility then returns result keys `successful`/`failed`, while the route reads `result['success_count']`/`result['error_count']`. The missing keys raise a `KeyError`, which surfaces as a `500` rather than a clean per-assignment error list.
->
-> **Workaround**: Assign roles individually via `PUT /roles/users/{user_hash}/role`.
-> See [Roles Troubleshooting → Bulk role assignment](roles/troubleshooting.md#bulk-role-assignment-always-fails) for details.
+**Scenario**: Give several users the same global role, recorded against a project.
+
+```bash
+curl -X POST "http://localhost:8000/admin/projects/PROJ_HASH/bulk-assign-roles" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "user_hashes=usr-a...&user_hashes=usr-b...&role_names=editor"
+```
+
+- `role_names` are role **names**. Every name is resolved before anything is written; an unknown or inactive name returns `404 ROLE_NOT_FOUND` (`NF_4007`) with `details.role_names`, and nothing is assigned.
+- A user holds a single global role, so when several `role_names` are listed each user ends up with the **last** one. Send one role name per request.
+- The response is `200` with `summary` (`total_requested`, `success_count`, `error_count`), per-assignment `results` (`user_hash`, `role_name`, `success`, and `error` on failure), and `errors`.
+
+See [Roles Troubleshooting → Bulk role assignment](roles/troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role).
+
+### Bulk Assign Users to Groups
+
+`POST /admin/user-groups/bulk-assign` adds every listed user to every listed user group (see [Scenario 3](#scenario-3-bulk-onboarding-new-team)). `group_names` are user-group **names**; an unknown or inactive name returns `404 GROUP_NOT_FOUND` (`NF_4003`) with `details.group_names`, and nothing is assigned. The `200` response aggregates all groups: `summary` plus per-user-per-group `results` (`user_hash`, `group_name`, `success`, and `error` on failure) and `errors`.
+
+All four bulk routes return `401` for an invalid or expired bearer token.
 
 ---
 

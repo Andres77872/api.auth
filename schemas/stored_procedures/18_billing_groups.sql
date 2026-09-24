@@ -189,7 +189,7 @@ BEGIN
            stripe_secret_key_fingerprint, stripe_webhook_secret_fingerprint,
            (stripe_secret_key_ciphertext IS NOT NULL) AS has_secret_key,
            (stripe_webhook_secret_ciphertext IS NOT NULL) AS has_webhook_secret,
-           credential_key_id, created_at, updated_at,
+           credential_key_id, catalog_sync_status, last_catalog_synced_at, created_at, updated_at,
            (SELECT COUNT(*) FROM billing_group_projects bgp WHERE bgp.billing_group_id = bg.id AND bgp.status = 'active') AS project_count,
            (SELECT COUNT(*) FROM billing_catalog_items ci WHERE ci.billing_group_id = bg.id AND ci.provisioning_status <> 'archived') AS catalog_item_count
     FROM billing_groups bg
@@ -206,9 +206,11 @@ CREATE PROCEDURE sp_billing_group_list(
 BEGIN
     SELECT SQL_CALC_FOUND_ROWS
            id, billing_group_hash, name, description, owner_id, provider, status,
+           checkout_enabled, portal_enabled, provisioning_enabled, webhooks_enabled,
            credential_status,
            (stripe_secret_key_ciphertext IS NOT NULL) AS has_secret_key,
-           created_at, updated_at,
+           (stripe_webhook_secret_ciphertext IS NOT NULL) AS has_webhook_secret,
+           catalog_sync_status, last_catalog_synced_at, created_at, updated_at,
            (SELECT COUNT(*) FROM billing_group_projects bgp WHERE bgp.billing_group_id = bg.id AND bgp.status = 'active') AS project_count,
            (SELECT COUNT(*) FROM billing_catalog_items ci WHERE ci.billing_group_id = bg.id AND ci.provisioning_status <> 'archived') AS catalog_item_count
     FROM billing_groups bg

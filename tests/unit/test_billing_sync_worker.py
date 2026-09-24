@@ -61,3 +61,19 @@ def test_source_sync_missing_operational_ref_is_non_retryable():
     assert result.status == "failed"
     assert result.retryable is False
     assert result.reason == "missing_operational_ref"
+
+
+def test_cli_passes_a_stable_worker_id_for_the_heartbeat(monkeypatch):
+    created: list[dict] = []
+
+    class _Worker:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        def run_forever(self):
+            return None
+
+    monkeypatch.setattr(billing_sync_worker, "BillingSyncWorker", _Worker)
+
+    assert billing_sync_worker.main(["--worker-id", "container-host-billing"]) == 0
+    assert created == [{"worker_id": "container-host-billing"}]

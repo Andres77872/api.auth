@@ -49,11 +49,17 @@ Three distinct causes:
 3. **Root list without a filter** — `GET /api-keys` as root with neither `user_hash` nor
    `project_hash` → `"Root users must provide at least user_hash or project_hash filter"`.
 
-### `API_KEY_REVOKED` when revoking
+### `400 API_KEY_REVOKED` when revoking
 
-You revoked a key that was already revoked (or no longer exists). Revocation is idempotent in
-effect but the second call signals `API_KEY_REVOKED`. The key is already inactive — no action
-needed.
+You revoked a key that was already inactive (revoked, or deactivated after expiring).
+Revocation is idempotent in effect but the second call returns `400 API_KEY_REVOKED`
+(`AUTH_1012`). The key is already inactive — no action needed.
+
+### `404` when updating a key that never expires
+
+Keys created without `expires_at` update like any other key. A database whose
+`sp_update_api_key` predates that fix refuses the update with "API key not found"; install the
+current procedure with `python scripts/schema_sync.py --env-file .env --apply`.
 
 ### `400 ambiguous_credentials` when validating
 

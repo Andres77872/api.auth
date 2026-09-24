@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -81,8 +82,15 @@ class FakeOAuthDB:
         self.credential_calls.append(kwargs)
         row = self._row(kwargs["id"])
         row.update(credential_status="active", has_client_secret=kwargs["client_secret_ciphertext"] is not None,
-                   client_secret_fingerprint=kwargs["client_secret_fingerprint"], credential_key_id=kwargs["credential_key_id"])
+                   has_signing_key=kwargs["signing_key_ciphertext"] is not None,
+                   client_secret_fingerprint=kwargs["client_secret_fingerprint"],
+                   signing_key_fingerprint=kwargs["signing_key_fingerprint"], credential_key_id=kwargs["credential_key_id"])
+        row["_operational"] = {key: value for key, value in kwargs.items() if key not in {"id", "set_by"}}
         return row
+
+    def get_connection_operational_credentials(self, *, id):
+        row = self._row(id)
+        return {"id": id, "credential_status": row["credential_status"], **row.get("_operational", {})}
 
     def list_connections(self, **kwargs):
         rows = list(self.connections.values())
@@ -145,6 +153,11 @@ class FakeOAuthDB:
     def list_binding_urls(self, *, binding_id):
         return list(self.urls.get(binding_id, []))
 
+    def set_binding_legacy_redeem(self, *, binding_id, url_ciphertext, token_ciphertext, key_id, actor):
+        row = next(row for row in self.bindings.values() if row["binding_id"] == binding_id)
+        row.update(init_mode="legacy_redeem", has_legacy_redeem=True)
+        return row
+
 
 @pytest.fixture
 def oauth_db():
@@ -166,6 +179,8 @@ def _as(oauth_db, *, root: bool, permissions=("admin",), project_access=True):
         target = "src.routes.admin_oauth"
         stack.enter_context(patch(f"{target}.validate_session", return_value=session))
         stack.enter_context(patch(f"{target}.is_root_user", return_value=root))
+        # A non-root caller here is an admin user; consumers are covered in test_admin_scope_oauth.py.
+        stack.enter_context(patch(f"{target}.is_admin_user", return_value=not root))
         stack.enter_context(patch(f"{target}.check_admin_multi_project_access", return_value=project_access))
         stack.enter_context(patch(f"{target}.get_project_by_hash", lambda project_hash: PROJECT if project_hash == "ph-1" else None))
         stack.enter_context(patch(f"{target}.get_user_group_by_hash", lambda group_hash: GROUP if group_hash == "ugh-1" else None))
@@ -265,6 +280,94 @@ async def test_credentials_are_refused_when_the_server_has_no_encryption_key(cli
         response = await client.put(f"/admin/oauth/connections/{connection_hash}/credentials", headers=AUTH, json={"client_secret": SECRET})
     assert response.status_code == 400 and SECRET not in response.text
     assert oauth_db.credential_calls == []
+
+
+SIGNING_KEY = "-----BEGIN PRIVATE KEY-----SIGNING-SENTINEL-----END PRIVATE KEY-----"
+
+
+def _stored_secret(oauth_db, connection_hash: str, kind: str) -> str | None:
+    from src.Util.oauth.secrets import decrypt_secret
+
+    row = oauth_db.connections[connection_hash]
+    stored = row["_operational"]
+    if stored[f"{kind}_ciphertext"] is None:
+        return None
+    return decrypt_secret(
+        owner_id=row["id"], kind=kind, ciphertext=stored[f"{kind}_ciphertext"],
+        key_id=stored["credential_key_id"], expected_digest=stored[f"{kind}_hmac"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_saving_one_secret_keeps_the_other_reencrypted_under_the_active_key(client, oauth_db, monkeypatch):
+    with _as(oauth_db, root=True):
+        connection_hash = (await _create(client)).json()["connection"]["connection_hash"]
+        first = await client.put(
+            f"/admin/oauth/connections/{connection_hash}/credentials", headers=AUTH,
+            json={"client_secret": SECRET, "signing_key": SIGNING_KEY},
+        )
+        # rotate the encryption key; the previous one stays available for decryption only
+        old_key = os.environ["OAUTH_SECRET_ENCRYPTION_KEY"]
+        monkeypatch.setenv("OAUTH_SECRET_DECRYPTION_KEYS_JSON", json.dumps({"oauth-key-1": old_key}))
+        monkeypatch.setenv("OAUTH_SECRET_ENCRYPTION_KEY", Fernet.generate_key().decode())
+        monkeypatch.setenv("OAUTH_SECRET_ENCRYPTION_KEY_ID", "oauth-key-2")
+        second = await client.put(
+            f"/admin/oauth/connections/{connection_hash}/credentials", headers=AUTH, json={"client_secret": "rotated-client-secret"}
+        )
+
+    assert first.status_code == 200 and second.status_code == 200, second.text
+    status = second.json()["credentials"]
+    assert status["has_client_secret"] is True and status["has_signing_key"] is True
+    assert status["signing_key_fingerprint"] == first.json()["credentials"]["signing_key_fingerprint"]
+    assert oauth_db.credential_calls[-1]["credential_key_id"] == "oauth-key-2"
+    assert _stored_secret(oauth_db, connection_hash, "client_secret") == "rotated-client-secret"
+    assert _stored_secret(oauth_db, connection_hash, "signing_key") == SIGNING_KEY
+    assert SIGNING_KEY not in second.text and "rotated-client-secret" not in second.text
+
+
+@pytest.mark.asyncio
+async def test_an_empty_string_clears_one_secret_but_never_the_last(client, oauth_db):
+    with _as(oauth_db, root=True):
+        connection_hash = (await _create(client)).json()["connection"]["connection_hash"]
+        path = f"/admin/oauth/connections/{connection_hash}/credentials"
+        await client.put(path, headers=AUTH, json={"client_secret": SECRET, "signing_key": SIGNING_KEY})
+        cleared = await client.put(path, headers=AUTH, json={"signing_key": ""})
+        last = await client.put(path, headers=AUTH, json={"client_secret": ""})
+        empty = await client.put(path, headers=AUTH, json={})
+
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["credentials"]["has_signing_key"] is False
+    assert _stored_secret(oauth_db, connection_hash, "signing_key") is None
+    assert _stored_secret(oauth_db, connection_hash, "client_secret") == SECRET
+    assert last.status_code == 400, "clearing the only remaining secret is refused"
+    assert empty.status_code == 400
+    assert len(oauth_db.credential_calls) == 2
+
+
+async def _binding(client) -> str:
+    connection_hash = await _active_connection(client)
+    await client.put("/admin/oauth/projects/ph-1/bindings/google", headers=AUTH, json={"connection_hash": connection_hash})
+    return "/admin/oauth/projects/ph-1/bindings/google/legacy-redeem"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://companion.example/internal/redeem", 200),
+        ("https://10.1.2.3/internal/redeem", 200),
+        ("http://localhost:8010/internal/auth/provider-init/redeem", 200),
+        ("http://companion.internal/internal/redeem", 400),
+        ("http://10.1.2.3/internal/redeem", 400),
+        ("https://user:pw@companion.example/internal/redeem", 400),
+    ],
+)
+async def test_legacy_redeem_url_must_be_https_except_on_localhost(client, oauth_db, url, expected):
+    with _as(oauth_db, root=True):
+        path = await _binding(client)
+        response = await client.put(path, headers=AUTH, json={"redeem_url": url, "redeem_token": "companion-bearer"})
+    assert response.status_code == expected, response.text
+    assert url not in response.text and "companion-bearer" not in response.text
 
 
 @pytest.mark.asyncio

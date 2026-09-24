@@ -670,6 +670,9 @@ def _issue_token_pair(
     session_id = str(uuid4())
     access_jti = str(uuid4())
     refresh_jti = str(uuid4())
+    # A new token family is only issued after the user proved their credentials
+    # (password, OAuth or registration), so this is the session's sign-in time.
+    auth_time = int(now.timestamp())
 
     access_token = JWTTokenHandler.create_access_token(
         session_id=session_id,
@@ -678,6 +681,7 @@ def _issue_token_pair(
         scope=scope,
         jti=access_jti,
         family_id=family_id,
+        auth_time=auth_time,
     )
     refresh_token = JWTTokenHandler.create_refresh_token(
         session_id=session_id,
@@ -710,6 +714,7 @@ def _issue_token_pair(
         "user_group_ids": group_ids or [],
         "user_group_names": groups or [],
         "issued_at": now.isoformat(),
+        "auth_time": auth_time,
         "expires_at": access_expires_at.isoformat(),
         "remember_me": bool(remember_me),
         "refresh_ttl_seconds": effective_refresh_ttl,
@@ -727,6 +732,7 @@ def _issue_token_pair(
         "current_access_jti": access_jti,
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
+        "auth_time": auth_time,
         "expires_at": refresh_expires_at.isoformat(),
         "remember_me": bool(remember_me),
         "refresh_ttl_seconds": effective_refresh_ttl,
@@ -1036,6 +1042,10 @@ def _build_rotated_pair(
     )
     access_jti = str(uuid4())
     refresh_jti = str(uuid4())
+    # Rotation (refresh or project switch) is not a sign-in: keep the family's original
+    # sign-in time so a refresh can never satisfy a recent-authentication check. Families
+    # issued before auth_time existed carry none, and fail those checks closed.
+    auth_time = family.get("auth_time") or old_session.get("auth_time")
 
     access_token = JWTTokenHandler.create_access_token(
         session_id=session_id,
@@ -1044,6 +1054,7 @@ def _build_rotated_pair(
         scope=scope,
         jti=access_jti,
         family_id=family_id,
+        auth_time=auth_time,
     )
     refresh_token = JWTTokenHandler.create_refresh_token(
         session_id=session_id,
@@ -1070,6 +1081,7 @@ def _build_rotated_pair(
         "groups": list(context.groups),
         "user_group_names": list(context.groups),
         "issued_at": now.isoformat(),
+        "auth_time": auth_time,
         "expires_at": access_expires_at.isoformat(),
         "remember_me": remember_me,
         "refresh_ttl_seconds": refresh_ttl,

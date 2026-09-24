@@ -67,7 +67,9 @@ async def test_path_scoped_webhook_threads_url_group_into_observe(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    monkeypatch.setattr(module, "get_billing_group_by_hash", lambda **_: {"id": "bg-url-1"})
+    monkeypatch.setattr(
+        module, "get_billing_group_by_hash", lambda **_: {"id": "bg-url-1", "status": "active", "webhooks_enabled": 1}
+    )
     monkeypatch.setattr(
         module,
         "get_stripe_account_secrets_for_group",
@@ -117,3 +119,37 @@ async def test_path_scoped_webhook_503_when_group_not_ready(monkeypatch):
         resp = await client.post(GROUP_PATH, content=b"{}", headers={"Stripe-Signature": "sig", "User-Agent": "t"})
 
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "group_row",
+    [
+        pytest.param({"id": "bg-url-1", "status": "active", "webhooks_enabled": False}, id="webhooks-capability-off"),
+        pytest.param({"id": "bg-url-1", "status": "suspended", "webhooks_enabled": True}, id="group-suspended"),
+        pytest.param({"id": "bg-url-1", "status": "archived", "webhooks_enabled": True}, id="group-archived"),
+    ],
+)
+async def test_path_scoped_webhook_503_when_group_webhooks_are_off(monkeypatch, group_row):
+    """The group's own ``webhooks_enabled`` flag and ``status`` gate its endpoint, not only the global flags."""
+
+    monkeypatch.setenv("STRIPE_WEBHOOKS_ENABLED", "true")
+    monkeypatch.setenv("BILLING_ENABLED", "true")
+    module = importlib.import_module(ROUTE_MODULE)
+    processed: list[Any] = []
+
+    monkeypatch.setattr(module, "get_billing_group_by_hash", lambda **_: dict(group_row))
+    monkeypatch.setattr(
+        module,
+        "get_stripe_account_secrets_for_group",
+        lambda **_: SimpleNamespace(webhook_secret="whsec_group_secret"),
+    )
+    monkeypatch.setattr(module, "build_verified_provider_event", lambda **_: _event())
+    monkeypatch.setattr(module, "record_webhook_delivery", lambda **kwargs: processed.append(kwargs) or {"delivery_status": "accepted"})
+
+    async with _client() as client:
+        resp = await client.post(GROUP_PATH, content=b"{}", headers={"Stripe-Signature": "sig", "User-Agent": "t"})
+
+    assert resp.status_code == 503
+    assert resp.json() == {"success": False, "message": "Webhook unavailable."}
+    assert processed == [], "a disabled group's deliveries must not be recorded or processed"

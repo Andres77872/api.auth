@@ -81,13 +81,13 @@ Reference for the roles-related API surface in `api.auth`.
 
 ---
 
-## Bulk Role Assignment (BROKEN)
+## Bulk Role Assignment
 
 | Endpoint | Method | Auth | Content Type | Purpose |
 |----------|--------|------|--------------|---------|
 | `/admin/projects/{hash}/bulk-assign-roles` | POST | Admin | Form | Bulk assign roles to project users |
 
-**This endpoint does not work.** There is a parameter mismatch between the route and the utility function. See [troubleshooting.md](troubleshooting.md#bulk-role-assignment-always-fails).
+Form fields: repeated `user_hashes` (max 100) and repeated `role_names` (role **names**). Every name is resolved before any write; an unknown or inactive name returns 404 `ROLE_NOT_FOUND` (`NF_4007`) with `details.role_names` and nothing is assigned. A user holds a single global role, so when several names are listed each user ends up with the last one. Returns 200 with `summary`, per-assignment `results` (`user_hash`, `role_name`, `success`, and `error` on failure), and `errors`. See [troubleshooting.md](troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role).
 
 ---
 
@@ -122,17 +122,16 @@ See the canonical explanation in **[Permissions Reference → Guard differences]
 | 401 | `SESSION_INVALID` | Invalid/expired session token |
 | 403 | `INSUFFICIENT_PERMISSIONS` | Non-admin without `manage_roles` |
 | 403 | `ACCOUNT_INACTIVE` | Target user is inactive (role assignment) |
-| 500 | `INTERNAL_ERROR` | Current code defect: system-role delete references missing `ErrorCode.OPERATION_NOT_ALLOWED` instead of returning the intended 403 |
+| 403 | `OPERATION_NOT_ALLOWED` | Deleting a system role (`is_system_role = TRUE`) |
 | 404 | `ROLE_NOT_FOUND` | Role hash not found |
-| 500 | `INTERNAL_ERROR` | Current code defect: permission-group not-found paths reference missing `ErrorCode.PERMISSION_GROUP_NOT_FOUND` |
+| 404 | `PERMISSION_GROUP_NOT_FOUND` | Permission group hash not found or soft-deleted |
 | 404 | `USER_NOT_FOUND` | User hash not found |
 | 404 | `PROJECT_NOT_FOUND` | Project hash not found (catalog endpoints) |
+| 404 | `RESOURCE_NOT_FOUND` | Link/catalog **removal** when the permission group is not on the role, the permission is not in the group, or the role is not in the project catalog |
 | 409 | `DUPLICATE_ENTRY` | Duplicate role name through DB conflict handling |
-| 500 | `INTERNAL_ERROR` | Current code defect: the duplicate project-catalog branch references missing `ErrorCode.ALREADY_EXISTS` instead of returning the intended 409 |
-| 500 | `INTERNAL_ERROR` | Current code defect: the three link/catalog **removal** "not assigned / not in catalog" branches reference missing `ErrorCode.NOT_FOUND` instead of the intended 404 |
 | 500 | `INTERNAL_ERROR` | DB operation failed |
 
-**Missing-enum defects (summary):** four `ErrorCode` members referenced in `global_roles.py` are absent from the `ErrorCode` enum in `src/Util/error_handler.py`, so each reference raises `AttributeError` and the request surfaces as a generic **500** instead of the intended status: `OPERATION_NOT_ALLOWED` (system-role delete → 403), `PERMISSION_GROUP_NOT_FOUND` (permission-group not-found lookups → 404), `ALREADY_EXISTS` (duplicate catalog add → 409), and `NOT_FOUND` (the three unlink/catalog-removal "not assigned" branches → 404).
+Adding a role that is already in a project catalog is not an error: the add is an idempotent upsert and returns 200.
 
 ---
 

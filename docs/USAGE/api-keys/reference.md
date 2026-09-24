@@ -121,11 +121,12 @@ The `secret_hash` is never returned by any endpoint.
 | Code | HTTP | Cause |
 |------|------|-------|
 | `API_KEY_NOT_FOUND` | 404 | Key missing, or not owned (user routes return this for non-owned keys to avoid leaking existence) |
-| `API_KEY_REVOKED` | — | Re-revoking an already-revoked or nonexistent key |
+| `API_KEY_REVOKED` | 400 | Revoking a key that is already inactive (revoked, or deactivated after expiring) |
 | `INVALID_INPUT` | 400 | Bad/past `expires_at`, no-field update, or root list without a filter |
 | `PROJECT_ACCESS_DENIED` | 403 | Self-service create for a project the caller cannot access |
 | `ACCESS_DENIED` | 403 | Admin acting outside their project scope / on an out-of-scope user |
 | `INSUFFICIENT_PERMISSIONS` | 403 | Admin lacks `manage_users` for another user's key |
+| `STATE_CONFLICT` | 409 | Admin create (non-root caller): the owner is inactive or has no access to the project |
 
 See the global **[Errors Reference](../errors.md)** for the envelope and status mapping.
 

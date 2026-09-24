@@ -270,7 +270,7 @@ def update_user_group(group_id: str, group_name: str = None, group_description: 
             else:
                 raise NotFoundError(
                     message=f"User group not found: {group_id}",
-                    error_code=ErrorCode.NOT_FOUND
+                    error_code=ErrorCode.GROUP_NOT_FOUND
                 )
     
     return handle_db_operation(

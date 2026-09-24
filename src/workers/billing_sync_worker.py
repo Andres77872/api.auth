@@ -898,9 +898,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true", help="Process one batch and exit")
     parser.add_argument("--mode", default=_MODE_QUEUED, choices=sorted(_SUPPORTED_ONE_SHOT_MODES), help="One-shot mode")
     parser.add_argument("--limit", type=int, default=None, help="Maximum jobs to claim")
+    parser.add_argument("--worker-id", default=None, help="Stable worker identifier (heartbeat key)")
     args = parser.parse_args(argv)
 
-    worker = BillingSyncWorker()
+    worker = BillingSyncWorker(worker_id=args.worker_id)
     if args.once:
         asyncio.run(worker.run_once(mode=args.mode, limit=args.limit))
     else:

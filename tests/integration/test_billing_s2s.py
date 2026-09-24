@@ -352,3 +352,67 @@ async def test_purchase_status_read_and_resync_are_safe_s2s_only(monkeypatch):
     assert resync.status_code in {200, 202, 404}
     _assert_no_raw_provider_leaks(_json_or_text(purchase), context="purchase status read")
     _assert_no_raw_provider_leaks(_json_or_text(resync), context="resync response")
+
+
+# Checkout issues purchase refs as `bpur-...`; the response model only accepts opaque `b*-` refs.
+PURCHASE_REF = "bpur-fixture-credit-001"
+STORED_PURCHASE_PATH = f"/internal/users/{USER_HASH}/billing/purchases/{PURCHASE_REF}?project_hash={PROJECT_HASH}"
+
+
+def _enable_s2s(monkeypatch) -> None:
+    monkeypatch.setenv("BILLING_ENABLED", "true")
+    monkeypatch.setenv("BILLING_S2S_ENABLED", "true")
+    monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_purchase_status_read_is_wired_to_the_purchase_lookup_procedure(monkeypatch):
+    """The route used to hold ``get_purchase_status_by_ref = None`` and answered 404 for every ref."""
+
+    _enable_s2s(monkeypatch)
+    route_module = _future_route_module()
+    calls: list[tuple[str, list[Any]]] = []
+
+    def _callproc_one(proc_name, args, *, context, commit=False):
+        calls.append((proc_name, list(args)))
+        return {
+            "purchase_ref": PURCHASE_REF,
+            "provider": "stripe",
+            "status": "paid",
+            "credit_product_code": "credits_small",
+            "quantity": 1,
+            "paid_at": "2026-01-02T03:04:05Z",
+            "refunded_at": None,
+            "disputed_at": None,
+            "last_synced_at": "2026-01-02T03:04:06Z",
+            "stale_after": None,
+        }
+
+    monkeypatch.setattr(route_module.db_billing, "_callproc_one", _callproc_one)
+    async with _billing_client() as client:
+        response = await client.get(STORED_PURCHASE_PATH, headers=_auth_headers())
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["user_hash"] == USER_HASH and payload["project_hash"] == PROJECT_HASH
+    purchase = payload["purchase"]
+    assert purchase["purchase_ref"] == PURCHASE_REF
+    assert purchase["status"] == "paid"
+    assert purchase["credit_product_code"] == "credits_small"
+    assert purchase["paid_at"].startswith("2026-01-02T03:04:05")
+    assert calls == [
+        ("sp_billing_get_purchase_status_by_ref", [USER_HASH, PROJECT_HASH, PURCHASE_REF, "stripe"])
+    ]
+    _assert_no_raw_provider_leaks(payload, context="purchase status read")
+
+
+@pytest.mark.asyncio
+async def test_purchase_status_read_is_404_when_the_purchase_is_not_in_this_user_and_project(monkeypatch):
+    _enable_s2s(monkeypatch)
+    route_module = _future_route_module()
+    monkeypatch.setattr(route_module.db_billing, "_callproc_one", lambda *_args, **_kwargs: None)
+    async with _billing_client() as client:
+        response = await client.get(STORED_PURCHASE_PATH, headers=_auth_headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"success": False, "message": "Resource not found."}

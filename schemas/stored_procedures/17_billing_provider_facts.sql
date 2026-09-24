@@ -121,6 +121,40 @@ BEGIN
 END$$
 
 -- ===================================================================================
+-- sp_billing_get_purchase_status_by_ref
+-- Safe S2S purchase read for pull-only credit fulfilment. The purchase must belong to
+-- this user and to the project it was bought in; a ref of another user or project reads
+-- as not found. Normalized facts only, never encrypted provider refs.
+-- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_billing_get_purchase_status_by_ref$$
+CREATE PROCEDURE sp_billing_get_purchase_status_by_ref(
+    IN p_user_hash VARCHAR(255),
+    IN p_project_hash VARCHAR(255),
+    IN p_purchase_ref VARCHAR(64),
+    IN p_provider VARCHAR(32)
+)
+BEGIN
+    SELECT bpe.purchase_ref,
+           bpe.provider,
+           bpe.status,
+           bpe.credit_product_code,
+           bpe.quantity,
+           bpe.paid_at,
+           bpe.refunded_at,
+           bpe.disputed_at,
+           bpe.last_synced_at,
+           bpe.stale_after
+    FROM billing_purchase_events bpe
+    JOIN users u ON bpe.user_id = u.id
+    JOIN projects p ON bpe.project_id = p.id
+    WHERE bpe.purchase_ref = p_purchase_ref
+      AND u.user_hash = p_user_hash
+      AND p.project_hash = p_project_hash
+      AND bpe.provider = COALESCE(NULLIF(TRIM(p_provider), ''), 'stripe')
+    LIMIT 1;
+END$$
+
+-- ===================================================================================
 -- sp_billing_checkout_intent_begin
 -- Begins an idempotent S2S Checkout intent. Same key + same request returns replay;
 -- same key + different request returns conflict without provider side effects.

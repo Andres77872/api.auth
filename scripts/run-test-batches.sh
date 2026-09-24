@@ -28,6 +28,8 @@ declare -A REAL_DB_ONLY_TARGETS=(
   ["tests/integration/test_slice23_soft_delete_cascades.py"]=1
   ["tests/integration/test_slice24_real_default_groups.py"]=1
   ["tests/integration/test_oauth_real_db.py"]=1
+  ["tests/integration/test_billing_real_db.py"]=1
+  ["tests/integration/test_api_key_procedures_real_db.py"]=1
 )
 
 discover_host_targets() {

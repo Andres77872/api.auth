@@ -83,18 +83,26 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
 
 @router.get("", response_model=ListProjectGroupsResponse)
 async def list_project_groups(
-        limit: int = Query(50, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
-        sort_by: str = Query('group_name', description="Sort by field (group_name, created_at, updated_at)"),
-        sort_order: str = Query('ASC', description="Sort order (ASC or DESC)"),
-        search: str = Query(None, description="Search term for group name"),
+        limit: int = Query(50, ge=1, le=1000, description="Maximum number of project groups to return (1-1000)."),
+        offset: int = Query(0, ge=0, description="Number of project groups to skip."),
+        sort_by: str = Query('group_name', description=(
+            "Sort field: `group_name` (default), `created_at` or `updated_at`. Any other value sorts by `group_name`."
+        )),
+        sort_order: str = Query('ASC', description="`DESC` (case-insensitive) for descending; any other value sorts ascending."),
+        search: str = Query(None, description="Case-insensitive substring match on the project group name."),
         session_data=Depends(require_admin)
 ) -> ListProjectGroupsResponse:
     """
-    List all project permission groups (admin only).
-    
-    Returns:
-        List of project groups with project counts
+    List active project groups with their project counts.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles` (every root/admin session has `admin`; consumers only through
+    a global role).
+
+    `project_count` counts active, non-archived projects. The list includes the dedicated project group created
+    automatically for each new project. `pagination.total` respects `search`.
+
+    **Responses:** 401 missing, invalid or expired access token; 403 missing permission.
     """
     # Get all project groups
     project_groups = handle_db_operation(
@@ -142,22 +150,23 @@ async def list_project_groups(
 
 @router.post("", response_model=CreateProjectGroupResponse)
 async def create_project_group_endpoint(
-        group_name: str = Form(...),
-        description: Optional[str] = Form(None),
+        group_name: str = Form(..., description="Unique project group name (required, non-empty)."),
+        description: Optional[str] = Form(None, description="Optional project group description."),
         session_data=Depends(require_admin)
 ) -> CreateProjectGroupResponse:
     """
-    Create a new project group (admin only).
-    
-    Project groups are containers for grouping projects together.
-    Users gain access to projects through: USER → USER_GROUP → PROJECT_GROUP → PROJECT
-    
-    Args:
-        group_name: Group name
-        description: Group description
-        
-    Returns:
-        Created project group information
+    Create an empty project group.
+
+    Project groups are containers of projects and carry no permissions; users reach projects through
+    user → user group → project group → project.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    **Request:** form fields `group_name` (required) and optional `description`.
+
+    **Responses:** 400 missing or empty `group_name`; 401 missing, invalid or expired access token; 403 missing
+    permission; 409 name already in use (names of deleted groups stay reserved).
     """
     # Get current user for audit trail
     user_data = handle_db_operation(
@@ -211,17 +220,20 @@ async def create_project_group_endpoint(
 
 @router.get("/{group_hash}", response_model=ProjectGroupDetailsResponse)
 async def get_project_group_details(
-        group_hash: str = Path(...),
+        group_hash: str = Path(..., description="Project group hash."),
         session_data=Depends(require_admin)
 ) -> ProjectGroupDetailsResponse:
     """
-    Get detailed project group information (admin only).
-    
-    Args:
-        group_hash: Project group identifier
-        
-    Returns:
-        Project group details with assigned projects
+    Get a project group and the projects assigned to it.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    `assigned_projects`, `project_group.project_count` and `statistics.total_projects` include only active,
+    non-archived projects, sorted by name.
+
+    **Responses:** 401 missing, invalid or expired access token; 403 missing permission;
+    404 unknown or deleted project group.
     """
     # Get project group
     project_group = handle_db_operation(
@@ -267,23 +279,27 @@ async def get_project_group_details(
 
 @router.put("/{group_hash}", response_model=UpdateProjectGroupResponse)
 async def update_project_group_endpoint(
-        group_hash: str = Path(...),
-        group_name: Optional[str] = Form(None),
-        description: Optional[str] = Form(None),
+        group_hash: str = Path(..., description="Project group hash."),
+        group_name: Optional[str] = Form(None, description="New unique name. Omitted or empty keeps the current name."),
+        description: Optional[str] = Form(None, description=(
+            "New description. Omitted or empty keeps the current description (it cannot be cleared)."
+        )),
         session_data=Depends(require_admin)
 ) -> UpdateProjectGroupResponse:
     """
-    Update project group information (admin only).
-    
-    Project groups are containers for grouping projects together.
-    
-    Args:
-        group_hash: Project group identifier
-        group_name: Group name
-        description: Group description
-        
-    Returns:
-        Updated project group information
+    Rename a project group and/or change its description.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    **Request:** form fields `group_name` and/or `description`.
+
+    **Responses:** 401 missing, invalid or expired access token; 403 missing permission; 404 unknown or deleted
+    project group; 409 name already in use; 500 when neither field has a value.
+    \f
+    Developer note: ``update_project_group()`` calls ``sp_update_project_group`` with four arguments, but the
+    canonical procedure in ``schemas/stored_procedures/04_project_groups.sql`` takes three, so updates fail
+    against that schema.
     """
     # Get project group
     project_group = handle_db_operation(
@@ -328,17 +344,21 @@ async def update_project_group_endpoint(
 
 @router.delete("/{group_hash}", response_model=DeleteProjectGroupResponse)
 async def delete_project_group_endpoint(
-        group_hash: str = Path(...),
+        group_hash: str = Path(..., description="Project group hash."),
         session_data=Depends(require_admin)
 ) -> DeleteProjectGroupResponse:
     """
-    Delete a project group (admin only).
-    
-    Args:
-        group_hash: Project group identifier
-        
-    Returns:
-        Deletion confirmation
+    Soft-delete a project group.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    **Effects:** the group, its project assignments and every user-group grant to it are deactivated (projects
+    themselves are untouched). Active project-scoped sessions (and refresh-token families) of users who can no
+    longer reach an affected project through another chain are revoked. The group name stays reserved.
+
+    **Responses:** 401 missing, invalid or expired access token; 403 missing permission;
+    404 unknown or already deleted project group.
     """
     # Get project group
     project_group = handle_db_operation(
@@ -394,19 +414,23 @@ async def delete_project_group_endpoint(
 
 @router.post("/{group_hash}/projects", response_model=AssignProjectToGroupResponse)
 async def assign_project_to_group_endpoint(
-        group_hash: str = Path(...),
-        project_hash: str = Form(...),
+        group_hash: str = Path(..., description="Project group hash."),
+        project_hash: str = Form(..., description="Hash of the project to add (any non-deleted project)."),
         session_data=Depends(require_admin)
 ) -> AssignProjectToGroupResponse:
     """
-    Assign a project to a project group (admin only).
-    
-    Args:
-        group_hash: Project group identifier
-        project_hash: Project hash
-        
-    Returns:
-        Assignment confirmation
+    Add a project to a project group.
+
+    Members of every user group granted this project group gain access to the project (unless it is archived).
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    **Request:** form field `project_hash`. Idempotent: re-adding a current or previously removed project
+    (re)activates the assignment and returns 200.
+
+    **Responses:** 400 missing `project_hash`; 401 missing, invalid or expired access token; 403 missing
+    permission; 404 unknown project group or project.
     """
     target_project_hash = project_hash
 
@@ -469,19 +493,22 @@ async def assign_project_to_group_endpoint(
 
 @router.delete("/{group_hash}/projects/{project_hash}", response_model=RemoveProjectFromGroupResponse)
 async def remove_project_from_group_endpoint(
-        group_hash: str = Path(...),
-        project_hash: str = Path(...),
+        group_hash: str = Path(..., description="Project group hash."),
+        project_hash: str = Path(..., description="Hash of the project to remove from the group."),
         session_data=Depends(require_admin)
 ) -> RemoveProjectFromGroupResponse:
     """
-    Remove a project from a project group (admin only).
-    
-    Args:
-        group_hash: Project group identifier
-        project_hash: Project identifier
-        
-    Returns:
-        Removal confirmation
+    Remove a project from a project group.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    session must carry `admin` or `manage_roles`.
+
+    Returns 200 even if the project was not in the group. Active sessions scoped to this project are then
+    revoked (with their refresh-token families) for users of the group who can no longer reach it through
+    another chain.
+
+    **Responses:** 401 missing, invalid or expired access token; 403 missing permission; 404 unknown project
+    group or project.
     """
     # Get project group
     project_group = handle_db_operation(
