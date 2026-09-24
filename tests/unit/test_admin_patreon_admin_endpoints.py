@@ -349,6 +349,11 @@ async def test_resync_user_enqueues_member_resync(monkeypatch):
     monkeypatch.setattr(route, "load_patreon_config", lambda: _FakeConfig(sync_enabled=True))
     monkeypatch.setattr(route, "rate_limiter", _PassLimiter())
     monkeypatch.setattr(route, "get_user_by_hash", lambda h: _FakeUser("internal-uid-1"))
+    monkeypatch.setattr(
+        route.db_patreon,
+        "list_active_patreon_memberships",
+        lambda **kwargs: [{"membership_id": "pmem-1", "user_id": kwargs.get("user_id")}],
+    )
 
     captured = {}
 
@@ -403,3 +408,46 @@ async def test_resync_all_enqueues_full_campaign_sweep(monkeypatch):
     assert captured["job_type"] == route.patreon_sync.JOB_TYPE_FULL_CAMPAIGN
     assert captured["campaign_id"] is None
     assert captured["user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_resync_user_without_linked_membership_is_not_queued(monkeypatch):
+    _root(monkeypatch)
+    monkeypatch.setattr(route, "load_patreon_config", lambda: _FakeConfig(sync_enabled=True))
+    monkeypatch.setattr(route, "rate_limiter", _PassLimiter())
+    monkeypatch.setattr(route, "get_user_by_hash", lambda h: _FakeUser("internal-uid-1"))
+    monkeypatch.setattr(route.db_patreon, "list_active_patreon_memberships", lambda **kwargs: [])
+    monkeypatch.setattr(
+        route.patreon_sync,
+        "enqueue_member_resync",
+        lambda **kwargs: pytest.fail("an unlinked user must not queue a campaign scan"),
+    )
+
+    resp = await route.enqueue_admin_patreon_resync.__wrapped__(
+        scope="user", user_hash="usr-aaa", reason=None, force=False,
+        credentials=None,
+        log_context=_Ctx(),
+    )
+    assert resp["accepted"] is False
+    assert resp["status"] == "not_linked"
+
+
+@pytest.mark.asyncio
+async def test_resync_all_reports_the_job_it_merged_into(monkeypatch):
+    _root(monkeypatch)
+    monkeypatch.setattr(route, "load_patreon_config", lambda: _FakeConfig(sync_enabled=True))
+    monkeypatch.setattr(route, "rate_limiter", _PassLimiter())
+    monkeypatch.setattr(
+        route.db_patreon,
+        "enqueue_patreon_sync_job",
+        lambda **kwargs: {"job_id": "psj-already-queued", "job_status": "deduplicated"},
+    )
+
+    resp = await route.enqueue_admin_patreon_resync.__wrapped__(
+        scope="all", user_hash=None, reason=None, force=False,
+        credentials=None,
+        log_context=_Ctx(),
+    )
+    assert resp["accepted"] is True
+    assert resp["correlation_id"] == "psj-already-queued"
+    assert "already queued" in resp["message"]

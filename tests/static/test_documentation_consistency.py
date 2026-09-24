@@ -27,7 +27,7 @@ ROUTE_COUNTS = {
     "admin_billing.py": 22,
     "admin_dashboard.py": 8,
     "admin_oauth.py": 20,
-    "admin_patreon.py": 7,
+    "admin_patreon.py": 8,
     "admin_project_groups.py": 7,
     "admin_user_groups.py": 13,
     "api_keys.py": 7,
@@ -143,11 +143,11 @@ def test_route_inventory_matches_source_and_central_indexes():
     }
 
     assert actual == ROUTE_COUNTS
-    assert sum(actual.values()) == 245
+    assert sum(actual.values()) == 246
 
     for index in CENTRAL_INDEXES:
         text = index.read_text(encoding="utf-8")
-        assert re.search(r"\b245\b.*\b27\b|\b27\b.*\b245\b", text, re.DOTALL)
+        assert re.search(r"\b246\b.*\b27\b|\b27\b.*\b246\b", text, re.DOTALL)
         for module, count in ROUTE_COUNTS.items():
             assert re.search(
                 rf"`{re.escape(module)}`[^\n]*\|\s*{count}\s*\|",
@@ -350,7 +350,7 @@ def test_schema_inventory_matches_canonical_sql():
     assert expected_counts == {
         "Tables": 73,
         "Indexes": 83,
-        "Stored Procedures": 309,
+        "Stored Procedures": 316,
         "Functions": 1,
         "Views": 18,
         "Triggers": 123,

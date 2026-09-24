@@ -190,7 +190,7 @@ Common causes:
 - `PATREON_SYNC_ENABLED=false`.
 - `src/workers/patreon_sync_worker.py` is not running.
 - Patreon API outage, timeout, token failure, or 429 backoff.
-- Webhook was partial/out-of-order and queued resync.
+- Webhook was partial or a delete event and queued resync.
 - Tier map not ready.
 
 Recovery:

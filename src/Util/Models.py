@@ -457,7 +457,7 @@ class ExternalIdentityUnlinkResponse(BaseResponse):
 
 PatreonEntitlementStatus = Literal["active", "free", "pending", "former", "revoked", "stale"]
 PatreonSafeLinkStatus = Literal["none", "pending", "linked", "unlinked", "revoked", "blocked"]
-PatreonResyncAcceptanceStatus = Literal["accepted", "queued", "disabled", "rate_limited", "degraded"]
+PatreonResyncAcceptanceStatus = Literal["accepted", "queued", "disabled", "rate_limited", "degraded", "not_linked"]
 
 PATREON_FORBIDDEN_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
     {
@@ -847,9 +847,29 @@ PATREON_ADMIN_ENTITLEMENT_ITEM_FIELD_NAMES: FrozenSet[str] = frozenset(
         "plan_code",
         "tier_code",
         "tier_name",
+        "next_renewal_at",
         "last_synced_at",
+        "stale_after",
         "updated_at",
     }
+)
+PATREON_ADMIN_HISTORY_ITEM_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {
+        "history_id",
+        "previous_status",
+        "new_status",
+        "previous_plan_code",
+        "new_plan_code",
+        "previous_tier_code",
+        "new_tier_code",
+        "link_status",
+        "reason",
+        "sync_source",
+        "observed_at",
+    }
+)
+PATREON_ADMIN_HISTORY_RESPONSE_FIELD_NAMES: FrozenSet[str] = frozenset(
+    {"success", "message", "user_hash", "items"}
 )
 PATREON_ADMIN_TIER_MAP_ITEM_FIELD_NAMES: FrozenSet[str] = frozenset(
     {
@@ -908,8 +928,46 @@ class PatreonAdminEntitlementItem(PatreonSafeModelConfig):
     plan_code: str = Field(default="free", min_length=1, max_length=128)
     tier_code: Optional[str] = Field(default=None, max_length=128)
     tier_name: Optional[str] = Field(default=None, max_length=256)
+    next_renewal_at: Optional[datetime] = None
     last_synced_at: Optional[datetime] = None
+    stale_after: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+class PatreonAdminHistoryItem(PatreonSafeModelConfig):
+    """One entitlement transition for a user (normalized codes and reasons only)."""
+
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_ADMIN_HISTORY_ITEM_FIELD_NAMES
+
+    history_id: str = Field(..., min_length=1, max_length=64)
+    previous_status: Optional[str] = Field(default=None, max_length=64)
+    new_status: str = Field(..., min_length=1, max_length=64)
+    previous_plan_code: Optional[str] = Field(default=None, max_length=128)
+    new_plan_code: str = Field(..., min_length=1, max_length=128)
+    previous_tier_code: Optional[str] = Field(default=None, max_length=128)
+    new_tier_code: Optional[str] = Field(default=None, max_length=128)
+    link_status: Optional[str] = Field(default=None, max_length=64)
+    reason: str = Field(..., min_length=1, max_length=128)
+    sync_source: str = Field(..., min_length=1, max_length=64)
+    observed_at: Optional[datetime] = None
+
+
+class PatreonAdminHistoryResponse(BaseResponse):
+    """A user's recent Patreon entitlement transitions, newest first."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+    safe_fields: ClassVar[FrozenSet[str]] = PATREON_ADMIN_HISTORY_RESPONSE_FIELD_NAMES
+
+    user_hash: str = Field(..., min_length=1, max_length=255)
+    items: List[PatreonAdminHistoryItem] = Field(default_factory=list)
+
+    def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
+        return _model_dump_patreon_safe(self, **kwargs)
 
 
 class PatreonAdminEntitlementsListResponse(BaseResponse):
@@ -1064,6 +1122,8 @@ def assert_patreon_response_model_allow_lists() -> None:
         PatreonResyncAcceptedResponse: PATREON_RESYNC_ACCEPTED_RESPONSE_FIELD_NAMES,
         PatreonAdminEntitlementItem: PATREON_ADMIN_ENTITLEMENT_ITEM_FIELD_NAMES,
         PatreonAdminEntitlementsListResponse: PATREON_ADMIN_LIST_RESPONSE_FIELD_NAMES,
+        PatreonAdminHistoryItem: PATREON_ADMIN_HISTORY_ITEM_FIELD_NAMES,
+        PatreonAdminHistoryResponse: PATREON_ADMIN_HISTORY_RESPONSE_FIELD_NAMES,
         PatreonAdminTierMapItem: PATREON_ADMIN_TIER_MAP_ITEM_FIELD_NAMES,
         PatreonAdminTierMapListResponse: PATREON_ADMIN_LIST_RESPONSE_FIELD_NAMES,
         PatreonAdminSyncJobItem: PATREON_ADMIN_SYNC_JOB_ITEM_FIELD_NAMES,

@@ -12,7 +12,7 @@ All Patreon behavior is disabled by default. Enable only the narrowly required s
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `PATREON_LINKING_ENABLED` | `false` | Enables authenticated user link request/confirm/status/unlink behavior. |
+| `PATREON_LINKING_ENABLED` | `false` | Enables authenticated link request/confirm. Status and unlink stay available so a user can always see and remove an existing link. |
 | `PATREON_WEBHOOKS_ENABLED` | `false` | Enables verified processing of `POST /webhooks/patreon`. |
 | `PATREON_SYNC_ENABLED` | `false` | Enables scheduled/manual source-of-truth sync worker behavior. |
 | `PATREON_S2S_ENTITLEMENT_ENABLED` | `false` | Enables internal entitlement reads for Magic Worlds. |
@@ -63,7 +63,9 @@ Generate unique high-entropy values outside source control. Treat HMACs, hashes,
 | `PATREON_TIER_MAP_FILE` | Path to server-only tier-map JSON file. |
 | `PATREON_ALLOWED_WEBHOOK_EVENTS` | Comma-separated webhook event allow-list. |
 
-Tier-map entries require `campaign_id`, `tier_id`, `plan_code`, and `tier_code`; optional fields include `tier_name`, `priority`, `active`, and `campaign_name`. Ambiguous active mappings block readiness. Production activation should use `PATREON_CAMPAIGN_TIER_MAP`, `PATREON_TIER_MAP_JSON`, or `PATREON_TIER_MAP_FILE` as the source of truth for entitlement projection.
+Tier-map entries require `campaign_id`, `tier_id`, `plan_code`, and `tier_code`; optional fields include `tier_name`, `priority`, `active`, and `campaign_name`. Ambiguous active mappings block readiness. Precedence is `PATREON_CAMPAIGN_TIER_MAP`, then `PATREON_TIER_MAP_JSON`, then `PATREON_TIER_MAP_FILE`.
+
+**The configured tier map is the classification authority.** `patreon_campaigns` and `patreon_tier_map` are an HMAC/fingerprint mirror of it that the runtime keeps in step automatically (`src/Util/patreon/catalog.py`): the sync worker mirrors it on every pass, the link request mirrors it before emailing a proof, and `GET /admin/patreon/tier-map` mirrors it before listing. Entries removed from configuration are deactivated, never deleted (memberships keep referencing their campaign). The seed script (`scripts/migrations/patreon_tier_map_seed.py`) remains available for a manual pre-seed but is no longer required.
 
 Default allowed webhook events:
 
@@ -83,6 +85,8 @@ Default allowed webhook events:
 | `PATREON_WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Maximum `90` days. |
 | `PATREON_RAW_PAYLOAD_RETENTION_DAYS` | `30` | Maximum `30` days. |
 
+The sync worker runs the retention purge on its own once a day (no queued job needed) with these windows; the SQL caps each window at its maximum. Finished sync jobs (`completed`/`failed`/`cancelled`) are purged after 30 days.
+
 Link history, membership/snapshot history, entitlement history, and unlink history are retained indefinitely in privacy-minimized form.
 
 ### Provider API, sync, worker, and health settings
@@ -96,7 +100,7 @@ Link history, membership/snapshot history, entitlement history, and unlink histo
 | `PATREON_API_RETRY_MAX_ATTEMPTS` | `3` | Provider API retry attempts. Parsed but not consumed yet; setting it currently has no effect. |
 | `PATREON_API_RETRY_BACKOFF_SECONDS` | `1,5,15` | Provider API retry backoff sequence. |
 | `PATREON_API_RETRY_JITTER_SECONDS` | `5` | Provider API retry jitter. |
-| `PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS` | `604800` | Refresh margin before creator-token expiry. Parsed but not consumed yet; setting it currently has no effect. |
+| `PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS` | `604800` | With `PATREON_CREATOR_TOKEN_REFRESH_ENABLED`, the worker refreshes the creator token this long before it expires (checked hourly), instead of waiting for a `401`. Refreshed tokens are stored encrypted and preferred over the env bootstrap values after a restart. |
 | `PATREON_SYNC_INTERVAL_SECONDS` | `21600` | Scheduled full sync interval. |
 | `PATREON_SYNC_JITTER_SECONDS` | `900` | Scheduled sync jitter. |
 | `PATREON_SYNC_STALE_AFTER_SECONDS` | `86400` | Snapshot freshness boundary. |
@@ -123,6 +127,8 @@ Link history, membership/snapshot history, entitlement history, and unlink histo
 | Provider API client edge | `PATREON_API_CLIENT_RATE_LIMIT` | `PATREON_API_CLIENT_RATE_WINDOW_SECONDS` | `100` / `2s` |
 | Provider access token | `PATREON_API_ACCESS_TOKEN_RATE_LIMIT` | `PATREON_API_ACCESS_TOKEN_RATE_WINDOW_SECONDS` | `100` / `60s` |
 | Provider edge 4xx | `PATREON_API_EDGE_4XX_RATE_LIMIT` | `PATREON_API_EDGE_4XX_RATE_WINDOW_SECONDS` | `2000` / `600s` |
+
+User-facing buckets keep one counter per dimension (user, source IP, and email hint / recipient / proof lookup id) and refuse a request when any is exhausted, so changing one part (another IP header, another email hint) never resets the budget. The per-IP counter allows 5x the per-user limit for shared egress IPs. The proof-send bucket is spent on every link request before Patreon is contacted, so neither the remaining budget nor the timing reveals whether an email belongs to a patron. Proof-consume is keyed on the proof lookup id, never on the submitted secret.
 
 Redis rate-limit keys must use hashed bucket material only. Never use raw IPs, user hashes, emails, campaign IDs, tier IDs, member IDs, proof IDs, tokens, signatures, fingerprints, or hash prefixes in key names.
 
@@ -190,8 +196,9 @@ Redis rate-limit keys must use hashed bucket material only. Never use raw IPs, u
 | Authority | `X-Patreon-Signature` HMAC-MD5 over exact raw request body using server-only webhook secret. |
 | Headers | `X-Patreon-Event`, `X-Patreon-Signature`. |
 | Body | Raw JSON:API bytes; parse only after signature verification. |
-| Success posture | `200` accepted/ignored/duplicate safe response after durable decision. |
-| Failure posture | `401` invalid signature; `429` excessive signature failures; `500` only for retryable post-verification processing failure. |
+| Success posture | `200` accepted/ignored/duplicate safe response after durable decision. A complete, signed member document (create/update events) is applied directly, downgrades included; partial payloads, `*:delete` events and unmapped tiers queue a source-of-truth resync. Deliveries for Patreon users nobody linked are acknowledged and ignored. |
+| Failure posture | `401` invalid signature; `429` excessive signature failures; `503` disabled or invalid configuration. When processing fails after the delivery was recorded, a resync is queued and the delivery is still acknowledged (`200`) so Patreon does not pause the webhook; only if no resync can be queued is `500` returned, and the ledger then lets the redelivery be processed again. |
+| Ledger | Every recorded delivery ends as `processed`, `ignored` or `failed`; `failed` (or abandoned `received`) deliveries are reprocessed on redelivery, `processed` ones are answered as `replay`. |
 | Forbidden | Browser session authority, raw body audit capture, raw signature/payload exposure. |
 
 ### `GET /internal/users/{user_hash}/entitlements`
@@ -218,7 +225,7 @@ Redis rate-limit keys must use hashed bucket material only. Never use raw IPs, u
 
 ### Admin Dashboard Routes (`/admin/patreon`)
 
-Seven ROOT-only read/operate routes back the operator dashboard. Every response
+Eight ROOT-only read/operate routes back the operator dashboard. Every response
 passes through the admin allow-list and a defensive redaction pass, so they carry
 fingerprints, codes and counts — never creator tokens, raw member/campaign
 selectors, plaintext member emails, or raw webhook payloads. All list routes take
@@ -226,10 +233,11 @@ selectors, plaintext member emails, or raw webhook payloads. All list routes tak
 
 | Route | Method | Query | Returns |
 | --- | --- | --- | --- |
-| `/admin/patreon/status` | GET | — | Non-secret operational status: worker/sync health, coarse degraded reason, `generated_at`. |
-| `/admin/patreon/entitlements` | GET | `limit`, `offset`, `status`, `plan_code` | Sanitized current entitlements in the S2S safe shape. |
-| `/admin/patreon/entitlements/{user_hash}` | GET | — | One user's sanitized entitlement; `404` when no row exists. |
-| `/admin/patreon/tier-map` | GET | `limit`, `offset`, `active` | Campaign/tier **fingerprints** with `plan_code`, `tier_code`, `priority`, `active`, and the effective window. |
+| `/admin/patreon/status` | GET | — | Non-secret operational status: overall `status`, `generated_at`, and component groups `readiness`, `creator_token`, `webhooks`, `snapshots`, `tier_map`, `proof_delivery`, `s2s`, `worker`, `sync_queue`, `database_clock`, plus flat `metrics`. Failed checks carry only a redacted `error`. |
+| `/admin/patreon/entitlements` | GET | `limit`, `offset`, `status`, `plan_code`, `link_status`, `search` | Current entitlement rows: `user_hash`, `display_name`, `status`, `link_status`, `plan_code`, `tier_code`, `tier_name`, `next_renewal_at`, `last_synced_at`, `stale_after`, `updated_at`. `search` matches an exact `user_hash` or a username/email prefix. |
+| `/admin/patreon/entitlements/{user_hash}` | GET | — | One user's entitlement in the S2S safe shape; an active user without Patreon data gets the `free` projection; `404` only for an unknown or inactive user. |
+| `/admin/patreon/entitlements/{user_hash}/history` | GET | `limit` (1–200) | The user's entitlement transitions, newest first: `history_id`, previous/new status, plan and tier codes, `link_status`, `reason`, `sync_source`, `observed_at`. |
+| `/admin/patreon/tier-map` | GET | `limit`, `offset`, `active` | Campaign/tier **fingerprints** with `plan_code`, `tier_code`, `priority`, `active`, and the effective window, mirrored from configuration before listing. |
 | `/admin/patreon/sync-jobs` | GET | `limit`, `offset`, `status` | Resync job ledger state. |
 | `/admin/patreon/webhooks` | GET | `limit`, `offset`, `status` | Webhook deliveries: `delivery_id`, `event_type`, `status`, `signature_valid`, timestamps. No bodies. |
 | `/admin/patreon/resync` | POST | — | Enqueue a resync. JSON body `scope` (`user`\|`all`), `user_hash`, `reason`, `force`. |
@@ -238,7 +246,10 @@ selectors, plaintext member emails, or raw webhook payloads. All list routes tak
 surface:
 
 - `scope="user"` requires `user_hash` and enqueues a per-user member resync;
-  a missing `user_hash` is `VAL_3001`.
+  a missing `user_hash` is `VAL_3001`. A user without a linked Patreon membership
+  answers `200` `accepted: false, status: "not_linked"` and queues nothing.
+- A request identical to an already-queued job is merged into it: the response
+  carries that job's id as `correlation_id` and says so in `message`.
 - A `reason` longer than 128 characters or a `user_hash` longer than 255 is
   rejected with `400` / `VAL_3001`.
 - `scope="all"` enqueues one full-campaign job that the worker drains as a sweep
@@ -247,8 +258,10 @@ surface:
   `accepted: false, status: "disabled"` rather than an error.
 - The job is only processed while the Patreon sync worker is running; enqueue
   success is not delivery.
-- Enqueue is rate limited (`EXT_8116` / `429` with `Retry-After`). The limiter
-  fails **open** on backend errors because the surface is already ROOT-only.
+- Enqueue is rate limited (`429` with `Retry-After`; the admin error envelope's
+  code is the generic rate-limit code). The admin budget is separate from the
+  S2S resync budget. The limiter fails **open** on backend errors because the
+  surface is already ROOT-only.
 
 A non-ROOT caller is refused by the shared authorization guard before any
 Patreon state is read.
@@ -360,11 +373,13 @@ Activity details must use redacted safe values only: reason codes, status transi
 | Member snapshots | `patreon_member_snapshots`, `patreon_member_snapshot_history` | Append-only observation evidence; privacy-minimized. |
 | Current entitlement | `patreon_entitlements_current` | One current normalized projection per user. |
 | Entitlement history | `patreon_entitlement_history` | Append-only entitlement changes and unlink/relink evidence. |
-| Webhook idempotency | `patreon_webhook_deliveries`, `sp_patreon_webhook_delivery_record` | Local delivery hash because Patreon has no native delivery ID. |
-| Sync queue | `patreon_sync_jobs`, `sp_patreon_sync_job_enqueue`, `sp_patreon_sync_job_claim`, `sp_patreon_sync_job_complete` | Full campaign, member, user, retention, token refresh, and webhook resync jobs. |
+| Webhook idempotency | `patreon_webhook_deliveries`, `sp_patreon_webhook_delivery_record`, `sp_patreon_webhook_delivery_mark` | Local delivery hash because Patreon has no native delivery ID; each delivery's outcome is recorded. |
+| Sync queue | `patreon_sync_jobs`, `sp_patreon_sync_job_enqueue`, `sp_patreon_sync_job_claim`, `sp_patreon_sync_job_complete` | Full campaign, member, user, retention, token refresh, and webhook resync jobs. Enqueue returns the job actually queued (`deduplicated` when merged); a request that lands while its job runs re-queues that job once it completes; an expired lease on the last attempt fails the job. |
+| Catalog mirror | `sp_patreon_catalog_campaign_upsert`, `sp_patreon_catalog_tier_upsert`, `sp_patreon_catalog_retire_missing` | Keeps the DB campaign/tier mirror in step with configuration. |
+| Reconciliation | `sp_patreon_list_active_memberships` | Linked memberships a complete Patreon read no longer returns are downgraded to `former`/free (the link stays). |
 | Raw-payload quarantine | `patreon_raw_payload_quarantine` | Disabled by default, encrypted/server-only, 30-day maximum. |
 | Creator-token state | `patreon_provider_token_state` | Optional global provider-token state only; never per-user. |
-| Retention purge | `sp_patreon_retention_purge` | Purges bounded proof/webhook/quarantine artifacts, preserves history. |
+| Retention purge | `sp_patreon_retention_purge(proof_hours, webhook_days, sync_job_days)` | Purges bounded proof/webhook/quarantine artifacts and finished sync jobs, preserves history. |
 
 ## Retention Windows
 
@@ -372,6 +387,7 @@ Activity details must use redacted safe values only: reason codes, status transi
 | --- | --- | --- |
 | Proof requests | 24 hours after proof expiry | Purge or irreversible stripping; no recoverable proof secret remains. |
 | Webhook hashes / delivery ledger | 90 days | Purge/anonymize delivery hash/idempotency records; current snapshots/history remain. |
+| Finished sync jobs | 30 days | Operational queue rows only; active jobs are never purged. |
 | Raw provider payload quarantine | 30 days maximum | Disabled by default; if enabled, encrypted/server-only and purged within cap; do not expose externally. |
 | Link history | Indefinite | Privacy-minimized; no indefinite raw payload/email requirement. |
 | Membership/snapshot history | Indefinite | Append-only normalized evidence for audit/dispute/resync reasoning. |

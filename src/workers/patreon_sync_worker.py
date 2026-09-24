@@ -30,8 +30,9 @@ import src.Util.db_config as db_config
 from src.Util import auth_constants as constants
 from src.Util.db import db_patreon
 from src.Util.patreon import sync as patreon_sync
+from src.Util.patreon.catalog import campaign_db_id, ensure_patreon_catalog_safely, raw_campaign_id_for
 from src.Util.patreon.client import PatreonClient, PatreonUnauthorizedError
-from src.Util.patreon.config import load_patreon_config
+from src.Util.patreon.config import PatreonConfigError, load_patreon_config
 from src.Util.patreon.security import hash_patreon_identifier, sanitize_patreon_log_value
 from src.Util.system_metrics import SystemMetrics
 
@@ -64,6 +65,7 @@ _MODE_ALIASES = {
     "full_campaign": _MODE_FULL_CAMPAIGN_SWEEP,
     "retention": _MODE_RETENTION_ONLY,
 }
+_TOKEN_REFRESH_CHECK_INTERVAL_SECONDS = 60 * 60
 _JOB_TYPE_ALIASES = {
     "manual_member": patreon_sync.JOB_TYPE_USER_MEMBER,
     "member": patreon_sync.JOB_TYPE_USER_MEMBER,
@@ -341,10 +343,24 @@ class PatreonSyncWorker:
         self.worker_id = worker_id or f"patreon-sync-worker-{uuid.uuid4()}"
         self.redis = redis if redis is not None else db_config.redis_client
         self.db = db_module if db_module is not None else db if db is not None else db_patreon
-        self.client = client if client is not None else patreon_client if patreon_client is not None else PatreonClient.from_config(self.config)
+        # Built on first use: a deployment with Patreon disabled (no creator token)
+        # must still be able to start the worker without crashing the container.
+        self._client = client if client is not None else patreon_client
         self._stopping = False
         self._last_scheduled_sweep_monotonic: float | None = None
         self._next_scheduled_sweep_monotonic: float | None = None
+        self._next_retention_monotonic: float | None = None
+        self._next_token_check_monotonic: float | None = None
+
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            self._client = PatreonClient.from_config(self.config)
+        return self._client
+
+    @client.setter
+    def client(self, value: Any) -> None:
+        self._client = value
 
     @property
     def sync_enabled(self) -> bool:
@@ -415,6 +431,8 @@ class PatreonSyncWorker:
                     )
                 ]
         else:
+            # Memberships reference campaign rows: keep the catalog mirror current.
+            ensure_patreon_catalog_safely(self.config, db_module=self.db)
             results = await self.process_queued_jobs(limit=limit)
             if not results and self._scheduled_sweep_due():
                 results = await self.run_full_campaign_sweep(now=now)
@@ -727,12 +745,71 @@ class PatreonSyncWorker:
     async def _serve(self, *, once: bool = False) -> None:
         try:
             while not self._stopping:
-                await self.run_once()
+                # One failed pass (DB blip, provider outage) must not end the process:
+                # the container entrypoint treats a worker exit as fatal for the API too.
+                try:
+                    await self.run_once()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Patreon sync worker pass failed: %s", type(exc).__name__)
+                try:
+                    await self._run_scheduled_maintenance()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Patreon sync worker maintenance failed: %s", type(exc).__name__)
                 if once:
                     return
                 await asyncio.sleep(max(1, self._worker_poll_seconds()))
         finally:
             await self.aclose()
+
+    async def _run_scheduled_maintenance(self) -> None:
+        """Retention purge and creator-token refresh on their own cadences."""
+
+        now = time.monotonic()
+        if self.token_refresh_enabled and (
+            self._next_token_check_monotonic is None or now >= self._next_token_check_monotonic
+        ):
+            self._next_token_check_monotonic = now + _TOKEN_REFRESH_CHECK_INTERVAL_SECONDS
+            if self._creator_token_refresh_due():
+                await self.run_once(mode=_MODE_TOKEN_REFRESH)
+
+        if self._next_retention_monotonic is not None and now < self._next_retention_monotonic:
+            return
+        self._next_retention_monotonic = now + constants.DEFAULT_PATREON_RETENTION_INTERVAL_SECONDS
+        result = await self.run_retention_purge()
+        await self._record_heartbeat(mode=_MODE_RETENTION_ONLY, results=[result])
+
+    def _creator_token_refresh_due(self) -> bool:
+        """Refresh before expiry instead of waiting for a 401 to break sync.
+
+        Without a persisted token state the expiry of the bootstrap token is
+        unknown, so the first check refreshes once to establish it.
+        """
+
+        reader = getattr(self.db, "get_patreon_provider_token_state", None)
+        if not callable(reader):
+            return False
+        try:
+            row = _plain_mapping(reader())
+        except Exception:
+            return False
+        if not row or str(row.get("status") or "") != "active":
+            return True
+        expires_at = row.get("expires_at")
+        if isinstance(expires_at, str):
+            try:
+                expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                return True
+        if not isinstance(expires_at, datetime):
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        margin = _int_field(
+            self.config,
+            "creator_token_refresh_margin_seconds",
+            default=constants.DEFAULT_PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS,
+        )
+        return (expires_at - _utc_now()).total_seconds() <= margin
 
     async def run_loop(self) -> None:
         await self._serve(once=False)
@@ -740,7 +817,7 @@ class PatreonSyncWorker:
     async def aclose(self) -> None:
         """Close the Patreon client's HTTP session if the worker owns it."""
 
-        close = getattr(self.client, "close", None)
+        close = getattr(self._client, "close", None)
         if not callable(close):
             return
         try:
@@ -817,6 +894,8 @@ class PatreonSyncWorker:
         members_seen = 0
         members_persisted = 0
         tier_map_misses = 0
+        member_failures = 0
+        seen_member_hashes: set[bytes] = set()
         max_pages = _int_field(self.config, "api_max_pages_per_sync", default=constants.DEFAULT_PATREON_API_MAX_PAGES_PER_SYNC)
 
         async for page in patreon_sync.iter_campaign_member_pages(
@@ -831,19 +910,40 @@ class PatreonSyncWorker:
                 capture_reason="campaign_sync_page",
             )
             for member in _member_data_from_page(page):
-                result = await self._process_member_payload(_member_payload(page, member), member=member, now=now)
                 members_seen += 1
+                member_hash = self._member_hash(member)
+                if member_hash is not None:
+                    seen_member_hashes.add(member_hash)
+                # One bad member must not abort the sweep for everyone after it.
+                try:
+                    result = await self._process_member_payload(_member_payload(page, member), member=member, now=now)
+                except Exception as exc:  # noqa: BLE001
+                    member_failures += 1
+                    logger.warning("Patreon member sync failed: %s", type(exc).__name__)
+                    continue
                 members_persisted += 1 if result.persisted else 0
                 tier_map_misses += 1 if result.tier_map_miss else 0
 
+        # Only a complete sweep (every page, no member failures) may conclude that a
+        # linked member is gone: a partial read would downgrade paying patrons.
+        members_downgraded = 0
+        if not member_failures:
+            members_downgraded = await self._downgrade_absent_members(
+                campaign_db_id(campaign_id, self.config),
+                seen_member_hashes,
+                now=now,
+            )
+
         await self._record_activity(
             event="patreon_sync_completed",
-            outcome="completed",
+            outcome="completed" if not member_failures else "completed_with_member_failures",
             details={
                 "pages_fetched": pages_fetched,
                 "members_seen": members_seen,
                 "members_persisted": members_persisted,
                 "tier_map_misses": tier_map_misses,
+                "member_failures": member_failures,
+                "members_downgraded": members_downgraded,
             },
         )
         return PatreonWorkerItemResult(
@@ -853,7 +953,63 @@ class PatreonSyncWorker:
             members_persisted=members_persisted,
             pages_fetched=pages_fetched,
             tier_map_misses=tier_map_misses,
+            reason="member_failures_skipped" if member_failures else None,
         )
+
+    def _member_hash(self, member: Mapping[str, Any]) -> bytes | None:
+        id_secret = _text_field(self.config, "id_hmac_secret", "provider_sub_pepper")
+        raw_member_id = _text_field(member, "id")
+        if not id_secret or not raw_member_id:
+            return None
+        try:
+            return hash_patreon_identifier(raw_id=raw_member_id, kind="member", pepper=id_secret)
+        except Exception:
+            return None
+
+    async def _downgrade_absent_members(
+        self,
+        campaign_ref: str | None,
+        seen_member_hashes: set[bytes],
+        *,
+        user_id: str | None = None,
+        member_id_hash: bytes | None = None,
+        now: datetime | None = None,
+    ) -> int:
+        """Downgrade active linked memberships a complete read did not return."""
+
+        lister = getattr(self.db, "list_active_patreon_memberships", None)
+        if not callable(lister) or (campaign_ref is None and user_id is None and member_id_hash is None):
+            return 0
+        try:
+            memberships = await _maybe_await(
+                lister(campaign_id=campaign_ref, user_id=user_id, member_id_hash=member_id_hash)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Patreon absent-member reconciliation skipped: %s", type(exc).__name__)
+            return 0
+        downgraded = 0
+        for membership in memberships or []:
+            row = _plain_mapping(membership)
+            if _bytes_or_hex_field(row.get("member_id_hash")) in seen_member_hashes:
+                continue
+            try:
+                if patreon_sync.persist_absent_membership(
+                    row,
+                    config=self.config,
+                    db_module=self.db,
+                    now=now,
+                    source=constants.PATREON_SYNC_SOURCE_API_PULL,
+                ):
+                    downgraded += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Patreon absent-member downgrade failed: %s", type(exc).__name__)
+        if downgraded:
+            await self._record_activity(
+                event="patreon_entitlement_changed",
+                outcome="source_of_truth_downgrade",
+                details={"reason": patreon_sync.ABSENT_MEMBER_REASON, "members_downgraded": downgraded},
+            )
+        return downgraded
 
     async def _process_member_payload(
         self,
@@ -971,9 +1127,16 @@ class PatreonSyncWorker:
         job_type = _job_type(row)
         try:
             if job_type == patreon_sync.JOB_TYPE_FULL_CAMPAIGN:
-                campaign_id = _text_field(row, "campaign_id", "raw_campaign_id")
-                results = await self.run_full_campaign_sweep() if not campaign_id else [await self._sync_campaign(campaign_id=campaign_id)]
+                # Jobs store the internal pcamp-* id; Patreon needs the configured raw id.
+                campaign_id = raw_campaign_id_for(_text_field(row, "campaign_id", "raw_campaign_id"), self.config)
+                results = await self.run_full_campaign_sweep() if not campaign_id else [await self.run_campaign_sync(campaign_id=campaign_id)]
                 aggregate_status, retry_after_seconds, aggregate_reason = self._aggregate_provider_results(results)
+                if (
+                    aggregate_status == patreon_sync.SYNC_JOB_STATUS_RETRY
+                    and _int_field(row, "attempts", default=0)
+                    >= _int_field(row, "max_attempts", default=constants.DEFAULT_PATREON_SYNC_MAX_ATTEMPTS)
+                ):
+                    aggregate_status, retry_after_seconds = patreon_sync.SYNC_JOB_STATUS_FAILED, None
                 await self._complete_job(
                     job_id=job_id,
                     status=aggregate_status,
@@ -1027,7 +1190,8 @@ class PatreonSyncWorker:
         raw_member_id = _text_field(row, "member_id", "raw_member_id", "provider_member_id")
         member_hash = _bytes_or_hex_field(row.get("member_id_hash"))
         user_id = _text_field(row, "user_id")
-        campaign_id = _text_field(row, "campaign_id", "raw_campaign_id")
+        # Stored as pcamp-*; an unknown reference scans every configured campaign.
+        campaign_id = raw_campaign_id_for(_text_field(row, "campaign_id", "raw_campaign_id"), self.config)
         if raw_member_id:
             payload = await self.client.get_member(raw_member_id)
             await self._maybe_quarantine_raw_payload(
@@ -1068,16 +1232,12 @@ class PatreonSyncWorker:
         for candidate_campaign_id in campaign_ids:
             async for page in patreon_sync.iter_campaign_member_pages(self.client, candidate_campaign_id):
                 for member in _member_data_from_page(page):
-                    raw_member_id = _text_field(member, "id")
-                    if not raw_member_id:
-                        continue
-                    try:
-                        candidate = hash_patreon_identifier(raw_id=raw_member_id, kind="member", pepper=id_secret)
-                    except Exception:
-                        continue
-                    if candidate == member_hash:
+                    if self._member_hash(member) == member_hash:
                         await self._process_member_payload(_member_payload(page, member), member=member, now=now)
                         return True
+        # Every page of every candidate campaign was read and the member is gone
+        # (Patreon drops deleted members): end any paid access it still grants.
+        await self._downgrade_absent_members(None, set(), member_id_hash=member_hash, now=now)
         return False
 
     async def _scan_for_user_id(self, *, user_id: str, campaign_id: str | None = None, now: datetime | None = None) -> PatreonWorkerItemResult:
@@ -1093,7 +1253,20 @@ class PatreonSyncWorker:
         if not campaign_ids:
             return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_COMPLETED, job_type=patreon_sync.JOB_TYPE_USER_MEMBER, reason="no_configured_campaigns_noop")
 
+        # A user without an active linked membership has nothing to resync: skip the
+        # (potentially many-page) campaign scan entirely.
+        lister = getattr(self.db, "list_active_patreon_memberships", None)
+        if callable(lister):
+            try:
+                active = await _maybe_await(lister(campaign_id=None, user_id=safe_user_id, member_id_hash=None))
+            except Exception:
+                active = None
+            if active is not None and not active:
+                return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_COMPLETED, job_type=patreon_sync.JOB_TYPE_USER_MEMBER, reason="user_not_linked_noop")
+
+        seen_member_hashes: set[bytes] = set()
         for candidate_campaign_id in campaign_ids:
+            found_in_campaign = False
             async for page in patreon_sync.iter_campaign_member_pages(self.client, candidate_campaign_id):
                 pages_fetched += 1
                 await self._maybe_quarantine_raw_payload(
@@ -1105,10 +1278,24 @@ class PatreonSyncWorker:
                     context = await self._persistence_context_for_member(member)
                     if context is None or str(context.user_id) != safe_user_id:
                         continue
+                    member_hash = self._member_hash(member)
+                    if member_hash is not None:
+                        seen_member_hashes.add(member_hash)
                     result = await self._process_member_payload(_member_payload(page, member), member=member, now=now)
                     members_seen += 1
                     members_persisted += 1 if result.persisted else 0
                     tier_map_misses += 1 if result.tier_map_miss else 0
+                    found_in_campaign = True
+                # One Patreon user has at most one member per campaign.
+                if found_in_campaign:
+                    break
+            if not found_in_campaign:
+                await self._downgrade_absent_members(
+                    campaign_db_id(candidate_campaign_id, self.config),
+                    seen_member_hashes,
+                    user_id=safe_user_id,
+                    now=now,
+                )
 
         return PatreonWorkerItemResult(
             status=patreon_sync.SYNC_JOB_STATUS_COMPLETED,
@@ -1336,6 +1523,19 @@ class PatreonSyncWorker:
 PatreonWorker = PatreonSyncWorker
 
 
+def _idle_until_stopped() -> None:
+    stopping = False
+
+    def _stop(*_args: Any) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    while not stopping:
+        time.sleep(5)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Patreon entitlement sync worker")
     parser.add_argument("--once", action="store_true", help="process one worker pass and exit")
@@ -1349,7 +1549,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO)
-    worker = PatreonSyncWorker(worker_id=args.worker_id)
+    try:
+        worker = PatreonSyncWorker(worker_id=args.worker_id)
+    except PatreonConfigError:
+        # Exiting would stop the API too (the container entrypoint waits on any
+        # child); stay idle and visible in logs until restarted with valid config.
+        logger.error("Patreon configuration is invalid; the Patreon sync worker is idle until restarted")
+        if args.once:
+            return 1
+        _idle_until_stopped()
+        return 0
     if args.once:
 
         async def _run_once_scoped() -> None:

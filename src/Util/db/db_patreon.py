@@ -214,7 +214,9 @@ def _callproc_rows_and_total(proc_name: str, args: list[Any], *, context: str) -
             _drain_remaining_result_sets(cur)
             return rows, total
 
-    result = handle_db_operation(_operation, error_context=context, default_return=([], 0))
+    # No default_return: an outage or an unsynced schema must surface as an error, not
+    # as an empty admin list that looks like "nothing happened".
+    result = handle_db_operation(_operation, error_context=context)
     return result if isinstance(result, tuple) else ([], 0)
 
 
@@ -534,6 +536,97 @@ def resolve_patreon_link_by_provider_hash(*, provider_sub_hash: bytes) -> dict[s
     return get_patreon_link_by_provider_sub_hash(provider_sub_hash=provider_sub_hash)
 
 
+def list_active_patreon_memberships(
+    *,
+    campaign_id: str | None = None,
+    user_id: str | None = None,
+    member_id_hash: bytes | None = None,
+) -> list[dict[str, Any]]:
+    """Call `sp_patreon_list_active_memberships` (server-only reconciliation read).
+
+    Unlike the admin lists this raises on failure: reconciliation must never
+    mistake a DB error for "no memberships".
+    """
+
+    def _operation() -> list[dict[str, Any]]:
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc("sp_patreon_list_active_memberships", [campaign_id, user_id, member_id_hash])
+            return _fetch_all_dicts(cur)
+
+    return handle_db_operation(_operation, error_context="list_active_patreon_memberships()") or []
+
+
+# =============================================================================
+# Campaign / tier-map catalog mirror
+# =============================================================================
+
+
+def upsert_patreon_catalog_campaign(
+    *,
+    campaign_db_id: str,
+    campaign_id_hash: bytes,
+    campaign_id_fingerprint: str,
+    display_name: str | None,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    """Call `sp_patreon_catalog_campaign_upsert` (HMAC/fingerprint only)."""
+
+    return _callproc_one(
+        "sp_patreon_catalog_campaign_upsert",
+        [campaign_db_id, campaign_id_hash, campaign_id_fingerprint, display_name, bool(enabled)],
+        context=f"upsert_patreon_catalog_campaign(campaign={campaign_db_id})",
+        commit=True,
+    )
+
+
+def upsert_patreon_catalog_tier(
+    *,
+    tier_map_id: str,
+    campaign_db_id: str,
+    tier_id_hash: bytes,
+    tier_id_fingerprint: str,
+    plan_code: str,
+    tier_code: str,
+    tier_name: str | None,
+    priority: int,
+    active: bool,
+) -> dict[str, Any] | None:
+    """Call `sp_patreon_catalog_tier_upsert` (HMAC/fingerprint only)."""
+
+    return _callproc_one(
+        "sp_patreon_catalog_tier_upsert",
+        [
+            tier_map_id,
+            campaign_db_id,
+            tier_id_hash,
+            tier_id_fingerprint,
+            plan_code,
+            tier_code,
+            tier_name,
+            int(priority),
+            bool(active),
+        ],
+        context=f"upsert_patreon_catalog_tier(tier_map_id={tier_map_id})",
+        commit=True,
+    )
+
+
+def retire_unconfigured_patreon_catalog(
+    *,
+    campaign_db_ids: Sequence[str],
+    tier_map_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    """Call `sp_patreon_catalog_retire_missing`; deactivates, never deletes."""
+
+    return _callproc_one(
+        "sp_patreon_catalog_retire_missing",
+        [json.dumps(list(campaign_db_ids)), json.dumps(list(tier_map_ids))],
+        context="retire_unconfigured_patreon_catalog()",
+        commit=True,
+    )
+
+
 # =============================================================================
 # Webhook delivery ledger
 # =============================================================================
@@ -575,6 +668,17 @@ def record_webhook_delivery(**kwargs: Any) -> dict[str, Any] | None:
     """Alias over `sp_patreon_webhook_delivery_record` for route seams."""
 
     return record_patreon_webhook_delivery(**kwargs)
+
+
+def mark_patreon_webhook_delivery(*, delivery_id: str, status: str) -> dict[str, Any] | None:
+    """Call `sp_patreon_webhook_delivery_mark` with the delivery's final outcome."""
+
+    return _callproc_one(
+        "sp_patreon_webhook_delivery_mark",
+        [delivery_id, status],
+        context=f"mark_patreon_webhook_delivery(delivery_id={delivery_id}, status={status})",
+        commit=True,
+    )
 
 
 # =============================================================================
@@ -682,14 +786,31 @@ def list_patreon_entitlements_admin(
     plan_code: str | None,
     limit: int,
     offset: int,
+    link_status: str | None = None,
+    search: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """List current Patreon entitlements (paginated) for the ROOT dashboard."""
 
     return _callproc_rows_and_total(
         "sp_patreon_admin_list_entitlements",
-        [status or None, plan_code or None, limit, offset],
+        [status or None, plan_code or None, link_status or None, search or None, limit, offset],
         context=f"list_patreon_entitlements_admin(status={status or ''}, limit={limit}, offset={offset})",
     )
+
+
+def list_patreon_entitlement_history_admin(*, user_hash: str, limit: int) -> list[dict[str, Any]]:
+    """Return one user's normalized entitlement transitions, newest first."""
+
+    def _operation() -> list[dict[str, Any]]:
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc("sp_patreon_admin_entitlement_history", [user_hash, limit])
+            return _fetch_all_dicts(cur)
+
+    return handle_db_operation(
+        _operation,
+        error_context="list_patreon_entitlement_history_admin(user_hash=[REDACTED])",
+    ) or []
 
 
 def list_patreon_tier_map_admin(
@@ -807,6 +928,16 @@ def get_patreon_provider_token_state() -> dict[str, Any] | None:
         "sp_patreon_provider_token_state_get",
         [],
         context="get_patreon_provider_token_state()",
+    )
+
+
+def get_patreon_provider_token_state_encrypted() -> dict[str, Any] | None:
+    """Call `sp_patreon_provider_token_state_get_encrypted` (server-only ciphertext)."""
+
+    return _callproc_one(
+        "sp_patreon_provider_token_state_get_encrypted",
+        [],
+        context="get_patreon_provider_token_state_encrypted()",
     )
 
 
@@ -971,10 +1102,12 @@ def run_patreon_retention_purge(
     proof_retention_after_expiry_hours: int | None = None,
     webhook_delivery_retention_days: int | None = None,
     raw_payload_retention_days: int | None = None,
+    sync_job_retention_days: int | None = None,
 ) -> dict[str, Any] | None:
-    """Call `sp_patreon_retention_purge`.
+    """Call `sp_patreon_retention_purge` with the configured windows.
 
-    SQL purges only bounded proof/webhook/quarantine artifacts. Link, snapshot,
+    SQL purges only bounded proof/webhook/quarantine artifacts and finished sync
+    jobs, and caps every window at its documented maximum. Link, snapshot,
     entitlement, and unlink history remain preserved indefinitely.
     """
 
@@ -999,7 +1132,13 @@ def run_patreon_retention_purge(
 
     return _callproc_one(
         "sp_patreon_retention_purge",
-        [],
+        [
+            proof_retention_after_expiry_hours,
+            webhook_delivery_retention_days,
+            sync_job_retention_days
+            if sync_job_retention_days is not None
+            else constants.DEFAULT_PATREON_SYNC_JOB_RETENTION_DAYS,
+        ],
         context="run_patreon_retention_purge()",
         commit=True,
     )
@@ -1023,7 +1162,14 @@ __all__ = [
     "get_patreon_provider_token_state",
     "insert_patreon_raw_payload_quarantine",
     "link_patreon_account",
+    "list_active_patreon_memberships",
+    "list_patreon_entitlement_history_admin",
     "list_patreon_entitlements_admin",
+    "mark_patreon_webhook_delivery",
+    "retire_unconfigured_patreon_catalog",
+    "upsert_patreon_catalog_campaign",
+    "upsert_patreon_catalog_tier",
+    "get_patreon_provider_token_state_encrypted",
     "list_patreon_sync_jobs_admin",
     "list_patreon_tier_map_admin",
     "list_patreon_webhooks_admin",

@@ -23,6 +23,8 @@ from src.Util.Models import (
     PaginationInfo,
     PatreonAdminEntitlementItem,
     PatreonAdminEntitlementsListResponse,
+    PatreonAdminHistoryItem,
+    PatreonAdminHistoryResponse,
     PatreonAdminResyncRequest,
     PatreonAdminSyncJobItem,
     PatreonAdminSyncJobsListResponse,
@@ -46,7 +48,8 @@ from src.Util.error_handler import (
 )
 from src.Util.log_context_models import LogContext
 from src.Util.patreon import sync as patreon_sync
-from src.Util.patreon.config import load_patreon_config
+from src.Util.patreon.catalog import ensure_patreon_catalog_safely
+from src.Util.patreon.config import PatreonConfigError, load_patreon_config
 from src.Util.patreon.rate_limit import PatreonRateLimiter, PatreonRateLimitExceeded
 from src.Util.system_metrics import SystemMetrics
 
@@ -84,6 +87,10 @@ _SECRET_ENV_NAME_FRAGMENTS = (
 _ROOT_ONLY_403 = {403: {"description": "The caller is not a root user."}}
 _LIMIT_DESCRIPTION = "Page size (1-500)."
 _OFFSET_DESCRIPTION = "Number of rows to skip."
+_USER_HASH_PATH = Path(
+    max_length=255,
+    description="Public hash of the local user (not a Patreon identifier).",
+)
 
 
 def _require_root(log_context: LogContext) -> None:
@@ -214,6 +221,16 @@ async def list_admin_patreon_entitlements(
         description="Exact entitlement status: `active`, `free`, `pending`, `former`, `revoked` or `stale`.",
     ),
     plan_code: Optional[str] = Query(None, max_length=64, description="Exact internal plan code, e.g. `free`."),
+    link_status: Optional[str] = Query(
+        None,
+        max_length=32,
+        description="Exact link status: `none`, `pending`, `linked`, `unlinked`, `revoked` or `stale`.",
+    ),
+    search: Optional[str] = Query(
+        None,
+        max_length=255,
+        description="Exact `user_hash`, or a username/email prefix.",
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
@@ -225,14 +242,17 @@ async def list_admin_patreon_entitlements(
     cookie) of a root user.
 
     **Responses:** `200` with `items[]` (`user_hash`, `display_name`, entitlement `status`,
-    `link_status`, `plan_code`, `tier_code`, `tier_name`, `last_synced_at`, `updated_at`) and
-    `pagination`. No raw Patreon identifiers, emails or payloads. `403` for non-root callers.
+    `link_status`, `plan_code`, `tier_code`, `tier_name`, `next_renewal_at`, `last_synced_at`,
+    `stale_after`, `updated_at`) and `pagination`. No raw Patreon identifiers, emails or
+    payloads. `403` for non-root callers.
     """
 
     _require_root(log_context)
     rows, total = db_patreon.list_patreon_entitlements_admin(
         status=status,
         plan_code=plan_code,
+        link_status=link_status if isinstance(link_status, str) else None,
+        search=search.strip() or None if isinstance(search, str) else None,
         limit=limit,
         offset=offset,
     )
@@ -245,7 +265,9 @@ async def list_admin_patreon_entitlements(
             plan_code=str(row.get("plan_code") or "free"),
             tier_code=row.get("tier_code"),
             tier_name=row.get("tier_name"),
+            next_renewal_at=row.get("next_renewal_at"),
             last_synced_at=row.get("last_synced_at"),
+            stale_after=row.get("stale_after"),
             updated_at=row.get("updated_at"),
         )
         for row in rows
@@ -265,7 +287,7 @@ async def list_admin_patreon_entitlements(
     log_success=False,
 )
 async def get_admin_patreon_entitlement(
-    user_hash: Annotated[str, Path(description="Public hash of the local user (not a Patreon identifier).")],
+    user_hash: Annotated[str, _USER_HASH_PATH],
     credentials: HTTPAuthorizationCredentials = Depends(security),
     log_context: LogContext = None,
 ) -> Dict[str, Any]:
@@ -292,6 +314,58 @@ async def get_admin_patreon_entitlement(
     return _sanitize_patreon_admin_value(response.model_dump_safe(mode="json"))
 
 
+@router.get("/entitlements/{user_hash}/history", responses=_ROOT_ONLY_403)
+@log_and_handle_errors(
+    operation_name="get_admin_patreon_entitlement_history",
+    activity_type=ActivityType.ADMIN_ACTION,
+    log_success=False,
+)
+async def get_admin_patreon_entitlement_history(
+    user_hash: Annotated[str, _USER_HASH_PATH],
+    limit: int = Query(50, ge=1, le=200, description="Most recent transitions to return (1-200)."),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    log_context: LogContext = None,
+) -> Dict[str, Any]:
+    """Return one user's recent Patreon entitlement transitions, newest first.
+
+    Each row is a change of entitlement status, plan, tier or link status (or a tier-map
+    miss), with the normalized `reason` and `sync_source` that caused it.
+
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    cookie) of a root user.
+
+    **Responses:** `200` with `user_hash` and `items[]` (`history_id`, `previous_status`,
+    `new_status`, `previous_plan_code`, `new_plan_code`, `previous_tier_code`, `new_tier_code`,
+    `link_status`, `reason`, `sync_source`, `observed_at`). An unknown user returns an empty
+    list. `403` for non-root callers.
+    """
+
+    _require_root(log_context)
+    safe_hash = str(user_hash or "").strip()
+    if not safe_hash:
+        raise ValidationError(message="user_hash is required", error_code=ErrorCode.INVALID_INPUT)
+    rows = db_patreon.list_patreon_entitlement_history_admin(user_hash=safe_hash, limit=limit)
+    items = [
+        PatreonAdminHistoryItem(
+            history_id=str(row.get("history_id") or ""),
+            previous_status=row.get("previous_status"),
+            new_status=str(row.get("new_status") or "free"),
+            previous_plan_code=row.get("previous_plan_code"),
+            new_plan_code=str(row.get("new_plan_code") or "free"),
+            previous_tier_code=row.get("previous_tier_code"),
+            new_tier_code=row.get("new_tier_code"),
+            link_status=row.get("link_status"),
+            reason=str(row.get("reason") or "unknown")[:128],
+            sync_source=str(row.get("sync_source") or "unknown"),
+            observed_at=row.get("observed_at"),
+        )
+        for row in rows
+        if row.get("history_id")
+    ]
+    response = PatreonAdminHistoryResponse(user_hash=safe_hash, items=items)
+    return _sanitize_patreon_admin_value(response.model_dump_safe(mode="json"))
+
+
 @router.get("/tier-map", responses=_ROOT_ONLY_403)
 @log_and_handle_errors(
     operation_name="list_admin_patreon_tier_map",
@@ -314,9 +388,18 @@ async def list_admin_patreon_tier_map(
     `campaign_name`, `tier_fingerprint`, `plan_code`, `tier_code`, `tier_name`, `priority`,
     `active`, `effective_from`, `effective_until` — and `pagination`. Campaign and tier ids appear
     only as fingerprints, never raw. `403` for non-root callers.
+
+    The table mirrors the server-only tier-map configuration, which is what classifies users;
+    it is refreshed from configuration before it is listed.
     """
 
     _require_root(log_context)
+    try:
+        config = load_patreon_config()
+    except PatreonConfigError:
+        config = None
+    if config is not None and not getattr(config, "disabled", True):
+        ensure_patreon_catalog_safely(config)
     rows, total = db_patreon.list_patreon_tier_map_admin(active=active, limit=limit, offset=offset)
     items = [
         PatreonAdminTierMapItem(
@@ -477,9 +560,12 @@ async def enqueue_admin_patreon_resync(
     **Request:** JSON object; every field is optional (`scope` defaults to `user`).
 
     **Responses:**
-    - `200` `accepted: true`, `status: queued`, `correlation_id` (the job id). Queued jobs run
-      only while the Patreon sync worker process is running.
+    - `200` `accepted: true`, `status: queued`, `correlation_id` (the job id). When an identical
+      job is already queued the request is merged into it: `correlation_id` is that job's id and
+      `message` says so. Queued jobs run only while the Patreon sync worker process is running.
     - `200` `accepted: false`, `status: disabled` when Patreon sync is turned off; nothing is queued.
+    - `200` `accepted: false`, `status: not_linked` for `scope: user` when the user has no linked
+      Patreon membership; nothing is queued.
     - `400` `scope: user` without `user_hash`, a `reason` over 128 characters, or a `user_hash`
       over 255; `404` unknown `user_hash`; `429` enqueue rate limit exceeded (`Retry-After`
       header); `403` for non-root callers.
@@ -493,20 +579,30 @@ async def enqueue_admin_patreon_resync(
 
     _require_root(log_context)
     payload = PatreonAdminResyncRequest(scope=scope, user_hash=user_hash, reason=reason, force=force)
-    config = load_patreon_config()
-    if not bool(getattr(config, "sync_enabled", False)):
+    try:
+        config = load_patreon_config()
+    except PatreonConfigError:
+        config = None
+    if config is None or not bool(getattr(config, "sync_enabled", False)):
         return {
             "success": True,
             "accepted": False,
             "status": "disabled",
-            "message": "Patreon sync is disabled.",
+            "message": "Patreon sync is disabled." if config is not None else "Patreon configuration is invalid.",
         }
+
+    safe_hash = str(payload.user_hash or "").strip()
+    if payload.scope == "user" and not safe_hash:
+        raise ValidationError(
+            message="user_hash is required for scope='user'",
+            error_code=ErrorCode.INVALID_INPUT,
+        )
 
     try:
         _current_rate_limiter().check_sync_enqueue(
-            kind=patreon_sync.JOB_TYPE_USER_MEMBER,
-            user_id=(payload.user_hash or "admin"),
-            source="manual",
+            kind=patreon_sync.JOB_TYPE_USER_MEMBER if payload.scope == "user" else patreon_sync.JOB_TYPE_FULL_CAMPAIGN,
+            user_id=(safe_hash or "all"),
+            source="admin",
         )
     except PatreonRateLimitExceeded as exc:
         retry_after = max(1, int(getattr(exc, "retry_after", 0) or 1))
@@ -522,15 +618,19 @@ async def enqueue_admin_patreon_resync(
     job_id = f"psj-{uuid.uuid4().hex}"
 
     if payload.scope == "user":
-        safe_hash = str(payload.user_hash or "").strip()
-        if not safe_hash:
-            raise ValidationError(
-                message="user_hash is required for scope='user'",
-                error_code=ErrorCode.INVALID_INPUT,
-            )
         user = get_user_by_hash(safe_hash)
         if not user:
             raise NotFoundError(message="User not found")
+        # A resync reads Patreon for the user's linked membership; without one there
+        # is nothing to read, and the worker would page through every campaign.
+        if not db_patreon.list_active_patreon_memberships(user_id=user.id):
+            response = PatreonResyncAcceptedResponse(
+                accepted=False,
+                status="not_linked",
+                user_hash=safe_hash,
+                message="This user has no linked Patreon membership to resync.",
+            )
+            return _sanitize_patreon_admin_value(response.model_dump_safe(mode="json"))
         accepted = patreon_sync.enqueue_member_resync(
             user_id=user.id,
             user_hash=safe_hash,
@@ -543,7 +643,7 @@ async def enqueue_admin_patreon_resync(
         return _sanitize_patreon_admin_value(accepted.model_dump_safe(mode="json"))
 
     # scope == "all": one full-campaign job with no campaign id -> full sweep.
-    db_patreon.enqueue_patreon_sync_job(
+    enqueued = db_patreon.enqueue_patreon_sync_job(
         job_id=job_id,
         job_type=patreon_sync.JOB_TYPE_FULL_CAMPAIGN,
         campaign_id=None,
@@ -555,11 +655,16 @@ async def enqueue_admin_patreon_resync(
         source="manual",
         sanitized_metadata={"reason": reason, "source": "admin_dashboard", "scope": "all"},
     )
+    queued_job_id, deduplicated = patreon_sync.enqueued_job_reference(enqueued, job_id)
     response = PatreonResyncAcceptedResponse(
         accepted=True,
         status="queued",
-        correlation_id=job_id,
-        message="Full Patreon resync enqueued.",
+        correlation_id=queued_job_id,
+        message=(
+            "A full Patreon resync is already queued; this request was merged into it."
+            if deduplicated
+            else "Full Patreon resync enqueued."
+        ),
     )
     return _sanitize_patreon_admin_value(response.model_dump_safe(mode="json"))
 

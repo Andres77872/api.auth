@@ -111,7 +111,7 @@ The [error reference](/documentation/USAGE/errors.md) lists every code.
 
 ## Route Modules
 
-API version `2.2.0` registers 245 method/path operations across 27 modules in
+API version `2.2.0` registers 246 method/path operations across 27 modules in
 `src/routes`, each under one tag:
 
 | Module | Tag | Operations | Surface |
@@ -133,7 +133,7 @@ API version `2.2.0` registers 245 method/path operations across 27 modules in
 | `internal_billing.py` | Billing Internal | 6 | Billing S2S facts, catalog, Checkout, Portal, resync |
 | `stripe_webhooks.py` | Stripe Webhooks | 2 | Global fallback and per-billing-group Stripe webhooks |
 | `admin_oauth.py` | Admin - OAuth | 20 | Provider catalog, connections, credentials, project bindings, readiness |
-| `admin_patreon.py` | Admin - Patreon | 7 | Root-only Patreon operations |
+| `admin_patreon.py` | Admin - Patreon | 8 | Root-only Patreon operations |
 | `internal_patreon.py` | Patreon Internal | 2 | Patreon entitlement S2S read and resync |
 | `patreon_webhooks.py` | Patreon Webhooks | 1 | Patreon webhook |
 | `email_templates.py` | Admin - Email Templates | 8 | Root-only template lifecycle |

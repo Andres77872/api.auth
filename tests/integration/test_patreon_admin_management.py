@@ -188,6 +188,11 @@ async def test_tier_map_list(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_resync_user_returns_correlation_id(client, monkeypatch):
     monkeypatch.setattr(admin_patreon, "get_user_by_hash", lambda h: _FakeUser())
+    monkeypatch.setattr(
+        admin_patreon.db_patreon,
+        "list_active_patreon_memberships",
+        lambda **kwargs: [{"membership_id": "pmem-1", "user_id": kwargs.get("user_id")}],
+    )
 
     captured: dict[str, Any] = {}
 

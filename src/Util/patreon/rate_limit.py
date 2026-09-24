@@ -38,6 +38,9 @@ _PATREON_RATE_BUCKETS = (
     "sync_enqueue",
 )
 _KEY_DIGEST_HEX_LENGTH = 32
+# Many legitimate users can share one egress IP (NAT, campus, mobile carrier), so the
+# per-IP counter of a user-facing bucket gets this much headroom over the per-user one.
+_IP_DIMENSION_MULTIPLIER = 5
 
 
 class PatreonRateLimitExceeded(RuntimeError):
@@ -212,6 +215,48 @@ class PatreonRateLimiter:
         key = _bucket_key(PATREON_REDIS_RATE_PREFIXES[bucket], bucket, *parts)
         return self._consume_bucket(bucket, key)
 
+    def _check_dimensions(
+        self,
+        bucket: str,
+        dimensions: tuple[tuple[str, Any, int], ...],
+    ) -> PatreonRateLimitDecision:
+        """Consume one independent counter per present dimension.
+
+        A single key over every dimension would let a caller reset its budget by
+        varying any one part (a new IP header or email hint), and would make the
+        remaining budget depend on the combination. Each dimension is limited on
+        its own; the request fails if any of them is exhausted.
+        """
+
+        if bucket not in _PATREON_RATE_BUCKETS:
+            raise ValueError(f"Unsupported Patreon rate-limit bucket: {bucket}")
+        prefix = PATREON_REDIS_RATE_PREFIXES[bucket]
+        base_limit = self.policy.bucket_limit(bucket)
+        window_seconds = self.policy.bucket_window_seconds(bucket)
+        exceeded: PatreonRateLimitExceeded | None = None
+        remaining: int | None = None
+        for name, value, multiplier in dimensions:
+            if value is None or str(value).strip() == "":
+                continue
+            key = _bucket_key(prefix, bucket, name, value)
+            limit = max(1, base_limit * max(1, multiplier))
+            try:
+                count = int(self.redis.incr(key))
+                if count == 1 or int(self.redis.ttl(key)) < 0:
+                    self.redis.expire(key, max(1, int(window_seconds)))
+            except Exception:
+                return self._redis_unavailable(bucket)
+            if count > limit:
+                retry_after = self._ttl(key, window_seconds)
+                if exceeded is None or retry_after > exceeded.retry_after:
+                    exceeded = PatreonRateLimitExceeded(bucket=bucket, retry_after=retry_after, limit=limit, key=key)
+            else:
+                left = limit - count
+                remaining = left if remaining is None else min(remaining, left)
+        if exceeded is not None:
+            raise exceeded
+        return PatreonRateLimitDecision(allowed=True, bucket=bucket, remaining=remaining)
+
     def check_link_request(
         self,
         *,
@@ -220,9 +265,17 @@ class PatreonRateLimiter:
         email_hint: str | None = None,
         request_scope: str | None = None,
     ) -> PatreonRateLimitDecision:
-        """Consume the authenticated Patreon link-request bucket."""
+        """Consume the authenticated Patreon link-request bucket (per user, IP and hint)."""
 
-        return self._check("link_request", user_id, ip_address, email_hint, request_scope)
+        _ = request_scope
+        return self._check_dimensions(
+            "link_request",
+            (
+                ("user", user_id, 1),
+                ("ip", ip_address, _IP_DIMENSION_MULTIPLIER),
+                ("email", str(email_hint).strip().lower() if email_hint else None, 1),
+            ),
+        )
 
     check_link = check_link_request
 
@@ -234,9 +287,21 @@ class PatreonRateLimiter:
         proof_email_hash: str | None = None,
         pending_link_id: str | None = None,
     ) -> PatreonRateLimitDecision:
-        """Consume proof-send/request abuse controls."""
+        """Consume proof-send controls (per user, IP and recipient).
 
-        return self._check("proof_request", user_id, ip_address, proof_email_hash, pending_link_id)
+        Callers must consume this on every link request, before contacting Patreon,
+        so the remaining budget never depends on whether the email is a patron's.
+        """
+
+        _ = pending_link_id
+        return self._check_dimensions(
+            "proof_request",
+            (
+                ("user", user_id, 1),
+                ("ip", ip_address, _IP_DIMENSION_MULTIPLIER),
+                ("recipient", proof_email_hash, 1),
+            ),
+        )
 
     check_proof_send = check_proof_request
     check_proof = check_proof_request
@@ -248,10 +313,23 @@ class PatreonRateLimiter:
         lookup_id: str | None = None,
         proof_token_fingerprint: str | None = None,
         pending_link_id: str | None = None,
+        user_id: str | None = None,
     ) -> PatreonRateLimitDecision:
-        """Consume invalid/valid proof-token submission controls."""
+        """Consume proof-token submission controls (per user, IP and proof lookup id).
 
-        return self._check("proof_consume", ip_address, lookup_id, proof_token_fingerprint, pending_link_id)
+        Deliberately not keyed on the submitted secret: every guess against one
+        proof must spend the same budget.
+        """
+
+        _ = (proof_token_fingerprint, pending_link_id)
+        return self._check_dimensions(
+            "proof_consume",
+            (
+                ("user", user_id, 1),
+                ("ip", ip_address, _IP_DIMENSION_MULTIPLIER),
+                ("lookup", lookup_id, 1),
+            ),
+        )
 
     check_proof_confirmation = check_proof_consume
     check_proof_confirm = check_proof_consume
@@ -264,7 +342,10 @@ class PatreonRateLimiter:
     ) -> PatreonRateLimitDecision:
         """Consume Patreon unlink/relink lifecycle controls."""
 
-        return self._check("unlink", user_id, ip_address)
+        return self._check_dimensions(
+            "unlink",
+            (("user", user_id, 1), ("ip", ip_address, _IP_DIMENSION_MULTIPLIER)),
+        )
 
     check_unlink_attempt = check_unlink
 
@@ -276,7 +357,10 @@ class PatreonRateLimiter:
     ) -> PatreonRateLimitDecision:
         """Consume browser-owned safe link-status read controls."""
 
-        return self._check("status", user_id, ip_address)
+        return self._check_dimensions(
+            "status",
+            (("user", user_id, 1), ("ip", ip_address, _IP_DIMENSION_MULTIPLIER)),
+        )
 
     check_status_read = check_status
 
@@ -301,9 +385,14 @@ class PatreonRateLimiter:
         event_type: str | None = None,
         signature_digest: str | None = None,
     ) -> PatreonRateLimitDecision:
-        """Consume invalid webhook-signature failure controls."""
+        """Consume invalid webhook-signature failure controls (per source IP).
 
-        return self._check("webhook_signature_failure", ip_address, event_type, signature_digest)
+        The event header is attacker-controlled on a failed signature, so it is not
+        part of the key.
+        """
+
+        _ = (event_type, signature_digest)
+        return self._check("webhook_signature_failure", ip_address)
 
     record_webhook_signature_failure = check_webhook_signature_failure
 

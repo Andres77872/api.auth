@@ -126,7 +126,7 @@ neither printed/seeded default is a valid current login.
 
 ## 📡 API Surface
 
-The app currently registers **245 route-module endpoint methods across 27 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
+The app currently registers **246 route-module endpoint methods across 27 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
 
 | Surface | Prefix | Module | Count | Contract |
 |---------|--------|--------|-------|----------|
@@ -147,7 +147,7 @@ The app currently registers **245 route-module endpoint methods across 27 `src/r
 | Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Provider catalog, connections, write-only credentials, project bindings, URL allow-lists, readiness |
 | Billing Internal | `/internal/.../billing` | `internal_billing.py` | 6 | S2S billing facts, catalog, Checkout, Portal, resync |
 | Stripe Webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Raw Stripe webhook intake |
-| Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 7 | ROOT-only Patreon status and operations |
+| Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 8 | ROOT-only Patreon status and operations |
 | Patreon Internal | `/internal/users/{user_hash}/entitlements` | `internal_patreon.py` | 2 | S2S entitlement read and resync |
 | Patreon Webhooks | `/webhooks/patreon` | `patreon_webhooks.py` | 1 | Raw Patreon webhook intake |
 | Internal Email | `/internal/email` | `internal_email.py` | 3 | Root-gated identity, template send, message status |

@@ -386,7 +386,12 @@ def verify_s2s_bearer_token(
     right = expected if expected is not None else expected_token
     left_text = "" if left is None else str(left)
     right_text = "" if right is None else str(right)
-    matches = hmac.compare_digest(left_text, right_text)
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str input, which an
+    # unauthenticated caller could otherwise turn into a 500.
+    matches = hmac.compare_digest(
+        left_text.encode("utf-8", "surrogatepass"),
+        right_text.encode("utf-8", "surrogatepass"),
+    )
     return bool(left_text and right_text and matches)
 
 

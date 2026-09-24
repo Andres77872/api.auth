@@ -168,7 +168,9 @@ def test_campaign_members_request_uses_expected_url_headers_query_and_timeout():
     assert "fields%5Bmember%5D" in parsed.query
     assert "fields%5Btier%5D" in parsed.query
     assert "page%5Bcount%5D" in parsed.query
-    assert query["include"] == ["currently_entitled_tiers,user"]
+    # ``campaign`` must be included: JSON:API omits un-included relationships, and
+    # the classifier and every persistence path need the member's campaign.
+    assert query["include"] == ["currently_entitled_tiers,user,campaign"]
     assert "email" in query["fields[member]"][0]
     assert "patron_status" in query["fields[member]"][0]
     assert "last_charge_status" in query["fields[member]"][0]

@@ -523,6 +523,32 @@ class SystemMetrics:
             return False
 
     @staticmethod
+    @staticmethod
+    def _patreon_error_code(error: BaseException) -> str:
+        """Non-leaking failure marker: exception text can carry hosts, SQL or config."""
+
+        return f"{type(error).__name__}"
+
+    @staticmethod
+    def get_patreon_db_timezone_health() -> Dict[str, Any]:
+        """Patreon SQL compares NOW() with UTC times written by the application.
+
+        That is only correct when the DB session clock is UTC; anything else skews
+        proof expiry, staleness and every time window by the offset.
+        """
+
+        try:
+            row = SystemMetrics._fetch_one_metric_row(
+                "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds"
+            ) or {}
+            offset = SystemMetrics._safe_int(row.get("offset_seconds"), 0)
+            return {
+                "status": "healthy" if abs(offset) < 60 else "degraded",
+                "utc_offset_seconds": offset,
+            }
+        except Exception as e:
+            return {"status": "unknown", "error": SystemMetrics._patreon_error_code(e)}
+
     def get_patreon_readiness_metrics() -> Dict[str, Any]:
         """Return non-secret Patreon readiness and kill-switch posture."""
 
@@ -561,7 +587,7 @@ class SystemMetrics:
                 "status": "not_ready",
                 "ready": False,
                 "disabled": True,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -572,15 +598,36 @@ class SystemMetrics:
         try:
             from src.Util.db import db_patreon
 
+            config = load_patreon_config()
+            needs_token = bool(config.linking_enabled or config.sync_enabled)
             row = db_patreon.get_patreon_creator_token_health()
-            status = str(row.get("status") or "unknown") if isinstance(row, dict) else "unknown"
+            row = row if isinstance(row, dict) else {}
+            if row.get("configured"):
+                # Auto-refresh keeps an encrypted token state row: report its state.
+                status = str(row.get("status") or "unknown")
+                degraded = bool(row.get("degraded")) or status in {"refresh_failed", "revoked", "expired"}
+                configured = True
+                source = "refreshed_state"
+            else:
+                # No refresh state: the token is the static server-only env value.
+                configured = bool(config.creator_access_token)
+                if configured:
+                    status = "configured"
+                elif needs_token:
+                    status = "not_ready"
+                else:
+                    status = "disabled"
+                degraded = needs_token and not configured
+                source = "environment" if configured else None
             return {
                 "status": status,
-                "configured": bool(row.get("configured")) if isinstance(row, dict) else False,
-                "degraded": bool(row.get("degraded")) if isinstance(row, dict) else status in {"refresh_failed", "revoked", "expired"},
-                "expires_at": row.get("expires_at") if isinstance(row, dict) else None,
-                "refreshed_at": row.get("refreshed_at") if isinstance(row, dict) else None,
-                "rotated_at": row.get("rotated_at") if isinstance(row, dict) else None,
+                "configured": configured,
+                "degraded": degraded,
+                "source": source,
+                "auto_refresh_enabled": bool(config.creator_token_refresh_enabled),
+                "expires_at": row.get("expires_at"),
+                "refreshed_at": row.get("refreshed_at"),
+                "rotated_at": row.get("rotated_at"),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
         except Exception as e:
@@ -588,7 +635,7 @@ class SystemMetrics:
                 "status": "unknown",
                 "configured": False,
                 "degraded": True,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -606,9 +653,9 @@ class SystemMetrics:
                     """
                     SELECT
                         SUM(CASE WHEN signature_valid = 0 THEN 1 ELSE 0 END) AS signature_failures,
-                        SUM(CASE WHEN status IN ('failed','processing') OR retry_after_at IS NOT NULL THEN 1 ELSE 0 END) AS retrying_deliveries
+                        SUM(CASE WHEN status = 'failed' OR retry_after_at IS NOT NULL THEN 1 ELSE 0 END) AS retrying_deliveries
                     FROM patreon_webhook_deliveries
-                    WHERE received_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
+                    WHERE received_at >= DATE_SUB(NOW(), INTERVAL %s SECOND)
                     """,
                     (max(1, int(config.webhook_signature_failure_alert_window_seconds)),),
                 ) or {}
@@ -642,7 +689,7 @@ class SystemMetrics:
                 "signature_failure_count": 0,
                 "paused": False,
                 "retrying_deliveries": 0,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -655,10 +702,12 @@ class SystemMetrics:
                 """
                 SELECT
                     COUNT(*) AS current_snapshot_count,
-                    SUM(CASE WHEN stale_after IS NOT NULL AND stale_after < UTC_TIMESTAMP() THEN 1 ELSE 0 END) AS stale_snapshot_count,
-                    MAX(CASE WHEN stale_after IS NOT NULL AND stale_after < UTC_TIMESTAMP()
+                    SUM(CASE WHEN link_status = 'linked' THEN 1 ELSE 0 END) AS linked_count,
+                    SUM(CASE WHEN link_status = 'linked' AND entitlement_status = 'active' THEN 1 ELSE 0 END) AS active_paid_count,
+                    SUM(CASE WHEN link_status = 'linked' AND stale_after IS NOT NULL AND stale_after < UTC_TIMESTAMP() THEN 1 ELSE 0 END) AS stale_snapshot_count,
+                    MAX(CASE WHEN link_status = 'linked' AND stale_after IS NOT NULL AND stale_after < UTC_TIMESTAMP()
                         THEN TIMESTAMPDIFF(SECOND, stale_after, UTC_TIMESTAMP()) ELSE 0 END) AS max_stale_age_seconds,
-                    MAX(CASE WHEN last_synced_at IS NOT NULL
+                    MAX(CASE WHEN link_status = 'linked' AND last_synced_at IS NOT NULL
                         THEN TIMESTAMPDIFF(SECOND, last_synced_at, UTC_TIMESTAMP()) ELSE NULL END) AS oldest_snapshot_age_seconds
                 FROM patreon_entitlements_current
                 """
@@ -675,6 +724,8 @@ class SystemMetrics:
             return {
                 "status": "degraded" if stale_count else "healthy",
                 "current_snapshot_count": SystemMetrics._safe_int(row.get("current_snapshot_count"), 0),
+                "linked_count": SystemMetrics._safe_int(row.get("linked_count"), 0),
+                "active_paid_count": SystemMetrics._safe_int(row.get("active_paid_count"), 0),
                 "stale_snapshot_count": stale_count,
                 "max_stale_age_seconds": SystemMetrics._safe_int(row.get("max_stale_age_seconds"), 0),
                 "oldest_snapshot_age_seconds": row.get("oldest_snapshot_age_seconds"),
@@ -688,7 +739,7 @@ class SystemMetrics:
                 "stale_snapshot_count": 0,
                 "max_stale_age_seconds": None,
                 "tier_map_misses_24h": 0,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -704,10 +755,10 @@ class SystemMetrics:
                     SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END) AS delivered,
                     SUM(CASE WHEN status IN ('dead','bounced','complained','suppressed','cancelled') THEN 1 ELSE 0 END) AS failed,
                     MAX(CASE WHEN status IN ('pending','retry','processing')
-                        THEN TIMESTAMPDIFF(SECOND, created_at, UTC_TIMESTAMP()) ELSE NULL END) AS oldest_in_flight_age_seconds
+                        THEN TIMESTAMPDIFF(SECOND, created_at, NOW()) ELSE NULL END) AS oldest_in_flight_age_seconds
                 FROM email_messages
                 WHERE purpose = 'patreon_link_proof'
-                  AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
                 """
             ) or {}
             failed = SystemMetrics._safe_int(row.get("failed"), 0)
@@ -726,7 +777,7 @@ class SystemMetrics:
                 "in_flight": 0,
                 "delivered_24h": 0,
                 "failed_24h": 0,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -751,7 +802,7 @@ class SystemMetrics:
                 "status": "unknown",
                 "enabled": False,
                 "ready": False,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -806,7 +857,7 @@ class SystemMetrics:
                 "status": "unknown",
                 "heartbeat_count": 0,
                 "latest_heartbeat": None,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -821,11 +872,14 @@ class SystemMetrics:
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_jobs,
                     SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_jobs,
                     SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END) AS retry_jobs,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_jobs,
+                    SUM(CASE WHEN status = 'failed'
+                             AND COALESCE(completed_at, updated_at, created_at) >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                        THEN 1 ELSE 0 END) AS failed_jobs,
                     SUM(CASE WHEN job_type = 'retention' AND status IN ('completed','failed') THEN 1 ELSE 0 END) AS terminal_retention_jobs,
                     MAX(CASE WHEN job_type = 'retention' THEN completed_at ELSE NULL END) AS last_retention_completed_at
                 FROM patreon_sync_jobs
-                """
+                """,
+                (constants.PATREON_SYNC_QUEUE_FAILURE_WINDOW_HOURS,),
             ) or {}
             retry_jobs = SystemMetrics._safe_int(row.get("retry_jobs"), 0)
             failed_jobs = SystemMetrics._safe_int(row.get("failed_jobs"), 0)
@@ -835,6 +889,7 @@ class SystemMetrics:
                 "running_jobs": SystemMetrics._safe_int(row.get("running_jobs"), 0),
                 "retry_jobs": retry_jobs,
                 "failed_jobs": failed_jobs,
+                "failed_jobs_window_hours": constants.PATREON_SYNC_QUEUE_FAILURE_WINDOW_HOURS,
                 "terminal_retention_jobs": SystemMetrics._safe_int(row.get("terminal_retention_jobs"), 0),
                 "last_retention_completed_at": row.get("last_retention_completed_at"),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -846,7 +901,7 @@ class SystemMetrics:
                 "running_jobs": 0,
                 "retry_jobs": 0,
                 "failed_jobs": 0,
-                "error": str(e),
+                "error": SystemMetrics._patreon_error_code(e),
                 "last_check": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
@@ -863,19 +918,41 @@ class SystemMetrics:
         worker = SystemMetrics.get_patreon_worker_metrics()
         sync_queue = SystemMetrics.get_patreon_sync_queue_metrics()
 
+        tier_map_misses = SystemMetrics._safe_int(snapshots.get("tier_map_misses_24h"), 0)
+        if readiness.get("disabled"):
+            tier_map_status = "disabled"
+        elif tier_map_misses:
+            tier_map_status = "degraded"
+        elif not SystemMetrics._safe_int(readiness.get("configured_tier_map_entries"), 0):
+            tier_map_status = "not_ready"
+        else:
+            tier_map_status = "healthy"
+
+        db_timezone = SystemMetrics.get_patreon_db_timezone_health()
+        if db_timezone.get("status") == "degraded":
+            readiness = {
+                **readiness,
+                "degraded": [*list(readiness.get("degraded") or []), "db_session_timezone_not_utc"],
+            }
+
         component_statuses = [
             readiness.get("status"),
             creator_token.get("status"),
             webhooks.get("status"),
             snapshots.get("status"),
+            tier_map_status,
             proof_delivery.get("status"),
             s2s.get("status"),
             worker.get("status"),
             sync_queue.get("status"),
+            db_timezone.get("status"),
         ]
         if readiness.get("disabled"):
             status = "disabled"
-        elif any(item in {"degraded", "stale", "retrying", "unknown", "not_ready"} for item in component_statuses):
+        elif creator_token.get("degraded") or any(
+            item in {"degraded", "stale", "retrying", "unknown", "not_ready", "unhealthy"}
+            for item in component_statuses
+        ):
             status = "degraded"
         else:
             status = "healthy"
@@ -887,9 +964,11 @@ class SystemMetrics:
             "webhooks": webhooks,
             "snapshots": snapshots,
             "tier_map": {
-                "misses_24h": snapshots.get("tier_map_misses_24h", 0),
-                "status": "degraded" if SystemMetrics._safe_int(snapshots.get("tier_map_misses_24h"), 0) else snapshots.get("status"),
+                "misses_24h": tier_map_misses,
+                "configured_entries": SystemMetrics._safe_int(readiness.get("configured_tier_map_entries"), 0),
+                "status": tier_map_status,
             },
+            "database_clock": db_timezone,
             "proof_delivery": proof_delivery,
             "s2s": s2s,
             "worker": worker,

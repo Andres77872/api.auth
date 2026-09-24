@@ -29,7 +29,8 @@ from src.Util.email.route_support import client_ip, user_agent
 from src.Util.error_handler import rate_limit_headers
 from src.Util.patreon import classifier as patreon_classifier
 from src.Util.patreon import sync as patreon_sync
-from src.Util.patreon.config import load_patreon_config
+from src.Util.patreon.catalog import ensure_patreon_catalog_safely
+from src.Util.patreon.config import PatreonConfigError, load_patreon_config
 from src.Util.patreon.rate_limit import PatreonRateLimitExceeded, PatreonRateLimiter
 from src.Util.patreon.security import (
     compute_patreon_delivery_hash,
@@ -617,44 +618,22 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc).replace(microsecond=0)
 
 
-def _member_attribute(member: Mapping[str, Any] | None, name: str) -> Any:
-    if not isinstance(member, Mapping):
-        return None
-    attrs = member.get("attributes")
-    if isinstance(attrs, Mapping) and name in attrs:
-        return attrs.get(name)
-    return member.get(name)
-
-
-def _member_observed_at(member: Mapping[str, Any] | None) -> datetime | None:
-    for field_name in ("last_charge_date", "next_charge_date", "updated_at", "created_at"):
-        observed = _parse_datetime(_member_attribute(member, field_name))
-        if observed is not None:
-            return observed
-    return None
-
-
-def _snapshot_has_paid_plan(snapshot: Mapping[str, Any] | None) -> bool:
-    row = _plain_mapping(snapshot)
-    plan_code = str(row.get("plan_code") or "free").strip().lower()
-    status = str(row.get("status") or row.get("entitlement_status") or "").strip().lower()
-    return bool(plan_code and plan_code != "free" and status in {"", constants.PATREON_ENTITLEMENT_STATUS_ACTIVE, constants.PATREON_ENTITLEMENT_STATUS_STALE})
-
-
-def _is_out_of_order(member: Mapping[str, Any] | None, current_snapshot: Mapping[str, Any] | None) -> bool:
-    observed_at = _member_observed_at(member)
-    last_synced_at = _parse_datetime(_plain_mapping(current_snapshot).get("last_synced_at"))
-    return bool(observed_at and last_synced_at and observed_at < last_synced_at)
-
-
 def _should_resync_instead_of_commit(
     *,
     event_type: str,
-    member: Mapping[str, Any] | None,
     classification: patreon_classifier.PatreonClassificationResult,
     is_complete: bool,
-    current_snapshot: Mapping[str, Any] | None,
 ) -> tuple[bool, str]:
+    """Decide whether a verified delivery is applied directly or via a resync.
+
+    A complete, signed member document is Patreon's own statement of the member's
+    current state, so it is applied directly, downgrades included; that is what
+    makes cancellations and declines take effect without waiting for a sweep.
+    Patreon sends no event timestamp, so ordering cannot be judged per delivery;
+    the scheduled sweep is what corrects a late redelivery. Partial payloads,
+    deletes and unmapped tiers go through a source-of-truth read instead.
+    """
+
     if not is_complete or not classification.is_complete:
         return True, "partial_payload_resync_required"
     if event_type.endswith(":delete"):
@@ -663,12 +642,6 @@ def _should_resync_instead_of_commit(
         return True, "tier_map_miss_resync_required"
     if classification.resync_required:
         return True, "classifier_requested_resync"
-    if _is_out_of_order(member, current_snapshot):
-        return True, "out_of_order_resync_required"
-    if classification.downgrade_applied and _snapshot_has_paid_plan(current_snapshot):
-        return True, "destructive_downgrade_requires_source_of_truth"
-    if classification.status in {constants.PATREON_ENTITLEMENT_STATUS_FREE, constants.PATREON_ENTITLEMENT_STATUS_FORMER, constants.PATREON_ENTITLEMENT_STATUS_REVOKED} and _snapshot_has_paid_plan(current_snapshot):
-        return True, "non_paid_webhook_requires_source_of_truth"
     return False, "complete_verified_payload"
 
 
@@ -768,7 +741,9 @@ async def _process_verified_member_payload(
     raw_user_id: str | None,
     member_hash: bytes | None,
     campaign_hash: bytes | None,
-) -> None:
+) -> str:
+    """Apply one verified member delivery; returns the ledger outcome."""
+
     is_complete = _member_complete_for_webhook(member)
     provider_secret = _config_secret(config, "provider_sub_pepper")
     id_secret = _config_secret(config, "id_hmac_secret", "provider_sub_pepper")
@@ -788,19 +763,32 @@ async def _process_verified_member_payload(
     )
     should_resync, reason = _should_resync_instead_of_commit(
         event_type=event_type,
-        member=member,
         classification=classification,
         is_complete=is_complete,
-        current_snapshot=current_snapshot,
     )
 
-    if not link_row or not campaign_db_id or not membership_id or not id_secret:
-        reason = "unknown_member_resync_required" if not link_row else "incomplete_server_context_resync_required"
+    if not link_row:
+        # Nobody linked this Patreon user: there is no entitlement to update, and a
+        # resync would only page through the whole campaign for nothing. If the
+        # user links later, the confirm step reads their membership directly.
+        await record_patreon_webhook_activity(
+            ActivityType.PATREON_WEBHOOK_RECEIVED,
+            event="webhook_ignored",
+            outcome="member_not_linked",
+            request=request,
+            status_code=200,
+            reason="member_not_linked",
+            details={"event_type": event_type, "is_complete": is_complete},
+        )
+        return "ignored"
+
+    if not campaign_db_id or not membership_id or not id_secret:
+        reason = "incomplete_server_context_resync_required"
         resync_enqueued = await _enqueue_member_source_of_truth_resync(
             raw_member_id=raw_member_id,
             campaign_db_id=campaign_db_id,
             member_hash=member_hash,
-            user_id=_string_field(link_row, "user_id", "id") if link_row else None,
+            user_id=_string_field(link_row, "user_id", "id"),
             config=config,
             reason=reason,
         )
@@ -820,7 +808,7 @@ async def _process_verified_member_payload(
                 "unknown_tier": classification.unknown_tier,
             },
         )
-        return
+        return "processed"
 
     if should_resync:
         resync_enqueued = await _enqueue_member_source_of_truth_resync(
@@ -848,8 +836,10 @@ async def _process_verified_member_payload(
                 "unknown_tier": classification.unknown_tier,
             },
         )
-        return
+        return "processed"
 
+    # The membership row created/updated below references its campaign row.
+    ensure_patreon_catalog_safely(config)
     await _maybe_await(
         _persist_classification(
             payload=member_payload,
@@ -877,6 +867,20 @@ async def _process_verified_member_payload(
             "unknown_tier": classification.unknown_tier,
         },
     )
+    return "processed"
+
+
+async def _mark_delivery(delivery_row: Mapping[str, Any] | None, status: str) -> None:
+    """Record the delivery's outcome in the ledger; best effort, never raises."""
+
+    delivery_id = _string_field(_plain_mapping(delivery_row), "delivery_id")
+    method = getattr(db_patreon, "mark_patreon_webhook_delivery", None)
+    if not delivery_id or not callable(method):
+        return
+    try:
+        await _maybe_await(method(delivery_id=delivery_id, status=status))
+    except Exception as exc:
+        logger.debug("Patreon webhook delivery ledger update failed: %s", type(exc).__name__)
 
 
 @router.post(
@@ -931,7 +935,11 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
     raw_body = await request.body()
     event_type = _safe_event_type(request.headers.get(constants.PATREON_WEBHOOK_EVENT_HEADER))
     signature = request.headers.get(constants.PATREON_WEBHOOK_SIGNATURE_HEADER)
-    config = load_patreon_config()
+    try:
+        config = load_patreon_config()
+    except PatreonConfigError:
+        logger.warning("Patreon configuration is invalid; webhook delivery answered as unavailable")
+        return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
 
     if not _webhook_feature_ready(config):
         return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
@@ -1012,7 +1020,7 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
         return _webhook_json_response(status_code=200)
 
     if payload is None or member is None:
-        await _enqueue_member_source_of_truth_resync(
+        resync_enqueued = await _enqueue_member_source_of_truth_resync(
             raw_member_id=raw_member_id,
             campaign_db_id=_campaign_db_id_from_hash(campaign_hash),
             member_hash=member_hash,
@@ -1027,12 +1035,13 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             request=request,
             status_code=200,
             reason="invalid_or_missing_member_payload",
-            details={"event_type": event_type, "is_complete": False, "resync_enqueued": True},
+            details={"event_type": event_type, "is_complete": False, "resync_enqueued": resync_enqueued},
         )
+        await _mark_delivery(delivery_row, "processed" if resync_enqueued else "ignored")
         return _webhook_json_response(status_code=200)
 
     try:
-        await _process_verified_member_payload(
+        outcome = await _process_verified_member_payload(
             request=request,
             event_type=event_type,
             payload=payload,
@@ -1045,7 +1054,7 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             campaign_hash=campaign_hash,
         )
     except Exception:
-        logger.warning("Patreon webhook processing failed after verification; returning retryable response")
+        logger.warning("Patreon webhook processing failed after verification")
         resync_enqueued = await _enqueue_member_source_of_truth_resync(
             raw_member_id=raw_member_id,
             campaign_db_id=_campaign_db_id_from_hash(campaign_hash),
@@ -1054,17 +1063,26 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             config=config,
             reason="processing_failed_after_delivery_ledger",
         )
+        # With a resync queued the entitlement is corrected from the source of truth,
+        # so the delivery is acknowledged: repeated non-2xx answers make Patreon pause
+        # the whole webhook. Only when nothing could be queued is Patreon asked to
+        # redeliver (the ledger lets a failed delivery be processed again).
+        status_code = 200 if resync_enqueued else 500
         await record_patreon_webhook_activity(
             ActivityType.PATREON_WEBHOOK_RECEIVED,
             event="webhook_processing_failed",
             outcome="resync_enqueued" if resync_enqueued else "resync_unavailable",
             request=request,
-            status_code=500,
+            status_code=status_code,
             reason="processing_failed_after_delivery_ledger",
             details={"event_type": event_type, "resync_enqueued": resync_enqueued},
         )
+        await _mark_delivery(delivery_row, "failed")
+        if resync_enqueued:
+            return _webhook_json_response(status_code=200)
         return _webhook_json_response(status_code=500, message=_GENERIC_RETRY_MESSAGE)
 
+    await _mark_delivery(delivery_row, outcome)
     return _webhook_json_response(status_code=200)
 
 

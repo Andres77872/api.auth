@@ -165,6 +165,8 @@ Auto-pause recovery:
 
 Patreon tier mapping is campaign-scoped and supports multiple campaigns from day one. Raw campaign/tier IDs are server-only inputs. Browser-visible and S2S responses receive only normalized plan/tier codes.
 
+The server-only tier-map configuration is the classification authority. The runtime mirrors it into `patreon_campaigns` / `patreon_tier_map` automatically (sync worker every pass, link requests, and the admin tier-map view), so editing the configuration and restarting is enough; removed entries are deactivated, never deleted. The seeder remains available to pre-seed or validate a configuration without starting the service.
+
 Use the seeder in dry-run mode first:
 
 ```bash
@@ -198,14 +200,15 @@ curl -X GET "${BASE_URL}/system/health" \
 Inspect the Patreon component only for non-secret posture:
 
 - `readiness` — feature flags, configured campaign/tier-map count, retention settings, missing config key names.
-- `creator_token` — configured/degraded/expiry/refresh status without token values.
-- `webhooks` — signature failure counts, retrying deliveries, paused/degraded signal.
-- `snapshots` — current/stale counts and stale age.
-- `tier_map` — miss count and degraded status.
+- `creator_token` — `configured` (static env token), the refreshed token state (`active`, `refresh_failed`, `revoked`, `expired`) when auto-refresh is on, or `not_ready` when linking/sync need a token that is missing. A revoked/failed token degrades the overall status.
+- `webhooks` — signature failure counts, failed deliveries, paused/degraded signal.
+- `snapshots` — linked/active counts and stale counts/age (linked rows only).
+- `tier_map` — configured entries, 24h miss count, and `healthy`/`degraded`/`not_ready`.
 - `proof_delivery` — aggregate proof email delivery status.
 - `s2s` — enablement, ready status, S2S rate counters.
 - `worker` — sync worker heartbeat and latest safe counters.
-- `sync_queue` — pending/running/retry/failed jobs and retention status.
+- `sync_queue` — pending/running/retry jobs and failed jobs in the last 24 hours, plus retention status.
+- `database_clock` — the DB session's offset from UTC. Patreon SQL compares `NOW()` with UTC times written by the application, so any offset skews proof expiry, staleness and every time window; a non-zero offset adds `db_session_timezone_not_utc` to `readiness.degraded`. Run MySQL (or the connection) in UTC.
 
 Disabled Patreon should not degrade unrelated local authentication health. Enabled but not-ready/degraded Patreon should be visible as a separate component.
 
@@ -224,8 +227,9 @@ ROOT admin dashboard (cookie/session, `is_root_user` gated) management surface:
 
 ```text
 GET  /admin/patreon/status                      # operational health (existing)
-GET  /admin/patreon/entitlements?limit&offset&status&plan_code
+GET  /admin/patreon/entitlements?limit&offset&status&plan_code&link_status&search
 GET  /admin/patreon/entitlements/{user_hash}
+GET  /admin/patreon/entitlements/{user_hash}/history?limit
 GET  /admin/patreon/tier-map?limit&offset&active
 GET  /admin/patreon/sync-jobs?limit&offset&status
 GET  /admin/patreon/webhooks?limit&offset&status
@@ -234,8 +238,10 @@ POST /admin/patreon/resync                       # body {scope:'user'|'all', use
 
 These power the magic-auth-dashboard Patreon management tabs (Overview, Entitlements,
 Tier Map, Sync & Webhooks). They are sanitized read surfaces plus an admin-triggered
-resync; `scope='user'` enqueues a per-user member resync, `scope='all'` enqueues a
-single full-campaign job that the worker drains as a full sweep.
+resync; `scope='user'` enqueues a per-user member resync (or answers `not_linked`
+when the user has no linked membership), `scope='all'` enqueues a single
+full-campaign job that the worker drains as a full sweep. A request identical to an
+already-queued job is merged into it and reports that job's id.
 
 > IMPORTANT: A dashboard/S2S resync only **enqueues** a job. Jobs are processed only
 > while `src/workers/patreon_sync_worker.py` is running as a separate process (it is not
@@ -322,9 +328,10 @@ Required windows:
 | Proof requests | Purge/strip 24h after expiry |
 | Webhook delivery hashes / idempotency ledger | 90d |
 | Raw payload quarantine | Disabled by default; 30d max when explicitly enabled |
+| Finished sync jobs | 30d |
 | Link, snapshot, entitlement, unlink history | Indefinite, privacy-minimized |
 
-Run retention-only worker pass when needed:
+The running sync worker purges on its own once a day using the configured windows (capped at the maxima above). Run a retention-only pass by hand when needed:
 
 ```bash
 ./.venv/bin/python -m src.workers.patreon_sync_worker --once --mode retention_only

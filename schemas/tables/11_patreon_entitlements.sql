@@ -236,6 +236,7 @@ CREATE TABLE IF NOT EXISTS patreon_entitlements_current (
     UNIQUE KEY uk_patreon_current_user (user_id),
     INDEX idx_patreon_current_status (entitlement_status, link_status, stale_after),
     INDEX idx_patreon_current_external (external_account_id),
+    INDEX idx_patreon_current_updated (updated_at),
     CONSTRAINT fk_patreon_current_user FOREIGN KEY (user_id)
         REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_patreon_current_external FOREIGN KEY (external_account_id)
@@ -266,6 +267,7 @@ CREATE TABLE IF NOT EXISTS patreon_entitlement_history (
     PRIMARY KEY (id),
     INDEX idx_patreon_history_user_time (user_id, observed_at),
     INDEX idx_patreon_history_membership (membership_id, observed_at),
+    INDEX idx_patreon_history_reason_time (reason, observed_at),
     CONSTRAINT fk_patreon_history_user FOREIGN KEY (user_id)
         REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_patreon_history_external FOREIGN KEY (external_account_id)
@@ -332,6 +334,8 @@ CREATE TABLE IF NOT EXISTS patreon_sync_jobs (
     INDEX idx_patreon_sync_claim (status, not_before, priority, created_at),
     INDEX idx_patreon_sync_user (user_id, status, created_at),
     INDEX idx_patreon_sync_campaign (campaign_id, status, created_at),
+    INDEX idx_patreon_sync_created (created_at),
+    INDEX idx_patreon_sync_terminal (status, completed_at),
     CONSTRAINT fk_patreon_sync_campaign FOREIGN KEY (campaign_id)
         REFERENCES patreon_campaigns(id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_patreon_sync_user FOREIGN KEY (user_id)

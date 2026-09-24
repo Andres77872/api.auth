@@ -58,7 +58,7 @@ runbooks under `docs/RUNBOOKS/`, outside this suite.
 
 ## API Surface
 
-The application currently registers **245 method/path operations across 27
+The application currently registers **246 method/path operations across 27
 `src/routes/*.py` modules**. This inventory excludes FastAPI's built-in
 `/docs`, `/redoc`, and `/openapi.json` routes plus routes implemented directly
 in `src/main.py`.
@@ -82,7 +82,7 @@ in `src/main.py`.
 | Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Admin; connections, credentials and catalog root-only |
 | Billing internal | `/internal/.../billing` | `internal_billing.py` | 6 | Dedicated billing S2S bearer |
 | Stripe webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Stripe signature |
-| Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 7 | Root |
+| Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 8 | Root |
 | Patreon internal | `/internal/users/{user_hash}/entitlements` | `internal_patreon.py` | 2 | Dedicated Patreon S2S bearer |
 | Patreon webhook | `/webhooks/patreon` | `patreon_webhooks.py` | 1 | Patreon signature |
 | Internal email | `/internal/email` | `internal_email.py` | 3 | Root access session |

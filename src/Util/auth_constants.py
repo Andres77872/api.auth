@@ -483,6 +483,12 @@ DEFAULT_PATREON_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
 MAX_PATREON_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
 DEFAULT_PATREON_RAW_PAYLOAD_RETENTION_DAYS = 30
 MAX_PATREON_RAW_PAYLOAD_RETENTION_DAYS = 30
+# Finished (completed/failed/cancelled) sync jobs are operational, not history.
+DEFAULT_PATREON_SYNC_JOB_RETENTION_DAYS = 30
+# The worker runs the retention purge on its own at this cadence.
+DEFAULT_PATREON_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+# Queue health counts only recent failures, so one old failure does not pin "degraded".
+PATREON_SYNC_QUEUE_FAILURE_WINDOW_HOURS = 24
 PATREON_LINK_HISTORY_RETENTION = "indefinite"
 PATREON_SNAPSHOT_HISTORY_RETENTION = "indefinite"
 PATREON_UNLINK_HISTORY_RETENTION = "indefinite"

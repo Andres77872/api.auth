@@ -964,7 +964,12 @@ def _snapshot_external_source(snapshot: Mapping[str, Any]) -> str | None:
 
 
 def _snapshot_status(snapshot: Mapping[str, Any]) -> str:
-    status = _snapshot_text(snapshot, "status") or constants.PATREON_ENTITLEMENT_STATUS_FREE
+    # DTO snapshots carry ``status``; DB current-entitlement rows carry ``entitlement_status``.
+    status = (
+        _snapshot_text(snapshot, "status")
+        or _snapshot_text(snapshot, "entitlement_status")
+        or constants.PATREON_ENTITLEMENT_STATUS_FREE
+    )
     if status not in constants.PATREON_SAFE_ENTITLEMENT_STATUSES:
         return constants.PATREON_ENTITLEMENT_STATUS_FREE
     return status

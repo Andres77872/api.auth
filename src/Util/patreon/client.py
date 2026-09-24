@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 import aiohttp
 
 from src.Util import auth_constants as constants
-from src.Util.email.security import encrypt_render_payload
+from src.Util.email.security import decrypt_render_payload, encrypt_render_payload
 from src.Util.patreon.security import redact_patreon_mapping, sanitize_patreon_log_value
 
 
@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 
 PATREON_API_PREFIX = "/api/oauth2/v2"
-DEFAULT_INCLUDE = ("currently_entitled_tiers", "user")
+# JSON:API only returns relationships that are named in ``include``. The classifier
+# and every persistence path need the member's campaign, so it is always requested.
+DEFAULT_INCLUDE = ("currently_entitled_tiers", "user", "campaign")
 DEFAULT_MEMBER_FIELDS = (
     "full_name",
     "email",
@@ -305,6 +307,60 @@ def _next_cursor_from_link(next_link: str | None) -> str | None:
     return cursor or None
 
 
+def _next_cursor_from_meta(payload: Mapping[str, Any]) -> str | None:
+    """Patreon's documented cursor: ``meta.pagination.cursors.next``."""
+
+    meta = payload.get("meta")
+    pagination = meta.get("pagination") if isinstance(meta, Mapping) else None
+    cursors = pagination.get("cursors") if isinstance(pagination, Mapping) else None
+    cursor = cursors.get("next") if isinstance(cursors, Mapping) else None
+    if isinstance(cursor, str) and cursor.strip():
+        return cursor.strip()
+    return None
+
+
+def _decrypt_provider_token(ciphertext: Any, *, key: str | bytes) -> str | None:
+    if not ciphertext:
+        return None
+    try:
+        payload = decrypt_render_payload(bytes(ciphertext), key=_provider_token_payload_key(key))
+    except Exception:
+        return None
+    value = payload.get("value") if isinstance(payload, Mapping) else None
+    text = str(value or "").strip()
+    return text or None
+
+
+def load_persisted_creator_tokens(config: Any, *, db_module: Any | None = None) -> tuple[str | None, str | None]:
+    """Return the last refreshed (access, refresh) tokens when auto-refresh persists them.
+
+    Patreon issues a new refresh token on every refresh, so after a restart the
+    bootstrap env values may already be rotated out. Any failure (feature off, no
+    row, wrong key, DB down) returns ``(None, None)`` and callers keep the env values.
+    """
+
+    if not bool(getattr(config, "creator_token_refresh_enabled", False)):
+        return None, None
+    key = getattr(config, "provider_token_encryption_key", None)
+    if not key:
+        return None, None
+    try:
+        if db_module is None:
+            from src.Util.db import db_patreon as db_module  # local: keeps the client importable offline
+        row = db_module.get_patreon_provider_token_state_encrypted() or {}
+    except Exception:
+        return None, None
+    if str(row.get("status") or "") != "active":
+        return None, None
+    key_id = getattr(config, "provider_token_encryption_key_id", None)
+    if key_id and row.get("encryption_key_id") and row.get("encryption_key_id") != key_id:
+        return None, None
+    return (
+        _decrypt_provider_token(row.get("access_token_ciphertext"), key=key),
+        _decrypt_provider_token(row.get("refresh_token_ciphertext"), key=key),
+    )
+
+
 def _next_link(payload: Mapping[str, Any]) -> str | None:
     links = payload.get("links")
     if isinstance(links, Mapping):
@@ -386,9 +442,10 @@ class PatreonClient:
         code owns when secrets are read and can pass a fake config in tests.
         """
 
+        persisted_access, persisted_refresh = load_persisted_creator_tokens(config)
         return cls(
-            access_token=getattr(config, "creator_access_token", None),
-            refresh_token=getattr(config, "creator_refresh_token", None),
+            access_token=persisted_access or getattr(config, "creator_access_token", None),
+            refresh_token=persisted_refresh or getattr(config, "creator_refresh_token", None),
             client_id=getattr(config, "client_id", None),
             client_secret=getattr(config, "client_secret", None),
             user_agent=getattr(config, "user_agent", None),
@@ -450,8 +507,9 @@ class PatreonClient:
 
     def _member_url(self, member_id: str) -> str:
         member_path = _quote_provider_path_segment(member_id, name="Patreon member identifier")
-        query = build_member_query_string(page_size=self.page_size)
-        return f"{self.base_url}/members/{member_path}?{query}"
+        params = build_member_query_params(page_size=self.page_size)
+        params.pop("page[count]", None)  # single-resource read: no pagination
+        return f"{self.base_url}/members/{member_path}?{urlencode(params, safe=',')}"
 
     def _absolutize_next_url(self, next_url: str) -> str:
         if urlsplit(next_url).scheme:
@@ -768,13 +826,11 @@ class PatreonClient:
             self._campaign_members_url(campaign_id, page_cursor=page_cursor),
             operation="campaign_members",
         )
-        next_url = _next_link(payload)
-        if next_url:
-            payload = dict(payload)
-            payload.setdefault("next_cursor", _next_cursor_from_link(next_url))
-        else:
-            payload = dict(payload)
-            payload.setdefault("next_cursor", None)
+        payload = dict(payload)
+        payload.setdefault(
+            "next_cursor",
+            _next_cursor_from_meta(payload) or _next_cursor_from_link(_next_link(payload)),
+        )
         return payload
 
     async def fetch_campaign_members(self, campaign_id: str) -> dict[str, Any]:
@@ -812,7 +868,11 @@ class PatreonClient:
             if isinstance(page_included, list):
                 included.extend(page_included)
             raw_next = _next_link(payload)
-            next_url = self._absolutize_next_url(raw_next) if raw_next else None
+            if raw_next:
+                next_url = self._absolutize_next_url(raw_next)
+            else:
+                meta_cursor = _next_cursor_from_meta(payload)
+                next_url = self._campaign_members_url(campaign_id, page_cursor=meta_cursor) if meta_cursor else None
 
         result: dict[str, Any] = {
             "data": members,
@@ -849,4 +909,5 @@ __all__ = [
     "PatreonUnauthorizedError",
     "build_member_query_params",
     "build_member_query_string",
+    "load_persisted_creator_tokens",
 ]

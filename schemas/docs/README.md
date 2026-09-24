@@ -746,7 +746,7 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Collation**: utf8mb4_unicode_ci
 - **Tables**: 73
 - **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
-- **Stored Procedures**: 309
+- **Stored Procedures**: 316
 - **Functions**: 1
 - **Views**: 18
 - **Triggers**: 123 total (108 activity/domain triggers plus 15 validation triggers in table setup)

@@ -44,7 +44,8 @@ from src.Util.email.route_support import client_ip, hash_route_value, link_url, 
 from src.Util.email.security import encrypt_render_payload
 from src.Util.error_handler import AuthenticationError, ErrorCode, rate_limit_headers
 from src.Util.patreon.client import PatreonClient
-from src.Util.patreon.config import load_patreon_config
+from src.Util.patreon.catalog import ensure_patreon_catalog_safely
+from src.Util.patreon.config import PatreonConfigError, load_patreon_config
 from src.Util.patreon.rate_limit import PatreonRateLimitExceeded, PatreonRateLimiter
 from src.Util.patreon import sync as patreon_sync
 from src.Util.patreon.security import (
@@ -578,21 +579,46 @@ def _require_local_user(login_data: Any) -> str:
 
 
 def _feature_ready_for_link_request(config: Any) -> bool:
-    if not _bool_field(config, "linking_enabled"):
+    """Link requests need every secret the confirm path will use plus a tier map.
+
+    Matches ``validate_patreon_readiness`` for the linking surface: without the ID
+    HMAC secret or a configured campaign, a proof could be emailed that can never
+    be confirmed.
+    """
+
+    if config is None or not _bool_field(config, "linking_enabled"):
         return False
     required = (
         _string_field(config, "creator_access_token"),
         _string_field(config, "provider_sub_pepper"),
         _string_field(config, "email_hash_pepper"),
         _string_field(config, "proof_token_pepper"),
-        _string_field(config, "id_hmac_secret") or _string_field(config, "provider_sub_pepper"),
+        _string_field(config, "id_hmac_secret"),
     )
-    return all(required)
+    return all(required) and bool(_configured_campaign_ids(config))
+
+
+def _load_config_or_none() -> Any:
+    """Load Patreon config; malformed config degrades to "not ready" instead of a 500."""
+
+    try:
+        return load_patreon_config()
+    except PatreonConfigError:
+        logger.warning("Patreon configuration is invalid; linking is treated as not ready")
+        return None
+
+
+def _is_consumer_session(login_data: Any) -> bool:
+    """Patreon entitlements attach to consumer accounts only (the SQL enforces it too)."""
+
+    user_type = (_string_field(login_data, "user_type") or "consumer").lower()
+    return user_type == "consumer"
 
 
 def _feature_ready_for_link_confirm(config: Any) -> bool:
     return bool(
-        _bool_field(config, "linking_enabled")
+        config is not None
+        and _bool_field(config, "linking_enabled")
         and _string_field(config, "proof_token_pepper")
     )
 
@@ -625,31 +651,43 @@ async def _check_proof_request_rate_limit(
     *,
     request: Request,
     user_id: str,
-    proof_email_hash: bytes,
-) -> None:
-    await _maybe_await(
-        _current_rate_limiter().check_proof_request(
-            user_id=user_id,
-            ip_address=client_ip(request),
-            proof_email_hash=proof_email_hash.hex(),
-            pending_link_id=None,
+    email_hint: str | None,
+) -> JSONResponse | None:
+    """Spend the proof-send budget on EVERY link request, before Patreon is called.
+
+    A member only matches when the hint equals the Patreon email, so keying on the
+    hint limits emails to that recipient exactly as keying on the recipient would,
+    while keeping the budget independent of whether the hint belongs to a patron.
+    """
+
+    recipient = normalize_patreon_email(email_hint) if email_hint else None
+    try:
+        await _maybe_await(
+            _current_rate_limiter().check_proof_request(
+                user_id=user_id,
+                ip_address=client_ip(request),
+                proof_email_hash=hashlib.sha256(recipient.encode("utf-8")).hexdigest() if recipient else None,
+                pending_link_id=None,
+            )
         )
-    )
+        return None
+    except PatreonRateLimitExceeded as exc:
+        return _rate_limited_public_response(_PROOF_REQUEST_SURFACE, exc)
 
 
 async def _check_proof_consume_rate_limit(
     *,
     request: Request,
+    user_id: str,
     lookup_id: str | None,
-    proof_token_fingerprint: str | None,
 ) -> JSONResponse | None:
     try:
         await _maybe_await(
             _current_rate_limiter().check_proof_consume(
                 ip_address=client_ip(request),
                 lookup_id=lookup_id,
-                proof_token_fingerprint=proof_token_fingerprint,
                 pending_link_id=None,
+                user_id=user_id,
             )
         )
         return None
@@ -891,29 +929,6 @@ def _patreon_client_from_config(config: Any) -> tuple[Any, bool]:
     ), True
 
 
-async def _call_discovery_method(method: Any, *, email_hint: str | None, config: Any) -> Any:
-    campaign_ids = _configured_campaign_ids(config)
-    attempts = (
-        {"email_hint": email_hint, "patreon_email_hint": email_hint, "campaign_ids": campaign_ids, "config": config},
-        {"email_hint": email_hint, "campaign_ids": campaign_ids},
-        {"email_hint": email_hint},
-        (email_hint,),
-        (),
-    )
-    last_type_error: TypeError | None = None
-    for attempt in attempts:
-        try:
-            if isinstance(attempt, Mapping):
-                return await _maybe_await(method(**attempt))
-            return await _maybe_await(method(*attempt))
-        except TypeError as exc:
-            last_type_error = exc
-            continue
-    if last_type_error is not None:
-        raise last_type_error
-    return None
-
-
 def _iter_members(payload: Any) -> list[Mapping[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, Mapping)]
@@ -999,31 +1014,24 @@ async def _discover_member_for_link(
     provider_client: Any,
     config: Any,
     email_hint: str | None,
-) -> tuple[Any, Mapping[str, Any] | None]:
-    for method_name in ("find_member_for_link", "get_member_by_email_hint", "lookup_member"):
-        method = getattr(provider_client, method_name, None)
-        if not callable(method):
-            continue
-        payload = await _call_discovery_method(method, email_hint=email_hint, config=config)
-        member = _select_member_from_payload(payload, email_hint=email_hint, allow_first=True)
-        if member is not None:
-            return payload, member
+) -> tuple[Any, Mapping[str, Any] | None, str | None]:
+    """Find the campaign member whose Patreon email equals the hint.
+
+    Returns ``(payload, member, raw_campaign_id)``; the campaign is the configured
+    one the member was found in, used when the member omits its campaign
+    relationship. Email equality only selects the member: ownership is proven by
+    the emailed proof.
+    """
 
     if not email_hint:
-        return {}, None
+        return {}, None, None
 
     for campaign_id in _configured_campaign_ids(config):
-        payload = None
-        if hasattr(provider_client, "fetch_campaign_members"):
-            payload = await _maybe_await(provider_client.fetch_campaign_members(campaign_id))
-        elif hasattr(provider_client, "get_campaign_members"):
-            payload = await _maybe_await(provider_client.get_campaign_members(campaign_id))
-        elif hasattr(provider_client, "list_campaign_members"):
-            payload = await _maybe_await(provider_client.list_campaign_members(campaign_id))
+        payload = await _fetch_campaign_payload(provider_client, campaign_id)
         member = _select_member_from_payload(payload, email_hint=email_hint, allow_first=False)
         if member is not None:
-            return payload, member
-    return {}, None
+            return payload, member, campaign_id
+    return {}, None, None
 
 
 def _hmac_identifier_or_none(
@@ -1106,12 +1114,6 @@ def _proof_parts_from_request(confirm_request: PatreonProofConfirmRequest) -> tu
     return None
 
 
-def _proof_token_fingerprint(lookup_id: str | None, secret: str | None) -> str | None:
-    if not lookup_id or not secret:
-        return None
-    return hashlib.blake2s(f"{lookup_id}.{secret}".encode("utf-8"), digest_size=6).hexdigest()
-
-
 def _route_hashes_for_consume(request: Request) -> tuple[bytes | None, bytes | None]:
     try:
         email_config = load_email_config(validate_real_send_guard=False)
@@ -1121,18 +1123,12 @@ def _route_hashes_for_consume(request: Request) -> tuple[bytes | None, bytes | N
 
 
 def _call_db_consume_proof(*, kwargs: dict[str, Any]) -> Any:
-    # Prefer the older test seam name when present; the real production wrapper
-    # is consume_patreon_proof below. Never pass raw token material to logs.
-    for method_name in ("consume_link_proof", "consume_patreon_proof"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            try:
-                return method(**kwargs)
-            except TypeError:
-                legacy_kwargs = dict(kwargs)
-                legacy_kwargs.pop("user_id", None)
-                return method(**legacy_kwargs)
-    raise RuntimeError("Patreon proof consume DB wrapper is not available")
+    # The user binding (``user_id``) is always passed: the SQL only consumes a proof
+    # requested by the same local user. Never pass raw token material to logs.
+    method = getattr(db_patreon, "consume_patreon_proof", None)
+    if not callable(method):
+        raise RuntimeError("Patreon proof consume DB wrapper is not available")
+    return method(**kwargs)
 
 
 def _consume_status(row: Any) -> str:
@@ -1414,7 +1410,9 @@ async def _classify_and_persist_initial_entitlement(
         context,
         "external_account_id",
     )
-    membership_id = _string_field(context, "membership_id")
+    # The procedure returns the membership row it actually used: a relink gets a new
+    # row, so the id derived from the proof is only a fallback.
+    membership_id = _string_field(link_result, "membership_id") or _string_field(context, "membership_id")
     if not external_account_id or not membership_id:
         raise RuntimeError("Patreon link result is missing server-side IDs")
 
@@ -1455,7 +1453,8 @@ async def _classify_and_persist_initial_entitlement(
             source=_LINK_ACTIVATION_SOURCE,
             is_complete=True,
         )
-        return result.entitlement
+        if result.persisted:
+            return result.entitlement
 
     result = _pending_link_activation_result(config)
     _persist_pending_initial_snapshot(
@@ -1468,15 +1467,48 @@ async def _classify_and_persist_initial_entitlement(
     return result.entitlement
 
 
-def _call_db_create_proof(*, kwargs: dict[str, Any]) -> Any:
-    if isinstance(db_patreon, type(inspect)) and "create_patreon_proof" in vars(db_patreon):
-        return db_patreon.create_patreon_proof(**kwargs)
+async def _initial_entitlement_after_link(
+    *,
+    config: Any,
+    context: Mapping[str, Any],
+    link_result: Any,
+    user_id: str,
+    user_hash: str | None,
+) -> PatreonSafeEntitlement:
+    """First entitlement for a just-committed link; never undoes or hides the link.
 
-    for method_name in ("create_link_proof", "enqueue_link_proof_email", "create_patreon_proof"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            return method(**kwargs)
-    raise RuntimeError("Patreon proof DB wrapper is not available")
+    If the member read or snapshot write fails, the user still gets ``linked`` with
+    a pending entitlement, and a source-of-truth resync is queued to fill it in.
+    """
+
+    try:
+        return await _classify_and_persist_initial_entitlement(
+            config=config,
+            context=context,
+            link_result=link_result,
+            user_id=user_id,
+        )
+    except Exception:
+        logger.warning("Patreon initial entitlement could not be stored after link; queueing resync")
+    try:
+        patreon_sync.enqueue_member_resync(
+            user_id=user_id,
+            user_hash=user_hash,
+            job_type=patreon_sync.JOB_TYPE_USER_MEMBER,
+            priority=1,
+            source="link_activation",
+            sanitized_metadata={"reason": "initial_entitlement_retry", "source": "auth_patreon_link_confirm"},
+        )
+    except Exception:
+        logger.warning("Patreon post-link resync could not be queued")
+    return _pending_link_activation_result(config).entitlement
+
+
+def _call_db_create_proof(*, kwargs: dict[str, Any]) -> Any:
+    method = getattr(db_patreon, "create_patreon_proof", None)
+    if not callable(method):
+        raise RuntimeError("Patreon proof DB wrapper is not available")
+    return method(**kwargs)
 
 
 async def _create_link_proof(
@@ -1488,19 +1520,28 @@ async def _create_link_proof(
     payload: Any,
     member: Mapping[str, Any],
     proof_email: str,
-) -> None:
+    searched_campaign_id: str | None,
+) -> bool:
+    """Create the proof row and queue its email; ``False`` when nothing was sent."""
+
     raw_member_id = _string_field(member, "id")
     raw_user_id = _relationship_id(member, "user")
-    raw_campaign_id = _relationship_id(member, "campaign")
+    raw_campaign_id = _relationship_id(member, "campaign") or searched_campaign_id
     if not raw_member_id or not raw_user_id or not raw_campaign_id:
-        return
+        return False
+    if raw_campaign_id not in _configured_campaign_ids(config):
+        return False
 
-    id_pepper = _string_field(config, "id_hmac_secret") or _string_field(config, "provider_sub_pepper")
+    id_pepper = _string_field(config, "id_hmac_secret")
     provider_pepper = _string_field(config, "provider_sub_pepper")
     email_pepper = _string_field(config, "email_hash_pepper")
     proof_pepper = _string_field(config, "proof_token_pepper")
     if not id_pepper or not provider_pepper or not email_pepper or not proof_pepper:
-        return
+        return False
+
+    # The membership row created at confirm references its campaign row.
+    if not ensure_patreon_catalog_safely(config):
+        return False
 
     patreon_user_hash, patreon_user_fingerprint = _hmac_identifier_or_none(
         raw_id=raw_user_id,
@@ -1514,12 +1555,6 @@ async def _create_link_proof(
     )
     proof_email_hash = hash_patreon_email(email=proof_email, pepper=email_pepper)
     proof_email_masked = mask_patreon_email(proof_email)
-
-    await _check_proof_request_rate_limit(
-        request=request,
-        user_id=user_id,
-        proof_email_hash=proof_email_hash,
-    )
 
     generated = generate_patreon_proof_token(
         ttl_seconds=int(getattr(config, "proof_token_ttl_seconds", 900) or 900),
@@ -1559,6 +1594,7 @@ async def _create_link_proof(
     }
     _ = payload  # Keep payload server-only and out of durable metadata/logs.
     await _maybe_await(_call_db_create_proof(kwargs=kwargs))
+    return True
 
 
 _PATREON_429_RESPONSE = {
@@ -1608,7 +1644,6 @@ async def request_patreon_link(
     Never returns proof, email, campaign, tier, provider, or local auth token material.
     """
 
-    config = load_patreon_config()
     login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
@@ -1644,6 +1679,24 @@ async def request_patreon_link(
         )
         return rate_limited
 
+    # Spent on every request, before Patreon is contacted, so neither the budget nor
+    # the timing depends on whether the hint belongs to a patron.
+    rate_limited = await _check_proof_request_rate_limit(
+        request=request,
+        user_id=user_id,
+        email_hint=link_request.patreon_email_hint,
+    )
+    if rate_limited is not None:
+        await _record_patreon_link_rejection(
+            request=request,
+            user_id=user_id,
+            event="proof_request_rate_limited",
+            reason="rate_limited",
+            status_code=429,
+        )
+        return rate_limited
+
+    config = _load_config_or_none()
     if not link_request.explicit_user_intent or not _feature_ready_for_link_request(config):
         await _record_patreon_link_rejection(
             request=request,
@@ -1654,9 +1707,20 @@ async def request_patreon_link(
         )
         return _proof_request_response()
 
-    provider_client, should_close = _patreon_client_from_config(config)
+    if not _is_consumer_session(login_data):
+        await _record_patreon_link_rejection(
+            request=request,
+            user_id=user_id,
+            event="proof_request_rejected",
+            reason="non_consumer_account",
+        )
+        return _proof_request_response()
+
+    provider_client = None
+    should_close = False
     try:
-        payload, member = await _discover_member_for_link(
+        provider_client, should_close = _patreon_client_from_config(config)
+        payload, member, searched_campaign_id = await _discover_member_for_link(
             provider_client=provider_client,
             config=config,
             email_hint=link_request.patreon_email_hint,
@@ -1682,7 +1746,7 @@ async def request_patreon_link(
             return _proof_request_response()
 
         email_config = load_email_config(validate_real_send_guard=True)
-        await _create_link_proof(
+        created = await _create_link_proof(
             request=request,
             config=config,
             email_config=email_config,
@@ -1690,7 +1754,16 @@ async def request_patreon_link(
             payload=payload,
             member=member,
             proof_email=proof_email,
+            searched_campaign_id=searched_campaign_id,
         )
+        if not created:
+            await _record_patreon_link_rejection(
+                request=request,
+                user_id=user_id,
+                event="proof_request_rejected",
+                reason="member_context_incomplete",
+            )
+            return _proof_request_response()
         await record_patreon_link_activity(
             ActivityType.PATREON_LINK_PROOF_REQUESTED,
             event="proof_requested",
@@ -1727,7 +1800,7 @@ async def request_patreon_link(
         )
         return _proof_request_response()
     finally:
-        if should_close and hasattr(provider_client, "close"):
+        if should_close and provider_client is not None and hasattr(provider_client, "close"):
             await _maybe_await(provider_client.close())
 
 
@@ -1773,7 +1846,6 @@ async def confirm_patreon_link(
     - `429` — rate limited; `Retry-After` is set.
     """
 
-    config = load_patreon_config()
     login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
@@ -1796,11 +1868,10 @@ async def confirm_patreon_link(
 
     parts = _proof_parts_from_request(confirm_request)
     lookup_id = parts[0] if parts else confirm_request.lookup_id
-    proof_fingerprint = _proof_token_fingerprint(parts[0], parts[1]) if parts else None
     rate_limited = await _check_proof_consume_rate_limit(
         request=request,
+        user_id=user_id,
         lookup_id=lookup_id,
-        proof_token_fingerprint=proof_fingerprint,
     )
     if rate_limited is not None:
         await _record_patreon_link_rejection(
@@ -1812,6 +1883,7 @@ async def confirm_patreon_link(
         )
         return rate_limited
 
+    config = _load_config_or_none()
     if parts is None or not _feature_ready_for_link_confirm(config):
         await _record_patreon_link_rejection(
             request=request,
@@ -1860,16 +1932,6 @@ async def confirm_patreon_link(
             )
             return _generic_confirm_response()
 
-        consumed_user_id = _string_field(consumed, "user_id")
-        if consumed_user_id and consumed_user_id != user_id:
-            await _record_patreon_link_rejection(
-                request=request,
-                user_id=user_id,
-                event="proof_confirm_rejected",
-                reason="proof_user_binding_mismatch",
-            )
-            return _generic_confirm_response()
-
         await record_patreon_link_activity(
             ActivityType.PATREON_LINK_PROOF_CONSUMED,
             event="proof_consumed",
@@ -1909,11 +1971,14 @@ async def confirm_patreon_link(
             return _generic_confirm_response()
 
         link_result = await _maybe_await(_call_db_link_account(user_id=user_id, context=context))
-        entitlement = await _classify_and_persist_initial_entitlement(
+        # From here on the link is committed: report it as linked even if the first
+        # entitlement read fails (that read is retried by a queued resync).
+        entitlement = await _initial_entitlement_after_link(
             config=config,
             context=context,
             link_result=link_result,
             user_id=user_id,
+            user_hash=_string_field(login_data, "user_hash"),
         )
         await record_patreon_link_activity(
             ActivityType.PATREON_LINKED,
@@ -1984,7 +2049,6 @@ async def get_patreon_link_status(
     ``model_dump_safe()``.
     """
 
-    config = load_patreon_config()
     login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 
@@ -2053,7 +2117,6 @@ async def unlink_patreon_link(
     - `429` — rate limited; `Retry-After` is set.
     """
 
-    config = load_patreon_config()
     login_data = _load_current_session(credentials)
     user_id = _require_local_user(login_data)
 

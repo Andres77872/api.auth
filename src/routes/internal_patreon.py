@@ -38,7 +38,7 @@ from src.Util.db import db_patreon, get_user_by_hash
 from src.Util.email.route_support import client_ip, user_agent
 from src.Util.error_handler import rate_limit_headers
 from src.Util.patreon import sync as patreon_sync
-from src.Util.patreon.config import load_patreon_config
+from src.Util.patreon.config import PatreonConfigError, load_patreon_config
 from src.Util.patreon.rate_limit import PatreonRateLimitExceeded, PatreonRateLimiter
 from src.Util.patreon.security import sanitize_patreon_log_value, verify_s2s_bearer_token
 
@@ -184,12 +184,29 @@ def _s2s_feature_ready(config: Any) -> bool:
 
 
 def _authorized_internal_bearer(request: Request, config: Any) -> bool:
-    """Validate the dedicated S2S bearer without touching user-session auth."""
+    """Validate the dedicated S2S bearer without touching user-session auth.
 
-    presented = _extract_bearer_token(request)
-    expected = _string_field(config, "s2s_bearer_token")
-    token_matches = verify_s2s_bearer_token(presented=presented, expected=expected)
-    return bool(_s2s_feature_ready(config) and token_matches)
+    Fails closed on anything unexpected (unparseable config, odd header bytes) so an
+    unauthenticated caller can never turn the check into a 500.
+    """
+
+    if config is None:
+        return False
+    try:
+        presented = _extract_bearer_token(request)
+        expected = _string_field(config, "s2s_bearer_token")
+        token_matches = verify_s2s_bearer_token(presented=presented, expected=expected)
+        return bool(_s2s_feature_ready(config) and token_matches)
+    except Exception:
+        return False
+
+
+def _load_config_or_none() -> Any:
+    try:
+        return load_patreon_config()
+    except PatreonConfigError:
+        logger.warning("Patreon configuration is invalid; internal Patreon routes deny all callers")
+        return None
 
 
 def _response_path(request: Request | None, fallback: str = _INTERNAL_ENTITLEMENTS_PATH) -> str:
@@ -420,7 +437,9 @@ async def _check_sync_enqueue_rate_limit(*, user_hash: str) -> int | None:
             _current_rate_limiter().check_sync_enqueue(
                 kind=patreon_sync.JOB_TYPE_USER_MEMBER,
                 user_id=user_hash,
-                source="manual",
+                # Separate budget from the ROOT dashboard ("admin"), so a busy
+                # companion service cannot exhaust an operator's resyncs.
+                source="s2s",
             )
         )
         return None
@@ -585,7 +604,7 @@ _S2S_429 = {"description": "Rate limited; see `Retry-After`."}
     openapi_extra={"security": [{"PatreonS2SBearer": []}]},
 )
 async def get_internal_patreon_entitlement(
-    user_hash: Annotated[str, Path(description=_S2S_USER_HASH_DESCRIPTION)], request: Request
+    user_hash: Annotated[str, Path(max_length=255, description=_S2S_USER_HASH_DESCRIPTION)], request: Request
 ) -> JSONResponse:
     """Return a user's normalized Patreon entitlement to a trusted backend (service-to-service).
 
@@ -607,7 +626,7 @@ async def get_internal_patreon_entitlement(
       generic (`{"success": false, "message": ...}`).
     """
 
-    config = load_patreon_config()
+    config = _load_config_or_none()
     if not _authorized_internal_bearer(request, config):
         await capture_patreon_internal_audit(
             "s2s_entitlement_denied",
@@ -674,7 +693,7 @@ async def get_internal_patreon_entitlement(
     openapi_extra={"security": [{"PatreonS2SBearer": []}]},
 )
 async def enqueue_internal_patreon_resync(
-    user_hash: Annotated[str, Path(description=_S2S_USER_HASH_DESCRIPTION)],
+    user_hash: Annotated[str, Path(max_length=255, description=_S2S_USER_HASH_DESCRIPTION)],
     request: Request,
     resync_request: PatreonResyncRequest | None = Body(
         default=None,
@@ -701,7 +720,7 @@ async def enqueue_internal_patreon_resync(
     `status: rate_limited` and `retry_after_seconds`.
     """
 
-    config = load_patreon_config()
+    config = _load_config_or_none()
     if not _authorized_internal_bearer(request, config):
         await capture_patreon_internal_audit(
             "s2s_resync_denied",

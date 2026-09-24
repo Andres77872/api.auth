@@ -114,12 +114,16 @@ def _load_json_config(args: argparse.Namespace) -> Any:
         raw = args.config_json
     elif args.config_file:
         raw = Path(args.config_file).read_text(encoding="utf-8")
-    elif os.getenv("PATREON_TIER_MAP_FILE"):
-        raw = Path(os.environ["PATREON_TIER_MAP_FILE"]).read_text(encoding="utf-8")
+    # Same precedence as the runtime (src/Util/patreon/config.py), so the seeded map is
+    # the one that classifies users.
     elif os.getenv("PATREON_CAMPAIGN_TIER_MAP"):
         raw = os.environ["PATREON_CAMPAIGN_TIER_MAP"]
+    elif os.getenv("PATREON_TIER_MAP_JSON"):
+        raw = os.environ["PATREON_TIER_MAP_JSON"]
+    elif os.getenv("PATREON_TIER_MAP_FILE"):
+        raw = Path(os.environ["PATREON_TIER_MAP_FILE"]).read_text(encoding="utf-8")
     else:
-        raw = os.getenv("PATREON_TIER_MAP_JSON", "")
+        raw = ""
 
     if not raw.strip():
         raise ConfigError(

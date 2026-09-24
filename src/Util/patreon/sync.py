@@ -901,8 +901,9 @@ def enqueue_member_resync(
     if not_before_value is None and retry_after_seconds:
         not_before_value = _utc_now() + timedelta(seconds=max(1, retry_after_seconds))
 
-    db_module.enqueue_patreon_sync_job(
-        job_id=job_id or _new_id("psj"),
+    requested_job_id = job_id or _new_id("psj")
+    enqueued = db_module.enqueue_patreon_sync_job(
+        job_id=requested_job_id,
         job_type=db_job_type,
         campaign_id=_clean_text(campaign_id),
         member_id_hash=digest,
@@ -913,14 +914,32 @@ def enqueue_member_resync(
         source=_db_job_source(source),
         sanitized_metadata=_safe_metadata(sanitized_metadata, reason="member_resync"),
     )
+    job_id_value, deduplicated = enqueued_job_reference(enqueued, requested_job_id)
     return PatreonResyncAcceptedResponse(
         accepted=True,
         status="queued",
         user_hash=user_hash,
         retry_after_seconds=retry_after_seconds,
         not_before=not_before_value,
-        correlation_id=job_id,
+        correlation_id=job_id_value,
+        message=(
+            "Merged into a Patreon resync that is already queued."
+            if deduplicated
+            else "Patreon entitlement resync request accepted."
+        ),
     )
+
+
+def enqueued_job_reference(enqueued: Any, requested_job_id: str) -> tuple[str, bool]:
+    """Return ``(job_id, deduplicated)`` from ``sp_patreon_sync_job_enqueue``'s row.
+
+    When the request merged into an active job with the same dedupe key, the id of
+    THAT job is returned so callers can find it; the requested id was never stored.
+    """
+
+    row = _plain_mapping(enqueued)
+    job_id = _clean_text(row.get("job_id")) or requested_job_id
+    return job_id, str(row.get("job_status") or "") == "deduplicated"
 
 
 async def iter_campaign_member_pages(
@@ -1151,7 +1170,7 @@ def persist_member_classification(
         observed_unmapped_tiers=classification_result.observed_unmapped_tiers,
     )
 
-    db_module.observe_patreon_membership(
+    observed = db_module.observe_patreon_membership(
         membership_id=identity.membership_id,
         user_id=persistence.user_id,
         external_account_id=persistence.external_account_id,
@@ -1163,13 +1182,16 @@ def persist_member_classification(
         status=_membership_status_from_classification(classification_result),
         metadata=safe_metadata,
     )
+    # The procedure resolves the member's ACTIVE membership row (a relink or a
+    # re-created member uses a new row); the snapshot must reference that row.
+    membership_id = _clean_text(_plain_mapping(observed).get("membership_id")) or identity.membership_id
     db_module.upsert_patreon_entitlement_snapshot(
         snapshot_id=_new_id("psnap"),
         history_id=None,
         current_id=None,
         user_id=persistence.user_id,
         external_account_id=persistence.external_account_id,
-        membership_id=identity.membership_id,
+        membership_id=membership_id,
         observed_at=observed_at,
         sync_source=_db_snapshot_source(source),
         patron_status_normalized=patron_status,
@@ -1191,6 +1213,62 @@ def persist_member_classification(
         safe_metadata=safe_metadata,
     )
     return "snapshot_upserted"
+
+
+ABSENT_MEMBER_REASON = "member_absent_from_source_of_truth"
+
+
+def persist_absent_membership(
+    membership: Mapping[str, Any],
+    *,
+    config: PatreonConfig | Any | None = None,
+    db_module: Any = db_patreon,
+    now: datetime | str | None = None,
+    source: str = constants.PATREON_SYNC_SOURCE_API_PULL,
+) -> bool:
+    """Downgrade a linked membership that a complete Patreon read no longer returns.
+
+    Patreon omits deleted members from campaign reads, so "not found after a full
+    scan" is the only signal that paid access ended. The link itself stays intact
+    (the user can pledge again); only the entitlement becomes ``former``/free.
+    The payload hash is derived from the membership id so repeated sweeps reuse one
+    snapshot row instead of appending a new one every pass.
+    """
+
+    row = _plain_mapping(membership)
+    membership_id = _clean_text(row.get("membership_id"))
+    user_id = _clean_text(row.get("user_id"))
+    if not membership_id or not user_id:
+        return False
+    observed_at = _utc_now(now)
+    db_module.upsert_patreon_entitlement_snapshot(
+        snapshot_id=_new_id("psnap"),
+        history_id=None,
+        current_id=None,
+        user_id=user_id,
+        external_account_id=_clean_text(row.get("external_account_id")),
+        membership_id=membership_id,
+        observed_at=observed_at,
+        sync_source=_db_snapshot_source(source),
+        patron_status_normalized="former_patron",
+        tier_hashes_json=[],
+        last_charge_status_normalized=None,
+        next_charge_at=None,
+        payload_hash=hashlib.sha256(f"absent:{membership_id}".encode("utf-8")).digest(),
+        is_complete=True,
+        requires_resync=False,
+        entitlement_status=constants.PATREON_ENTITLEMENT_STATUS_FORMER,
+        link_status=constants.PATREON_LINK_STATUS_LINKED,
+        plan_code="free",
+        tier_code=None,
+        tier_name=None,
+        next_renewal_at=None,
+        grace_period_until=None,
+        stale_after=calculate_stale_after(now=observed_at, config=config),
+        reason=ABSENT_MEMBER_REASON,
+        safe_metadata={"reason": ABSENT_MEMBER_REASON, "source": "patreon_source_of_truth"},
+    )
+    return True
 
 
 def build_hashed_member_identity(
@@ -1424,6 +1502,8 @@ __all__ = [
     "decide_retry_backoff",
     "enqueue_full_campaign_sync",
     "enqueue_member_resync",
+    "enqueued_job_reference",
+    "persist_absent_membership",
     "fail_sync_job",
     "fetch_campaign_members_paginated",
     "finalize_sync_job",

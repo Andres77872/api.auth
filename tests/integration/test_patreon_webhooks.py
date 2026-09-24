@@ -393,7 +393,9 @@ async def test_processing_failure_after_delivery_ledger_enqueues_source_of_truth
 
     _assert_webhook_route_exists(first)
     _assert_webhook_route_exists(replay)
-    assert first.status_code == 500
+    # A queued source-of-truth resync corrects the entitlement, so the delivery is
+    # acknowledged: repeated non-2xx answers make Patreon pause the whole webhook.
+    assert first.status_code == 200
     assert replay.status_code == 200
     assert len(capture.deliveries) == 2
     assert capture.deliveries[1]["duplicate"] is True
@@ -405,6 +407,32 @@ async def test_processing_failure_after_delivery_ledger_enqueues_source_of_truth
     assert capture.current_updates == []
     _assert_no_session_or_raw_provider_leaks(first, context="post-ledger failure response")
     _assert_no_session_or_raw_provider_leaks(replay, context="post-ledger replay response")
+
+
+@pytest.mark.asyncio
+async def test_processing_failure_without_resync_asks_patreon_to_redeliver(client):
+    capture = WebhookCapture()
+    raw_body = _raw_fixture("member_update_active")
+    headers = _signed_headers("member_update_active")
+
+    async def fail_after_ledger(*args, **kwargs):
+        raise RuntimeError("simulated post-ledger processing failure")
+
+    async def resync_unavailable(**kwargs):
+        return False
+
+    with _patched_webhook_seams(capture), _optional_patch_targets(
+        ("src.routes.patreon_webhooks._process_verified_member_payload",),
+        fail_after_ledger,
+    ), _optional_patch_targets(
+        ("src.routes.patreon_webhooks._enqueue_member_source_of_truth_resync",),
+        resync_unavailable,
+    ):
+        response = await _post_webhook(client, raw_body, headers)
+
+    _assert_webhook_route_exists(response)
+    assert response.status_code == 500
+    _assert_no_session_or_raw_provider_leaks(response, context="unrecoverable failure response")
 
 
 @pytest.mark.asyncio

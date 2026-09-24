@@ -124,6 +124,40 @@ INDEX_PATCHES = (
     ),
 )
 
+# Plain (non-unique) indexes added to existing Patreon tables for the admin lists, the
+# tier-map-miss metric and retention. CREATE TABLE IF NOT EXISTS never adds them to a
+# live table, so they are patched in the same idempotent way.
+INDEX_PATCHES += (
+    (
+        "add idx_patreon_current_updated",
+        "patreon_entitlements_current",
+        "idx_patreon_current_updated",
+        "add",
+        "ALTER TABLE patreon_entitlements_current ADD INDEX idx_patreon_current_updated (updated_at)",
+    ),
+    (
+        "add idx_patreon_history_reason_time",
+        "patreon_entitlement_history",
+        "idx_patreon_history_reason_time",
+        "add",
+        "ALTER TABLE patreon_entitlement_history ADD INDEX idx_patreon_history_reason_time (reason, observed_at)",
+    ),
+    (
+        "add idx_patreon_sync_created",
+        "patreon_sync_jobs",
+        "idx_patreon_sync_created",
+        "add",
+        "ALTER TABLE patreon_sync_jobs ADD INDEX idx_patreon_sync_created (created_at)",
+    ),
+    (
+        "add idx_patreon_sync_terminal",
+        "patreon_sync_jobs",
+        "idx_patreon_sync_terminal",
+        "add",
+        "ALTER TABLE patreon_sync_jobs ADD INDEX idx_patreon_sync_terminal (status, completed_at)",
+    ),
+)
+
 # Generated columns made obsolete by INDEX_PATCHES; dropped only once their index is gone.
 STALE_COLUMNS = (("user_external_accounts", "active_user_provider"),)
 
@@ -678,6 +712,12 @@ def _verify_markers(cursor) -> list[str]:
     if int(cursor.fetchone()["count"]) < 16:
         failures.append("Patreon activity catalog range is incomplete")
 
+    for _, patch_table, index_name, action, _ in INDEX_PATCHES:
+        if not patch_table.startswith("patreon_"):
+            continue
+        if action == "add" and not _index_exists(cursor, patch_table, index_name):
+            failures.append(f"missing index {patch_table}.{index_name}")
+
     failures.extend(_verify_oauth_markers(cursor))
     return failures
 
@@ -691,7 +731,9 @@ def _verify_oauth_markers(cursor) -> list[str]:
     failures: list[str] = []
     table = "user_external_accounts"
 
-    for _, _, index_name, action, _ in INDEX_PATCHES:
+    for _, patch_table, index_name, action, _ in INDEX_PATCHES:
+        if patch_table != table:
+            continue
         present = _index_exists(cursor, table, index_name)
         if action == "add" and not present:
             failures.append(f"missing unique key {index_name}")

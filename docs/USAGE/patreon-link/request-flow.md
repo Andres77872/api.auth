@@ -180,10 +180,15 @@ delivery ledger
   │ duplicate/replay -> safe success, no repeated side effects
   ▼
 classification / resync decision
-  ├─ complete verified payload + known tier map + linked identity
-  │    update snapshot/current entitlement and append history
-  └─ partial, unsupported, unknown, ambiguous, out-of-order, or unknown tier
-       enqueue source-of-truth resync or mark stale; no destructive downgrade
+  ├─ Patreon user not linked to anyone
+  │    acknowledge and ignore (no resync: nothing to update)
+  ├─ complete verified member document (create/update) + mapped tier
+  │    update snapshot/current entitlement (downgrades included) and append history
+  └─ partial payload, *:delete event, or unmapped tier
+       enqueue source-of-truth resync; no destructive downgrade from partial data
+  │
+  ▼
+ledger outcome: processed | ignored | failed (failed deliveries are reprocessed on redelivery)
 ```
 
 ### Webhook rules
@@ -192,7 +197,9 @@ classification / resync decision
 - Body normalization, parsing before verification, altered whitespace, altered encoding, or changed bytes must fail verification.
 - Unsupported events are ignored or recorded safely without entitlement mutation.
 - Duplicate deliveries are idempotent because Patreon does not provide a native delivery ID.
-- Partial or ambiguous webhook payloads must not revoke or downgrade paid entitlement without source-of-truth confirmation.
+- Partial or ambiguous webhook payloads must not revoke or downgrade paid entitlement without source-of-truth confirmation. A complete, signed member document is Patreon's own statement of the member's current state and is applied directly, so cancellations and declines take effect without waiting for a sweep.
+- Patreon sends no event timestamp, so per-delivery ordering cannot be judged; the scheduled sweep corrects a late redelivery.
+- A source-of-truth read that completes without finding a linked member (Patreon drops deleted members from campaign reads) downgrades that membership to `former`/free. The link itself stays, so the user can pledge again without relinking.
 
 Configured allowed event defaults:
 
