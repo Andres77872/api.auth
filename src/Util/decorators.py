@@ -53,6 +53,21 @@ async def _extract_project_hash_from_call(kwargs: Dict[str, Any]) -> Optional[st
     return candidate if isinstance(candidate, str) and candidate else None
 
 
+def _resolved_signature(func: Callable):
+    """Return ``func``'s signature with string annotations evaluated in its own module.
+
+    FastAPI resolves string annotations (``from __future__ import annotations``)
+    against the endpoint's ``__globals__``; for a ``@wraps`` wrapper that is this
+    module, so route-local request models become unresolved ForwardRefs, get
+    treated as query params, and break ``/openapi.json``. Publishing the resolved
+    signature as ``__signature__`` makes FastAPI see the real types.
+    """
+    try:
+        return signature(func, eval_str=True)
+    except Exception:
+        return signature(func)
+
+
 def log_and_handle_errors(
     operation_name: str,
     activity_type: Optional[ActivityType] = None,
@@ -330,6 +345,7 @@ def log_and_handle_errors(
                     original_error=e
                 )
         
+        async_wrapper.__signature__ = _resolved_signature(func)
         return async_wrapper
     
     return decorator
@@ -555,6 +571,7 @@ def log_unauthenticated_operation(
                     original_error=e
                 )
         
+        async_wrapper.__signature__ = _resolved_signature(func)
         return async_wrapper
     
     return decorator

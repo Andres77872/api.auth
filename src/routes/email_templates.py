@@ -76,6 +76,16 @@ _TEMPLATE_CODE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _injected_log_context() -> None:
+    """Placeholder default for ``log_context``; ``log_and_handle_errors`` injects the real one.
+
+    A bare ``LogContext = None`` default is a pydantic model, so FastAPI would read it
+    as a second JSON body field and expect the request model nested under ``"body"``
+    instead of the flat JSON documented in docs/USAGE/email/reference.md.
+    """
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -278,7 +288,7 @@ def _normalize_variable_names(
 )
 async def list_email_templates(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """List every transactional template with its active source/version."""
 
@@ -299,7 +309,7 @@ async def list_email_templates(
 async def create_email_template(
     body: TemplateCreateRequest,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Create a dynamic internal template code and activate version 1."""
 
@@ -369,7 +379,7 @@ async def create_email_template(
 async def get_email_template(
     template_code: str,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Return the active body for a code plus its allowlist and version history."""
 
@@ -422,7 +432,7 @@ async def update_email_template(
     template_code: str,
     body: TemplateDraft,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Validate, sanitize-check and save a new active version of a template."""
 
@@ -484,7 +494,7 @@ async def preview_email_template(
     template_code: str,
     body: TemplatePreviewRequest | None = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Render a draft (or the active version) with sample data for preview.
 
@@ -519,7 +529,7 @@ async def preview_email_template(
 async def disable_email_template(
     template_code: str,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Disable a template code while preserving catalog/version history."""
 
@@ -558,7 +568,7 @@ async def send_test_email_template(
     template_code: str,
     body: TemplatePreviewRequest | None = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Send a rendered test email to the ROOT user's OWN verified address."""
 
@@ -666,7 +676,7 @@ async def rollback_email_template(
     template_code: str,
     body: TemplateRollbackRequest,
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    log_context: LogContext = None,
+    log_context: LogContext = Depends(_injected_log_context),
 ) -> Dict[str, Any]:
     """Re-activate a prior version of a template."""
 
