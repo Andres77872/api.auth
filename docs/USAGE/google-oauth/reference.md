@@ -1,166 +1,185 @@
-# Google OAuth Reference
+# Google OAuth reference
 
-Reference for environment keys, endpoints, response models, OAuth error taxonomy, activity catalog, redaction fields, and allowlist behavior.
+Settings, request fields and activity codes specific to the deprecated `/auth/google/*`
+aliases and the environment-configured Google connection. Responses, error codes, rate
+limits, Redis keys and audit redaction are shared with `/auth/oauth/*` and documented in
+the [OAuth reference](../oauth/reference.md).
 
-> Provider boundary: this reference covers Google OAuth login/link contracts. Patreon is entitlement/link only and has separate route, S2S, retention, activity, and forbidden-browser-field references in [Patreon account linking](../patreon-link/README.md). Do not reuse Google `LoginResponse`, cookie, refresh-token, or callback semantics for Patreon.
+## Configuration keys
 
-## Configuration Keys
+Values below are names only; never paste real secrets into docs or tickets. The Google
+client, allow-list, provisioning, hosted-domain and `PROVIDER_INIT_*` keys configure the
+single Google connection served while `OAUTH_CONFIG_SOURCE=env`; with `db` they are
+ignored and the connection and binding come from the database. The pepper, TTL, leeway,
+cache and fail-closed keys are also the fallbacks of the `OAUTH_*` deployment settings
+under both sources.
 
-Values below are names only. Do not paste real secrets into docs. Use localhost examples in local smoke only.
-
-| Key | Purpose | Notes |
+| Key | Default | Notes |
 | --- | --- | --- |
-| `GOOGLE_OAUTH_ENABLED` | Runtime kill switch | Keep false/disabled until rollout gate passes. |
-| `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth client identifier | Use deployment secret/config management. |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client credential | Rotate via runbook; never log or document the value. |
-| `GOOGLE_OAUTH_DISCOVERY_URL` | OIDC discovery metadata URL | **Optional override.** Leave unset; `load_google_oauth_config` defaults to `https://accounts.google.com/.well-known/openid-configuration`. |
-| `GOOGLE_OAUTH_AUTHORIZE_ENDPOINT` | Authorization endpoint | **Optional override.** Defaults to `https://accounts.google.com/o/oauth2/v2/auth`. |
-| `GOOGLE_OAUTH_TOKEN_ENDPOINT` | Token endpoint | **Optional override.** Defaults to `https://oauth2.googleapis.com/token`. Used for exactly-once code exchange. |
-| `GOOGLE_OAUTH_JWKS_URI` | JWKS endpoint | **Optional override.** Defaults to `https://www.googleapis.com/oauth2/v3/certs`. Cache TTL capped at `3600` seconds. |
-| `GOOGLE_OAUTH_ISSUERS` | Accepted issuers | **Optional override.** Defaults to `https://accounts.google.com` and `accounts.google.com`. |
-| `GOOGLE_OAUTH_SCOPES` | OAuth scopes | Must be exactly `openid email`. |
-| `GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS` | Optional Google Workspace `hd` restriction | Comma-separated domain list; empty (the default) allows **all** accounts, and `*` also allows all. A non-empty list restricts Workspace sign-in to those domains (case-insensitive); a non-matching `hd` is rejected with `OAUTH_WORKSPACE_DENIED` (`EXT_8023`). Consumer Gmail carries no `hd` and is always allowed. |
-| `GOOGLE_OAUTH_REDIRECT_URIS` | Exact callback URI allowlist | Local examples: `http://localhost:8000/auth/google/callback`, `http://127.0.0.1:8000/auth/google/callback`. |
-| `GOOGLE_OAUTH_RETURN_ORIGINS` | Exact frontend return-origin allowlist | Local examples: `http://localhost:3000`, `http://localhost:5173`. |
-| `GOOGLE_OAUTH_PROVISIONING_MODE` | `disabled`, `link_only`, `auto_create`, or `both` | Production default must be `disabled` or `link_only`. |
-| `GOOGLE_OAUTH_STATE_TTL_SECONDS` | OAuth state TTL | Max `600`. |
-| `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS` | Recent step-up lifetime | Default design value `300`. |
-| `GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS` | JWKS cache cap | Max `3600`. |
-| `GOOGLE_OAUTH_LEEWAY_SECONDS` | Exp/iat clock leeway | Max `30`. |
-| `GOOGLE_OAUTH_STATE_PEPPER` | HMAC key for state Redis keys | Secret value, never printed. |
-| `GOOGLE_OAUTH_PROVIDER_SUB_PEPPER` | HMAC key for Google `sub` authority | Secret value, never printed. |
-| `GOOGLE_OAUTH_EMAIL_HASH_PEPPER` | HMAC key for email snapshot hash | Secret value, never printed. |
-| `GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | Redis failure policy | Should remain fail closed. |
-| `PROVIDER_INIT_REDEEM_URL` | Server-to-server companion redeem endpoint | Local/test only in docs; production value omitted. |
-| `PROVIDER_INIT_REDEEM_TOKEN` | Bearer trust-boundary credential | Secret value, never printed. |
-| `PROVIDER_INIT_RETURN_ORIGINS` | Provider-init return-origin allowlist | Exact match; defaults can mirror return origins. |
+| `GOOGLE_OAUTH_ENABLED` | `false` | Enables the environment Google connection; off answers `403` or `404` `EXT_8011` on every Google route. Also the fallback of `OAUTH_ENABLED`. |
+| `GOOGLE_OAUTH_CLIENT_ID` | — | Required once enabled; missing answers `503` `EXT_8010`. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | — | Used for the code exchange. Rotate through secret management; never log it. |
+| `GOOGLE_OAUTH_AUTHORIZE_ENDPOINT` | `https://accounts.google.com/o/oauth2/v2/auth` | Optional override. |
+| `GOOGLE_OAUTH_TOKEN_ENDPOINT` | `https://oauth2.googleapis.com/token` | Optional override. |
+| `GOOGLE_OAUTH_JWKS_URI` | `https://www.googleapis.com/oauth2/v3/certs` | Optional override. |
+| `GOOGLE_OAUTH_ISSUERS` | `https://accounts.google.com,accounts.google.com` | Optional override. |
+| `GOOGLE_OAUTH_DISCOVERY_URL` | `https://accounts.google.com/.well-known/openid-configuration` | Parsed but not used: Google endpoints come from the keys above or the built-in values. |
+| `GOOGLE_OAUTH_SCOPES` | `openid email` | Must be exactly `openid email`; any other value makes the Google configuration fail to load. |
+| `GOOGLE_OAUTH_REDIRECT_URIS` | empty | Comma-separated exact allow-list. `start` uses the requested URI if listed, else the first. |
+| `GOOGLE_OAUTH_RETURN_ORIGINS` | empty | Comma-separated exact allow-list. `start` uses the requested origin, else the first. |
+| `GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS` | empty | Workspace `hd` allow-list, comma-separated, case-insensitive. Empty or `*` allows every account; consumer Gmail carries no `hd` and is always allowed. A non-matching `hd` answers `401` `EXT_8023`. |
+| `GOOGLE_OAUTH_PROVISIONING_MODE` | `disabled` | `disabled`, `link_only`, `auto_create` or `both`, for the whole deployment. |
+| `GOOGLE_OAUTH_STATE_TTL_SECONDS` | `600` | 1–600. State TTL of the environment connection; fallback of `OAUTH_MAX_STATE_TTL_SECONDS`. |
+| `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS` | `300` | Fallback of `OAUTH_RECENT_REAUTH_SECONDS`. |
+| `GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS` | `3600` | 1–3600. JWKS cache cap of the environment connection; fallback of `OAUTH_JWKS_CACHE_TTL_SECONDS`. |
+| `GOOGLE_OAUTH_LEEWAY_SECONDS` | `30` | 0–30. Clock leeway of the environment connection; fallback of `OAUTH_LEEWAY_SECONDS`. |
+| `GOOGLE_OAUTH_STATE_PEPPER` | — | Fallback of `OAUTH_STATE_PEPPER`. Secret. |
+| `GOOGLE_OAUTH_PROVIDER_SUB_PEPPER` | — | Fallback of `OAUTH_PROVIDER_SUB_PEPPER`. Keys every linked identity; never change it. |
+| `GOOGLE_OAUTH_EMAIL_HASH_PEPPER` | — | Fallback of `OAUTH_EMAIL_HASH_PEPPER`. Secret. |
+| `GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | `true` | Fallback of `OAUTH_FAIL_CLOSED_ON_REDIS_ERROR`. |
+| `PROVIDER_INIT_REDEEM_URL` | — | The companion's redeem endpoint. Must be `https://` (plain `http://` only to `localhost`, `127.0.0.1` or `::1`) without credentials; private hosts are allowed. |
+| `PROVIDER_INIT_REDEEM_TOKEN` | — | Bearer sent to the redeem endpoint. Secret. |
+| `PROVIDER_INIT_RETURN_ORIGINS` | `GOOGLE_OAUTH_RETURN_ORIGINS` | Origins a redeemed token may name. |
 
-The five Google endpoint keys — `GOOGLE_OAUTH_DISCOVERY_URL`,
-`GOOGLE_OAUTH_AUTHORIZE_ENDPOINT`, `GOOGLE_OAUTH_TOKEN_ENDPOINT`,
-`GOOGLE_OAUTH_JWKS_URI`, and `GOOGLE_OAUTH_ISSUERS` — are **optional
-overrides**, not required settings. `src/Util/google_oauth_config.py` already
-carries the correct Google values as built-in defaults, so leave all five unset
-unless a deployment deliberately points at a different endpoint. Setting them to
-placeholder values overrides the working defaults with garbage and breaks
-sign-in. What a deployment actually must supply to enable the feature is
-`GOOGLE_OAUTH_ENABLED`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
-the redirect/return-origin allowlists, and the peppers/secrets above.
+The four endpoint keys, `GOOGLE_OAUTH_ISSUERS` and `GOOGLE_OAUTH_DISCOVERY_URL` are
+optional overrides, not required settings: `src/Util/google_oauth_config.py` carries the
+correct Google values as built-in defaults. Leave them unset unless a deployment
+deliberately points somewhere else; setting them to placeholder values overrides the
+working defaults and breaks sign-in. What a deployment must supply to enable the
+environment connection is `GOOGLE_OAUTH_ENABLED`, `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, the redirect and return-origin allow-lists, the three
+peppers and, for the alias handshake, `PROVIDER_INIT_REDEEM_URL` and
+`PROVIDER_INIT_REDEEM_TOKEN`.
 
-Rate-limit keys:
+The `GOOGLE_OAUTH_*_RATE_LIMIT` and `GOOGLE_OAUTH_*_RATE_WINDOW_SECONDS` keys are the
+fallback names of the shared OAuth rate limits; see
+[Rate limits](../oauth/reference.md#rate-limits).
 
-- `GOOGLE_OAUTH_START_RATE_LIMIT`, `GOOGLE_OAUTH_START_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_CALLBACK_RATE_LIMIT`, `GOOGLE_OAUTH_CALLBACK_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT`, `GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT`, `GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT`, `GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS`
-- `GOOGLE_OAUTH_UNLINK_RATE_LIMIT`, `GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS`
-
-## Exact Allowlist Behavior
-
-Redirect URI and return-origin checks are exact string matches. No suffix matching, wildcard matching, implicit scheme upgrades, or production-domain defaults are allowed.
-
-Local examples only:
-
-- `http://localhost:8000/auth/google/callback`
-- `http://127.0.0.1:8000/auth/google/callback`
-- `http://localhost:3000`
-- `http://localhost:5173`
+Redirect URIs and return origins match by exact string equality: no suffix or wildcard
+matching, no implicit scheme upgrade, no production-domain defaults. Local examples:
+`http://localhost:5000/auth/google/callback/return` (a BFF callback),
+`http://localhost:3000`, `http://localhost:5173`.
 
 ## Endpoints
 
-> **Deprecated aliases.** `/auth/google/*` delegates to the provider-agnostic pipeline with the connection key `google` and stays available for existing consumers. New integrations should use [`/auth/oauth/*`](../oauth/reference.md). Linking and re-authentication complete inside the callback; the former `POST /auth/google/link/finish` route has been removed because nothing could ever satisfy it.
-
-| Endpoint | Method | Request | Success | Failure |
+| Path | Method | Auth | Request | Success |
 | --- | --- | --- | --- | --- |
-| `/auth/google/start` | POST | `GoogleOAuthStartRequest` | `303` redirect to Google, OAuth binding cookie | Disabled provider returns `OAUTH_PROVIDER_DISABLED` / `EXT_8011` with explicit `403`; otherwise neutral `EXT_8xxx` (`EXT_8012` redeem, `EXT_8013` allowlist, `EXT_8014` state, `EXT_8030` rate-limit); no strict hash leakage |
-| `/auth/google/callback` | GET | `code`, `state`, optional `error`/`error_description` | For a login state: existing `LoginResponse` + existing cookies. For a link state: `ExternalIdentityLinkResponse` (no new session). For a reauth state: `{"reauthenticated": true}` and the recent-reauth marker is recorded. The purpose comes from the server-side state record only. | Neutral `EXT_8xxx`; no provider/local enumeration. `error=access_denied` returns `OAUTH_USER_CANCELLED` / `EXT_8031` (`400`) and consumes the state. A verified-e-mail collision with an existing local account returns `OAUTH_ACCOUNT_LINK_REQUIRED` / `EXT_8032` (`409`). |
-| `/auth/google/link/start` | POST | Local session + recent reauth (`require_recent_reauthentication`, op `google_oauth_link`); provisioning `link_only`/`both` | `303` redirect to Google | `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`) neutral denial on any failure |
-| `/auth/google/reauth/start` | POST | Local session (no provisioning gate, no pre-required recent reauth) | `303` redirect to Google with `prompt=login` step-up intent | `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`) on failure |
-| `/auth/google/unlink` | DELETE | Local session + recent reauth (op `google_oauth_unlink`) | `ExternalIdentityUnlinkResponse` (with `sessions_revoked`) | `EXTERNAL_IDENTITY_NOT_LINKED` / `EXT_8028` (`404`), `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` / `EXT_8029` (`409`), or `OAUTH_RATE_LIMITED` / `EXT_8030` (`429`, unlink-specific) |
+| `/auth/google/start` | POST | Public; the provider-init token is the credential | JSON, see below | `303` to Google, `oauth_state` cookie (path `/auth/google`) |
+| `/auth/google/callback` | GET | Public; the state is the credential | Query `code`, `state`, optional `error` (`error_description` ignored) | `200` login, link or reauth result, as for `/auth/oauth/callback` |
+| `/auth/google/link/start` | POST | Access token plus recent authentication | Optional JSON `return_origin` | `303` to Google |
+| `/auth/google/reauth/start` | POST | Access token | Optional JSON `return_origin` | `303` to Google with `prompt=login` |
+| `/auth/google/unlink` | DELETE | Access token plus recent authentication | — | `200` `ExternalIdentityUnlinkResponse` with `sessions_revoked` |
 
-## Models
+`POST /auth/google/start` — JSON body:
 
-`GoogleOAuthStartRequest`:
-
-- `provider_init_token`: required opaque token from companion.
-- `redirect_uri`: optional, exact-match allowlisted.
-- `return_origin`: optional, exact-match allowlisted.
-- `remember_me`: optional local session preference.
-
-`GoogleOAuthStartResponse` is for explicit non-browser/test negotiation only. Browser flow redirects by default.
-
-`ExternalIdentityInfo` returns only secret-safe provider metadata: provider, masked subject fingerprint, masked email snapshot, verification snapshot, linked/last-seen timestamps, and status.
-
-Callback success uses `LoginResponse`, not an OAuth-specific success model.
-
-## Error Codes
-
-OAuth provider/protocol/external identity errors use enum symbols whose values stay in the `EXT_8xxx` family.
-
-| Symbol | Value | Typical Status | Public Posture |
-| --- | --- | --- | --- |
-| `OAUTH_PROVIDER_NOT_CONFIGURED` | `EXT_8010` | 503 | Provider unavailable |
-| `OAUTH_PROVIDER_DISABLED` | `EXT_8011` | 403 (start) / 404 (map default) | Provider unavailable |
-| `OAUTH_PROVIDER_INIT_INVALID` | `EXT_8012` | 401 | Neutral OAuth failure |
-| `OAUTH_REDIRECT_URI_NOT_ALLOWED` | `EXT_8013` | 400 | Neutral OAuth failure |
-| `OAUTH_STATE_INVALID` | `EXT_8014` | 401 | Neutral OAuth failure |
-| `OAUTH_STATE_EXPIRED` | `EXT_8015` | 401 | Neutral OAuth failure |
-| `OAUTH_STATE_REUSED` | `EXT_8016` | 401 | Neutral OAuth failure |
-| `OAUTH_NONCE_MISMATCH` | `EXT_8017` | 401 | Neutral OAuth failure |
-| `OAUTH_CODE_EXCHANGE_FAILED` | `EXT_8018` | 502 | Provider unavailable |
-| `OAUTH_ID_TOKEN_INVALID` | `EXT_8019` | 401 | Neutral OAuth failure |
-| `OAUTH_ISSUER_MISMATCH` | `EXT_8020` | 401 | Neutral OAuth failure |
-| `OAUTH_AUDIENCE_MISMATCH` | `EXT_8021` | 401 | Neutral OAuth failure |
-| `OAUTH_TOKEN_EXPIRED` | `EXT_8022` | 401 | Neutral OAuth failure |
-| `OAUTH_WORKSPACE_DENIED` | `EXT_8023` | 401 | Neutral OAuth failure |
-| `OAUTH_PROVISIONING_DENIED` | `EXT_8024` | 401 | Neutral OAuth failure |
-| `OAUTH_PROJECT_ACCESS_DENIED` | `EXT_8025` | 403 | Neutral access denial |
-| `EXTERNAL_IDENTITY_ALREADY_LINKED` | `EXT_8026` | 409 | External identity action denied |
-| `EXTERNAL_IDENTITY_SUB_CONFLICT` | `EXT_8027` | 409 | External identity action denied |
-| `EXTERNAL_IDENTITY_NOT_LINKED` | `EXT_8028` | 404 | External identity action denied |
-| `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` | `EXT_8029` | 409 | Establish fallback auth first |
-| `OAUTH_RATE_LIMITED` | `EXT_8030` | 429 | Retry later |
-
-`EXTERNAL_IDENTITY_ALREADY_LINKED` / `EXT_8026` is defined in the enum but is **not currently emitted**. Linking an identity that already belongs to another user returns `EXTERNAL_IDENTITY_SUB_CONFLICT` / `EXT_8027` (`409`) from the callback; treat `EXT_8026` as a reserved code.
-
-## Activity Catalog `act-cat-064..074`
-
-| ID | ActivityType | Meaning |
+| Field | Required | Notes |
 | --- | --- | --- |
-| `act-cat-064` | `GOOGLE_OAUTH_STARTED` | Provider-init redeemed and authorization URL created. |
-| `act-cat-065` | `GOOGLE_OAUTH_PROVIDER_INIT_REJECTED` | Provider-init missing, expired, replayed, or redeem failed. |
-| `act-cat-066` | `GOOGLE_OAUTH_CALLBACK_RECEIVED` | Callback entered after basic query parsing. |
-| `act-cat-067` | `GOOGLE_OAUTH_STATE_REJECTED` | State missing, expired, replayed, or mismatched. |
-| `act-cat-068` | `GOOGLE_OAUTH_NONCE_REJECTED` | ID-token nonce mismatch. |
-| `act-cat-069` | `GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED` | Google token endpoint or invalid-grant failure. |
-| `act-cat-070` | `GOOGLE_OAUTH_ID_TOKEN_REJECTED` | Signature, `kid`, issuer, audience, `hd`, time, or google-auth cross-check failure. |
-| `act-cat-071` | `GOOGLE_OAUTH_LOGIN_SUCCEEDED` | Local session issued. |
-| `act-cat-072` | `GOOGLE_OAUTH_LOGIN_DENIED` | Provisioning, project access, consumer policy, or collision denial. |
-| `act-cat-073` | `GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED` | Google external account linked. |
-| `act-cat-074` | `GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED` | Google external account soft-unlinked. |
+| `provider_init_token` | yes | Opaque token from the companion, at most 4,096 characters. |
+| `redirect_uri` | no | Must be on the allow-list. |
+| `return_origin` | no | Must be on the allow-list and equal the origin the redeemed token names. |
+| `remember_me` | no | Boolean, default `false`. |
+| `project_hash`, `user_group_hash` | — | Rejected with `400` `EXT_8012`. |
 
-## Redacted Audit Fields
+Alias start errors:
 
-At minimum, audit/error/logging redacts or omits:
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `EXT_8012` | Body not a JSON object, forbidden field, or missing or oversized token. |
+| `400` | `EXT_8013` | The redirect URI and return origin pair does not match exactly one Google binding. |
+| `401` | `EXT_8012` | Redemption failed or the redeemed binding was rejected. |
+| `401` | `EXT_8014` | State storage unavailable. |
+| `403` | `EXT_8011` | Google connection disabled, or no usable `legacy_redeem` binding (database source). |
+| `429` | `EXT_8030` | Start or provider-init redeem bucket exhausted; `Retry-After` is set. |
+| `503` | `EXT_8010` | Google connection not configured, or the authorization URL could not be built. |
 
-```text
-provider_init_token, authorization_code, oauth_code, code, state, oauth_state,
-nonce, code_verifier, pkce_verifier, id_token, google_id_token,
-google_id_token_claims, access_token, refresh_token, google_access_token,
-google_refresh_token, google_sub, provider_sub, google_email, google_hd,
-oauth_link_token, project_hash, user_group_hash
+The callback, link, reauth and unlink aliases answer exactly as their `/auth/oauth/*`
+equivalents; see [Error codes by endpoint](../oauth/reference.md#error-codes-by-endpoint).
+`EXT_8015` and `EXT_8026` are defined but never emitted. Linking an identity that already
+belongs to another user answers `409` `EXT_8027`.
+
+## Provider-init redemption
+
+`api.auth` calls the redeem endpoint once per start request: `POST` to
+`PROVIDER_INIT_REDEEM_URL` (or the binding's encrypted redeem URL under the database
+source), with `Authorization: Bearer <redeem token>`, a 5-second timeout and redirects
+not followed. Request body:
+
+```json
+{
+  "provider_init_token": "REPLACE_ME_OPAQUE_LOCAL_TOKEN",
+  "provider": "google",
+  "audience": "api.auth"
+}
 ```
 
-`/auth/google/callback` remains audited with redaction. `/auth/google/*` uses `auth_method='oauth'` and tags `authentication`, `google_oauth`, and `external_idp`; 4xx/5xx outcomes are security events.
+A `2xx` JSON object is expected, for example:
 
-## Redis Namespaces
+```json
+{
+  "active": true,
+  "provider": "google",
+  "audience": "api.auth",
+  "purpose": "login",
+  "project_hash": "REPLACE_ME_SERVER_SIDE_PROJECT_HASH",
+  "user_group_hash": "REPLACE_ME_SERVER_SIDE_GROUP_HASH",
+  "return_origin": "http://localhost:3000",
+  "expires_in": 540
+}
+```
 
-- `google_oauth_state:*`
-- `google_oauth_state_consumed:*`
-- `google_oauth_link:*`
-- `google_oauth_reauth:*`
-- `google_oauth_jwks:*`
-- `google_oauth_rate:*` and bucket-specific rate prefixes
-- `provider_init_redeem:*`
+| Field | Rule |
+| --- | --- |
+| `active` | Must not be `false`. `signature_valid: false` or `signature_mismatch` also rejects. |
+| `provider` | Must be `google`. |
+| `audience` | When present, must be `api.auth`. |
+| `purpose` | One of `login`, `link`, `reauth`, `auto_create`. The alias start always runs a login. |
+| `project_hash` | Required. Under the database source it must equal the binding's project. |
+| `user_group_hash` | Optional. Under the environment source it is the auto-create group; under the database source, when present, it must equal the binding's default group. |
+| `return_origin` | Required; must be in `PROVIDER_INIT_RETURN_ORIGINS` (database source: the binding's return origins) and equal the origin of the start request. |
+| `expires_in`, `expires_at` | At least one; the remaining lifetime must be above `0` and at most `600` seconds. |
 
-Raw state is not embedded in keys; HMAC/fingerprint material is used.
+Any failure answers `401` `EXT_8012` and records `google_oauth_provider_init_rejected`
+with one of these `reason` values: `provider_init_not_configured`,
+`provider_init_redeem_url_unsafe`, `provider_init_timeout_or_unavailable`,
+`provider_init_http_rejected`, `provider_init_malformed_response`,
+`provider_init_signature_mismatch`, `provider_init_inactive`,
+`provider_init_provider_mismatch`, `provider_init_audience_mismatch`,
+`provider_init_purpose_invalid`, `provider_init_binding_missing_project`,
+`provider_init_return_origin_denied`, `provider_init_return_origin_mismatch`,
+`provider_init_expired_or_ttl_invalid`, `provider_init_project_not_bound`,
+`provider_init_group_not_bound`, `provider_init_redeem_failed`.
+
+## Activity catalog `act-cat-064..074`
+
+Recorded by the `/auth/google/*` routes only; `/auth/oauth/*` records `act-cat-107..127`
+for the same events. A reauth and a cancellation on an alias record the generic
+`oauth_reauth_succeeded` (`act-cat-117`) and `oauth_user_cancelled` (`act-cat-118`).
+
+| ID | Activity type | Recorded when |
+| --- | --- | --- |
+| `act-cat-064` | `google_oauth_started` | A Google round trip starts (login, link or reauth). |
+| `act-cat-065` | `google_oauth_provider_init_rejected` | The start body or the provider-init redemption is rejected, or the authorization start fails. |
+| `act-cat-066` | `google_oauth_callback_received` | A callback arrives. |
+| `act-cat-067` | `google_oauth_state_rejected` | State unknown, expired, reused, cookie-mismatched, or its connection became unavailable. |
+| `act-cat-068` | `google_oauth_nonce_rejected` | ID-token nonce mismatch. |
+| `act-cat-069` | `google_oauth_token_exchange_failed` | Google returned an error other than a cancellation, or the code exchange failed. |
+| `act-cat-070` | `google_oauth_id_token_rejected` | Signature, `kid`, issuer, audience, `hd`, time or cross-check failure, or the identity key could not be derived. |
+| `act-cat-071` | `google_oauth_login_succeeded` | A local session was issued. |
+| `act-cat-072` | `google_oauth_login_denied` | Login refused; `sub_reason` names the cause. |
+| `act-cat-073` | `google_oauth_external_account_linked` | Google identity linked. |
+| `act-cat-074` | `google_oauth_external_account_unlinked` | Google identity soft-unlinked. |
+
+Details carry fingerprints, reason codes and masked values only. The audit log tags alias
+requests `authentication`, `oauth`, `google_oauth` and `external_idp` with
+`auth_method='oauth'`; the redacted field list is in the
+[OAuth reference](../oauth/reference.md#activity-codes).
+
+## Redis keys
+
+The aliases use the shared keys listed in the
+[OAuth reference](../oauth/reference.md#redis-keys). Of the historical Google prefixes,
+`google_oauth_rate:` is still written (by every provider), and `google_oauth_state:`,
+`google_oauth_state_consumed:` and `google_oauth_reauth:` are only read, so round trips
+started before the rename complete. `google_oauth_link:`, `google_oauth_jwks:` and
+`provider_init_redeem:` are no longer used: link tokens are gone and JWKS documents are
+cached in process memory.

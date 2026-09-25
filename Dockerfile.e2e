@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 
-COPY requirements.txt requirements-test.txt /tmp/api-auth-deps/
+COPY requirements.txt requirements-assistant.txt requirements-test.txt /tmp/api-auth-deps/
 RUN python -m pip install --upgrade \
         pip==26.1.2 \
         setuptools==83.0.0 \

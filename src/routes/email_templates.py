@@ -88,11 +88,11 @@ class TemplateDraft(BaseModel):
     )
     html_template: str = Field(
         description=(
-            "HTML body (max 100,000 chars). Only an email-safe tag allowlist is accepted: no scripts, "
+            "HTML body (max 65,535 bytes as UTF-8). Only an email-safe tag allowlist is accepted: no scripts, "
             "forms, embeds, `on*` handlers, or URL schemes other than http, https and mailto."
         ),
     )
-    text_template: str = Field(description="Plain-text body (max 40,000 chars).")
+    text_template: str = Field(description="Plain-text body (max 40,000 chars and 65,535 bytes as UTF-8).")
 
 
 class TemplateCreateRequest(TemplateDraft):

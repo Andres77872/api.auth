@@ -1316,14 +1316,20 @@ class PatreonSyncWorker:
             await self._complete_job(job_id=job_id, status=patreon_sync.SYNC_JOB_STATUS_RETRY, retry_after_seconds=60, last_error="token_refresh_unavailable")
             return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_RETRY, job_id=job_id, job_type=patreon_sync.JOB_TYPE_TOKEN_REFRESH, retry_after_seconds=60, reason="token_refresh_unavailable")
         try:
-            await _maybe_await(refresher(db_module=self.db))
-            await self._record_provider_health(status="healthy", reason="creator_token_refreshed")
-            await self._complete_job(job_id=job_id, status=patreon_sync.SYNC_JOB_STATUS_COMPLETED)
-            return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_COMPLETED, job_id=job_id, job_type=patreon_sync.JOB_TYPE_TOKEN_REFRESH)
+            refresh_result = await _maybe_await(refresher(db_module=self.db))
         except TypeError:
-            await _maybe_await(refresher())
-            await self._complete_job(job_id=job_id, status=patreon_sync.SYNC_JOB_STATUS_COMPLETED)
-            return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_COMPLETED, job_id=job_id, job_type=patreon_sync.JOB_TYPE_TOKEN_REFRESH)
+            refresh_result = await _maybe_await(refresher())
+        if str(getattr(refresh_result, "status", "refreshed")) == "refreshed":
+            await self._record_activity(
+                event="patreon_token_refreshed",
+                outcome=patreon_sync.SYNC_JOB_STATUS_COMPLETED,
+                details={
+                    "reason": "creator_token_refreshed",
+                    "token_state_status": getattr(refresh_result, "token_state_status", None),
+                },
+            )
+        await self._complete_job(job_id=job_id, status=patreon_sync.SYNC_JOB_STATUS_COMPLETED)
+        return PatreonWorkerItemResult(status=patreon_sync.SYNC_JOB_STATUS_COMPLETED, job_id=job_id, job_type=patreon_sync.JOB_TYPE_TOKEN_REFRESH)
 
     async def _handle_provider_failure(
         self,
@@ -1341,17 +1347,23 @@ class PatreonSyncWorker:
             config=self.config,
         )
         degraded_reason = decision.reason or patreon_sync.provider_failure_reason(error)
-        await self._record_provider_health(status="degraded", reason=degraded_reason)
+        # Existing entitlements are left untouched: readers label them `stale` once
+        # `stale_after` passes, and the retry lives in the job ledger and the
+        # `patreon_sync_failed` activity below.
         token_invalid = _is_token_invalid_error(error)
+        token_refresh_failed = False
         if token_invalid:
             await self._record_creator_token_degraded(error=error)
+            await self._record_activity(
+                event="patreon_token_revoked",
+                outcome="degraded",
+                details={"reason": degraded_reason, "auto_refresh_enabled": self.token_refresh_enabled},
+            )
             if self.token_refresh_enabled:
                 try:
                     await self._run_token_refresh_job(job_id=None)
                 except Exception:
-                    await self._record_provider_health(status="degraded", reason="creator_token_refresh_failed")
-        if decision.stale_existing_snapshot:
-            await self._record_retry_or_stale(decision=decision)
+                    token_refresh_failed = True
         await self._complete_job(
             job_id=job_id,
             status=decision.status,
@@ -1366,6 +1378,7 @@ class PatreonSyncWorker:
                 "retry_after_seconds": decision.retry_after_seconds,
                 "preserve_last_known_snapshot": True,
                 "fail_closed_new_paid_grants": True,
+                "creator_token_refresh_failed": token_refresh_failed,
             },
         )
         return PatreonWorkerItemResult(
@@ -1418,33 +1431,6 @@ class PatreonSyncWorker:
             except Exception:
                 return
 
-    async def _record_retry_or_stale(self, *, decision: patreon_sync.PatreonSyncBackoffDecision) -> None:
-        payload = {
-            "reason": decision.reason,
-            "degraded_reason": decision.reason,
-            "retry_after_seconds": decision.retry_after_seconds,
-            "status": decision.status,
-            "degraded": True,
-            "preserve_last_known_snapshot": True,
-            "fail_closed_new_paid_grants": True,
-        }
-        for method_name in ("record_sync_retry", "mark_entitlement_stale"):
-            method = getattr(self.db, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                await _maybe_await(method(**payload))
-            except Exception:
-                pass
-
-    async def _record_provider_health(self, *, status: str, reason: str) -> None:
-        method = getattr(self.db, "record_provider_health", None)
-        if callable(method):
-            try:
-                await _maybe_await(method(provider=constants.PATREON_PROVIDER_NAME, status=status, reason=reason))
-            except Exception:
-                pass
-
     async def _record_creator_token_degraded(self, *, error: BaseException) -> None:
         method = getattr(self.db, "record_patreon_creator_token_degraded", None)
         if not callable(method):
@@ -1480,21 +1466,7 @@ class PatreonSyncWorker:
             "webhook_delivery_hashes_purged": sum(item.webhook_delivery_hashes_purged for item in results),
             "raw_payloads_purged": sum(item.raw_payloads_purged for item in results),
         }
-        payload = {
-            "worker_id": self.worker_id,
-            "mode": mode,
-            "recorded_at": _utc_now(now).isoformat(),
-            "counters": counters,
-        }
-        for method_name in ("record_patreon_worker_heartbeat", "record_worker_heartbeat"):
-            method = getattr(self.db, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                await _maybe_await(method(**payload))
-                break
-            except Exception:
-                break
+        # The Redis heartbeat is what `worker.status` in Patreon health reads.
         SystemMetrics.record_patreon_worker_heartbeat(
             self.worker_id,
             mode=mode,

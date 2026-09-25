@@ -147,7 +147,7 @@ async def test_admin_update_user_status_returns_200(client, fake_redis, patched_
          patch("src.routes.users.is_root_user", return_value=False), \
          patch("src.routes.users.get_user_type", return_value="admin"), \
          patch("src.routes.users.get_user_accessible_projects", return_value=[shared_project]), \
-         patch("src.routes.users.update_user", return_value={"success": True}), \
+         patch("src.routes.users.set_user_active_status", return_value=True), \
          patch("src.Util.db.invalidate_user_sessions", return_value=True), \
          patch("src.Util.cache_manager.cache_manager.invalidate_user_cache", return_value=True):
         response = await client.put(
@@ -185,7 +185,7 @@ async def test_admin_deactivate_user_revokes_refresh_families(client, fake_redis
          patch("src.routes.users.is_root_user", return_value=False), \
          patch("src.routes.users.get_user_type", return_value="admin"), \
          patch("src.routes.users.get_user_accessible_projects", return_value=[shared_project]), \
-         patch("src.routes.users.update_user", return_value={"success": True}), \
+         patch("src.routes.users.set_user_active_status", return_value=True), \
          patch("src.routes.users.revoke_user_auth_state", create=True) as revoke_auth_state:
         response = await client.put(
             "/users/usr-target-001/status",

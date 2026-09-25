@@ -45,6 +45,8 @@ BILLING_PROCEDURES = {
     "sp_billing_webhook_delivery_record",
     "sp_billing_subscription_observe",
     "sp_billing_purchase_event_record",
+    "sp_billing_resolve_event_scope",
+    "sp_billing_get_sync_context",
     "sp_billing_sync_job_enqueue",
     "sp_billing_sync_job_claim",
     "sp_billing_sync_job_complete",

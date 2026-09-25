@@ -162,11 +162,13 @@ def require_project_in_scope(scope: AdminScope, project: Any) -> None:
         )
 
 
-def user_in_scope(scope: AdminScope, target_user_id: Any) -> bool:
+def user_in_scope(scope: AdminScope, target_user_id: Any, target_user_type: Optional[str] = None) -> bool:
     """Whether the caller may administer a user.
 
-    Root may administer anyone. Admins may administer themselves and users who reach
-    at least one of the admin's assigned projects through their user groups.
+    Root may administer anyone. Admins may administer themselves and non-root users who
+    reach at least one of the admin's assigned projects through their user groups. Root
+    users reach every project, so they are excluded explicitly. ``target_user_type`` is
+    looked up when not given.
     """
 
     if scope.is_root:
@@ -177,12 +179,17 @@ def user_in_scope(scope: AdminScope, target_user_id: Any) -> bool:
         return True
     from src.Util import db
 
+    if target_user_type is None:
+        target_user_type = db.get_user_type(str(target_user_id))
+    if target_user_type == ROOT_USER_TYPE:
+        return False
+
     target_projects = db.get_user_accessible_projects(str(target_user_id)) or []
     return any(str(_field(project, "id")) in scope.project_ids for project in target_projects)
 
 
 def require_user_in_scope(scope: AdminScope, target_user: Any) -> None:
-    if not user_in_scope(scope, _field(target_user, "id")):
+    if not user_in_scope(scope, _field(target_user, "id"), _field(target_user, "user_type")):
         raise AuthorizationError(
             message="Access denied: user not in your administrative scope",
             error_code=ErrorCode.ACCESS_DENIED,

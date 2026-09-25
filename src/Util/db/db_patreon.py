@@ -5,7 +5,8 @@ Trace: `.dev/sdd/changes/patreon-account-link/tasks.md` tasks `4.3`,
 
 Security posture:
 - This module only calls procedures that exist in
-  `schemas/stored_procedures/16_patreon_entitlements.sql`.
+  `schemas/stored_procedures/16_patreon_entitlements.sql`, except
+  `record_patreon_activity`, which writes through the shared activity logger.
 - Wrapper argument order mirrors each stored procedure exactly. Do not reorder
   parameters for convenience; callers should use keywords.
 - Raw Patreon IDs, emails, payloads, signatures, token material, fingerprints,
@@ -1144,6 +1145,31 @@ def run_patreon_retention_purge(
     )
 
 
+def record_patreon_activity(
+    *,
+    event: str,
+    outcome: str,
+    details: Mapping[str, Any] | None = None,
+    user_id: str | None = None,
+) -> bool:
+    """Persist one sync-worker Patreon activity row (`act-cat-075`..`090`).
+
+    ``event`` is the Patreon activity type (for example ``patreon_sync_completed``).
+    The row is written through the shared activity logger (`sp_log_activity`),
+    which rejects non-Patreon types and applies the Patreon detail redaction.
+    """
+
+    from src.Util import activity_logger
+
+    payload = {key: value for key, value in dict(details or {}).items() if key != "action"}
+    payload["outcome"] = outcome
+    return activity_logger.log_patreon_activity(
+        event,
+        activity_logger.build_patreon_activity_details(event, **payload),
+        user_id=user_id,
+    )
+
+
 __all__ = [
     "check_patreon_link_conflict",
     "claim_patreon_sync_jobs",
@@ -1176,6 +1202,7 @@ __all__ = [
     "observe_patreon_membership",
     "record_patreon_webhook_delivery",
     "record_webhook_delivery",
+    "record_patreon_activity",
     "record_patreon_creator_token_degraded",
     "relink_patreon_account",
     "resolve_patreon_link_by_provider_hash",

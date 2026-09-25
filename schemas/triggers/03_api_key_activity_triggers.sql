@@ -42,7 +42,7 @@ BEGIN
     );
 END//
 
--- AFTER UPDATE: Log api_key_revoked, api_key_reactivated, api_key_updated events
+-- AFTER UPDATE: Log api_key_revoked, api_key_reactivated, api_key_expired, api_key_updated events
 DROP TRIGGER IF EXISTS trg_after_api_key_update//
 CREATE TRIGGER trg_after_api_key_update AFTER UPDATE ON user_project_api_keys FOR EACH ROW
 BEGIN
@@ -93,6 +93,30 @@ BEGIN
                 'new_expires_at', NEW.expires_at
             ),
             'warning',
+            NOW()
+        );
+    END IF;
+
+    -- Key expired: sp_cleanup_expired_api_keys deactivated it (no revocation)
+    IF NEW.is_active = FALSE AND OLD.is_active = TRUE AND NEW.revoked_at IS NULL
+       AND NEW.expires_at IS NOT NULL AND NEW.expires_at <= NOW() THEN
+        INSERT INTO activity_logs (
+            id, user_id, activity_type, details, project_id, target_user_id,
+            metadata, severity_level, created_at
+        ) VALUES (
+            CONCAT('act-log-', UUID()),
+            NULL,
+            'api_key_expired',
+            CONCAT('API key expired: ', NEW.name, ' (', NEW.public_id, ')'),
+            NEW.project_id,
+            NEW.owner_user_id,
+            JSON_OBJECT(
+                'key_id', NEW.id,
+                'public_id', NEW.public_id,
+                'name', NEW.name,
+                'expires_at', NEW.expires_at
+            ),
+            'info',
             NOW()
         );
     END IF;

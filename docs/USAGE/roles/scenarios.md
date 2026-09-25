@@ -1,229 +1,150 @@
-# Roles Scenarios
+# Roles scenarios
 
-Concrete admin and user workflows for the global roles system in `api.auth`.
+End-to-end workflows that chain several `/roles` calls. Field rules are in
+[Roles reference](reference.md); why each result looks the way it does is in
+[Permission resolution](../permissions/resolution.md). Examples use `http://localhost:8000`,
+`$ROOT_TOKEN` for a root session, `$TOKEN` for an admin session, and `$USER_TOKEN` for the affected
+user.
 
----
+## Build a role and give it to a user
 
-## Admin Scenarios
-
-### Scenario 1: Create a New Role from Scratch
-
-You need a new "Content Editor" role with read and write data permissions.
-
-```bash
-# Step 1: Create the permissions
-curl -X POST "http://localhost:8000/roles/permissions" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=read_data&permission_display_name=Read Data&permission_description=Read project data&permission_category=data"
-
-curl -X POST "http://localhost:8000/roles/permissions" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=write_data&permission_display_name=Write Data&permission_description=Write project data&permission_category=data"
-
-# Step 2: Create a permission group
-curl -X POST "http://localhost:8000/roles/permission-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=content_editors&group_display_name=Content Editors&group_category=general"
-
-# Step 3: Add permissions to the group (use the hashes from steps 1 and 2)
-curl -X POST "http://localhost:8000/roles/permission-groups/PG_CONTENT_EDITORS/permissions/PERM_READ_DATA" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-curl -X POST "http://localhost:8000/roles/permission-groups/PG_CONTENT_EDITORS/permissions/PERM_WRITE_DATA" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Step 4: Create the role
-curl -X POST "http://localhost:8000/roles/roles" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_name=content_editor&role_display_name=Content Editor&role_priority=60"
-
-# Step 5: Attach the permission group to the role
-curl -X POST "http://localhost:8000/roles/roles/ROLE_CONTENT_EDITOR/permission-groups/PG_CONTENT_EDITORS" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-This is the standard 4-step build process: **permission → group → add to group → attach group to role**.
-
----
-
-### Scenario 2: Assign a Role to a User
+**Goal:** a `content_editor` role that grants `read_data` and `write_data`, assigned to one consumer.
 
 ```bash
-# Check the user's current role (may be null)
-curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+# 1. Permissions (keep each permission_hash)
+curl -X POST "http://localhost:8000/roles/permissions" -H "Authorization: Bearer $TOKEN" \
+  -d "permission_name=read_data" -d "permission_display_name=Read data" -d "permission_category=data"
+curl -X POST "http://localhost:8000/roles/permissions" -H "Authorization: Bearer $TOKEN" \
+  -d "permission_name=write_data" -d "permission_display_name=Write data" -d "permission_category=data"
 
-# Assign the new role
-curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_hash=ROLE_CONTENT_EDITOR"
+# 2. A group holding both (keep group_hash)
+curl -X POST "http://localhost:8000/roles/permission-groups" -H "Authorization: Bearer $TOKEN" \
+  -d "group_name=content_editing" -d "group_display_name=Content editing"
+curl -X POST "http://localhost:8000/roles/permission-groups/$GROUP_HASH/permissions/$READ_HASH" -H "Authorization: Bearer $TOKEN"
+curl -X POST "http://localhost:8000/roles/permission-groups/$GROUP_HASH/permissions/$WRITE_HASH" -H "Authorization: Bearer $TOKEN"
 
-# Verify the assignment
-curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+# 3. The role, linked to the group (keep role_hash)
+curl -X POST "http://localhost:8000/roles/roles" -H "Authorization: Bearer $TOKEN" \
+  -d "role_name=content_editor" -d "role_display_name=Content editor" -d "role_priority=60"
+curl -X POST "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$GROUP_HASH" -H "Authorization: Bearer $TOKEN"
+
+# 4. Assign it
+curl -X PUT "http://localhost:8000/roles/users/$USER_HASH/role" -H "Authorization: Bearer $TOKEN" \
+  -d "role_hash=$ROLE_HASH"
+
+# 5. The user confirms: content_editing is listed under sources.from_role
+curl "http://localhost:8000/permissions/users/me/permission-sources" -H "Authorization: Bearer $USER_TOKEN"
 ```
 
-**Note:** the user must be active. If they are inactive, you get 403 `ACCOUNT_INACTIVE`.
+The user's session permissions include `read_data` and `write_data` within about 30 seconds, without
+a new login. If the user is `root` or `admin`, the role has no effect on their session.
 
----
+## Delegate role management to a consumer
 
-### Scenario 3: Change a User's Role
+**Goal:** a consumer can maintain ordinary roles and assignments without being an `admin` user.
+
+The `/roles` guard accepts `manage_roles` only from the caller's role, and `manage_roles` is a
+reserved name, so root sets this up.
 
 ```bash
-# Assign a different role (replaces the existing one)
-curl -X PUT "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_hash=ROLE_VIEWER"
+# 1. Root puts manage_roles into a group and the group into a role
+curl -X POST "http://localhost:8000/roles/permission-groups" -H "Authorization: Bearer $ROOT_TOKEN" \
+  -d "group_name=role_admin" -d "group_display_name=Role administration"
+curl -X POST "http://localhost:8000/roles/permission-groups/$PG_ROLE_ADMIN/permissions/$MANAGE_ROLES_HASH" \
+  -H "Authorization: Bearer $ROOT_TOKEN"
+curl -X POST "http://localhost:8000/roles/roles" -H "Authorization: Bearer $ROOT_TOKEN" \
+  -d "role_name=role_manager" -d "role_display_name=Role manager"
+curl -X POST "http://localhost:8000/roles/roles/$ROLE_MANAGER_HASH/permission-groups/$PG_ROLE_ADMIN" \
+  -H "Authorization: Bearer $ROOT_TOKEN"
+
+# 2. Root assigns the role (it grants a reserved name)
+curl -X PUT "http://localhost:8000/roles/users/$DELEGATE_HASH/role" -H "Authorization: Bearer $ROOT_TOKEN" \
+  -d "role_hash=$ROLE_MANAGER_HASH"
 ```
 
-The user's session still contains permissions from their previous role until they re-login or refresh.
+The delegate can now create and edit roles, groups, and permissions, link them, and assign roles to
+other users. It still gets `403` for anything involving a reserved name and for its own role.
+Role-derived `manage_roles` also opens the `/permissions` admin routes and the first check of
+`/admin/project-groups`, so plan the delegation with the full
+[guard list](../permissions/resolution.md#guards-on-the-role-and-permission-apis) in mind.
 
-The API takes the public `role_hash` form value, resolves it to the internal numeric role id, and stores that id in `users.role_id`.
+## Change a user's role
 
----
-
-### Scenario 4: Remove a User's Role
+**Goal:** move a user from `content_editor` to `viewer`.
 
 ```bash
-# Remove the role entirely
-curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Verify — should return null role
-curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+curl "http://localhost:8000/roles/users/$USER_HASH/role" -H "Authorization: Bearer $TOKEN"
+curl -X PUT "http://localhost:8000/roles/users/$USER_HASH/role" -H "Authorization: Bearer $TOKEN" \
+  -d "role_hash=$VIEWER_HASH"
 ```
 
----
+The `PUT` replaces the old role in one step; there is nothing to remove first. If either role grants
+a reserved name, only root can make the change. The user's existing tokens switch to the new
+permissions within about 30 seconds; `POST /auth/refresh` applies it at once.
 
-### Scenario 5: Audit What Permissions a Role Grants
+## Rename a role
+
+**Goal:** `role_name` is immutable, so replace `editor` with `content_editor`.
+
+1. Create `content_editor` and read the old role's groups:
+
+   ```bash
+   curl "http://localhost:8000/roles/roles/$OLD_ROLE_HASH/permission-groups" -H "Authorization: Bearer $TOKEN"
+   ```
+
+2. Link each of those groups to the new role
+   (`POST /roles/roles/{role_hash}/permission-groups/{group_hash}`).
+3. Reassign every holder with `PUT /roles/users/{user_hash}/role`. No endpoint lists a role's
+   holders, so work from your own user list; bulk assignment takes the role **name**:
+
+   ```bash
+   curl -X POST "http://localhost:8000/admin/projects/$PROJECT_HASH/bulk-assign-roles" \
+     -H "Authorization: Bearer $TOKEN" \
+     -d "user_hashes=$USER_A" -d "user_hashes=$USER_B" -d "role_names=content_editor"
+   ```
+
+4. Delete the old role. Its name stays taken.
+
+A display-name change alone does not need any of this: `PUT /roles/roles/{role_hash}` with
+`role_display_name`.
+
+## Retire a role
+
+**Goal:** stop using a role without leaving users on a dead reference.
+
+1. Reassign or clear every holder (`PUT` or `DELETE /roles/users/{user_hash}/role`). After the role is
+   deleted, holders keep it in `users.role_id`: it grants nothing at auth time, but the inspection
+   endpoints still count its permissions.
+2. Optionally remove it from project catalogs
+   (`DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}`). Catalog listings hide deleted
+   roles anyway, but the catalog rows stay active and cannot be removed once the role is deleted.
+3. Delete it:
+
+   ```bash
+   curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH" -H "Authorization: Bearer $TOKEN"
+   ```
+
+System roles (`is_system_role = 1`) cannot be deleted (`403` `AUTHZ_2009`).
+
+## Audit what a role grants
 
 ```bash
-# Get the role with its permission groups
-curl -X GET "http://localhost:8000/roles/roles/ROLE_CONTENT_EDITOR" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# For each permission group in the response, get its permissions
-curl -X GET "http://localhost:8000/roles/permission-groups/PG_CONTENT_EDITORS" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+curl "http://localhost:8000/roles/roles/$ROLE_HASH" -H "Authorization: Bearer $TOKEN"
+# for each group in permission_groups:
+curl "http://localhost:8000/roles/permission-groups/$GROUP_HASH/permissions" -H "Authorization: Bearer $TOKEN"
 ```
 
-This is a two-step lookup: role → permission groups → permissions.
+Both reads show only active groups and permissions, which is exactly what the role grants: a
+soft-deleted group that is still linked grants nothing and does not appear here either. See
+[Soft-delete effects](../permissions/resolution.md#soft-delete-effects).
 
----
-
-### Scenario 6: Soft-Delete a Role
+## Suggest roles for a project
 
 ```bash
-# Attempt to delete a system role (will fail)
-curl -X DELETE "http://localhost:8000/roles/roles/ROLE_ADMIN" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-# 403 OPERATION_NOT_ALLOWED (AUTHZ_2009): system roles cannot be deleted
-
-# Delete a user-created role (succeeds)
-curl -X DELETE "http://localhost:8000/roles/roles/ROLE_CONTENT_EDITOR" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# The role disappears from list queries
-curl -X GET "http://localhost:8000/roles/roles" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# But users who had this role still reference it (orphaned FK)
-# Their role query returns null because the SP checks is_active
-curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-# role: null
+curl -X POST "http://localhost:8000/roles/projects/$PROJECT_HASH/catalog/roles/$ROLE_HASH" \
+  -H "Authorization: Bearer $TOKEN" --data-urlencode "catalog_purpose=Default for editors"
+curl "http://localhost:8000/roles/projects/$PROJECT_HASH/catalog/roles" -H "Authorization: Bearer $USER_TOKEN"
 ```
 
----
-
-### Scenario 7: Catalog Roles for a Project
-
-```bash
-# Add a role to the project's catalog (metadata only)
-curl -X POST "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "catalog_purpose=Recommended editor role&notes=Metadata only"
-
-# List all cataloged roles for the project
-curl -X GET "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Remove from catalog
-curl -X DELETE "http://localhost:8000/roles/projects/proj-api-v2/catalog/roles/ROLE_CONTENT_EDITOR" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-# if the role was never cataloged (or already removed), this returns
-#   404 RESOURCE_NOT_FOUND (NF_4004); nothing is left to undo.
-```
-
-**Reminder:** this is metadata only. It does not restrict which roles can be assigned to users of this project. Re-adding a role that is already cataloged returns 200 and re-activates the entry; omitted `catalog_purpose`/`notes` keep their previous values — see [troubleshooting.md](troubleshooting.md#removing-an-already-removed-linkcatalog-entry-returns-404).
-
----
-
-## User Scenarios
-
-### Scenario 8: Check My Role
-
-```bash
-curl -X GET "http://localhost:8000/roles/users/me/role" \
-  -H "Authorization: Bearer $USER_TOKEN"
-```
-
-Returns `null` if no role is assigned or if the assigned role is soft-deleted.
-
----
-
-### Scenario 9: Check My Effective Permissions
-
-```bash
-# Get all permissions from all three sources
-curl -X GET "http://localhost:8000/permissions/users/me/permissions" \
-  -H "Authorization: Bearer $USER_TOKEN"
-
-# Check a specific permission
-curl -X GET "http://localhost:8000/permissions/users/me/permissions/check/read_data" \
-  -H "Authorization: Bearer $USER_TOKEN"
-
-# See where my permissions come from
-curl -X GET "http://localhost:8000/permissions/users/me/permission-sources" \
-  -H "Authorization: Bearer $USER_TOKEN"
-```
-
-**Important:** these endpoints use the **comprehensive** resolution (role + user-group + direct). The auth/session flow only uses the role path. See [../permissions/resolution.md](../permissions/resolution.md).
-
----
-
-### Scenario 10: Role Changed but Permissions Don't Seem Updated
-
-```bash
-# The access context may still have old permissions. Refresh with the refresh token:
-curl -X POST "http://localhost:8000/auth/refresh" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "refresh_token=$REFRESH_TOKEN"
-
-# Or re-login entirely:
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=myuser&password=mypass&project_hash=$PROJECT_HASH"
-```
-
----
-
-## Related Documentation
-
-- **[Roles Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
-- **[Permission Resolution](../permissions/resolution.md)** — Auth vs inspection gap
+The catalog is for UIs. It does not limit which roles can be assigned to the project's users, and
+removing an entry changes no assignment.

@@ -1,10 +1,13 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from starlette.responses import RedirectResponse
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Optional
 from enum import Enum
+import asyncio
+import gzip
 import os
 
 from src.middleware.error_handler import register_exception_handlers
@@ -15,10 +18,12 @@ from src.routes import (
     auth, auth_google, auth_oauth, auth_patreon, email_webhooks, patreon_webhooks,
     stripe_webhooks, internal_patreon, internal_billing, internal_email, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, admin_patreon, system, bulk_operations, global_roles, permission_assignments,
-    audit_logs, api_keys, user_api_keys, email_templates, admin_billing, admin_oauth,
+    audit_logs, api_keys, user_api_keys, email_templates, admin_billing, admin_oauth, assistant,
 )
+from src.Util.api_key_expiry import run_api_key_expiry_sweeper
+from src.assistant.readiness import warn_if_websocket_transport_missing
 from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
-from src.Util.documentation_renderer import DocumentationRenderer, get_documentation_files, get_documentation_categories
+from src.Util import docs_site
 from src.Util.oauth.registry import register_default_adapters
 from src.Util.openapi_metadata import OPENAPI_TAGS, SWAGGER_UI_PARAMETERS, install_openapi_metadata
 
@@ -26,7 +31,20 @@ from src.Util.openapi_metadata import OPENAPI_TAGS, SWAGGER_UI_PARAMETERS, insta
 # the app does not depend on the working directory it is started from.
 description = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    application.state.assistant_websocket_ready = warn_if_websocket_transport_missing()
+    # Keeps `is_active` of expired API keys in step with `expires_at` (see api_key_expiry).
+    api_key_expiry_sweeper = asyncio.create_task(run_api_key_expiry_sweeper())
+    yield
+    api_key_expiry_sweeper.cancel()
+    with suppress(asyncio.CancelledError):
+        await api_key_expiry_sweeper
+    await assistant.shutdown_assistant(application)
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title='Group-Based Multi-Project Authentication API',
     summary='Authentication, authorization, OAuth sign-in, API keys, transactional email, '
             'and billing/entitlement facts for multi-project products.',
@@ -80,6 +98,8 @@ app.include_router(global_roles.router)
 app.include_router(permission_assignments.router)
 app.include_router(audit_logs.router)
 app.include_router(api_keys.router)
+app.include_router(assistant.router)
+
 
 # CORS configuration — explicit browser clients only.
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
@@ -107,7 +127,7 @@ app.add_middleware(APIAuditMiddleware)
 app.add_middleware(AuthContextMiddleware)
 
 
-# Documentation base path
+# Documentation wiki (docs/ rendered at /documentation; see src/Util/docs_site)
 DOCS_BASE_PATH = Path(__file__).parent.parent / "docs"
 DOCS_BASE_URL = "/documentation"
 
@@ -120,102 +140,91 @@ class DocFormat(str, Enum):
     markdown = "markdown"
 
 
+RAW_DOC_FORMATS = (DocFormat.raw, DocFormat.md, DocFormat.markdown)
+
+
+def _docs_body(request: Request, body: str | bytes, media_type: str, status_code: int = 200,
+               headers: Optional[dict] = None) -> Response:
+    """Documentation payloads are large text; gzip them when the client accepts it."""
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    headers = {**(headers or {}), "Vary": "Accept-Encoding"}
+    if len(data) > 1024 and "gzip" in request.headers.get("accept-encoding", "").lower():
+        data = gzip.compress(data, compresslevel=6)
+        headers["Content-Encoding"] = "gzip"
+    return Response(data, status_code=status_code, media_type=media_type, headers=headers)
+
+
+def _docs_response(request: Request, result: docs_site.DocsResponse) -> Response:
+    if result.kind == "redirect":
+        return RedirectResponse(url=result.body, status_code=result.status)
+    media_type = {
+        "markdown": "text/markdown; charset=utf-8",
+        "text": "text/plain; charset=utf-8",
+    }.get(result.kind, "text/html; charset=utf-8")
+    return _docs_body(request, result.body, media_type, result.status)
+
+
 @app.get("/documentation", response_class=HTMLResponse, tags=["Documentation"])
 async def documentation_index(
-    format: Optional[DocFormat] = Query(None, description="Output format: html (default), raw/md/markdown for raw markdown")
+    request: Request,
+    format: Optional[DocFormat] = Query(None, description="Output format: html (default), raw/md/markdown for a Markdown index")
 ):
     """
     Documentation home page.
-    
+
     - **format**: Output format
-        - `html` (default): Rendered HTML with styling
-        - `raw`, `md`, `markdown`: Raw markdown content (for LLM/API consumption)
+        - `html` (default): the rendered documentation wiki
+        - `raw`, `md`, `markdown`: a Markdown index of every page (for LLM/API consumption)
     """
-    categories = get_documentation_categories(DOCS_BASE_PATH)
-    
-    # Return raw list for LLM consumption
-    if format in [DocFormat.raw, DocFormat.md, DocFormat.markdown]:
-        file_list = "# API Documentation\n\n## Available Categories\n\n"
-        for cat in categories:
-            file_list += f"\n### {cat.title}\n\n"
-            for f in cat.files:
-                file_list += f"- [{f.title}]({DOCS_BASE_URL}/{f.path})\n"
-        file_list += "\n## API Documentation\n\n"
-        file_list += "- [OpenAPI/Swagger](/docs)\n"
-        file_list += "- [ReDoc](/redoc)\n"
-        return PlainTextResponse(file_list, media_type="text/markdown; charset=utf-8")
-    
-    return HTMLResponse(DocumentationRenderer.render_home(categories, DOCS_BASE_URL))
+    if format in RAW_DOC_FORMATS:
+        index = docs_site.markdown_index(DOCS_BASE_PATH, base_url=DOCS_BASE_URL)
+        return _docs_body(request, index, "text/markdown; charset=utf-8")
+    home = docs_site.render_home_page(DOCS_BASE_PATH, base_url=DOCS_BASE_URL, version=app.version)
+    return _docs_body(request, home, "text/html; charset=utf-8")
+
+
+@app.get("/documentation/_search.json", include_in_schema=False)
+async def documentation_search_index(request: Request):
+    """Page and section index behind the documentation search palette."""
+    return _docs_body(
+        request,
+        docs_site.search_index(DOCS_BASE_PATH, base_url=DOCS_BASE_URL),
+        "application/json",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 @app.get("/documentation/{path:path}", tags=["Documentation"])
 async def serve_documentation(
+    request: Request,
     path: str,
     format: Optional[DocFormat] = Query(None, description="Output format: html (default), raw/md/markdown for raw markdown"),
     raw: bool = Query(False, description="Deprecated: Use format=raw instead")
 ):
     """
     Serve documentation markdown files.
-    
-    - **path**: Path to the markdown file (e.g., USAGE/authentication-usage-cases.md)
+
+    - **path**: Path to the markdown file (e.g., USAGE/authentication-usage-cases.md).
+      A directory redirects to its `README.md`.
     - **format**: Output format
-        - `html` (default): Rendered HTML with modern docs UI
+        - `html` (default): Rendered page with navigation, search and outline
         - `raw`, `md`, `markdown`: Raw markdown content (for LLM/API consumption)
     - **raw**: Deprecated - use `format=raw` instead
-    
+
     **LLM Usage**: Add `?format=raw` to get plain markdown text suitable for AI/LLM processing.
-    
+
     **Examples**:
     - `/documentation/USAGE/authentication-usage-cases.md` - Rendered HTML
     - `/documentation/USAGE/authentication-usage-cases.md?format=raw` - Raw markdown for LLMs
     """
-    # Get categories for sidebar navigation
-    categories = get_documentation_categories(DOCS_BASE_PATH)
-    
-    # Normalize path
-    file_path = DOCS_BASE_PATH / path
-    
-    # Security check - ensure we're still within docs directory
-    try:
-        file_path = file_path.resolve()
-        if not str(file_path).startswith(str(DOCS_BASE_PATH.resolve())):
-            raise HTTPException(status_code=403, detail="Access denied")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    
-    # Check if file exists
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Documentation not found: {path}")
-    
-    # Determine if raw output is requested
-    is_raw = raw or format in [DocFormat.raw, DocFormat.md, DocFormat.markdown]
-    
-    # If it's a directory, list contents
-    if file_path.is_dir():
-        files = get_documentation_files(DOCS_BASE_PATH, path)
-        
-        if is_raw:
-            # Raw format for LLM consumption
-            content = f"# {path}\n\n## Files\n\n"
-            for f in files:
-                content += f"- [{f.title}]({DOCS_BASE_URL}/{f.path})\n"
-            return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
-        
-        return HTMLResponse(DocumentationRenderer.render_index(path, files, DOCS_BASE_URL, categories))
-    
-    # Read file content
-    try:
-        content = file_path.read_text(encoding='utf-8')
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
-    
-    # Return raw markdown for LLM consumption
-    if is_raw or not path.endswith('.md'):
-        return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
-    
-    # Render as HTML
-    title = path.replace(".md", "").replace("-", " ").replace("/", " - ").title()
-    return HTMLResponse(DocumentationRenderer.render_page(content, title, path, DOCS_BASE_URL, categories))
+    result = docs_site.serve(
+        DOCS_BASE_PATH,
+        path,
+        base_url=DOCS_BASE_URL,
+        version=app.version,
+        raw=raw or format in RAW_DOC_FORMATS,
+    )
+    return _docs_response(request, result)
 
 
 @app.get("/docs/USAGE/{filename:path}", include_in_schema=False)
@@ -225,9 +234,12 @@ async def serve_usage_docs_legacy(
     raw: bool = Query(False)
 ):
     """
-    Legacy route for /docs/USAGE/* - serves documentation from /documentation/USAGE/*
+    Legacy route for /docs/USAGE/* - redirects to /documentation/USAGE/*
     """
-    return await serve_documentation(f"USAGE/{filename}", format=format, raw=raw)
+    target = f"{DOCS_BASE_URL}/USAGE/{filename}"
+    if raw or format in RAW_DOC_FORMATS:
+        target += "?format=raw"
+    return RedirectResponse(url=target, status_code=308)
 
 
 @app.get(

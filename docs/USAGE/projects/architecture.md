@@ -1,197 +1,125 @@
-# Projects Architecture
-
-Technical architecture of the projects system as it actually exists in `api.auth`.
-
----
-
-## Core Access Model
-
-Projects are resolved through the active runtime chain:
-
-```
-USER → USER_GROUP → PROJECT_GROUP → PROJECT
-```
-
-That means:
-
-- projects are not directly assigned to users
-- user groups do not directly point to projects in the active model
-- project groups are the reusable access containers in the middle
-
----
-
-## Real Tables Behind the Model
-
-| Table | Purpose |
-|------|---------|
-| `projects` | Core project records, owner, archived state, soft-delete state |
-| `project_groups` | Reusable project containers |
-| `project_group_members` | Project-to-project-group membership |
-| `user_group_project_groups` | User-group-to-project-group access bridge |
-| `user_sessions` | Active session records tied to current project context |
-| `api_audit_log` | Project-visible operational activity source |
-
-Access resolution also depends on the view `v_user_project_access`.
-
----
-
-## Route and Layer Split
-
-### Project operations
-- Route file: `src/routes/projects.py`
-- DB layer: `src/Util/db/db_projects.py`
-- Stored procedures: `schemas/stored_procedures/03_projects.sql`
-
-### Project-group operations
-- Route file: `src/routes/admin_project_groups.py`
-- DB layer: `src/Util/db/db_project_groups.py`
-- Stored procedures: `schemas/stored_procedures/04_project_groups.sql`
-
-### Access resolution and session context
-- Route file: `src/routes/auth.py`
-- DB layer: `src/Util/db/db_user_groups.py`
-- View: `schemas/tables/06_create_views.sql`
-
----
-
-## Access Resolution Backbone
-
-Two repo artifacts matter most:
-
-### `sp_get_user_accessible_projects`
-
-- root users get all active projects through a special branch
-- non-root users are resolved through the join chain:
-
-```text
-user_group_members
-  → user_groups
-  → user_group_project_groups
-  → project_groups
-  → project_group_members
-  → projects
-```
-
-### `v_user_project_access`
-
-This view exposes the effective user-to-project access map and is used by member/statistical flows.
-
-It includes:
-
-- `group_access` rows for normal users
-- `root_access` rows for root users across active, non-archived projects
-
----
-
-## Project Creation Bootstrap
-
-`src/Util/db/db_projects.py:create_project()` inserts the project and immediately calls `create_default_groups(project_id)`.
-
-That bootstrap function:
-
-1. creates a default project group
-2. links the new project to that project group
-3. creates three default user groups: `admin_{project_id}`, `user_{project_id}`, `readonly_{project_id}`
-4. links all three user groups to the default project group
-
-Important detail: this logic is implemented with raw SQL inserts in Python, not through dedicated stored procedures.
-
----
-
-## Authorization Split
-
-The project surface is not guarded uniformly.
-
-| Area | Permission Gate |
-|------|-----------------|
-| `POST /projects`, `PUT /projects/{hash}`, `DELETE /projects/{hash}` | `admin` |
-| `GET /projects/{hash}/members` | `admin` or `manage_users` |
-| `/admin/project-groups/*` | `admin` or `manage_roles` |
-| `/admin/user-groups/{hash}/project-groups/*` | `admin` or `manage_users` |
-
-So project access administration is split across at least two admin capabilities.
-
----
-
-## Login and Session Architecture
-
-Project context is embedded during login and project switching.
-
-### Login
-
-`src/routes/auth.py:login()`:
-
-- resolves accessible projects
-- binds non-root users to a requested or default project
-- issues an access+refresh token pair containing project context
-- also exposes `accessible_projects` to the client
-
-### Switch project
-
-`src/routes/auth.py:switch_project()`:
-
-- validates the current access token
-- validates the current refresh token through the documented refresh transport
-- verifies the requested project is in `get_user_accessible_projects()`
-- rotates both access and refresh credentials into the new project context
-- deletes the old access session and old full-session cache
-
-So when access changes, refresh with the current refresh token, switch-project, or re-login may be required before the client sees the new reality.
-
----
-
-## Soft Deletes and Archive State
-
-Project deletion is implemented as soft delete:
-
-- `projects.is_active = 0`
-- linked `project_group_members` rows are deactivated
-- active `user_sessions` for that project are invalidated
-
-Archive is a separate concept in the schema (`archived`, `archived_at`, `archived_by`). The archive **enforcement** is live — archived projects are excluded from authorization workflows in the DB/auth layer (see the caveat below) — but the public `PATCH /projects/{hash}/archive` **toggle endpoint** is still a `501` stub.
-
----
-
-## Important Current Caveats
-
-### Two public project endpoints are stubs
-
-- `PATCH /projects/{hash}/owner` → 501 (validates session/`admin`/project/`new_owner_hash`, then raises `FeatureNotImplementedError`)
-- `PATCH /projects/{hash}/archive` → 501 (validates session/`admin`/project, then raises `FeatureNotImplementedError`)
-
-Important nuance for the archive stub: `sp_archive_project` and `sp_unarchive_project` exist in `schemas/stored_procedures/03_projects.sql`, and the auth/DB layer excludes archived projects from logins, API keys, project tokens, session validation, and `v_user_project_access`. However, the `PATCH /archive` handler in `src/routes/projects.py` does **not** call those procedures and remains a `501` stub. The database can archive projects and enforces archive state at auth time, but there is no live API route that flips the `archived` flag.
-
-### `access_level` uses honest path-based labels (fixed)
-
-Project routes no longer derive `access_level` from `get_user_project_permissions()` (which returns global permissions). Instead:
-
-- Admin users → `"admin_access"`
-- Non-admin users with group-based access → `"group_access"`
-- Member lists use user type → `"root_access"`, `"admin_access"`, or `"group_access"`
-
-The `get_user_project_permissions()` function still exists in the DB layer but is no longer called by project routes.
-
-### Access checks use the groups-of-groups chain (fixed)
-
-`GET /projects/{hash}`, `GET /projects/{hash}/activity`, and `GET /projects/{hash}/stats` now verify non-admin access by checking `get_user_accessible_projects()` instead of relying on global permissions. This means consumers with valid group-based access are no longer incorrectly denied.
-
-### Non-admin project listing still slices in Python
-
-`GET /projects` for non-admin users fetches all accessible projects first, then slices in Python.
-
-Pagination metadata (`total`, `has_more`) is now correct, but the fetch-all-then-slice pattern remains a memory concern at large scale.
-
-### The `Project` model lags the table shape
-
-The SQL layer returns fields like `owner_id` and `archived`, but the Python `Project` model used in several places does not expose all of them cleanly.
-
----
-
-## Related Documentation
-
-- **[Projects Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+# Projects architecture
+
+How projects are stored, bootstrapped, authorized and archived, and where the implementation
+currently falls short. The access chain that connects users to projects is described once, in
+[groups architecture](../groups/architecture.md#access-resolution).
+
+## Components
+
+| Layer | Location |
+| --- | --- |
+| Routes | `src/routes/projects.py` (prefix `/projects`, 11 operations) |
+| Admin scope | `src/Util/admin_scope.py` |
+| DB helpers | `src/Util/db/db_projects.py`; reach queries in `src/Util/db/db_user_groups.py` |
+| Stored procedures | `schemas/stored_procedures/03_projects.sql` |
+| Table | `projects` in `schemas/tables/02_create_tables.sql` |
+| View | `v_user_project_access` in `schemas/tables/06_create_views.sql` |
+| Activity feed | `src/Util/activity_logger.py` |
+
+## The projects table
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Internal ID, `proj-<uuid>`. Not returned by project routes |
+| `project_hash` | Public identifier, 64 upper-case hex characters, unique |
+| `project_name` | Up to 100 characters, not unique |
+| `project_description` | Free text |
+| `created_by`, `owner_id` | Both set to the creating root user. No route changes or returns them |
+| `is_active` | `0` after `DELETE /projects/{project_hash}` |
+| `archived`, `archived_at`, `archived_by` | Archive state. No route changes or returns it |
+| `project_created`, `updated_at` | Timestamps |
+
+## Stored procedures used by the routes
+
+| Procedure | Route |
+| --- | --- |
+| `sp_create_project` | `POST /projects` |
+| `sp_get_project_by_hash` | Every route with `{project_hash}`: active projects, archived included |
+| `sp_list_all_projects`, `sp_search_projects` | `GET /projects` for root |
+| `sp_get_admin_project_assignments_with_details` | `GET /projects` for admin users |
+| `sp_get_user_accessible_projects` | `GET /projects` for other callers; group-reach checks |
+| `sp_update_project` | `PUT /projects/{project_hash}` |
+| `sp_delete_project` | `DELETE /projects/{project_hash}` |
+| `sp_get_project_members_paginated` | `GET /projects/{project_hash}/members` |
+| `sp_get_user_groups_for_project` | `GET /projects/{project_hash}/groups` |
+| `sp_get_project_statistics` | `statistics` on details and `/stats`: project row, access counts, then per-group member counts |
+| `sp_get_project_groups_for_project` | `project_groups` on details |
+
+`sp_archive_project` and `sp_unarchive_project` exist but no code calls them. There is no
+ownership-transfer procedure.
+
+## Default group bootstrap
+
+`create_project()` commits the `projects` row, then calls `create_default_groups()`, which writes
+with raw SQL rather than stored procedures:
+
+| Row | Table | ID | Name / hash |
+| --- | --- | --- | --- |
+| Default project group | `project_groups` | `pg-default-<project_id>` | `default_<project_id>`, hash `PG-` + 32 hex |
+| Project in that group | `project_group_members` | `pgm-default-<project_id>` | |
+| Three user groups | `user_groups` | `ug-default-{admin,user,readonly}-<project_id>` | `admin_<project_id>`, `user_<project_id>`, `readonly_<project_id>`, hash `UG-` + 32 hex |
+| Three grants | `user_group_project_groups` | `ugpg-default-{admin,user,readonly}-<project_id>` | |
+
+The IDs are deterministic and every insert is `INSERT ... ON DUPLICATE KEY UPDATE is_active = 1`,
+so a re-run repairs the scaffolding instead of duplicating it. No users are added. The
+`admin_<project_id>` group is what makes an admin user an administrator of the project; root fills
+it through `/user-types/admin/{user_hash}/projects` ([user types](../users/user-types.md)).
+
+## Admin scope
+
+`resolve_admin_scope()` reads the caller's `user_type` (`sp_get_user_type`) and, for admin users,
+their assignments (`sp_get_admin_assigned_projects`) from the database on every request.
+`AdminScope.allows_project()` is `true` for root on any project and for an admin user on an
+assigned one.
+
+Why: session permission names are not a safe basis for project administration. A consumer's
+session permissions come from a global role, so a role that includes `admin` or `manage_users`
+would otherwise turn a consumer into an administrator of every project. Reading live state also
+makes a demotion or unassignment effective on the next request instead of at token expiry.
+
+## Soft delete
+
+`sp_delete_project` sets `projects.is_active = 0`, deactivates the project's
+`project_group_members` rows and sets `is_active = 0` on its `user_sessions` rows. Redis sessions
+are not touched directly: the next validation of an access token scoped to the project cannot find
+the project, revokes the refresh family and returns `401`. The default groups and any other groups
+that contained the project stay as they are.
+
+## Archive state
+
+The archive flag has no API writer, but it is enforced wherever a project is resolved for access:
+
+| Place | Effect of `archived = true` |
+| --- | --- |
+| `sp_get_user_accessible_projects`, `sp_check_user_project_access`, `sp_get_user_groups_in_project_by_hash` | Project excluded from group reach, root included |
+| `sp_get_admin_assigned_projects` and related admin procedures | Excluded from admin assignments |
+| `v_user_project_access` | No rows, so `GET /projects/{project_hash}/members` is empty |
+| `sp_list_all_projects`, `sp_search_projects`, `sp_get_projects_in_project_group`, `sp_get_projects_for_user_group` | Excluded from listings and counts |
+| Login and `POST /auth/switch-project` | `403` `AUTHZ_2003` |
+| Access-token validation (`reconstruct_auth_context()` in `src/Util/auth_lifecycle.py`) | `401`, refresh family revoked |
+| `sp_validate_api_key` | Key rejected |
+| OAuth sign-in pipeline | Denied (`project_inactive_or_archived`) |
+| `sp_get_project_by_hash` | Not filtered: root can still read, update and delete the project by hash |
+
+## Design decisions
+
+- **No direct user-to-project assignment.** The former `POST /projects/{project_hash}/members` and
+  `DELETE /projects/{project_hash}/members/{user_hash}` routes were removed so that all reach goes
+  through groups and can be revoked in one place.
+- **Creation is root-only.** A project is a tenant boundary; admin users administer only the
+  projects root assigns them.
+- **Path-based access labels.** `access_level` says how the caller or member reaches the project
+  (`admin_access`, `group_access`, `root_access`), not which permissions they hold. Global-role
+  permissions are not project-scoped, so deriving a per-project label from them would mislead.
+
+## Known defects
+
+- **No session count.** `statistics.active_sessions` is always `null`; `sp_get_project_statistics`
+  reports group-based access only.
+- **Root pagination.** For root, `GET /projects` reports `pagination.total` as the page size and
+  `has_more` as `false`.
+- **Python-side paging.** For admin users and consumers `GET /projects` loads every reachable
+  project and slices in Python; `GET /projects/{project_hash}/groups` does the same.
+- **Stubs.** `PATCH /projects/{project_hash}/owner` and `/archive` always end in `501` `INT_7006`.
+- **Partial create.** The `projects` row is committed before `create_default_groups()` runs. If the
+  bootstrap fails, the request fails but the project exists without its default groups.

@@ -15,15 +15,18 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.Util.audit_session_id import audit_session_id
 from src.Util.error_handler import (
     AppException,
     build_error_response,
     sanitize_error_message,
     ErrorCode,
     ErrorCategory,
+    RateLimitError,
     ValidationError,
     log_error,
-    mask_uuid
+    mask_debug_param,
+    rate_limit_headers,
 )
 from src.Util.db.db_error_logger import (
     log_app_exception_to_db, 
@@ -60,11 +63,8 @@ def extract_user_context_from_request(request: Request) -> Dict[str, Optional[st
             context["project_id"] = request.state.project_id
         
         if hasattr(request.state, 'session_id'):
-            session_id = request.state.session_id
-            # Truncate session_id to 256 characters to fit database column
-            # (session_id may be a JWT token which is much longer)
-            if session_id:
-                context["session_id"] = session_id[:256]
+            # Never store token bytes: reduce to the session_id claim or a keyed hash
+            context["session_id"] = audit_session_id(request.state.session_id)
         
         # Alternative: try to get from session data if available
         if hasattr(request.state, 'session_data'):
@@ -124,23 +124,10 @@ def extract_function_context_from_exception() -> Optional[Dict[str, Any]]:
                 for key, value in local_vars.items():
                     if key in skip_params or key.startswith('_'):
                         continue
-                    
-                    # Convert value to string representation
-                    if isinstance(value, str):
-                        # Mask UUIDs in string values
-                        params[key] = mask_uuid(value)
-                    elif isinstance(value, (int, float, bool)):
-                        params[key] = value
-                    elif value is None:
-                        params[key] = None
-                    elif hasattr(value, 'user_hash'):
-                        # Session data or user object
-                        params[key] = mask_uuid(value.user_hash)
-                    elif hasattr(value, 'project_hash'):
-                        params[key] = mask_uuid(value.project_hash)
-                    else:
-                        # For other objects, just use their type
-                        params[key] = f"<{type(value).__name__}>"
+
+                    # Redact secret-named locals and non-UUID strings; never
+                    # expose a prefix of a submitted value.
+                    params[key] = mask_debug_param(key, value)
                 
                 return {
                     "name": function_name,
@@ -221,9 +208,14 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
             "client_host": request_context["client"]
         })
     
+    headers = None
+    if isinstance(exc, RateLimitError):
+        headers = rate_limit_headers((exc.details or {}).get("retry_after_seconds", 1))
+
     return JSONResponse(
         status_code=exc.status_code,
-        content=response_data
+        content=response_data,
+        headers=headers,
     )
 
 

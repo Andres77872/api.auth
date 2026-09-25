@@ -1,110 +1,89 @@
-# API Keys Documentation
+# API keys
 
-Detailed, repo-specific documentation for the API key system implemented in `api.auth`.
+API keys are long-lived credentials that belong to one user and are scoped to one project. Users
+manage their own keys; root and admin users manage keys for other users within their scope. A
+service that receives a key checks it with `POST /auth/validate-api-key`, which returns the owner,
+project, groups and permissions.
 
----
+## Key concepts
 
-## Overview
+- **Token format**: `sk_{public_id}.{secret}`. `public_id` is 12 base64url characters (9 random
+  bytes); `secret` is 43 base64url characters (32 random bytes).
+- **What the server stores**: `public_id` in clear, plus
+  `HMAC-SHA-256(API_KEY_PEPPER, "v1:{public_id}:{secret}")`. The secret itself is never stored, so
+  the full token is shown once, in the create response, and cannot be retrieved later.
+- **Key identifier**: `{key_id}` in every path is the `public_id`. The key object's `id` field has
+  the same value. Passing the full token as `{key_id}` returns `404`.
+- **Identification without the secret**: `fingerprint` (12 hex characters) and `secret_last4` let a
+  person recognise a key in a UI or log.
+- **State**: a key is usable while `is_active` is true, it is not past `expires_at`, the owner is
+  active and the owner still reaches the project. Revocation is permanent.
+- **Audit trail**: database triggers write `api_key_created`, `api_key_updated`,
+  `api_key_revoked` and `api_key_reactivated` rows to `activity_logs`.
 
-API keys are long-lived, project-scoped credentials issued to a single user. They use a
-**split-token** design — `sk_{public_id}.{secret}` — where only the `public_id` is stored
-in clear and the `secret` is never persisted in plaintext. The full token is revealed
-**exactly once**, in the response to the create call, and can never be retrieved again.
+Storage is the `user_project_api_keys` table and the procedures in
+`schemas/stored_procedures/13_api_keys.sql`. Token generation and verification live in
+`src/Util/api_key_security.py`.
 
-There are **two route families**, separated by who is acting:
+## Route families
 
-| Family | Prefix | Auth dependency | Who | Acts on |
-|--------|--------|-----------------|-----|---------|
-| Self-service | `/users/api-keys` | `verify_session` | Any authenticated user | The caller's **own** keys |
-| Admin | `/api-keys` | `verify_admin_access` | Root or admin | Keys on behalf of **other** users, within scope |
+| Family | Prefix | Auth | Acts on |
+| --- | --- | --- | --- |
+| Self-service | `/users/api-keys` | Access token (`verify_session`), any user type | The caller's own keys. A key owned by someone else returns `404`. |
+| Admin | `/api-keys` | Access token of a root or admin user (`verify_admin_access`) | Keys of any user (root) or keys in projects the admin administers |
+| Validation | `/auth/validate-api-key` | `X-API-Key` header only | Resolves a raw key to its owner context. Documented in [Authentication usage cases](../authentication-usage-cases.md#validate-an-api-key). |
 
-A separate **validation** endpoint, `POST /auth/validate-api-key`, lets a service exchange a
-raw key (sent in the `X-API-Key` header) for the owner's identity, project, groups, and
-permissions. That endpoint lives in the **auth suite** and is cross-linked from here; it is not
-owned by this suite.
+Full endpoint tables are in [reference.md](reference.md).
 
-- **`/users/api-keys/*`** — create, list, get, update, delete the caller's own keys. Authorization
-  is **ownership-only**: a non-owned key returns `404` (existence is not leaked).
-- **`/api-keys/*`** — root/admin management. Root is unrestricted; admins are limited to projects
-  they administer and need `manage_users` to act on **other** users' keys (self-service is always
-  allowed). Includes two audit views: by user and by project.
+## Rules and caveats
 
-Source files (authoritative): `src/routes/user_api_keys.py`, `src/routes/api_keys.py`,
-`src/Util/api_key_security.py`. Validation adapter: `src/routes/auth.py`.
+These rules apply to the whole suite. Platform-wide rules (User-Agent, body size, error envelope)
+are in [Platform-wide contracts](../README.md#platform-wide-contracts).
 
----
+- **Management routes do not accept API keys.** Send an access token (`Authorization: Bearer` or
+  the `session_token` cookie). `X-API-Key` is honoured only by `POST /auth/validate-api-key`.
+- **Writes take form fields** (`application/x-www-form-urlencoded` or `multipart/form-data`), not
+  JSON.
+- **Create, update and revoke need recent authentication**: a sign-in or an OAuth reauth of the
+  current session within `OAUTH_RECENT_REAUTH_SECONDS` (default `300` seconds). Refreshing the
+  session does not renew it. Otherwise the call fails with `401` `AUTH_1008`. Reads do not need it.
+- **Admin scope**: root is unrestricted. An admin works only in projects they administer, and
+  creating a key for another user also needs the `manage_users` permission in that project. Users
+  whose only admin power is an `admin` permission from a global role pass the dependency but have
+  no scope, so they get `403`.
+- **`expires_at` must be in the future.** It is ISO 8601; a value without a timezone is read as UTC.
+  Omit it for a key that never expires. Fields cannot be cleared once set.
+- **Expired keys are deactivated by a sweep.** Validation rejects a key by date as soon as
+  `expires_at` passes. The API process runs `sp_cleanup_expired_api_keys` every 5 minutes, which
+  sets `is_active` to false and records `api_key_expired`; until then an expired key can still
+  show `is_active: true`. A future `expires_at` makes an expired key usable again (recorded as
+  `api_key_reactivated`). To retire a key for good, revoke it.
+- **Revocation takes effect at once.** The Redis validation cache entry (`apikey:{public_id}`,
+  `60` seconds) is dropped when a key is revoked or its expiry changes.
 
-## Documents in This Suite
+## Handling keys safely
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day self-service and admin lifecycle flows (create, list, get, update, revoke) |
-| [reference.md](reference.md) | Endpoint table for both families, response envelope, per-key object fields, query params |
-| [scenarios.md](scenarios.md) | Concrete curl workflows: issue + reveal, validate, admin provisioning, audit, rotation |
-| [troubleshooting.md](troubleshooting.md) | Failure modes, error codes, the paginate-then-filter caveat, and best practices |
+- Issue one key per consumer and project, and set an `expires_at`.
+- Store the token in a secret manager when it is created. Log only `public_id`, `fingerprint` or
+  `secret_last4`, never the token.
+- Rotate by creating a new key, validating it, deploying it, then revoking the old one
+  ([rotation scenario](scenarios.md#rotate-a-key-without-downtime)).
+- Use the admin `revoke_reason` field so the audit trail explains the revocation.
 
----
+## In this suite
 
-## Key Format and Security
+| Document | Purpose |
+| --- | --- |
+| [usage.md](usage.md) | One task per section: create, list, inspect, update, revoke, validate |
+| [scenarios.md](scenarios.md) | End-to-end workflows: issue and use, provision, audit, rotate, respond to a leak |
+| [reference.md](reference.md) | Endpoint tables, fields, key object, token format, error codes |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause and fix for common failures |
 
-The token layout and cryptography are implemented in `src/Util/api_key_security.py`.
+## Related
 
-- **Token format**: `sk_{public_id}.{secret}`
-  - prefix `sk_`
-  - `public_id` — ~12 base64url chars (9 bytes of entropy); indexed in the DB for lookup
-  - `secret` — ~43 base64url chars (32 bytes of entropy); **never** stored in plaintext
-  - the two halves are joined by a single `.`
-- **Stored hash**: `HMAC-SHA-256(pepper, "v1:{public_id}:{secret}")` stored as `BINARY(32)`. The
-  server-side `API_KEY_PEPPER` is loaded at startup (fail-fast if missing). The stored
-  `hash_algorithm` label is `hmac-sha256-v1`.
-- **Fingerprint**: first 6 bytes of `BLAKE2s(full_token)` → 12 hex chars. Safe to display in a UI.
-- **secret_last4**: the last 4 chars of the secret, for human confirmation only.
-- **Verification**: splits the presented token on the **last** dot, checks the `sk_` prefix and
-  matching `public_id`, recomputes the HMAC, and compares with `hmac.compare_digest`
-  (constant-time). Malformed tokens are compared against a **dummy hash** so rejection timing
-  matches the valid path (timing-attack resistance).
-- **One-time reveal**: the full token appears **only** in the create response, under
-  `data.api_key`. List / get / update / delete responses never include `api_key`, the secret, or
-  `secret_hash`. A lost token cannot be recovered — issue a new key.
-
----
-
-## Recommended Reading Order
-
-1. Start with this README for the model and key format.
-2. Read [usage.md](usage.md) for the self-service then admin lifecycles.
-3. Keep [reference.md](reference.md) open while operating the API.
-4. Use [scenarios.md](scenarios.md) for end-to-end curl workflows.
-5. Use [troubleshooting.md](troubleshooting.md) for failure handling and best practices.
-
----
-
-## Scope and Caveats
-
-- **API version `2.2.0`.** Every request must send a `User-Agent` header (missing → `422`).
-- **All write endpoints take form fields** (`application/x-www-form-urlencoded`), not JSON bodies.
-  Create and update use FastAPI `Form(...)` params.
-- **`key_id` in every path is the `public_id`** (the ~12-char base64url segment), **not** the
-  numeric DB id and **not** the full token. Lookups use `get_api_key_by_public_id`.
-- **Step-up re-authentication** (`require_recent_reauthentication`) is required for **create,
-  update, and delete** on both families. Read (GET) endpoints do **not** require step-up.
-- **`expires_at` is future-only** ISO 8601. A naive timestamp is assumed UTC; a `Z` suffix is
-  accepted. A past date → `400 INVALID_INPUT`. Extending `expires_at` past `NOW()` on an expired
-  key reactivates it.
-- **Root must filter on `GET /api-keys`.** There is no "list all keys" path; root must supply
-  `user_hash` or `project_hash`.
-- **Pagination is applied before filtering** on some routes (see the paginate-then-filter caveat in
-  [troubleshooting.md](troubleshooting.md)); `total` can be a post-filter count.
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** — complete usage index
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** — `POST /auth/validate-api-key`
-  (the `X-API-Key` consumer flow) lives here
-- **[Users Documentation Suite](../users/README.md)** — user hashes, `manage_users`, admin scope
-- **[Projects Documentation Suite](../projects/README.md)** — project hashes and project reach
-- **[Permissions Documentation Suite](../permissions/README.md)** — effective permissions and `manage_users`
-- **[Errors Reference](../errors.md)** — global error envelope and codes
-- **Database schema** (`schemas/`) — SQL tables and stored procedures
+- [Authentication usage cases](../authentication-usage-cases.md#validate-an-api-key) — `POST /auth/validate-api-key`
+- [Users](../users/README.md) — user hashes and admin scope
+- [Projects](../projects/README.md) — project hashes and project reach
+- [Permissions](../permissions/README.md) — `manage_users` and effective permissions
+- [Audit logs](../audit_logs/README.md) — where the `api_key_*` activity rows appear
+- [Errors](../errors.md) — error envelope and code catalog

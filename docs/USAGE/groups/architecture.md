@@ -1,173 +1,130 @@
-# Groups Architecture
+# Groups architecture
 
-Technical architecture of the groups system as it actually exists in `api.auth`.
+How the groups-of-groups access model is stored, resolved and enforced, and why it is built this
+way.
 
----
+## Components
 
-## Core Access Model
+| Layer | User groups | Project groups |
+| --- | --- | --- |
+| Routes | `src/routes/admin_user_groups.py` | `src/routes/admin_project_groups.py` |
+| DB helpers | `src/Util/db/db_user_groups.py` | `src/Util/db/db_project_groups.py` (exported from `src/Util/db/__init__.py` under `*_project_permission_group*` aliases) |
+| Stored procedures | `schemas/stored_procedures/02_user_groups.sql` | `schemas/stored_procedures/04_project_groups.sql` |
+| Tables | `schemas/tables/02_create_tables.sql` | same |
 
-The active runtime model is:
+Shared pieces: `src/Util/admin_scope.py` (the `admin_` name check and admin scope),
+`src/Util/auth_lifecycle.py` (session validation and revocation) and the view
+`v_user_project_access` in `schemas/tables/06_create_views.sql`.
 
-```
-USER → USER_GROUP → PROJECT_GROUP → PROJECT
-                 ↘
-                   PERMISSION_GROUP → PERMISSIONS
-```
+## Tables
 
-This is the important distinction:
+| Table | Holds | Uniqueness | Soft-delete columns |
+| --- | --- | --- | --- |
+| `user_groups` | Global user groups | `group_hash`; `group_name` (case-insensitive collation) | `is_active` |
+| `user_group_members` | User to user group | (`user_id`, `user_group_id`) | `is_active`, `removed_at`, `removed_by` |
+| `project_groups` | Project containers | `group_hash`; `group_name` | `is_active` |
+| `project_group_members` | Project to project group | (`project_id`, `project_group_id`) | `is_active`, `removed_at`, `removed_by` |
+| `user_group_project_groups` | Grant: user group to project group | (`user_group_id`, `project_group_id`) | `is_active`, `revoked_at`, `revoked_by` |
+| `user_group_permission_groups` | Permission groups attached to a user group | | Owned by the [permissions suite](../permissions/architecture.md) |
 
-- **User groups** organize users globally
-- **Project groups** collect projects into reusable access buckets
-- **Permission groups** are attached independently and do not replace project-access wiring
+Because each link has a unique pair key, "add" procedures use `INSERT ... ON DUPLICATE KEY UPDATE`
+and reactivate the existing row. A pair is therefore never duplicated, and re-adding resets the
+timestamp (`assigned_at` or `granted_at`).
 
----
+## Access resolution
 
-## Real Tables Behind the Model
+All procedures below require every link to be active and the project to be active and not archived.
 
-| Table | Purpose |
-|------|---------|
-| `user_groups` | Global team/organizational groups |
-| `user_group_members` | User-to-user-group membership |
-| `project_groups` | Project containers |
-| `project_group_members` | Project-to-project-group membership |
-| `user_group_project_groups` | The key access bridge from teams to project containers |
-| `user_group_permission_groups` | Separate bridge from teams to permission templates |
+| Object | Answers | Used by |
+| --- | --- | --- |
+| `sp_get_user_accessible_projects` | Projects a user reaches. Root: every active, non-archived project. Everyone else: the group chain | Consumer login and switch-project, `GET /projects` for consumers, group-access checks on `/projects/{project_hash}` routes |
+| `sp_check_user_project_access` | Does this user reach this project | Session revocation re-check |
+| `sp_get_user_groups_in_project_by_hash` | Which of the user's groups lead to this project | Consumer access-token validation |
+| `sp_get_admin_assigned_projects` | Projects an admin user administers | Admin login, validation, admin scope |
+| `v_user_project_access` | User-project pairs: `group_access` rows plus `root_access` rows | `GET /projects/{project_hash}/members` |
+| `sp_get_projects_for_user_group` | Projects one user group reaches | `GET /admin/user-groups/{group_hash}` |
 
-If you forget `user_group_project_groups`, you miss the whole point of the implementation.
+The chain, as joined by these procedures:
 
----
-
-## Route and Layer Split
-
-### User-group operations
-- Route file: `src/routes/admin_user_groups.py`
-- DB layer: `src/Util/db/db_user_groups.py`
-- Stored procedures: `schemas/stored_procedures/02_user_groups.sql`
-
-### Project-group operations
-- Route file: `src/routes/admin_project_groups.py`
-- DB layer: `src/Util/db/db_project_groups.py`
-- Stored procedures: `schemas/stored_procedures/04_project_groups.sql`
-
-### Session-aware access resolution
-- Route file: `src/routes/auth.py`
-- Shared DB exports: `src/Util/db/__init__.py`
-
----
-
-## Authorization Split
-
-The repo does not use one identical admin guard for all group operations.
-
-| Area | Permission Gate |
-|------|-----------------|
-| `/admin/user-groups` | `admin` or `manage_users` |
-| `/admin/project-groups` | `admin` or `manage_roles` |
-
-That means user-group and project-group administration are related, but not authorized identically.
-
----
-
-## Login and Session Architecture
-
-During login, `src/Util/auth_lifecycle.py:_issue_token_pair()` builds the session payload and embeds the user's groups:
-
-- `user_group_ids`
-- `user_group_names`
-
-This matters because group changes may not be reflected in an already-issued session until the user logs in again, refreshes, or switches project context depending on the workflow.
-
-### Direct cross-group login contract
-
-The public `/auth/login` route already authorizes consumers through the direct groups-of-groups chain and this behavior is now codified/hardened:
-
-```
-consumer user
-  → active membership in user_group_b
-  → active direct user_group_b → project_group_b authorization row
-  → active project_group_b → project_a membership
-  → active, non-archived project_a
+```text
+user_group_members (user_id, is_active)
+  -> user_groups (is_active)
+  -> user_group_project_groups (is_active)
+  -> project_groups (is_active)
+  -> project_group_members (is_active)
+  -> projects (is_active, archived = false)
 ```
 
-So a consumer in `user_group_b` can log in with `project_a.project_hash` when `project_a` is a member of `project_group_b`. No direct `project_a → user_group_b` shortcut is required or supported.
+`parent_group_id` on `user_groups` and `project_groups` is never followed. The schema has
+hierarchy views, cycle-prevention triggers and `sp_get_user_all_groups_with_inheritance`, but no
+route writes `parent_group_id` (the create helpers pass `NULL`) and no access procedure reads it.
 
-Important constraints:
+## Project administrators
 
-- `user_groups.parent_group_id` is **not** traversed for login authorization.
-- `project_groups.parent_group_id` is **not** traversed for login authorization.
-- Login/switch responses do **not** disclose which user-group/project-group chain granted access.
-- Archived projects are denied for consumer login, root login, switching, accessible-project results, and session validation.
+An admin user administers a project when all of these hold:
 
----
+- the user's `user_type` is `admin`;
+- the user is an active member of the user group named `admin_<project_id>`;
+- that group is granted a project group that contains the project;
+- the project is active and not archived.
 
-## Project Creation Side Effect: Default Groups
+`sp_get_admin_assigned_projects` encodes this. Because the group name is the whole assignment,
+`_require_root_for_admin_group()` lets only root create, rename, delete or change members and
+grants of any user group whose name starts with `admin_`. The comparison uses
+`collation_key()` in `src/Util/admin_scope.py`, which ignores case, accents and width the way
+`utf8mb4_unicode_ci` does, so look-alike names cannot slip past it. Root normally assigns admins
+through `/user-types/admin/{user_hash}/projects` rather than these routes.
 
-`src/Util/db/db_projects.py:create_default_groups()` creates default access scaffolding when a project is created.
+## Session revocation
 
-Current behavior:
+`revoke_project_sessions_losing_access()` in `src/Util/auth_lifecycle.py` runs after a teardown
+route has changed the database:
 
-1. Create a default project group for the project
-2. Add the project to that project group
-3. Create default user groups based on the project id:
-   - `admin_{project_id}`
-   - `user_{project_id}`
-   - `readonly_{project_id}`
-4. Link those user groups to the default project group
+1. For each affected user, read the session index `user_sessions:{user_id}` in Redis.
+2. Skip sessions whose `project_id` is not one of the affected projects.
+3. Re-check access with `sp_check_user_project_access`. Keep the session if another chain still
+   grants the project (root always passes while the project is active).
+4. Otherwise revoke the refresh family (`refresh_family:{family_id}` marked revoked with the
+   reason) and delete `session:{access_jti}` and `session_full:{access_jti}`.
 
-So new projects come with group wiring baked in from day one.
+Revocation reasons are listed in the [reference](reference.md#session-revocation). Removing a
+single member skips this step; the next validation of that user's token fails instead
+([request flow](request-flow.md#access-re-check-on-every-request)).
 
----
+## Caching
 
-## Soft Deletes
+Group routes invalidate nothing, and nothing needs invalidating for sessions:
 
-Group deletion is implemented as deactivation, not hard deletion.
+- No Redis cache holds access decisions for sessions. Every access-token validation re-reads the
+  chain from MySQL.
+- `session_full:{access_jti}` caches the validated login object for `VALIDATE_CACHE_TTL` (default
+  `30` seconds). It is read only after the live access check passes, so it can show stale group
+  names but cannot grant access.
+- API-key validation results are cached as `apikey:{public_id}` for `60` seconds. Group changes do
+  not clear that entry, so a user-owned API key can keep validating for up to `60` seconds after
+  its owner loses the project. Revoking the key clears it at once.
 
-- `is_active = 0` is used across core group tables
-- membership and access links are also deactivated during user-group deletion
-- active queries typically filter on `is_active = 1`
+## Design decisions
 
-Operationally, this means historical records may still exist, but they should no longer participate in access resolution.
+- **Access only through groups.** Direct user-to-project assignment was removed from
+  `src/routes/projects.py`. Every grant is a user group to project group link, so team access is
+  added and removed in one place and audited from either side.
+- **Separate permissions for the two prefixes.** User groups sit behind `manage_users` and project
+  groups behind `manage_roles`, so a delegated consumer can manage team membership without being
+  able to change which projects a container holds, or the reverse.
+- **Soft deletes.** Rows are deactivated, not removed, which keeps `removed_by` / `revoked_by`
+  history and keeps deleted names reserved.
+- **Permission groups are separate.** Project reach and capabilities are resolved independently.
+  Permission groups attached to a user group appear in inspection endpoints only; authorization
+  uses global-role permissions ([permission resolution](../permissions/resolution.md)).
 
-### Live session revocation on access teardown
+## Known defects
 
-Soft-deactivating rows is not the whole story. The destructive routes also reach into the session layer: `src/routes/admin_user_groups.py` and `src/routes/admin_project_groups.py` both import `revoke_project_sessions_losing_access` from `src/Util/auth_lifecycle.py` and call it after a successful teardown, so access removal extends to **live sessions**.
-
-| Route | Reason passed |
-|------|---------------|
-| `DELETE /admin/user-groups/{hash}` | `user_group_deleted` |
-| `DELETE /admin/user-groups/{hash}/project-groups/{project_group_hash}` | `user_group_project_group_access_revoked` |
-| `DELETE /admin/project-groups/{hash}` | `project_group_deleted` |
-| `DELETE /admin/project-groups/{hash}/projects/{project_hash}` | `project_removed_from_group` |
-
-Before deleting/revoking, each route computes the impacted users and projects (user-group routes via `get_users_in_group` / `get_projects_for_user_group` / `get_projects_in_group`; project-group routes via `db_project_groups.get_users_with_access_to_project_group` and `get_projects_in_permission_group`) and passes those ids to the revocation helper. This is why affected users are forced to re-authenticate immediately rather than waiting for their sessions to expire.
-
----
-
-## Important Current Caveats
-
-### `parent_group_id` is not exposed by group CRUD routes
-
-Both `user_groups` and `project_groups` have hierarchy columns, but the active group-management routes do not expose `parent_group_id` as a create/update parameter; the DB layer currently passes `NULL` through those public flows.
-
-Do not confuse that route-layer reality with the SQL layer: schema views, cycle-prevention triggers, and a recursive permission CTE do reference `parent_group_id`. Treat hierarchy as SQL-level infrastructure, not as a public CRUD feature.
-
-### Permission groups are attached separately
-
-Permission groups are not children of project groups. They are attached to user groups or users through separate routes and tables.
-
-### Legacy direct-project traces still exist in some responses
-
-Some code paths still expose fields such as `accessible_projects`, but the real scalable access pattern is the group bridge:
-
-`user_group_members → user_group_project_groups → project_group_members`
-
----
-
-## Related Documentation
-
-- **[Groups Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+- `PUT /admin/project-groups/{group_hash}` with neither `group_name` nor `description` returns
+  `500` `INT_7001` instead of `400`; the user-group equivalent returns `400` `VAL_3002`.
+- `GET /admin/user-groups/{group_hash}` always returns `derived_projects: []` and
+  `statistics.total_derived_projects: 0`; `GET /admin/user-groups/{group_hash}/project-groups`
+  always returns `total_derived_projects: 0`. Use `accessible_projects` for the reachable projects.
+- Revoking a grant that is not active returns `500` `INT_7001` rather than `404`.
+- `GET /admin/user-groups` does not set `pagination.has_more`, and its `pagination.total` ignores
+  `search`.

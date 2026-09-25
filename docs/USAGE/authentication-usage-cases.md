@@ -1,126 +1,168 @@
-# Authentication Usage Guide
+# Authentication
 
-Complete practical guide for authentication, session management, and user registration in the authentication system.
+The server-side contract of the `/auth` routes: how to sign in, register, recover and change a
+password, validate and rotate tokens, switch projects, log out, and validate API keys. Every
+example uses `API=http://localhost:8000` and relies on curl's default `User-Agent`.
 
-> **New here?** Start with [Getting Started](getting-started.md) for platform setup and first-time onboarding.
-> For client integration (JS, Python, React), see [Client Authentication Guide](client-authentication-guide.md).
-> For error codes and troubleshooting, see [Error Reference](errors.md).
+- First-time setup (configuration, first root, first project and user):
+  [Getting started](getting-started.md).
+- Building a browser, mobile or server client on top of this contract:
+  [Client integration guide](client-authentication-guide.md).
+- Error envelope and codes: [standard error envelope](errors.md#standard-error-envelope) and
+  [error code catalog](errors.md#error-code-catalog). Platform rules (`User-Agent`, 8 MiB POST
+  limit, content types): [platform-wide contracts](README.md#platform-wide-contracts).
 
-> **Important**: Every request MUST include a `User-Agent` header. Missing it returns `422`. All curl examples below include it.
+## Endpoints at a glance
 
----
+"Access token" means `Authorization: Bearer <access_token>` or the `session_token` cookie.
 
-## Table of Contents
+| Method | Path | Credential | Body | Purpose |
+| --- | --- | --- | --- | --- |
+| `POST` | `/auth/login` | none | form | Project-scoped sign-in for every user type |
+| `POST` | `/auth/platform/login` | none | form | Project-less sign-in for root and admin |
+| `POST` | `/auth/register` | none | form | Create a consumer account in a user group |
+| `POST` | `/auth/check-availability` | none | form | Check whether a username or email is taken |
+| `POST` | `/auth/email/verify` | emailed link token | JSON or form | Activate an added email address |
+| `POST` | `/auth/password/forgot` | none | JSON or form | Request a password reset email |
+| `POST` | `/auth/password/reset` | emailed link token | JSON or form | Set a new password from the emailed link |
+| `POST` | `/auth/password/change` | access token | JSON or form | Change the signed-in user's password |
+| `GET` | `/auth/validate` | access token | none | Inspect the current session |
+| `POST` | `/auth/refresh` | refresh token | form or cookie | Rotate the access/refresh pair |
+| `POST` | `/auth/switch-project` | access + refresh token, recent sign-in | form | Move the session to another project |
+| `POST` | `/auth/logout` | access token | none | Revoke the session's refresh family and clear cookies |
+| `POST` | `/auth/validate-api-key` | `X-API-Key` | none | Resolve the owner and project of a user API key |
 
-- [Authentication Overview](#authentication-overview)
-- [Supported Protected-Route Authentication](#supported-protected-route-authentication)
-- [OAuth Sign-in](#oauth-sign-in)
-- [API Key Lifecycle and Validation Status](#api-key-lifecycle-and-validation-status)
-- [Login](#login)
-- [Registration](#registration)
-- [Email Activation and Password Reset](#email-activation-and-password-reset)
-- [Authenticated Password Change](#authenticated-password-change)
-- [Session Management](#session-management)
-- [Validate API Key](#validate-api-key)
-- [Project Switching](#project-switching)
-- [Common Scenarios](#common-scenarios)
-- [Best Practices](#best-practices)
-- [Troubleshooting](#troubleshooting)
+OAuth sign-in (`/auth/oauth/*`) and the deprecated `/auth/google/*` aliases are covered in
+[OAuth sign-in](#oauth-sign-in).
 
----
+## Tokens and sessions
 
-## Authentication Overview
+A successful sign-in (password login, platform login, registration or OAuth callback) starts a
+**refresh family**: a chain of access/refresh pairs that share one `family_id`. Each refresh or
+project switch retires the current pair and issues the next one.
 
-The authentication system uses **short-lived access JWTs** (default 15-minute expiry, `expires_in: 900`) plus **refresh JWT families** with Redis-backed revocation. The refresh family TTL depends on `remember_me`:
+- **Access token** — HS256 JWT (`type: access_token`) sent on every protected request. The server
+  also stores it in Redis as `session:{jti}`. Only the family's newest access token is valid: a
+  refresh or project switch invalidates the previous one immediately, even before it expires.
+- **Refresh token** — HS256 JWT (`type: refresh_token`). Single use, accepted only by
+  `POST /auth/refresh` and `POST /auth/switch-project`.
+- **`session_token`** — deprecated alias: the JSON field has the same value as `access_token`, and
+  the access cookie carries this name. It is never a refresh credential.
+- **Scope** — `project` sessions are bound to one project (login, registration, OAuth, switch);
+  `platform` sessions come from `/auth/platform/login` and have no project.
+- **Sign-in time** — the access token's `auth_time` claim records when the user last proved
+  credentials. Refresh and project switch carry it forward unchanged, so rotating never counts as
+  a new sign-in.
 
-- `remember_me=false` (default): refresh family is **72-hour sliding** (`refresh_expires_in: 259200`); each successful rotation extends the window 72h from the rotation time.
-- `remember_me=true`: refresh family is a **30-day absolute** window (`refresh_expires_in` ≈ `2592000` and decreasing). The family carries a fixed `absolute_expires_at`; rotation does **not** slide it, so the session ends 30 days after login regardless of activity.
+On every request that presents an access token, the server checks the signature, `exp`, token
+type and required claims, the Redis session and family state, and then rebuilds the user's
+context from the database: the user must be active, the project active and not archived, a
+consumer must still reach the project through a user group, and an admin must still be assigned to
+it. If the context check fails, the whole family is revoked and the request gets `401`.
 
-### Key Concepts
+### Lifetimes
 
-- **Access Token**: short-lived JWT (default 15 min, `expires_in: 900`) used for protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`. The default is set by `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default `15`).
-- **Refresh Token**: JWT used only by `/auth/refresh`; returned in JSON and as HttpOnly Secure `refresh_token` cookie. 72-hour sliding by default, or a 30-day absolute window when `remember_me=true` (see above).
-- **Session Token**: deprecated response/cookie alias for the access token
-- **`remember_me`**: optional `bool` form field on `/auth/login` and `/auth/platform/login` (default `false`) that switches the refresh family from 72h-sliding to 30-day-absolute. Successful login, refresh, and switch-project token-pair responses return the selected mode as top-level `remember_me`; `/auth/validate` also exposes it as `session.remember_me`.
-- **Project Context**: All users (including root) operate within a project context on `/auth/login`
-- **Root Users**: Have global access (bypass group-membership validation) but still require `project_hash` on `/auth/login`. Use `/auth/platform/login` for login without project binding.
-- **User Groups**: Determine which projects a user can access (root bypasses this validation)
-- **Session Plan Projection**: Project-scoped consumer login, access-token validation, and consumer API-key validation may return a provider-neutral subscription `plan`. It is resolved at response time from the project's billing group and is not stored in JWTs, cookies, or Redis auth state.
+| Item | Default | Configured by | Behavior |
+| --- | --- | --- | --- |
+| Access token and `session_token` cookie | `900` seconds | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default `15`) | Fixed per token |
+| Refresh family, `remember_me=false` | `259200` seconds (72 hours) | fixed | Sliding: every successful refresh restarts the 72-hour window |
+| Refresh family, `remember_me=true` | `2592000` seconds (30 days) | fixed | Absolute: ends 30 days after sign-in; `refresh_expires_in` counts down |
+| Refresh replay grace | `10` seconds | `REFRESH_REPLAY_GRACE_SECONDS` (`0` disables) | See [Refresh the token pair](#refresh-the-token-pair) |
+| Recent sign-in window | `300` seconds | `OAUTH_RECENT_REAUTH_SECONDS` (falls back to `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS`) | Gates `/auth/switch-project` and other sensitive operations |
 
-### Authentication Flow
+### Where each credential is accepted
 
-```
-1. User submits credentials (username/password)
-2. System validates credentials
-3. System checks project access (via user groups)
-4. Access + refresh JWT pair is generated and server-side Redis state is written by token `jti`/`family_id`
-5. For a project-scoped consumer, the response-only subscription plan is resolved from project → billing group
-6. HTTP-only cookies are set: `session_token` for access, `refresh_token` for refresh
-7. User can access authorized endpoints with the access token and renew through `/auth/refresh` with the refresh token
-```
+| Credential | Transport | Accepted by |
+| --- | --- | --- |
+| Access token | `Authorization: Bearer <token>` (exact `Bearer ` prefix), or the `session_token` cookie. The header wins when both are sent. | Every protected route, including `/auth/validate`, `/auth/logout`, `/auth/switch-project`, `/auth/password/change` |
+| Refresh token | `refresh_token` cookie (`Path=/auth`) and/or `refresh_token` form field. If both are sent they must be identical. `Authorization` is ignored. | `/auth/refresh`, `/auth/switch-project` |
+| User API key | `X-API-Key: sk_<public_id>.<secret>` | `/auth/validate-api-key`, plus `POST /auth/oauth/init` and `GET /auth/oauth/providers` ([OAuth suite](oauth/README.md)). No other route treats it as a credential. |
 
-### Supported Protected-Route Authentication
+The cookie names, attributes and lifetimes set by the server are listed in the
+[client integration guide](client-authentication-guide.md).
 
-Protected endpoints currently authorize requests through the session auth dependency. The supported protected-route credentials are:
+### Token-pair responses
 
-| Mechanism | Transport | Protected-route status | Notes |
-|-----------|-----------|------------------------|-------|
-| Access JWT | `Authorization: Bearer <access_token>` | Supported | Primary mode for API clients, scripts, mobile apps, and server-to-server callers |
-| Access JWT cookie | `session_token=<access_token>` | Supported | Browser/SPA mode; `session_token` is a deprecated name but still carries the access JWT |
-| Refresh JWT | `refresh_token` cookie or `refresh_token` body/form field | Not accepted on protected routes | Only `/auth/refresh` accepts refresh tokens |
-| API key | `X-API-Key: sk_<public_id>.<secret>` | Accepted **only** by `POST /auth/validate-api-key` | This dedicated endpoint validates a user-created API key and returns the resolved user/project/permissions. Other protected routes (e.g. `/users/profile`) still require an access JWT or `session_token` cookie. |
+Login, platform login, registration, refresh and OAuth sign-in return a `LoginResponse`
+(registration: `RegisterResponse`); project switching returns a `SwitchProjectResponse`. All three
+share these top-level token fields:
 
-### OAuth Sign-in
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `access_token` | string | Access JWT |
+| `refresh_token` | string | Refresh JWT |
+| `session_token` | string | Deprecated alias; same value as `access_token` |
+| `token_type` | string | Always `Bearer` |
+| `expires_in` | integer | Access-token lifetime in seconds |
+| `refresh_expires_in` | integer | Seconds until the refresh family expires |
+| `expires_at` | datetime | Access-token expiry (UTC) |
+| `refresh_expires_at` | datetime | Refresh-family expiry (UTC) |
+| `remember_me` | boolean | Refresh mode of the family |
 
-Signing in with an external identity provider is documented separately in the
-[OAuth suite](oauth/README.md). It is an additional way to obtain a session, not
-a separate session type: `GET /auth/oauth/callback` returns the same
-`LoginResponse` and the same access/refresh cookies as `POST /auth/login`.
-Everything in this document — validation, refresh rotation, project switching,
-logout — applies unchanged afterwards.
+`LoginResponse` adds:
 
-The deprecated `/auth/google/*` aliases run on the same pipeline and are covered
-in the [Google OAuth suite](google-oauth/README.md).
+| Field | Meaning |
+| --- | --- |
+| `user` | `user_hash`, `username`, `email` (the account's legacy email field), `user_type` |
+| `project` | `project_hash`, `project_name`, `project_description`; `null` for platform sessions |
+| `accessible_projects` | Projects the user can target later with `/auth/switch-project` |
+| `user_groups` | `{group_hash, group_name, description}` objects; empty for root and admin |
+| `plan` | Subscription projection for project-scoped consumers; `null` otherwise |
+| `user_id` | Internal user ID, present because the model carries it for logging. Identify users by `user.user_hash`. |
 
-### API Key Lifecycle and Validation Status
+Nested objects also serialize `created_at`, `updated_at` and similar optional keys as `null`;
+examples on this page omit them.
 
-API keys have full lifecycle support and a dedicated validation endpoint (`POST /auth/validate-api-key`), but `X-API-Key` is **not yet a general substitute** for an access/session JWT on the broader set of protected routes.
+### Session plan projection
 
-What works today:
+Consumer login, consumer refresh, `GET /auth/validate` for a consumer project session, and
+`POST /auth/validate-api-key` for a consumer-owned key return `plan`. The server resolves it at
+response time from the project's billing group; it is not stored in tokens, cookies or Redis, and it
+is not an authorization input.
 
-- Users can create, list, view, update, and revoke their own keys through `/users/api-keys` endpoints.
-- Admin/root users can create, list, view, update, and revoke scoped keys through `/api-keys` endpoints.
-- Generated keys use split-token format, server-side hashing, storage, cache validation, expiration, and revocation support.
-- **`POST /auth/validate-api-key` accepts `X-API-Key`** and returns the resolved user, project, user groups, permissions, and a secret-safe `api_key {key_id, public_id}` object (`auth_method: "api_key"`). It is the API-key analog of `GET /auth/validate`. See [Validate API Key](#validate-api-key).
-- Middleware can read `X-API-Key` and populate request/audit context such as `auth_method = "api_key"`.
+| Field | Values |
+| --- | --- |
+| `state` | `none` (no billing group or billing disabled), `free`, `trial`, `active`, `past_due`, `canceled` |
+| `active` | `true` only for `trial` and `active` |
+| `provider` | Provider name (default `stripe`) |
+| `plan_code`, `tier_code` | Opaque catalog labels; `null` for `none` and `free` |
+| `current_period_end`, `trial_end`, `cancel_at_period_end` | Subscription dates and flag |
 
-What does **not** work today:
+A lookup failure degrades to `state: "none"` instead of failing the request. Registration, project
+switching, platform login and root/admin sessions return `plan: null` or omit it; call
+`GET /auth/validate` after a switch when you need the new project's plan.
 
-- Sending only `X-API-Key` to general protected endpoints such as `/users/profile` still returns `401`; those routes only honor an access JWT or `session_token` cookie.
-- API-key request/audit context does not yet satisfy the route-level authorization dependency on those routes.
-- API-key management endpoints themselves still require Bearer/session JWT authentication.
+## Log in
 
-Known limitation / implementation gap:
+### Project login
 
-The intended future behavior is that an API token generated for a specific user and project can authenticate **any** protected route as that user. That requires a unified auth dependency and route migration so protected endpoints trust either a valid access/session JWT or a valid API key. Until that lands, `X-API-Key` is honored only by `POST /auth/validate-api-key`, and clients must use Bearer access JWTs or the `session_token` cookie for other protected-route access.
+`POST /auth/login` — form fields:
 
----
+| Field | Required | Notes |
+| --- | --- | --- |
+| `username` | yes | Username, or an activated email address |
+| `password` | yes | |
+| `project_hash` | yes | Required for every user type, root included |
+| `remember_me` | no | `true` selects the 30-day absolute refresh family (default `false`) |
 
-## Login
+Who can target which project:
 
-### Consumer Login (requires project_hash)
-
-**Scenario**: Non-root user logs in with username, password, and project context.
+| User type | Allowed projects | `message` on success |
+| --- | --- | --- |
+| Consumer | Projects reachable through the user's groups (user group → project group → project) | `Login successful` |
+| Admin | Projects the admin is assigned to administer | `Login successful` |
+| Root | Any active, non-archived project; group checks are skipped | `Root user login successful` |
 
 ```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john_doe&password=SecurePass123!&project_hash=proj-xyz789..."
+curl -s -X POST "$API/auth/login" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=$ALICE_PASSWORD" \
+  --data-urlencode "project_hash=$PROJECT_HASH"
 ```
 
-**Response:**
-```json
+The response sets the `session_token` and `refresh_token` cookies and returns:
+
+```jsonc
 {
   "success": true,
   "message": "Login successful",
@@ -130,172 +172,124 @@ curl -X POST "http://localhost:8000/auth/login" \
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
-  "user": {
-    "user_hash": "usr-abc123...",
-    "username": "john_doe",
-    "email": "john@example.com",
-    "user_type": "consumer"
-  },
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "Default Project",
-    "project_description": "User's default project"
-  },
+  "expires_at": "2026-09-24T12:15:00.482113Z",
+  "refresh_expires_at": "2026-09-27T12:00:00.482113Z",
+  "remember_me": false,
+  "user": {"user_hash": "usr-3f6c...", "username": "alice", "email": null, "user_type": "consumer"},
+  "project": {"project_hash": "9F2C...", "project_name": "My Project", "project_description": "First project"},
   "accessible_projects": [
-    {
-      "project_hash": "proj-xyz789...",
-      "project_name": "Default Project"
-    },
-    {
-      "project_hash": "proj-abc456...",
-      "project_name": "Secondary Project"
-    }
+    {"project_hash": "9F2C...", "project_name": "My Project", "project_description": "First project"}
   ],
-  "user_groups": [
-    {
-      "group_hash": "grp-dev123...",
-      "group_name": "developers",
-      "description": "Development team"
-    }
-  ],
-  "plan": {
-    "provider": "stripe",
-    "state": "active",
-    "active": true,
-    "plan_code": "pro",
-    "tier_code": "monthly",
-    "current_period_end": "2026-08-25T00:00:00Z",
-    "trial_end": null,
-    "cancel_at_period_end": false
-  }
+  "user_groups": [{"group_hash": "UG-7D1E...", "group_name": "user_proj-2b7c...", "description": "Regular users"}],
+  "plan": {"provider": "stripe", "state": "none", "active": false, "plan_code": null, "tier_code": null,
+           "current_period_end": null, "trial_end": null, "cancel_at_period_end": false},
+  "user_id": "usr-8a41..."
 }
 ```
 
-`plan` is a subscription-only projection for the selected consumer project. Its
-state is one of `none`, `free`, `trial`, `active`, `past_due`, or `canceled`;
-plan and tier codes are opaque catalog labels. A missing billing group, disabled
-billing, or a failed lookup degrades to `state: "none"` without failing login.
-Project-less platform login leaves `plan` unset.
+Root and admin responses have `user_groups: []` and `plan: null`. The admin's
+`accessible_projects` lists its assigned projects.
 
-### Login with Specific Project
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VAL_3001`, `VAL_3002` | `username`, `password` or `project_hash` missing (`project_hash` is checked after the password) |
+| `401` | `AUTH_1001` | Wrong password, unknown identifier, or inactive account; the response does not say which |
+| `403` | `AUTHZ_2001` | Consumer reaches no project at all |
+| `403` | `AUTHZ_2003` | Project not reachable by this user, admin not assigned, or project inactive or archived |
+| `404` | `NF_4002` | Root or admin: project hash does not exist (consumers get `403` instead) |
+| `429` | `INT_7005` | Failed-login limit reached; see [Login rate limits](#login-rate-limits) |
 
-**Scenario**: User logs in directly to a specific project.
+### Log in with an activated email
 
-```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john_doe&password=SecurePass123!&project_hash=proj-specific123..."
-```
+Send the email in the `username` field. The server resolves an exact username first, then an
+**activated** address from the user's email list. Pending, removed or unknown addresses, and the
+legacy `email` given at registration, fail with the same `401 AUTH_1001` as a wrong password. Add
+and activate addresses with `/users/me/emails` ([email management](users/email-management.md)).
 
-### Login with Email
+### Platform login
 
-**Scenario**: User logs in using an **activated** email instead of username. Pending, removed, unknown, or unactivated emails fail with the same generic invalid-credentials posture as a wrong password. All users must include `project_hash` on `/auth/login`.
-
-```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john@example.com&password=SecurePass123!&project_hash=proj-xyz789..."
-```
-
-### Root User Login
-
-**Scenario**: Root user logs in to a specific project. **Root must provide `project_hash` on `/auth/login`** — the requirement applies to all user types. Root only bypasses group-membership validation, not the `project_hash` requirement.
+`POST /auth/platform/login` — form fields `username`, `password`, optional `remember_me`. Only root
+and admin accounts can complete it; it needs no `project_hash` and issues a `platform`-scoped pair.
 
 ```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=root_admin&password=RootPass123!&project_hash=proj-xyz789..."
+curl -s -X POST "$API/auth/platform/login" \
+  --data-urlencode "username=root" \
+  --data-urlencode "password=$ROOT_PASSWORD"
 ```
 
-**Response:**
+The response is a `LoginResponse` with `message: "Platform login successful"`, `project: null`,
+`accessible_projects: []`, `user_groups: []` and `plan: null`, and it sets the same two cookies.
+Refreshing a platform pair keeps platform scope. Errors match project login, plus `403 AUTHZ_2002`
+when the account is a consumer (checked after the password).
+
+### Remember me
+
+`remember_me=true` on `/auth/login`, `/auth/platform/login` (or on OAuth init/start) switches the
+new family from a 72-hour sliding window to a fixed 30-day window that ends 30 days after sign-in,
+however often it is refreshed. The flag is echoed as top-level `remember_me` on login, refresh and
+switch responses and as `session.remember_me` on `/auth/validate`. Registration always issues a
+default family.
+
+### Login rate limits
+
+Both login routes count **failed** credential checks in Redis and refuse further attempts, before
+checking the password, once a bucket is full:
+
+| Bucket | Default limit | Window | Variables |
+| --- | --- | --- | --- |
+| Client IP + identifier | `10` failures | `900` seconds | `EMAIL_LOGIN_IDENTIFIER_FAILURE_LIMIT`, `EMAIL_LOGIN_IDENTIFIER_FAILURE_WINDOW_SECONDS` |
+| Identifier, any IP | `30` failures | `900` seconds | `EMAIL_LOGIN_ACCOUNT_FAILURE_LIMIT`, `EMAIL_LOGIN_ACCOUNT_FAILURE_WINDOW_SECONDS` |
+
+The identifier is compared trimmed and lower-cased. A blocked attempt returns `429 INT_7005` with a
+`Retry-After` header and `error.details.retry_after_seconds`. Windows are fixed, so a successful
+login does not reset them. The client IP is the first `X-Forwarded-For` entry, then `X-Real-IP`,
+then the socket address; strip or overwrite those headers at your proxy. If Redis is unavailable,
+the check fails closed with `429` and `Retry-After: 1`.
+
+## Register
+
+### Check availability
+
+`POST /auth/check-availability` — form fields `username` and/or `email` (at least one, else
+`400 VAL_3002`). Each value is compared against active accounts' usernames and legacy `email`
+fields.
+
+```bash
+curl -s -X POST "$API/auth/check-availability" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "email=alice@example.com"
+```
+
+```json
+{"success": true, "message": null, "username_available": true, "email_available": true}
+```
+
+A field is `null` when it was not sent. Use this only as a registration helper: it does not tell you
+whether an email is activated, and it must not drive activation or recovery logic.
+
+### Create an account
+
+`POST /auth/register` — form fields:
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `username` | yes | Must not match any active account's username or email |
+| `password` | yes | Checked by the [password policy](#password-policy) with the username and email as context |
+| `user_group_hash` | yes | User group the consumer joins; anyone who knows the hash can register into it |
+| `email` | no | Stored in the account's legacy `email` field only (see below) |
+
+```bash
+curl -s -X POST "$API/auth/register" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=$ALICE_PASSWORD" \
+  --data-urlencode "user_group_hash=$GROUP_HASH"
+```
+
+The account is always a consumer. When the group reaches at least one active project, the new
+session is scoped to the first one by name, the token fields are filled and both cookies are set;
+otherwise the token fields are `null` and no cookie is set.
+
 ```jsonc
-{
-  "success": true,
-  "message": "Root user login successful",
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "Bearer",
-  "expires_in": 900,
-  "refresh_expires_in": 259200,
-  "user": {
-    "user_hash": "usr-root123...",
-    "username": "root_admin",
-    "email": "root@example.com",
-    "user_type": "root"
-  },
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "Default Project",
-    "project_description": "Root's target project"
-  },
-  "accessible_projects": [...],
-  "user_groups": []
-}
-```
-
-> **Alternative endpoint**: Root and admin users can use `/auth/platform/login` which does **NOT** require `project_hash`. This endpoint is restricted to root/admin; consumer users are rejected (403). Platform login returns the same access+refresh token pair and platform refresh works through `/auth/refresh`.
-
-### Platform Login (root/admin, no project_hash)
-
-```bash
-curl -X POST "http://localhost:8000/auth/platform/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=root_admin&password=RootPass123!"
-```
-
-**Response highlights:**
-```json
-{
-  "success": true,
-  "access_token": "...platform access JWT...",
-  "refresh_token": "...platform refresh JWT...",
-  "session_token": "...same value as access_token...",
-  "project": null,
-  "accessible_projects": [],
-  "user": { "user_type": "root" }
-}
-```
-
-### Remember Me (longer-lived sessions)
-
-Both `/auth/login` and `/auth/platform/login` accept an optional `remember_me` form field (`bool`, default `false`):
-
-- `remember_me=false` (default): the refresh family is **72-hour sliding** (`refresh_expires_in: 259200`). Each `/auth/refresh` rotation extends the window 72h from the rotation moment.
-- `remember_me=true`: the refresh family becomes a **30-day absolute** window (`refresh_expires_in` ≈ `2592000` and counting down). The family carries a fixed `absolute_expires_at`; rotation does **not** slide it, so the session expires 30 days after the original login no matter how often it is refreshed.
-
-```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john_doe&password=SecurePass123!&project_hash=proj-xyz789...&remember_me=true"
-```
-
-The flag is preserved as top-level `remember_me` on login, refresh, and switch-project responses, and is also surfaced by `GET /auth/validate` as `session.remember_me`. `refresh_expires_at` carries the fixed remembered-session deadline.
-
----
-
-## Registration
-
-### Register New User
-
-**Scenario**: Register a new user with automatic group assignment. Email is optional; supplied invalid emails are rejected, but omitted email is valid.
-
-The submitted password is checked by the same server-side policy used by password reset, authenticated password change, and admin/root creation: default minimum length is controlled by `PASSWORD_POLICY_MIN_LENGTH`, common passwords can be extended with `PASSWORD_POLICY_WEAK_DENYLIST`, obvious username/email derivations are blocked, and there is no uppercase/lowercase/digit/symbol composition rule.
-
-```bash
-curl -X POST "http://localhost:8000/auth/register" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=new_user&password=SecurePass123!&email=newuser@example.com&user_group_hash=grp-default123..."
-```
-
-**Response:**
-```json
 {
   "success": true,
   "message": "User registered successfully",
@@ -305,654 +299,464 @@ curl -X POST "http://localhost:8000/auth/register" \
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
-  "user": {
-    "user_hash": "usr-new456...",
-    "username": "new_user",
-    "email": "newuser@example.com",
-    "user_type": "consumer"
-  },
-  "project": {
-    "project_hash": "proj-default...",
-    "project_name": "Default Project"
-  }
+  "expires_at": "2026-09-24T12:15:00.482113Z",
+  "refresh_expires_at": "2026-09-27T12:00:00.482113Z",
+  "remember_me": false,
+  "user": {"user_hash": "usr-3f6c...", "username": "alice", "email": null, "user_type": "consumer"},
+  "project": {"project_hash": "9F2C...", "project_name": "My Project"},
+  "user_id": "usr-8a41..."
 }
 ```
 
-### Register Without Email
+`RegisterResponse` has no `accessible_projects`, `user_groups` or `plan`; call
+`GET /auth/validate` or log in when you need them.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VAL_3001`, `VAL_3002` | A required field is missing |
+| `400` | `VAL_3007` | Password rejected by the policy |
+| `404` | `NF_4003` | User group not found |
+| `409` | `CONF_5001` | Username already in use |
+| `409` | `CONF_5002` | Email already in use |
+
+> [!IMPORTANT]
+> The `email` sent at registration is not an activated address: it cannot be used to log in and
+> does not receive recovery email. Email is optional; to use one, add it with `POST /users/me/emails`
+> and activate it through the emailed link ([email management](users/email-management.md)).
+
+### Password policy
+
+Registration, reset, change and root/admin creation share one server-side policy. A rejected
+password returns `400 VAL_3007`.
+
+| Rule | Reason code | Configured by |
+| --- | --- | --- |
+| Minimum length, default `8` | `too_short` | `PASSWORD_POLICY_MIN_LENGTH` |
+| Not on the common-password list | `common_password` | `PASSWORD_POLICY_WEAK_DENYLIST` (comma-separated; replaces the built-in list) |
+| Does not contain the username or email (3+ characters) | `obvious_identifier_derivation` | — |
+| Not one repeated character or a straight letter/digit run (8+ characters) | `repeated_or_sequential` | — |
+
+There is no character-class rule. The reason codes and `min_length` appear under
+`error.details.context` only when `DEBUG_MODE` is on; in production the client sees the code and
+the message `Weak password (VAL_3007)`, so show general guidance and let the server decide.
+
+## Email activation and password reset
+
+These public routes serve the links sent by email. Adding, listing and resending addresses is part of
+[email management](users/email-management.md); delivery (templates, provider, worker) is in the
+[email suite](email/README.md).
+
+### Rules for the public email routes
+
+- Send JSON (`Content-Type: application/json`); `application/x-www-form-urlencoded` and
+  `multipart/form-data` are also read.
+- Every processable request returns the same `202` body, whether or not the account, address or
+  link exists. Treat it as "accepted", never as proof:
+
+  ```json
+  {"success": true, "message": "If the request can be processed, it has been accepted."}
+  ```
+
+- `429 INT_7005` carries `Retry-After` and `error.details.retry_after_seconds`; wait before retrying.
+- An optional `Idempotency-Key` header makes retries safe: a repeat with the same key replays the
+  stored `202` without repeating side effects. Malformed keys are ignored.
+- None of these routes creates a session. After a successful activation or reset, send the user to
+  a normal login.
+- Emailed links point at `/auth/email/verify?token=...` and `/auth/password/reset?token=...` on the
+  public base URL; the frontend must serve those pages and POST the token here. The link token has
+  the form `<lookup_id>.<secret>`. Never log full links or link tokens.
+
+| Rate limit | Default | Variable |
+| --- | --- | --- |
+| Link consumption per lookup ID (verify, reset) | `5` per hour | `EMAIL_CONSUME_LOOKUP_HOURLY_LIMIT` |
+| Link consumption per client IP (verify, reset) | `30` per hour | `EMAIL_CONSUME_IP_HOURLY_LIMIT` |
+| Reset requests per identifier (forgot) | `3` per hour, `10` per day | `EMAIL_SEND_RECIPIENT_HOURLY_LIMIT`, `EMAIL_SEND_RECIPIENT_DAILY_LIMIT` |
+| Reset requests per client IP (forgot) | `20` per hour | `EMAIL_SEND_IP_HOURLY_LIMIT` |
+
+### Activate an email
+
+`POST /auth/email/verify` — body `token` (or `lookup_id` + `secret`).
 
 ```bash
-curl -X POST "http://localhost:8000/auth/register" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=no_email_user&password=SecurePass123!&user_group_hash=grp-default123..."
+curl -s -X POST "$API/auth/email/verify" \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$LINK_TOKEN\"}"
 ```
 
-This creates a normal account and does not require activation. The user can later add one or more emails through `/users/me/emails` and login with any activated email plus the existing password.
+A missing or malformed token also returns `202`. When the activation changes the account's
+sign-in identity, all of the user's sessions and refresh families are revoked. Activation links
+expire after `EMAIL_ACTIVATION_TOKEN_TTL_SECONDS` (default `86400`).
 
-### Check Username/Email Availability
+### Request a password reset email
 
-**Scenario**: Check if username or email is available before registration.
-
-> Availability is a registration helper only. Do **not** use it to infer whether activation, forgot-password, reset, resend, or delivery status applies to an account.
+`POST /auth/password/forgot` — body `email_or_username` (aliases `identifier`, `email`,
+`username`). A missing identifier is the only non-`202` validation error (`400 VAL_3002`).
 
 ```bash
-# Check username
-curl -X POST "http://localhost:8000/auth/check-availability" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=desired_username"
-
-# Check email
-curl -X POST "http://localhost:8000/auth/check-availability" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "email=desired@email.com"
-
-# Check both
-curl -X POST "http://localhost:8000/auth/check-availability" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=desired_username&email=desired@email.com"
+curl -s -X POST "$API/auth/password/forgot" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"email_or_username":"alice@example.com"}'
 ```
 
-**Response:**
+A message is queued only when the identifier matches an active account's **activated** email, or
+its username (the message then goes to the primary activated email). Pending, removed or unknown
+addresses and legacy-only `email` values get the same `202` and no message.
+
+The emailed link is built from, in order: a pinned base URL (`AUTH_EMAIL_PUBLIC_BASE_URL`, then
+`PUBLIC_AUTH_BASE_URL` or `BASE_URL`); the `X-Public-Base-Url` request header, when it is an http(s)
+origin listed in `ALLOWED_ORIGINS`; otherwise the API's own origin. A BFF, or the browser app itself,
+should send its frontend origin in `X-Public-Base-Url` unless the deployment pins one.
+
+### Reset the password
+
+`POST /auth/password/reset` — body `new_password` (alias `password`) and `token` (or `lookup_id` +
+`secret`). Links from `POST /auth/password/forgot` and admin-issued reset links are both accepted.
+
+```bash
+curl -s -X POST "$API/auth/password/reset" \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$LINK_TOKEN\",\"new_password\":\"$NEW_PASSWORD\"}"
+```
+
+`new_password` is validated before the link: a missing value returns `400 VAL_3002` and a weak one
+`400 VAL_3007`, whatever the link state. Every link outcome (reset, unknown, expired, already used)
+then returns `202`. A successful reset revokes all of the user's sessions and refresh families.
+A reset link works once, and not after `EMAIL_PASSWORD_RESET_TOKEN_TTL_SECONDS` (default `3600`).
+
+## Change the password
+
+`POST /auth/password/change` — access token plus `current_password` and `new_password` as a JSON
+object or form fields. The current password is the step-up proof, so no recent sign-in is needed.
+Do not send password fields to `PUT /users/profile`; it rejects them with `400 VAL_3001` and points
+here.
+
+```bash
+curl -s -X POST "$API/auth/password/change" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"current_password\":\"$CURRENT_PASSWORD\",\"new_password\":\"$NEW_PASSWORD\"}"
+```
+
 ```json
-{
-  "success": true,
-  "username_available": true,
-  "email_available": true
-}
+{"success": true, "message": "Password changed successfully"}
 ```
 
----
+No new tokens are issued. Every other session and refresh family of the user is revoked. The
+calling session stays valid: keep using the same access token, and the refresh token keeps working
+too.
 
-## Email Activation and Password Reset
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VAL_3002` | A field is missing |
+| `400` | `VAL_3007` | New password rejected by the policy (checked with the username as context) |
+| `401` | `AUTH_1003` | Access token missing, expired or revoked |
+| `401` | `AUTH_1001` | Wrong current password (same generic posture as login) |
+| `429` | `INT_7005` | Attempt limit reached; `Retry-After` is set |
 
-Email remains optional. A user can register and use the account without email. Activated emails are additional login identifiers, not account prerequisites.
+Attempts that pass the field and policy checks are counted, successful or not: by default `5` per
+user per hour (`AUTH_CHANGE_PASSWORD_USER_HOURLY_LIMIT`), `5` per session per hour
+(`AUTH_CHANGE_PASSWORD_SESSION_HOURLY_LIMIT`) and `20` per client IP per hour
+(`AUTH_CHANGE_PASSWORD_IP_HOURLY_LIMIT`).
 
-Public email-flow endpoints:
+## Validate an access token
 
-- `POST /auth/email/verify`
-- `POST /auth/password/forgot`
-- `POST /auth/password/reset`
-
-### Add an email to the current user
+`GET /auth/validate` — access token only. API keys are not accepted here; use
+[`POST /auth/validate-api-key`](#validate-an-api-key).
 
 ```bash
-curl -X POST "http://localhost:8000/users/me/emails" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: add-email-001" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"email":"new@example.com"}'
+curl -s "$API/auth/validate" -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-Response is generic `202 Accepted`:
-
-```json
-{ "success": true, "message": "If the request can be processed, it has been accepted." }
-```
-
-### Verify activation link
-
-```bash
-curl -X POST "http://localhost:8000/auth/email/verify" \
-  -H "Content-Type: application/json" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"token":"LOOKUP_ID.SECRET"}'
-```
-
-Activation returns generic `202`, does **not** create a session, and requires a later password login. Successful public activation revokes existing sessions for that user.
-
-### Forgot/reset password
-
-```bash
-curl -X POST "http://localhost:8000/auth/password/forgot" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: forgot-001" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"email_or_username":"user@example.com"}'
-
-curl -X POST "http://localhost:8000/auth/password/reset" \
-  -H "Content-Type: application/json" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"token":"LOOKUP_ID.SECRET","new_password":"NewSecurePass123!"}'
-```
-
-Both public routes preserve generic response posture. Reset consume changes the password when the token is valid, revokes target-user sessions, and does not create a replacement session.
-
-Recovery is activated-email-only. A pending, removed, suppressed, unknown, or legacy-only `users.email` value receives the same generic public response but does not enqueue a recovery message.
-
-### Public email-flow client rules
-
-- Treat `202` as "accepted for processing", not proof that an account/email/token exists.
-- On `429`, honor `Retry-After` and retry later.
-- Use `Idempotency-Key` on retryable add/resend/forgot/reset requests and keep the same key bound to the same route, recipient, purpose, and body.
-- Do not call `/auth/check-availability` to infer activation/reset eligibility.
-- Do not log activation/reset token secrets or full links.
-
----
-
-## Authenticated Password Change
-
-Use `POST /auth/password/change` for self-service password rotation. Do not send password-changing fields to `PUT /users/profile`; that profile route rejects them with sanitized guidance back to this endpoint.
-
-```bash
-curl -X POST "http://localhost:8000/auth/password/change" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"current_password":"CURRENT_PASSWORD","new_password":"long passphrase accepted by policy"}'
-```
-
-**Success response:**
-
-```json
-{
-  "success": true,
-  "message": "Password changed successfully"
-}
-```
-
-Runtime contract:
-
-- Requires the current authenticated access session plus `current_password` re-authentication.
-- Applies the shared password policy before any hash write.
-- Does not create or return a new access token, refresh token, or session.
-- Preserves the authorizing access `jti` and refresh `family_id`, then revokes the user's other active sessions/families.
-- Returns generic `AUTH_1001` invalid-credentials posture for a wrong current password.
-- Returns `VAL_3007` with safe reason codes only for weak new passwords.
-- Returns `429` plus `Retry-After` / `INT_7005` when change-password rate limits are exceeded.
-- Does not expose passwords, password hashes, token secrets, full links, recipient payloads, or provider payloads in responses or audit records.
-
-Reset-link consumption remains separate: `/auth/password/reset` is public, returns generic `202`, creates no session, and revokes existing sessions only after a successful password update.
-
----
-
-## Session Management
-
-### Validate Access Token
-
-**Scenario**: Check if the current access token is valid. Refresh tokens are rejected here.
-
-```bash
-curl -X GET "http://localhost:8000/auth/validate" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "valid": true,
-  "auth_method": "session",
-  "user": {
-    "user_hash": "usr-abc123...",
-    "username": "john_doe",
-    "user_type": "consumer"
-  },
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "Default Project"
-  },
-  "session": {
-    "created_at": null,
-    "scope": "project",
-    "expires_at": "2026-06-14T12:15:00+00:00",
-    "refresh_expires_at": "2026-06-17T12:00:00+00:00",
-    "remember_me": false
-  },
-  "user_groups": ["developers", "qa_team"],
-  "plan": {
-    "provider": "stripe",
-    "state": "active",
-    "active": true,
-    "plan_code": "pro",
-    "tier_code": "monthly",
-    "current_period_end": "2026-08-25T00:00:00Z",
-    "trial_end": null,
-    "cancel_at_period_end": false
-  }
-}
-```
-
-The `session` object reports the access token's `expires_at`, the refresh family's `refresh_expires_at` (the `absolute_expires_at` when `remember_me=true`, otherwise the sliding family expiry), and the `remember_me` flag for the active family. For a project-scoped consumer, `plan` is resolved at validation time and is not authentication authority. `/auth/validate` also sets an `X-Auth-Process-Time` response header (validation duration in milliseconds).
-
-### Refresh Token Rotation
-
-**Scenario**: Use the current refresh token to rotate the token pair. `/auth/refresh` accepts the `refresh_token` cookie and/or explicit `refresh_token` body/form value. It rejects access tokens, legacy session tokens, and `Authorization: Bearer` refresh transport.
-
-```bash
-curl -X POST "http://localhost:8000/auth/refresh" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "refresh_token=YOUR_REFRESH_TOKEN"
-```
-
-**Response:**
 ```jsonc
 {
   "success": true,
-  "message": "Token refreshed successfully",
+  "message": null,
+  "valid": true,
+  "auth_method": "session",
+  "user": {"user_hash": "usr-3f6c...", "username": "alice", "email": null, "user_type": "consumer"},
+  "project": {"project_hash": "9F2C...", "project_name": "My Project"},
+  "session": {
+    "created_at": null,
+    "scope": "project",
+    "expires_at": "2026-09-24T12:15:00+00:00",
+    "refresh_expires_at": "2026-09-27T12:00:00.482113+00:00",
+    "remember_me": false
+  },
+  "user_groups": ["user_proj-2b7c..."],
+  "plan": {"provider": "stripe", "state": "active", "active": true, "plan_code": "pro", "tier_code": "monthly",
+           "current_period_end": "2026-10-24T00:00:00Z", "trial_end": null, "cancel_at_period_end": false}
+}
+```
+
+- `user.email` is always `null` here; `project` is `null` for platform sessions.
+- `session.expires_at` is the access-token expiry; `session.refresh_expires_at` is the family's
+  absolute deadline for `remember_me` families and the current sliding expiry otherwise.
+- `user_groups` holds group **names**: the user's groups in the project for consumers, and fixed
+  labels such as `root_users`, `project_admins` or `platform_root_users` for root and admin.
+- The response carries an `X-Auth-Process-Time` header (milliseconds).
+- Any missing, malformed, expired or revoked token, or a failed context check, returns `401`.
+
+## Refresh the token pair
+
+`POST /auth/refresh` — refresh token only, from the `refresh_token` cookie and/or the
+`refresh_token` form field. JSON bodies are not read and `Authorization` is ignored, so an access
+token can never refresh itself.
+
+```bash
+curl -s -X POST "$API/auth/refresh" --data-urlencode "refresh_token=$REFRESH_TOKEN"
+```
+
+The response is a `LoginResponse` (`message: "Token refreshed successfully"`) for the same scope and
+project, with new cookies. `user_groups` contains consumers' groups with real hashes (empty for root
+and admin), `project` has only `project_hash` and `project_name`, and consumers get `plan`.
+
+Rotation rules:
+
+1. The presented refresh token becomes `used`, and the family's previous access token stops
+   working immediately.
+2. Without `remember_me`, the family window restarts at 72 hours; with it, the original 30-day
+   deadline is kept and `refresh_expires_in` shrinks.
+3. Presenting the token that was **just** rotated again within the replay grace (default `10`
+   seconds) returns `401 AUTH_1022` and leaves the family alive: the earlier refresh succeeded, so
+   continue with its tokens (a browser already has them as cookies).
+4. Presenting any older token, or the just-rotated one after the grace, is treated as theft:
+   `401 AUTH_1015` and the whole family, including its current access token, is revoked. Later
+   attempts get `401 AUTH_1017`.
+5. The user's context is re-checked; if it no longer holds (inactive user, lost project access,
+   inactive project), the family is revoked with `401 AUTH_1020`.
+
+| Status | Code | When | Client action |
+| --- | --- | --- | --- |
+| `401` | `AUTH_1014` | No refresh token in cookie or form | Log in |
+| `401` | `AUTH_1016` | Cookie and form values differ | Send one transport |
+| `401` | `AUTH_1018` | An access token was sent as the refresh token | Send the refresh token |
+| `401` | `AUTH_1019` | Refresh JWT expired | Log in |
+| `401` | `AUTH_1013` | Unknown, tampered or otherwise invalid refresh token | Log in |
+| `401` | `AUTH_1022` | Just-rotated token replayed within the grace | Use the newer pair; do not retry with this token |
+| `401` | `AUTH_1015` | Reuse detected; family revoked | Clear credentials and log in |
+| `401` | `AUTH_1017` | Family already revoked (logout, reuse, password reset, admin action) | Log in |
+| `401` | `AUTH_1020` | User or project context no longer valid | Log in; contact an admin if it persists |
+
+Client-side handling of these codes is in [refresh failures](errors.md#refresh-failures) and the
+[client integration guide](client-authentication-guide.md#refresh-strategy).
+
+## Switch project
+
+`POST /auth/switch-project` — access token, plus the current refresh token of the **same** family
+(cookie or `refresh_token` form field), plus form field `project_hash`.
+
+```bash
+curl -s -X POST "$API/auth/switch-project" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "project_hash=$OTHER_PROJECT_HASH" \
+  --data-urlencode "refresh_token=$REFRESH_TOKEN"
+```
+
+The switch rotates the family into a pair scoped to the new project (same `family_id`, same
+`remember_me` mode) and sets new cookies. The same user-type rules as login apply: root may target
+any active project, admins their assigned projects, consumers projects reachable through their
+groups.
+
+> [!IMPORTANT]
+> Switching requires a **recent sign-in**: the session's `auth_time` must be at most 300 seconds
+> old, or the session must have completed an OAuth reauth
+> (`POST /auth/oauth/{connection}/reauth/start`) within that window. Refreshing and switching keep
+> the original `auth_time`, so they never renew it. After the window, log in again with the target
+> `project_hash` instead.
+
+```jsonc
+{
+  "success": true,
+  "message": "Successfully switched to project: Second Project",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
-  "user": {
-    "user_hash": "usr-abc123...",
-    "username": "john_doe",
-    "email": "john@example.com",
-    "user_type": "consumer"
-  },
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "Default Project"
-  },
-  "accessible_projects": [...],
-  "user_groups": [...]
+  "expires_at": "2026-09-24T12:19:00.105339Z",
+  "refresh_expires_at": "2026-09-27T12:04:00.105339Z",
+  "remember_me": false,
+  "project": {"project_hash": "41AB...", "project_name": "Second Project", "project_description": null},
+  "user_groups": ["user_proj-9c0d..."]
 }
 ```
 
-### Logout
+`SwitchProjectResponse` has no `user`, `accessible_projects` or `plan`, and `user_groups` holds
+names.
 
-**Scenario**: End current session. Logout validates the access token, revokes the associated refresh family, and clears both `session_token` and `refresh_token` cookies.
+| Status | Code | When |
+| --- | --- | --- |
+| `401` | `AUTH_1003` | Access token missing, expired or revoked |
+| `401` | `AUTH_1008` | No recent sign-in or OAuth reauth |
+| `401` | `AUTH_1014`, `AUTH_1016`, `AUTH_1022`, other refresh codes | Refresh token missing, from another family, or already rotated (see [Refresh the token pair](#refresh-the-token-pair)) |
+| `403` | `AUTHZ_2003` | No access to the project, or project inactive or archived |
+| `404` | `NF_4002` | Project not found |
 
-An **expired** access token is accepted here. Logout only destroys state, so an
-authentic token whose 15-minute window has closed is still valid proof of which
-family to revoke — a tab left idle can log itself out instead of leaving the
-family alive for the remainder of its refresh TTL. Signature, token type, and the
-lifecycle claims are still enforced, so a forged or malformed token is refused.
+## Log out
 
-```bash
-curl -X POST "http://localhost:8000/auth/logout" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Logged out successfully"
-}
-```
-
----
-
-## Validate API Key
-
-**Scenario**: A service or caller validates a user-created API key and resolves the owner's user/project/permissions context. This is the API-key analog of `GET /auth/validate` and is the only auth route that accepts `X-API-Key`.
-
-`POST /auth/validate-api-key` authenticates through the `X-API-Key` header (format `sk_<public_id>.<secret>`). It does **not** use a JWT.
+`POST /auth/logout` — access token only, no body.
 
 ```bash
-curl -X POST "http://localhost:8000/auth/validate-api-key" \
-  -H "X-API-Key: sk_pubid123.secret456..." \
-  -H "User-Agent: my-client/1.0"
+curl -s -X POST "$API/auth/logout" -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-**Response:**
 ```json
+{"success": true, "message": "Logged out successfully"}
+```
+
+Logout revokes the caller's refresh family and its access session and clears the `session_token`
+(`Path=/`) and `refresh_token` (`Path=/auth`) cookies. The user's other sessions are untouched.
+
+The access token must still be valid: an expired or revoked one gets `401` before the handler runs,
+and the family then stays alive until its refresh window ends. To log out an idle session, refresh
+first and log out with the new access token.
+
+## Validate an API key
+
+`POST /auth/validate-api-key` — the user API key in `X-API-Key` (`sk_<public_id>.<secret>`), no
+body. It is the API-key counterpart of `GET /auth/validate`, for services that receive a user's key
+and need its owner, project and permissions. Keys are created and revoked through the
+[API keys suite](api-keys/README.md).
+
+```bash
+curl -s -X POST "$API/auth/validate-api-key" -H "X-API-Key: $API_KEY"
+```
+
+```jsonc
 {
   "success": true,
+  "message": null,
   "valid": true,
   "auth_method": "api_key",
-  "user": {
-    "user_hash": "usr-abc123...",
-    "username": "john_doe",
-    "email": "john@example.com",
-    "user_type": "consumer"
-  },
-  "project": {
-    "project_hash": "proj-xyz789...",
-    "project_name": "Default Project"
-  },
-  "plan": {
-    "provider": "stripe",
-    "state": "free",
-    "active": false,
-    "plan_code": null,
-    "tier_code": null,
-    "current_period_end": null,
-    "trial_end": null,
-    "cancel_at_period_end": false
-  },
-  "api_key": {
-    "key_id": "key-internal-id...",
-    "public_id": "pubid123"
-  },
-  "user_groups": ["developers"],
-  "permissions": ["read", "write"]
+  "user": {"user_hash": "usr-3f6c...", "username": "alice", "email": "alice@example.com", "user_type": "consumer"},
+  "project": {"project_hash": "9F2C...", "project_name": "My Project"},
+  "api_key": {"key_id": "Qm9vbXNoYWth", "public_id": "Qm9vbXNoYWth"},
+  "user_groups": ["user_proj-2b7c..."],
+  "permissions": [],
+  "plan": {"provider": "stripe", "state": "free", "active": false, "plan_code": null, "tier_code": null,
+           "current_period_end": null, "trial_end": null, "cancel_at_period_end": false}
 }
 ```
 
-Behavior contract:
+- Keys are always project-scoped, so `project` is set. `plan` is set for consumer-owned keys only.
+- `permissions` comes from the owner's global roles for consumers; root and admin owners get fixed
+  labels (`admin`, `global_admin` or `project_admin`).
+- The raw key and its secret are never echoed; `api_key` holds only `key_id` and `public_id`.
+- The response carries an `X-Auth-Process-Time` header.
 
-- Authenticates via `X-API-Key`; the key is always project-scoped, so `project` is populated.
-- Consumer keys also receive the response-only subscription `plan`; non-consumer keys leave it unset.
-- Sending **both** `Authorization` and `X-API-Key` returns `400` with `detail: "ambiguous_credentials"`. Send exactly one credential type.
-- Never returns the raw key or its secret component; only the secret-safe `api_key {key_id, public_id}` object.
-- An invalid, missing, revoked, or expired key returns `401`.
-- Sets an `X-Auth-Process-Time` response header (validation duration in milliseconds).
-- Honoring `X-API-Key` here does **not** mean it is accepted on other protected routes; those still require an access JWT or `session_token` cookie.
+| Status | `error.code` | When |
+| --- | --- | --- |
+| `400` | `VAL_3001` | Both `Authorization` and `X-API-Key` were sent (`error.message` is `ambiguous_credentials`) |
+| `401` | `AUTH_1003` | Key missing, malformed, unknown, revoked or expired, or owner inactive; `error.message` ends with the specific code (`AUTH_1010`, `AUTH_1011`, `AUTH_1012`, `NF_4010`) |
+| `403` | `AUTHZ_2001` | The key owner no longer has access to the key's project (message may end with `AUTHZ_2008`) |
 
----
+The message suffixes are listed in [codes carried only in the message](errors.md#codes-carried-only-in-the-message).
 
-## Project Switching
+## OAuth sign-in
 
-### Switch to Different Project
+Signing in through an external identity provider is documented in the [OAuth suite](oauth/README.md):
+the project's backend mints a single-use `init_token` with `POST /auth/oauth/init` (user API key),
+the browser posts it to `POST /auth/oauth/start`, and `GET /auth/oauth/callback` completes the
+login. The callback returns the same `LoginResponse` and sets the same cookies as
+`POST /auth/login`; only active consumer accounts can sign in this way. Everything on this page
+(validation, refresh, switching, logout) then applies unchanged. The deprecated `/auth/google/*`
+aliases run on the same pipeline; see the [Google OAuth suite](google-oauth/README.md).
 
-**Scenario**: Change project context without re-logging in. Switch-project requires a valid access token plus the current refresh token (cookie or explicit `refresh_token` field) and returns a new project-scoped access+refresh pair.
+## Session revocation
 
-```bash
-curl -X POST "http://localhost:8000/auth/switch-project" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "project_hash=proj-newproject456...&refresh_token=YOUR_REFRESH_TOKEN"
-```
+| Event | Revoked |
+| --- | --- |
+| `POST /auth/logout` | The caller's family |
+| `POST /auth/password/change` | Every family of the user except the caller's; the caller's access token keeps working |
+| Successful `POST /auth/password/reset` | Every family of the user |
+| `POST /auth/email/verify` that changes the sign-in identity | Every family of the user |
+| Refresh-token reuse outside the grace | That family |
+| User deactivated, deleted, bulk-deactivated or bulk-deleted by an admin | Every family of the user |
+| User type changed by root (any type-change route or bulk update) | Every family of the user |
+| User group or project group deleted, project-group grant revoked, or project removed from a project group | Sessions whose project is no longer reachable |
+| Context check fails on a later request (user inactive, project inactive or archived, user removed from the granting group, admin unassigned) | That family, at that request |
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Successfully switched to project: New Project",
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "project": {
-    "project_hash": "proj-newproject456...",
-    "project_name": "New Project",
-    "project_description": "Switched project context"
-  },
-  "user_groups": ["developers"]
-}
-```
+Email removal and primary-email changes also revoke the user's other sessions; see
+[email management](users/email-management.md).
 
----
+## Scenarios
 
-## Common Scenarios
-
-### Scenario 1: Complete Authentication Flow
-
-**Goal**: Full login → work → logout cycle.
+### Sign in, call an API, refresh, log out
 
 ```bash
-# Step 1: Login
-LOGIN_JSON=$(curl -s -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john_doe&password=SecurePass123!&project_hash=proj-a123...")
-ACCESS_TOKEN=$(echo "$LOGIN_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$LOGIN_JSON" | jq -r '.refresh_token')
+API=http://localhost:8000
+LOGIN=$(curl -s -X POST "$API/auth/login" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=$ALICE_PASSWORD" \
+  --data-urlencode "project_hash=$PROJECT_HASH")
+ACCESS_TOKEN=$(jq -r '.access_token' <<<"$LOGIN")
+REFRESH_TOKEN=$(jq -r '.refresh_token' <<<"$LOGIN")
 
-# Step 2: Use the access token for authenticated requests
-curl -X GET "http://localhost:8000/users/profile" \
+curl -s "$API/users/profile" -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Rotate: both values change, and the old access token stops working at once.
+REFRESHED=$(curl -s -X POST "$API/auth/refresh" --data-urlencode "refresh_token=$REFRESH_TOKEN")
+ACCESS_TOKEN=$(jq -r '.access_token' <<<"$REFRESHED")
+REFRESH_TOKEN=$(jq -r '.refresh_token' <<<"$REFRESHED")
+
+curl -s -X POST "$API/auth/logout" -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+### Work in two projects
+
+Within 300 seconds of signing in, switch with the current pair:
+
+```bash
+SWITCHED=$(curl -s -X POST "$API/auth/switch-project" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-
-# Step 3: Refresh access token with the refresh token only
-REFRESH_JSON=$(curl -s -X POST "http://localhost:8000/auth/refresh" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "refresh_token=$REFRESH_TOKEN")
-ACCESS_TOKEN=$(echo "$REFRESH_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$REFRESH_JSON" | jq -r '.refresh_token')
-
-# Step 4: Logout
-curl -X POST "http://localhost:8000/auth/logout" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "User-Agent: my-client/1.0"
+  --data-urlencode "project_hash=$OTHER_PROJECT_HASH" \
+  --data-urlencode "refresh_token=$REFRESH_TOKEN")
+ACCESS_TOKEN=$(jq -r '.access_token' <<<"$SWITCHED")
+REFRESH_TOKEN=$(jq -r '.refresh_token' <<<"$SWITCHED")
 ```
 
-### Scenario 2: Self-Service Registration
+Later in the session the switch returns `401 AUTH_1008`; log in again with
+`project_hash=$OTHER_PROJECT_HASH`. A client that needs both projects at once can hold one family
+per project by logging in twice.
 
-**Goal**: User registers and immediately starts working.
+### Administer the platform
 
-```bash
-# Step 1: Check availability
-curl -X POST "http://localhost:8000/auth/check-availability" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=newdev&email=newdev@company.com"
+Root and admin dashboards that are not tied to one project use `/auth/platform/login` and refresh
+the platform pair with `/auth/refresh` as usual. `GET /auth/validate` reports
+`session.scope: "platform"` and `project: null` for these sessions.
 
-# Step 2: Register (requires knowing a user group hash)
-REGISTER_JSON=$(curl -s -X POST "http://localhost:8000/auth/register" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=newdev&password=SecurePass123!&email=newdev@company.com&user_group_hash=grp-public123...")
-ACCESS_TOKEN=$(echo "$REGISTER_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$REGISTER_JSON" | jq -r '.refresh_token')
+### Detect a stolen refresh token
 
-# Step 3: Start working
-curl -X GET "http://localhost:8000/users/profile" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-### Scenario 3: Multi-Project User Workflow
-
-**Goal**: User works across multiple projects in a single session.
-
-```bash
-# Step 1: Login (must specify project_hash for all users)
-LOGIN_JSON=$(curl -s -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=john_doe&password=SecurePass123!&project_hash=proj-a123...")
-ACCESS_TOKEN=$(echo "$LOGIN_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$LOGIN_JSON" | jq -r '.refresh_token')
-
-# Step 2: Switch project and rotate both credentials
-SWITCH_JSON=$(curl -s -X POST "http://localhost:8000/auth/switch-project" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "project_hash=proj-b456...&refresh_token=$REFRESH_TOKEN")
-ACCESS_TOKEN=$(echo "$SWITCH_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$SWITCH_JSON" | jq -r '.refresh_token')
-```
-
-### Scenario 4: Platform Login and Refresh
-
-**Goal**: Root/admin logs into platform scope and refreshes without project binding.
-
-```bash
-PLATFORM_JSON=$(curl -s -X POST "http://localhost:8000/auth/platform/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "username=root_admin&password=RootPass123!")
-ACCESS_TOKEN=$(echo "$PLATFORM_JSON" | jq -r '.access_token')
-REFRESH_TOKEN=$(echo "$PLATFORM_JSON" | jq -r '.refresh_token')
-
-REFRESHED_PLATFORM_JSON=$(curl -s -X POST "http://localhost:8000/auth/refresh" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "User-Agent: my-client/1.0" \
-  -d "refresh_token=$REFRESH_TOKEN")
-```
-
-Platform refresh preserves platform scope, permissions, and the absence of project binding.
-
-### Scenario 5: Refresh Reuse Revokes Family
-
-If a refresh token is used successfully and then presented again later, the server treats that as reuse/theft, revokes the family, invalidates active access sessions in that family, and returns HTTP 401 with the canonical `{status, error}` envelope. Clients must serialize refresh calls and clear local credentials after a reuse/family-revoked response.
-
-### Scenario 6: Inactive, Deleted, or Bulk-Deactivated User
-
-When an administrator deactivates, deletes, or bulk-deactivates a user, the API revokes that user's active access sessions and refresh families. Old access tokens fail on `/auth/validate` and protected routes, and old refresh tokens fail on `/auth/refresh` with HTTP 401. Clients should clear credentials and stop refresh retries; only an administrator can reactivate the account.
-
----
-
-## Best Practices
-
-### Security
-
-1. **Use HTTPS** - Always use HTTPS in production
-2. **Store tokens securely** - Never store access or refresh tokens in localStorage
-3. **Refresh before access expiry** - Use `refresh_token` cookie/body only; do not send access tokens to `/auth/refresh`
-4. **Logout on inactivity** - Implement automatic logout
-
-### Token Management
-
-1. **Check access expiry** - Access tokens are short-lived (default 15 min). Refresh families are 72h sliding by default, or a 30-day absolute window when `remember_me=true`
-2. **Handle refresh failures** - Re-authenticate if refresh fails due to invalid/reused/revoked/expired refresh token
-3. **Clear on logout** - Ensure tokens are cleared on logout
-4. **Serialize refresh calls** - Concurrent duplicate refresh attempts can revoke the family under strict single-use rotation
-
-### Error Handling
-
-1. **Handle 401** - Redirect to login on authentication errors
-2. **Handle 403** - Show access denied message
-3. **Retry logic** - Implement retry for network errors
-
----
+If an attacker and the legitimate client both hold the same refresh token, whichever presents it
+second (after the grace) gets `401 AUTH_1015`, and the family is revoked for both. The legitimate
+client must then log in again; the attacker's tokens are dead.
 
 ## Troubleshooting
 
-### Invalid Credentials
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `400 VAL_3002` "Project identifier is required for login" | `/auth/login` without `project_hash` | Send `project_hash`; root and admin can use `/auth/platform/login` |
+| `401 AUTH_1001` with a correct-looking email | The address is not activated for this account (for example the registration `email`) | Log in with the username, or add and activate the address |
+| `401 AUTH_1001` for an account that used to work | Account deactivated, or password changed or reset | Check the account state as an admin; use password recovery |
+| `403 AUTHZ_2003` on consumer login | No user group of the user reaches the project, or the project is inactive or archived | Check `GET /admin/user-groups/users/{user_hash}/groups` and `GET /admin/user-groups/{group_hash}/project-groups` ([groups suite](groups/README.md)) |
+| `403 AUTHZ_2002` on platform login | The account is a consumer | Use `/auth/login` with a `project_hash` |
+| Every protected call returns `401` right after a refresh | The client kept using the previous access token | Replace both tokens from every refresh or switch response |
+| `401 AUTH_1014` from `/auth/refresh` | JSON body, or the refresh cookie was not sent (cookie path is `/auth`) | Send the `refresh_token` form field, or call the API at its root path so the cookie applies |
+| `401 AUTH_1015`, then `AUTH_1017` | Two refreshes used the same token, or a token was replayed later | Serialize refreshes per family; log in again |
+| `401 AUTH_1008` on switch-project | Sign-in older than the recent sign-in window | Log in again with the target `project_hash` |
+| `401` on logout | Access token already expired | Refresh, then log out with the new access token |
+| `401` right after an admin changed groups | The user no longer reaches the session's project, which revokes the session | Log in to a project the user can still reach |
+| `429 INT_7005` on login | Failed-login bucket full | Wait for `Retry-After`; the window does not reset on success |
+| Forgot password returns `202` but no email arrives | No activated address matches the identifier, or delivery is disabled or the email worker is not running | Confirm an activated address exists; check `EMAIL_DELIVERY_ENABLED` and the email worker ([email suite](email/README.md)) |
 
-**Error**: "Invalid username or password"
+## Related
 
-**Solutions**:
-1. Check username/email is correct
-2. Check password is correct
-3. Check if user account is active
-
-### Session Expired
-
-**Error**: "Invalid or expired session"
-
-**Solutions**:
-1. If the access token expired, call `/auth/refresh` with the current refresh token
-2. If refresh fails, clear tokens and re-authenticate with login
-3. Check Redis connection (access sessions and refresh families are stored in Redis)
-
-### Refresh Rejected
-
-**Error**: "A valid refresh token is required", `REFRESH_TOKEN_REUSED`, `REFRESH_FAMILY_REVOKED`, or `TOKEN_TYPE_INVALID`
-
-**Solutions**:
-1. Ensure `/auth/refresh` receives `refresh_token` cookie or explicit `refresh_token` field
-2. Do not send `Authorization: Bearer <access_token>` to `/auth/refresh`
-3. Stop retrying after refresh-token reuse/family-revoked errors and force login
-4. Legacy access/session tokens are not upgrade credentials and cannot refresh
-
-### Access Denied to Project
-
-**Error**: "Access denied to project"
-
-**Solutions**:
-1. Check user is in a user group with access
-2. Verify user group has access to project group
-3. Verify project is in the project group
-
-```bash
-# Check user's groups
-curl -X GET "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-
-# Check group's project access
-curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-### Username/Email Already Exists
-
-**Error**: "Username already exists" or "Email already exists"
-
-**Solutions**:
-1. Use check-availability endpoint first
-2. Choose a different username/email
-3. Contact admin if you own the account
-
----
-
-## Quick Reference
-
-### Authentication Endpoints
-
-| Operation | Endpoint | Method | Auth Required |
-|-----------|----------|--------|---------------|
-| Login | `/auth/login` | POST | No |
-| Platform login (root/admin) | `/auth/platform/login` | POST | No (consumer rejected 403) |
-| Register | `/auth/register` | POST | No |
-| Validate access token | `/auth/validate` | GET | Access JWT or `session_token` cookie |
-| Validate API key | `/auth/validate-api-key` | POST | `X-API-Key` header |
-| Logout | `/auth/logout` | POST | Access JWT or `session_token` cookie (expiry tolerated) |
-| Refresh token | `/auth/refresh` | POST | Refresh token only |
-| Switch project | `/auth/switch-project` | POST | Access token issued within the last `recent_reauth_seconds` (default 300s) + current refresh token |
-| Check availability | `/auth/check-availability` | POST | No |
-| Verify email activation | `/auth/email/verify` | POST | No (public; JSON body) |
-| Forgot password | `/auth/password/forgot` | POST | No (public; JSON body) |
-| Reset password | `/auth/password/reset` | POST | No (public; JSON body) |
-| Change password | `/auth/password/change` | POST | Access JWT or `session_token` cookie (JSON body) |
-
-### API Key Lifecycle Endpoints
-
-| Operation | Endpoint | Method | Auth Required |
-|-----------|----------|--------|---------------|
-| Create own API key | `/users/api-keys` | POST | Access JWT or `session_token` cookie |
-| List own API keys | `/users/api-keys` | GET | Access JWT or `session_token` cookie |
-| View/update/revoke own API key | `/users/api-keys/{key_id}` | GET/PUT/DELETE | Access JWT or `session_token` cookie |
-| Create/list admin-scoped API keys | `/api-keys` | POST/GET | Admin/root access JWT or `session_token` cookie |
-| View/update/revoke admin-scoped API key | `/api-keys/{key_id}` | GET/PUT/DELETE | Admin/root access JWT or `session_token` cookie |
-| List keys for user/project | `/api-keys/users/{user_hash}`, `/api-keys/projects/{project_hash}` | GET | Admin/root access JWT or `session_token` cookie |
-
-These endpoints manage API-key records. They do not mean `X-API-Key` is accepted as protected-route authentication yet.
-
-### Form Fields
-
-Form-encoded routes (`application/x-www-form-urlencoded`):
-
-| Endpoint | Required Fields | Optional Fields |
-|----------|-----------------|-----------------|
-| `/auth/login` | username, password, **project_hash** (required for ALL user types: root, admin, consumer) | remember_me (bool, default false) |
-| `/auth/platform/login` | username, password | remember_me (bool, default false) — only root/admin; consumer rejected |
-| `/auth/register` | username, password, user_group_hash | email |
-| `/auth/refresh` | refresh_token (or `refresh_token` cookie) | - |
-| `/auth/switch-project` | project_hash, refresh_token (or `refresh_token` cookie) | - |
-| `/auth/check-availability` | (at least one) | username, email |
-
-JSON-body routes (`application/json`):
-
-| Endpoint | Auth | Required Fields | Optional Fields |
-|----------|------|-----------------|-----------------|
-| `/auth/email/verify` | None (public) | token | - |
-| `/auth/password/forgot` | None (public) | email_or_username (also accepts `identifier`/`email`/`username`) | - |
-| `/auth/password/reset` | None (public) | token, new_password (also accepts `password`) | - |
-| `/auth/password/change` | Access JWT or `session_token` cookie | current_password, new_password | - |
-
-`X-API-Key` route (header auth, no body fields):
-
-| Endpoint | Auth | Notes |
-|----------|------|-------|
-| `/auth/validate-api-key` | `X-API-Key` header | Sending both `Authorization` and `X-API-Key` returns `400 ambiguous_credentials` |
-
----
-
-## Migration and Rollback Notes
-
-This auth change is intentionally breaking:
-
-- `/auth/refresh` rejects legacy access/session tokens immediately. Clients using the old contract must log in again and store `refresh_token`.
-- Deployments must set `JWT_SECRET_KEY`; missing secret fails outside explicit tests.
-- New refresh-family Redis namespaces may be cleared on rollback or left to expire naturally: `refresh_family:*`, `refresh_token:*`, `refresh_used:*`, `revoked_family:*`, `user_sessions:*`, and `user_refresh_families:*`.
-- Rollback means redeploying the previous release. Tokens issued by this true-refresh release are not compatible with the old session-rotation release, so user re-login may be required.
-- Do not silently re-enable access-token refresh without a new approved spec.
-
----
-
-## Related Documentation
-
-- **[Getting Started](getting-started.md)** — Platform setup, bootstrap, and first steps
-- **[Client Authentication Guide](client-authentication-guide.md)** — JS, Python, and React integration examples
-- **[Error Reference](errors.md)** — Error codes, response shapes, and troubleshooting
-- **[Users Documentation Suite](users/README.md)** - User profile, access summary, and lifecycle management
-- **[Groups Documentation Suite](groups/README.md)** - Understanding user groups and project access flow
-- **[Projects Documentation Suite](projects/README.md)** - Project access control and project switching context
-
+- [Getting started](getting-started.md) — configuration, first root, first project and user
+- [Client integration guide](client-authentication-guide.md) — cookies, storage, refresh strategy, code
+- [Error reference](errors.md) — envelope and code catalog
+- [OAuth suite](oauth/README.md) — external identity sign-in, linking and reauth
+- [API keys suite](api-keys/README.md) — key lifecycle and format
+- [Users email management](users/email-management.md) — adding and activating addresses
+- [Groups suite](groups/README.md) — how users reach projects

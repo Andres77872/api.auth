@@ -2,8 +2,8 @@
 -- Email Activation Integrity Triggers
 -- ===================================================================================
 -- Defensive database-boundary checks for email activation data. Stored procedures own
--- workflow transitions; these triggers only enforce invariants that must never be
--- bypassed by ad-hoc writes.
+-- workflow transitions; these triggers enforce invariants that must never be bypassed
+-- by ad-hoc writes, and record outbox enqueue / dead-letter activity.
 --
 -- Privacy posture:
 -- - No plaintext token material is logged, copied, or generated here.
@@ -150,10 +150,63 @@ BEGIN
     END IF;
 END//
 
+-- ===================================================================================
+-- EMAIL OUTBOX ACTIVITY
+-- ===================================================================================
+-- Every enqueue path inserts into email_messages, and sp_finalize_email_message can
+-- promote a retry to dead on its own, so the outbox row is the one place that sees
+-- both events. Details carry ids, purpose, template and error code; never recipients.
+
+DROP TRIGGER IF EXISTS trg_email_messages_after_insert//
+CREATE TRIGGER trg_email_messages_after_insert AFTER INSERT ON email_messages FOR EACH ROW
+BEGIN
+    INSERT INTO activity_logs (
+        id, user_id, activity_type, details, target_user_id, metadata, severity_level, created_at
+    ) VALUES (
+        CONCAT('act-log-', UUID()),
+        NULL,
+        'email_message_enqueued',
+        CONCAT('Email message enqueued: ', NEW.template_code),
+        NEW.user_id,
+        JSON_OBJECT(
+            'email_message_id', NEW.id,
+            'purpose', NEW.purpose,
+            'template_code', NEW.template_code
+        ),
+        'info',
+        NOW()
+    );
+END//
+
+DROP TRIGGER IF EXISTS trg_email_messages_after_update//
+CREATE TRIGGER trg_email_messages_after_update AFTER UPDATE ON email_messages FOR EACH ROW
+BEGIN
+    IF NEW.status = 'dead' AND OLD.status <> 'dead' THEN
+        INSERT INTO activity_logs (
+            id, user_id, activity_type, details, target_user_id, metadata, severity_level, created_at
+        ) VALUES (
+            CONCAT('act-log-', UUID()),
+            NULL,
+            'email_message_dead_lettered',
+            CONCAT('Email message dead-lettered: ', NEW.template_code),
+            NEW.user_id,
+            JSON_OBJECT(
+                'email_message_id', NEW.id,
+                'purpose', NEW.purpose,
+                'template_code', NEW.template_code,
+                'attempt_count', NEW.attempt_count,
+                'error_code', NEW.last_error_code
+            ),
+            'critical',
+            NOW()
+        );
+    END IF;
+END//
+
 DELIMITER ;
 
 -- ===================================================================================
 -- EMAIL ACTIVATION TRIGGERS CREATED
 -- ===================================================================================
 SELECT 'Email activation triggers created!' AS status,
-       'Integrity triggers for user_emails, user_email_link_tokens, and email_messages' AS details;
+       'Integrity triggers for user_emails, user_email_link_tokens, and email_messages; outbox activity' AS details;

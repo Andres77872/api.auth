@@ -12,6 +12,7 @@ Security properties:
 - Constant-time comparison via hmac.compare_digest()
 - Dummy hash for malformed tokens (timing-attack resistance)
 - One-time secret reveal at creation only
+- Validation-cache hits re-verify the presented secret against the cached stored_hash
 """
 
 import base64
@@ -19,6 +20,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from typing import Optional
 
 # Load pepper at module level — raises KeyError if missing (fail-fast at startup)
 API_KEY_PEPPER = os.environ["API_KEY_PEPPER"].encode("utf-8")
@@ -113,3 +115,45 @@ def verify_api_key_token(presented_token: str, public_id: str, stored_hash: byte
 
     # Constant-time comparison
     return hmac.compare_digest(candidate, stored_hash)
+
+
+def encode_secret_hash_for_cache(stored_hash: bytes) -> str:
+    """Encode the stored BINARY(32) hash as hex for the JSON validation cache entry.
+
+    The cache entry carries the stored hash (never the secret) so every cache hit
+    can re-verify the presented token instead of trusting the public_id alone.
+    """
+    return bytes(stored_hash).hex()
+
+
+def verify_api_key_token_against_cache(presented_token: str, public_id: str, cached: Optional[dict]) -> bool:
+    """Verify a presented token against the stored hash held in a cache entry.
+
+    A cache hit is only trustworthy when the presented secret matches. Entries that
+    are not "valid", lack a well-formed hash (e.g. written before hashes were cached),
+    or do not match must be treated as a cache miss by the caller.
+
+    Args:
+        presented_token: The full token string from the client
+        public_id: The public_id parsed from the presented token (cache key)
+        cached: The decoded apikey:{public_id} cache entry, or None
+
+    Returns:
+        True only if the entry is valid and the presented token verifies against it
+    """
+    if not cached or cached.get("validation_status") != "valid":
+        return False
+
+    encoded_hash = cached.get("secret_hash")
+    if not isinstance(encoded_hash, str):
+        return False
+
+    try:
+        stored_hash = bytes.fromhex(encoded_hash)
+    except ValueError:
+        return False
+
+    if len(stored_hash) != hashlib.sha256().digest_size:
+        return False
+
+    return verify_api_key_token(presented_token, public_id, stored_hash)

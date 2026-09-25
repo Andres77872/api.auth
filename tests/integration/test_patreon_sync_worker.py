@@ -84,11 +84,7 @@ class FakePatreonSyncStore:
     observations: list[dict[str, Any]] = field(default_factory=list)
     current_entitlements: list[dict[str, Any]] = field(default_factory=list)
     activities: list[dict[str, Any]] = field(default_factory=list)
-    stale_marks: list[dict[str, Any]] = field(default_factory=list)
-    retry_records: list[dict[str, Any]] = field(default_factory=list)
     completed_jobs: list[dict[str, Any]] = field(default_factory=list)
-    heartbeats: list[dict[str, Any]] = field(default_factory=list)
-    health_events: list[dict[str, Any]] = field(default_factory=list)
     purge_calls: list[dict[str, Any]] = field(default_factory=list)
     destructive_delete_attempts: list[dict[str, Any]] = field(default_factory=list)
 
@@ -136,28 +132,9 @@ class FakePatreonSyncStore:
     def record_activity(self, **kwargs) -> dict[str, Any]:
         return self.record_patreon_activity(**kwargs)
 
-    def mark_entitlement_stale(self, **kwargs) -> dict[str, Any]:
-        self.stale_marks.append(dict(kwargs))
-        return {"status": "stale", **kwargs}
-
-    def record_sync_retry(self, **kwargs) -> dict[str, Any]:
-        self.retry_records.append(dict(kwargs))
-        return {"status": "retry", **kwargs}
-
     def complete_sync_job(self, **kwargs) -> dict[str, Any]:
         self.completed_jobs.append(dict(kwargs))
         return {"status": kwargs.get("status", "completed"), **kwargs}
-
-    def record_worker_heartbeat(self, **kwargs) -> dict[str, Any]:
-        self.heartbeats.append(dict(kwargs))
-        return {"status": "heartbeat", **kwargs}
-
-    def record_patreon_worker_heartbeat(self, **kwargs) -> dict[str, Any]:
-        return self.record_worker_heartbeat(**kwargs)
-
-    def record_provider_health(self, **kwargs) -> dict[str, Any]:
-        self.health_events.append(dict(kwargs))
-        return {"status": "health", **kwargs}
 
     def purge_expired_patreon_proofs(self, **kwargs) -> dict[str, Any]:
         self.purge_calls.append({"kind": "proofs", **kwargs})
@@ -292,8 +269,9 @@ async def test_provider_429_backs_off_and_marks_existing_snapshot_stale_without_
 
     await _run_worker_once(worker, mode="full_campaign_sweep")
 
-    assert store.retry_records or store.stale_marks, "Patreon 429 must produce backoff/stale evidence"
-    assert any("42" in str(record) for record in store.retry_records + store.stale_marks), "retry_after_seconds must be preserved"
+    failures = [activity for activity in store.activities if activity.get("event") == "patreon_sync_failed"]
+    assert failures, "Patreon 429 must produce patreon_sync_failed backoff evidence"
+    assert any(record["details"].get("retry_after_seconds") == 42 for record in failures), "retry_after_seconds must be preserved"
     assert not any(record.get("status") in {"free", "revoked"} for record in store.current_entitlements), (
         "rate limits must not destructively downgrade current entitlement"
     )
@@ -324,22 +302,31 @@ async def test_creator_token_failure_reports_degraded_health_and_preserves_last_
 
     await _run_worker_once(worker, mode="full_campaign_sweep")
 
-    assert store.health_events or store.stale_marks, "creator-token failure must be observable as degraded health/stale state"
+    assert any(activity.get("event") == "patreon_token_revoked" for activity in store.activities), (
+        "creator-token failure must be observable as patreon_token_revoked activity"
+    )
     assert not any(record.get("status") in {"free", "revoked"} for record in store.current_entitlements), (
         "creator-token failure alone must not downgrade entitlement"
     )
 
 
 @pytest.mark.asyncio
-async def test_worker_records_heartbeat_after_one_shot_processing(fake_redis):
+async def test_worker_records_heartbeat_after_one_shot_processing(fake_redis, monkeypatch):
     store = FakePatreonSyncStore(campaigns=[{"campaign_id": "campaign-mw-alpha"}])
     client = FakePatreonClient(campaign_pages={("campaign-mw-alpha", None): {"data": [_active_member()], "next_cursor": None}})
     worker = _make_worker(fake_redis=fake_redis, client=client, store=store)
+    heartbeats: list[dict[str, Any]] = []
+    worker_module = import_module("src.workers.patreon_sync_worker")
+    monkeypatch.setattr(
+        worker_module.SystemMetrics,
+        "record_patreon_worker_heartbeat",
+        lambda worker_id, **kwargs: heartbeats.append({"worker_id": worker_id, **kwargs}) or True,
+    )
 
     await _run_worker_once(worker, mode="full_campaign_sweep")
 
-    assert store.heartbeats, "worker heartbeat must be recorded for system health"
-    assert all("creator_access_token" not in str(heartbeat).lower() for heartbeat in store.heartbeats)
+    assert heartbeats, "worker heartbeat must be recorded in Redis for system health"
+    assert all("creator_access_token" not in str(heartbeat).lower() for heartbeat in heartbeats)
 
 
 @pytest.mark.asyncio

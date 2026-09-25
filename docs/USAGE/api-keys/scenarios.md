@@ -1,144 +1,113 @@
-# API Keys Scenarios and Examples
+# API keys scenarios
 
-Concrete, repo-specific curl workflows for issuing, validating, auditing, and rotating API keys.
+End-to-end workflows. Each step links to the task in [usage.md](usage.md); fields and error codes
+are in [reference.md](reference.md).
 
-> All examples send a `User-Agent` header (required; missing → `422`). `{key_id}` path segments are
-> the key's **`public_id`**. Writes are form-encoded. Create / update / delete require recent
-> re-authentication (step-up); if step-up has lapsed, re-authenticate first.
+## Issue a key and use it from a service
 
----
+A developer creates a key for a CI job, and the service that receives it checks it on each call.
 
-## Scenario 1: User Issues a Key and Captures the One-Time Token
+1. Sign in (or reauthenticate) so the session has recent authentication.
+2. [Create the key](usage.md#create-a-key) and store `data.api_key` in the CI secret store.
 
-Goal: a logged-in user creates a key, saves the token, then inspects / updates / revokes it.
+   ```bash
+   curl -X POST "http://localhost:8000/users/api-keys" \
+     -H "Authorization: Bearer $TOKEN" \
+     -d "project_hash=$PROJECT_HASH" \
+     -d "name=ci-runner" \
+     -d "expires_at=2027-01-01T00:00:00Z"
+   ```
 
-```bash
-# 1. Create the key (form fields). The full token is shown exactly once.
-curl -X POST "http://localhost:8000/users/api-keys" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-app/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH&name=ci-runner&expires_at=2026-12-31T00:00:00Z"
-# data.api_key = "sk_<public_id>.<secret>" SAVE THIS NOW; it cannot be retrieved again.
-# data.public_id = "<public_id>" use this as {key_id}
+3. The CI job sends the token to the receiving service, which validates it:
 
-# 2. List your keys (token is NOT included here)
-curl -X GET "http://localhost:8000/users/api-keys?active_only=true" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
+   ```bash
+   curl -X POST "http://localhost:8000/auth/validate-api-key" \
+     -H "X-API-Key: $API_KEY"
+   ```
 
-# 3. Inspect one key by public_id
-curl -X GET "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
+4. The service authorizes the call from `user.user_hash`, `project.project_hash` and
+   `permissions`. The result for that `public_id` is cached for `60` seconds, so the service may
+   call validation on every request.
 
-# 4. Update name / expiry (at least one field required)
-curl -X PUT "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-app/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "name=ci-runner-prod"
+## Provision a key for a teammate
 
-# 5. Revoke when done (immediate cache invalidation)
-curl -X DELETE "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
-```
+An admin creates a key owned by another user in a project the admin administers.
 
----
+1. Confirm the admin has `manage_users` in the project (root does not need it).
+2. [Create the key for the user](usage.md#create-a-key-for-a-user):
 
-## Scenario 2: Validate a Key (X-API-Key header)
+   ```bash
+   curl -X POST "http://localhost:8000/api-keys" \
+     -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -d "user_hash=$USER_HASH" \
+     -d "project_hash=$PROJECT_HASH" \
+     -d "name=service-key" \
+     -d "expires_at=2027-01-01T00:00:00Z"
+   ```
 
-Goal: a service exchanges a raw key for the owner's identity, project, groups, and permissions.
-This calls the **auth suite's** `POST /auth/validate-api-key`.
+3. Deliver `data.api_key` to the owner over a secure channel. The owner can then see and revoke it
+   under `/users/api-keys`.
 
-```bash
-# Correct: raw token in X-API-Key, NO Authorization header
-curl -X POST "http://localhost:8000/auth/validate-api-key" \
-  -H "X-API-Key: sk_<public_id>.<secret>" \
-  -H "User-Agent: my-service/1.0"
-# { "success": true, "valid": true, "auth_method": "api_key",
-#     "user": {...}, "project": {...},
-#     "api_key": { "key_id": "...", "public_id": "..." },
-#     "user_groups": [...], "permissions": [...] }
-```
+| Response | Meaning |
+| --- | --- |
+| `403` `AUTHZ_2001` | The project is outside the admin's scope |
+| `403` `AUTHZ_2002` | The admin lacks `manage_users` for another user's key |
+| `409` `CONF_5005` | The owner is inactive or does not reach the project, or the project is inactive or archived |
 
-Wrong way (do not send both credentials):
+## Audit keys for a user or project
 
-```bash
-# Sending BOTH Authorization and X-API-Key 400 ambiguous_credentials
-curl -X POST "http://localhost:8000/auth/validate-api-key" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-API-Key: sk_<public_id>.<secret>" \
-  -H "User-Agent: my-service/1.0"
-# 400 { "detail": "ambiguous_credentials" }
-```
+1. List a project's keys, including revoked ones, with owner details:
 
-The raw key and secret are never echoed back. See
-[Authentication Usage Cases](../authentication-usage-cases.md).
+   ```bash
+   curl "http://localhost:8000/api-keys/projects/$PROJECT_HASH?limit=200" \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+   ```
 
----
+2. List everything one user holds (an admin sees only keys in projects they administer):
 
-## Scenario 3: Admin Provisions a Key for Another User
+   ```bash
+   curl "http://localhost:8000/api-keys/users/$USER_HASH?limit=200" \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+   ```
 
-Goal: an admin issues a key on behalf of a teammate. Requires the `manage_users` effective
-permission for the target's project (root bypasses) and project scope.
+3. For each key, check `is_active`, `expires_at` (a past date means the key no longer validates,
+   even in the few minutes before the expiry sweep sets `is_active` to false), `last_used_at` and
+   `revoked_at`.
+4. Review who created, changed or revoked keys in the activity log: filter on the
+   `api_key_created`, `api_key_updated`, `api_key_revoked`, `api_key_reactivated` and
+   `api_key_expired` activity types
+   (see [Audit logs usage](../audit_logs/usage.md)).
 
-```bash
-curl -X POST "http://localhost:8000/api-keys" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: ops/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hash=$USER_HASH&project_hash=$PROJECT_HASH&name=service-key&expires_at=2027-01-01T00:00:00Z"
-# data.api_key shown once; hand it to the user over a secure channel.
-```
+## Rotate a key without downtime
 
-Failure cues:
-- `403 ACCESS_DENIED` → the project is not in the admin's scope.
-- `403 INSUFFICIENT_PERMISSIONS` → the admin lacks `manage_users` for another user's key.
-  (Creating a key for **yourself** as an admin never needs `manage_users`.)
+1. [Create the replacement key](usage.md#create-a-key) in the same project and save the new token.
+2. Validate the new token with `POST /auth/validate-api-key` before deploying it.
+3. Deploy the new token to every consumer.
+4. Watch the old key's `last_used_at` until it stops changing.
+5. [Revoke the old key](usage.md#revoke-a-key):
 
----
+   ```bash
+   curl -X DELETE "http://localhost:8000/users/api-keys/$OLD_PUBLIC_ID" \
+     -H "Authorization: Bearer $TOKEN"
+   ```
 
-## Scenario 4: Admin Audits Keys by User and by Project
+To give consumers a grace period instead, set a near-future `expires_at` on the old key with `PUT`.
+Validation rejects it once that time passes, but the key can still be extended later; revoke it
+when the rotation is done.
 
-```bash
-# All keys for one user (response includes user_hash + username).
-# Non-root admins see only keys within their own projects; total is recomputed.
-curl -X GET "http://localhost:8000/api-keys/users/$USER_HASH?active_only=true" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "User-Agent: ops/1.0"
+## Respond to a leaked key
 
-# All keys for one project (response includes project_hash + project_name).
-curl -X GET "http://localhost:8000/api-keys/projects/$PROJECT_HASH?limit=100" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "User-Agent: ops/1.0"
+1. Identify the key from what leaked: `public_id` is the part between `sk_` and the last `.`.
+2. Revoke it immediately. The owner uses `DELETE /users/api-keys/{key_id}`; an admin uses
+   `DELETE /api-keys/{key_id}` with a `revoke_reason`:
 
-# Root-scoped flat list MUST include a filter (user_hash or project_hash):
-curl -X GET "http://localhost:8000/api-keys?user_hash=$USER_HASH" \
-  -H "Authorization: Bearer $ROOT_TOKEN" -H "User-Agent: ops/1.0"
-# Omitting both as root 400 INVALID_INPUT
-```
+   ```bash
+   curl -X DELETE "http://localhost:8000/api-keys/$PUBLIC_ID" \
+     -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -d "revoke_reason=leaked in build log"
+   ```
 
----
-
-## Scenario 5: Rotate a Key (create new, validate, revoke old)
-
-Goal: replace a credential with zero downtime.
-
-```bash
-# 1. Create the replacement key
-curl -X POST "http://localhost:8000/users/api-keys" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-app/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH&name=ci-runner-v2"
-# save data.api_key (NEW token) and data.public_id (NEW public_id)
-
-# 2. Validate the new key works before cutting over
-curl -X POST "http://localhost:8000/auth/validate-api-key" \
-  -H "X-API-Key: sk_<new_public_id>.<new_secret>" \
-  -H "User-Agent: my-app/1.0"
-
-# 3. Deploy the new token, then revoke the old key (immediate cache invalidation)
-curl -X DELETE "http://localhost:8000/users/api-keys/$OLD_PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
-```
-
-Tip: instead of revoking immediately, you can set a short future `expires_at` on the old key with
-`PUT` to give consumers a grace window — then it deactivates automatically.
+3. The Redis validation entry is dropped, so the next validation fails with
+   `API key has been revoked: AUTH_1012`.
+4. Issue a replacement key and deploy it (see [rotation](#rotate-a-key-without-downtime)).
+5. Review the owner's recent activity in the [audit logs](../audit_logs/usage.md).

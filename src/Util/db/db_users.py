@@ -112,6 +112,21 @@ def get_user_type(user_id: str) -> Optional[str]:
     )
 
 
+def _revoke_auth_state_after_type_change(user_id: str, previous_user_type: Optional[str],
+                                         new_user_type: Optional[str]) -> None:
+    """Sign a user out everywhere after their user type changed.
+
+    Access sessions carry the user type (and, for root/admin, the permission set) and
+    refresh rotation carries both forward, so after a promotion or demotion the user
+    must sign in again to get a session that matches the new type.
+    """
+    if not new_user_type or previous_user_type == new_user_type:
+        return
+    from src.Util.auth_lifecycle import revoke_user_auth_state
+
+    revoke_user_auth_state(str(user_id), reason="user_type_changed")
+
+
 def update_user_type(user_id: str, new_user_type: str, project_id: str = None, updated_by: str = None) -> bool:
     """
     Update user type and project assignment.
@@ -128,19 +143,37 @@ def update_user_type(user_id: str, new_user_type: str, project_id: str = None, u
     Raises:
         DatabaseError: On database operation errors
         ValidationError: On invalid user type
+        NotFoundError: If an admin project has no admin group (nothing is changed)
     """
     def _update():
+        previous_user_type = get_user_type(user_id)
+
         with get_connection() as con:
             cur = con.cursor()
 
+            # Check the admin group before touching the user: the nested helpers share
+            # this connection and commit it, so a later failure could not undo the type.
+            if new_user_type == 'admin' and project_id:
+                cur.callproc('sp_find_admin_group_for_project', [project_id])
+                admin_group_result = cur.fetchone()
+                while cur.nextset():
+                    pass
+                if not admin_group_result:
+                    raise NotFoundError(
+                        message="No admin group found for project",
+                        error_code=ErrorCode.GROUP_NOT_FOUND,
+                        details={"project_id": project_id}
+                    )
+
             cur.callproc('sp_update_user_type', [user_id, new_user_type])
-            
+
             # Only assign project for admin users
             if new_user_type == 'admin' and project_id:
                 add_admin_to_project(user_id, project_id, assigned_by=updated_by)
 
             con.commit()
             cache_manager.invalidate_user_cache(user_id)
+            _revoke_auth_state_after_type_change(user_id, previous_user_type, new_user_type)
             return True
     
     return handle_db_operation(
@@ -511,6 +544,8 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
         )
     
     def _update():
+        previous_user_type = get_user_type(user_id) if user_type else None
+
         with get_connection() as con:
             cur = con.cursor()
 
@@ -533,8 +568,9 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
             if rows_affected > 0:
                 con.commit()
 
-                # Invalidate all cache for this user when user data changes
+                # Drop cached data for this user; their sessions stay valid
                 cache_manager.invalidate_user_cache(user_id)
+                _revoke_auth_state_after_type_change(user_id, previous_user_type, user_type)
 
                 return get_user_by_id(user_id)
             else:
@@ -628,6 +664,43 @@ def change_user_password(
 
     cache_manager.invalidate_user_cache(user_id)
     return {"password_changed": True, "rows_affected": rows_affected}
+
+
+def set_user_active_status(user_id: str, is_active: bool) -> bool:
+    """
+    Activate or deactivate a user account (group memberships are left untouched).
+
+    Args:
+        user_id: ID of user to update
+        is_active: New active flag
+
+    Returns:
+        True if the user row was updated, False if no such user
+
+    Raises:
+        DatabaseError: On database operation errors
+    """
+    def _set():
+        with get_connection() as con:
+            cur = con.cursor()
+            cur.callproc('sp_set_user_status', [user_id, bool(is_active)])
+
+            # SP returns: SELECT ROW_COUNT() as rows_affected
+            result = cur.fetchone()
+            while cur.nextset():
+                pass
+            rows_affected = _row_value(result, "rows_affected", 0, 0) or 0
+
+            if rows_affected > 0:
+                con.commit()
+                cache_manager.invalidate_user_cache(user_id)
+                return True
+            return False
+
+    return handle_db_operation(
+        _set,
+        error_context=f"set_user_active_status(user_id={user_id}, is_active={is_active})"
+    )
 
 
 def delete_user(user_id: str, deleted_by: str = None) -> bool:
@@ -871,7 +944,7 @@ def grant_user_project_access(user_id: str, project_id: str, granted_by: str = N
             if not group_result:
                 raise NotFoundError(
                     message=f"No default user group found for project",
-                    error_code="NF_4003"
+                    error_code=ErrorCode.GROUP_NOT_FOUND
                 )
             
             user_group_id = group_result[0]
@@ -1258,7 +1331,7 @@ def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None)
         if user_type != 'admin':
             raise ValidationError(
                 message="User is not an admin user",
-                error_code="VAL_3001",
+                error_code=ErrorCode.INVALID_INPUT,
                 details={"user_id": user_id, "user_type": user_type}
             )
         
@@ -1271,7 +1344,7 @@ def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None)
             if not admin_group_result:
                 raise NotFoundError(
                     message=f"No admin group found for project",
-                    error_code="NF_4003"
+                    error_code=ErrorCode.GROUP_NOT_FOUND
                 )
             
             admin_group_id = admin_group_result[0]
@@ -1321,7 +1394,7 @@ def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = N
             if not admin_groups:
                 raise NotFoundError(
                     message=f"User is not in any admin group for project",
-                    error_code="NF_4003"
+                    error_code=ErrorCode.GROUP_NOT_FOUND
                 )
             
             success = False

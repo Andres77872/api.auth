@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.Util.admin_scope import AdminScope
+
 
 def _admin_session():
     session = MagicMock()
@@ -47,8 +49,10 @@ async def test_bulk_deactivation_uses_correct_helper_shape_and_revokes_auth_stat
         "errors": [],
     }
 
+    scope = AdminScope(user_id="1", user_type="admin", project_ids=frozenset({"1"}))
     with patch("src.routes.bulk_operations.validate_session", return_value=session), \
          patch("src.routes.bulk_operations.get_user_by_hash", return_value=admin), \
+         patch("src.routes.bulk_operations.resolve_admin_scope", return_value=scope), \
          patch("src.routes.bulk_operations.bulk_update_users", return_value=result) as bulk_update, \
          patch("src.routes.bulk_operations.revoke_user_auth_state", create=True) as revoke_auth_state, \
          patch("src.routes.bulk_operations.ActivityLogger.log_bulk_user_update", return_value=None):
@@ -65,6 +69,7 @@ async def test_bulk_deactivation_uses_correct_helper_shape_and_revokes_auth_stat
             {"user_hash": "usr-target-002", "updates": {"is_active": False}},
         ],
         updated_by="1",
+        scope=scope,
     )
     revoke_auth_state.assert_any_call("2", reason="bulk_user_deactivated")
     revoke_auth_state.assert_any_call("3", reason="bulk_user_deactivated")

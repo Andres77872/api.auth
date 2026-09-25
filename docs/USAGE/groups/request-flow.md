@@ -1,137 +1,103 @@
-# Groups Request and Data Flow
+# Groups request flow
 
-How group-related requests move through the API, DB layer, stored procedures, and session lifecycle.
+What happens to a request on `/admin/user-groups` or `/admin/project-groups`, and how group state
+is checked again on every later authenticated request.
 
----
-
-## 1. Create a User Group
-
-Flow for `POST /admin/user-groups`:
-
-1. `src/routes/admin_user_groups.py:create_user_group_endpoint()` receives form fields
-2. `require_admin()` validates the session and checks `admin` or `manage_users`
-3. The route resolves the acting user for audit context
-4. `src/Util/db/db_user_groups.py:create_user_group()` runs
-5. Stored procedure `sp_create_user_group` persists the record
-6. The API returns `CreateUserGroupResponse`
-
-Result: a global user group exists, but it still has no members, no project reach, and no permissions until further links are added.
-
----
-
-## 2. Add Members to a User Group
-
-Flow for `POST /admin/user-groups/{hash}/members` and `/members/bulk`:
-
-1. Route validates the acting session
-2. The user group is looked up by hash
-3. The user or users are resolved by hash
-4. Membership rows are written to `user_group_members`
-5. Bulk responses aggregate successes and failures per input user
-
-Important runtime detail:
-
-- a membership may be reactivated instead of inserted fresh if it already existed but was inactive
-
----
-
-## 3. Grant User Group Access to a Project Group
-
-Flow for `POST /admin/user-groups/{hash}/project-groups`:
-
-1. The route validates the session
-2. It resolves the user group and project group
-3. `db_user_groups.py:grant_user_group_project_group_access()` runs
-4. Stored procedure `sp_grant_user_group_project_group_access` writes into `user_group_project_groups`
-
-This is the main access bridge in the application.
-
-Without this row, user-group membership alone does not give project access.
-
----
-
-## 4. Login and Session Embedding
-
-Flow for `POST /auth/login`:
-
-1. `src/routes/auth.py:login()` verifies credentials
-2. The code resolves accessible projects through the groups-of-groups chain
-3. `auth_lifecycle.py:_issue_token_pair()` builds the session payload with active user-group context
-4. The session payload stores:
-   - `user_group_ids`
-   - `user_group_names`
-   - current project context if one is selected
-5. The token/session is stored and returned
-
-This is why a user can log in and immediately see group context reflected in auth responses.
-
----
-
-## 5. Project Switching
-
-Flow for `POST /auth/switch-project`:
-
-1. The current session is validated
-2. The API checks whether the user can access the requested project through the resolved group chain
-3. A new session is generated with the new project context
-4. Group information relevant to that project context is returned
-
-Operationally, this is one of the moments where group-based access becomes visible to the client without a full fresh login.
-
----
-
-## 6. Default Group Creation During Project Creation
-
-Flow inside `src/Util/db/db_projects.py:create_default_groups()`:
-
-1. Create a default project group for the new project
-2. Insert the new project into `project_group_members`
-3. Create default user groups (`admin_*`, `user_*`, `readonly_*`)
-4. Link each default user group to the default project group through `user_group_project_groups`
-
-This means project onboarding already assumes the group bridge architecture.
-
----
-
-## 7. Soft Delete Behavior
-
-Flow for `DELETE /admin/user-groups/{hash}`:
-
-1. The route resolves the group
-2. It snapshots the impacted users (`get_users_in_group`) and projects (`get_projects_for_user_group`) **before** deletion
-3. `db_user_groups.py:delete_user_group()` executes
-4. Stored procedure `sp_delete_user_group` deactivates:
-   - the user group
-   - its memberships
-   - its project-group access links
-5. On success, `auth_lifecycle.py:revoke_project_sessions_losing_access(..., reason="user_group_deleted")` revokes the snapshotted users' live sessions for the impacted projects
-
-So deleting a user group is effectively a membership, access, **and live-session** teardown, not just a name cleanup. The revoke / project-group delete / project-removal routes follow the same snapshot-then-revoke pattern with reasons `user_group_project_group_access_revoked`, `project_group_deleted`, and `project_removed_from_group` respectively.
-
----
-
-## 8. Access Resolution Query Shape
-
-The core accessible-project resolution uses joins equivalent to:
+## Common pipeline
 
 ```text
-user_group_members
-  → user_groups
-  → user_group_project_groups
-  → project_groups
-  → project_group_members
-  → projects
+request
+  -> platform middleware (CORS, request validation, API audit, auth context)
+  -> HTTPBearerOrCookie: Authorization bearer or session_token cookie        (401 if absent)
+  -> require_admin -> validate_session -> validate_access_session           (401 if invalid)
+  -> permission check: admin | manage_users  or  admin | manage_roles        (403 AUTHZ_2002)
+  -> handler: resolve hashes (active rows only)                              (404)
+  -> admin_ guard on user-group writes                                       (403 AUTHZ_2002)
+  -> DB helper -> stored procedure (MySQL)
+  -> teardown routes only: revoke_project_sessions_losing_access (Redis)
+  -> Pydantic response model
 ```
 
-That is the real runtime data flow behind “user can access this project”.
+1. `HTTPBearerOrCookie` takes the token from `Authorization: Bearer` or the `session_token` cookie.
+2. `require_admin` calls `validate_session()`, which for a JWT runs `validate_access_session()`:
+   signature and claims, the Redis session `session:{access_jti}`, the refresh family, then a live
+   rebuild of the auth context (see [access re-check](#access-re-check-on-every-request)).
+3. The dependency reads `permissions` from the validated session. User-group routes accept `admin`
+   or `manage_users`; project-group routes accept `admin` or `manage_roles`.
+4. The handler looks up the group by hash through `sp_get_user_group_by_hash` or
+   `sp_get_project_group_by_hash`, both of which return active rows only.
+5. User-group writes call `_require_root_for_admin_group()` with the current name and, on rename,
+   the new name. A name starting with `admin_` needs a root caller.
+6. The handler looks up the caller (`get_user_by_hash`) to record who made the change, then calls
+   the DB helper.
 
----
+## Write operations
 
-## Related Documentation
+| Route | DB helper | Stored procedure | Notes |
+| --- | --- | --- | --- |
+| `POST /admin/user-groups` | `create_user_group` | `sp_create_user_group` | Hash is 64 upper-case hex characters |
+| `PUT /admin/user-groups/{group_hash}` | `update_user_group` | `sp_update_user_group` | `COALESCE` keeps omitted values |
+| `DELETE /admin/user-groups/{group_hash}` | `delete_user_group` | `sp_delete_user_group` | Group, memberships and grants deactivated |
+| `POST /admin/user-groups/{group_hash}/members` and `/members/bulk` | `assign_user_to_group` | `sp_assign_user_to_group` | Upsert: reactivates an existing row |
+| `DELETE /admin/user-groups/{group_hash}/members/{user_hash}` | `remove_user_from_group` | `sp_remove_user_from_group` | No session revocation |
+| `POST /admin/user-groups/{group_hash}/project-groups` | `grant_user_group_project_group_access` | `sp_grant_user_group_project_group_access` | Upsert |
+| `DELETE /admin/user-groups/{group_hash}/project-groups/{project_group_hash}` | `revoke_user_group_project_group_access` | `sp_revoke_user_group_project_group_access` | `false` when no row changed, which the route turns into `500` |
+| `POST /admin/project-groups` | `create_project_group` | `sp_create_project_group` | Created empty |
+| `PUT /admin/project-groups/{group_hash}` | `update_project_group` | `sp_update_project_group` | `COALESCE` keeps omitted values; with no values the helper returns nothing and the route answers `500` |
+| `DELETE /admin/project-groups/{group_hash}` | `delete_project_group` | `sp_delete_project_group` | Group, project assignments and grants deactivated |
+| `POST /admin/project-groups/{group_hash}/projects` | `assign_project_to_group` | `sp_assign_project_to_group` | Upsert |
+| `DELETE /admin/project-groups/{group_hash}/projects/{project_hash}` | `remove_project_from_group` | `sp_remove_project_from_group` | |
 
-- **[Groups Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+The helpers live in `src/Util/db/db_user_groups.py` and `src/Util/db/db_project_groups.py`; the
+procedures in `schemas/stored_procedures/02_user_groups.sql` and
+`schemas/stored_procedures/04_project_groups.sql`.
+
+The bulk route loops over `user_hashes`, looks up each user and calls the same helper as the
+single add. It logs one `bulk_group_assignment` activity entry with the success count.
+
+## Teardown with session revocation
+
+The four teardown routes follow the same order:
+
+```text
+1. snapshot   affected user IDs and project IDs (before the change)
+2. mutate     run the stored procedure
+3. revoke     revoke_project_sessions_losing_access(user_ids, project_ids, reason)
+```
+
+| Route | Users snapshot | Projects snapshot |
+| --- | --- | --- |
+| `DELETE /admin/user-groups/{group_hash}` | `get_users_in_group` | `get_projects_for_user_group` |
+| `DELETE /admin/user-groups/{group_hash}/project-groups/{project_group_hash}` | `get_users_in_group` | `get_projects_in_group` (the project group's projects) |
+| `DELETE /admin/project-groups/{group_hash}` | `get_users_with_access_to_project_group` | `get_projects_in_group` |
+| `DELETE /admin/project-groups/{group_hash}/projects/{project_hash}` | `get_users_with_access_to_project_group` | The removed project only |
+
+The snapshot must come first: after the change the procedures that list users and projects no
+longer return the deactivated links. The revocation step itself is described in
+[architecture](architecture.md#session-revocation).
+
+## Access re-check on every request
+
+Group changes reach existing sessions through validation, not only through revocation. Every
+request that carries an access token runs `reconstruct_auth_context()` in
+`src/Util/auth_lifecycle.py` against the database:
+
+```text
+session:{access_jti} found and family active
+  -> project from the session: must exist, be active and not archived
+  -> root:      no further check
+  -> admin:     project must be in sp_get_admin_assigned_projects
+  -> consumer:  sp_get_user_groups_in_project_by_hash must return at least one group;
+                permissions are re-read from the global role
+  -> any failure: refresh family revoked (or the access session), request gets 401
+```
+
+So a user removed from a group loses the project on the next request even though
+`DELETE /admin/user-groups/{group_hash}/members/{user_hash}` revokes nothing itself. New grants
+work the other way: a consumer session stays bound to its project, and the user reaches a newly
+granted project by logging in with its `project_hash` or calling `POST /auth/switch-project`
+([authentication](../authentication-usage-cases.md)).
+
+After the context passes, the validated login object may be served from `session_full:{access_jti}`
+(`VALIDATE_CACHE_TTL`, default `30` seconds), so the group names attached to a session can lag
+a change by that long. The access decision itself does not.

@@ -442,8 +442,9 @@ async def invalidate_user_cache(
         not_found_message=f"User not found: {mask_uuid(user_hash)}"
     )
 
-    # Invalidate user cache
+    # Invalidate user cache; this endpoint also drops the user's access sessions
     success = cache_manager.invalidate_user_cache(target_user.id)
+    cache_manager.invalidate_user_sessions(target_user.id)
 
     if not success:
         from src.Util.error_handler import InternalError
@@ -467,11 +468,14 @@ async def invalidate_user_cache(
     log_success=True
 )
 async def invalidate_project_cache(
-        project_id: Annotated[int, Path(
+        project_id: Annotated[str, Path(
             description=(
-                "Project ID used to match cached `access:*`, `permission:*` and `role:*` keys. "
-                "Declared as an integer, so string project IDs (`proj-...`) are rejected with 400."
+                "Project ID (`proj-...`) used to match cached `access:*`, `permission:*` and `role:*` keys. "
+                "Letters, digits, `-` and `_` only (so it cannot widen the key pattern); anything else is rejected with 400."
             ),
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9_-]+$",
         )],
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None

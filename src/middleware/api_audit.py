@@ -11,7 +11,8 @@ import logging
 from typing import Callable, Optional, Dict, Any
 from fastapi import Request, BackgroundTasks
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
+from starlette.routing import Match
 import io
 
 from src.Util.api_audit_logger import (
@@ -19,9 +20,13 @@ from src.Util.api_audit_logger import (
     generate_audit_id,
     generate_request_id
 )
+from src.Util.audit_session_id import audit_session_id
 from src.Util.auth_constants import PATREON_WEBHOOK_ROUTE
 
 logger = logging.getLogger(__name__)
+
+# Error bodies are standard JSON envelopes; anything larger is not buffered for the audit row.
+_MAX_AUDITED_ERROR_BODY_BYTES = 64 * 1024
 
 
 class APIAuditMiddleware(BaseHTTPMiddleware):
@@ -82,10 +87,8 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             user_type = getattr(user, 'user_type', None)
         
         if hasattr(request.state, 'session_id'):
-            session_id = request.state.session_id
-            # Truncate session_id to 256 characters to fit database column
-            if session_id:
-                session_id = session_id[:256]
+            # Never store token bytes: reduce to the session_id claim or a keyed hash
+            session_id = audit_session_id(request.state.session_id)
         
         if hasattr(request.state, 'project_id'):
             project_id = request.state.project_id
@@ -150,12 +153,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             except Exception as e:
                 logger.warning(f"Failed to read request body: {e}")
         
-        # Get route pattern if available
-        route_pattern = None
-        if hasattr(request, 'scope') and 'route' in request.scope:
-            route = request.scope.get('route')
-            if route and hasattr(route, 'path'):
-                route_pattern = route.path
+        route_pattern = self._route_pattern(request)
         
         # Log request start immediately (more reliable than background tasks)
         logger.info(f"API Audit Middleware: Capturing request [{request.method}] {str(request.url.path)}")
@@ -198,22 +196,19 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             # Try to read response body for error details (only for errors)
             if status_code >= 400:
                 try:
-                    # For StreamingResponse, we can't read the body without consuming it
-                    # So we'll only read for regular Response objects
-                    if hasattr(response, 'body') and not isinstance(response, StreamingResponse):
-                        response_body = response.body
-                        if response_body:
-                            try:
-                                response_body_data = json.loads(response_body.decode('utf-8'))
-                                # Extract error details from standardized error response
-                                if isinstance(response_body_data, dict) and 'error' in response_body_data:
-                                    error_info = response_body_data['error']
-                                    if isinstance(error_info, dict):
-                                        error_code = error_info.get('code')
-                                        error_message = error_info.get('message')
-                            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                                # Body is not JSON or can't be decoded, skip
-                                pass
+                    response_body = await self._read_error_body(response)
+                    if response_body:
+                        try:
+                            response_body_data = json.loads(response_body.decode('utf-8'))
+                            # Extract error details from standardized error response
+                            if isinstance(response_body_data, dict) and 'error' in response_body_data:
+                                error_info = response_body_data['error']
+                                if isinstance(error_info, dict):
+                                    error_code = error_info.get('code')
+                                    error_message = error_info.get('message')
+                        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                            # Body is not JSON or can't be decoded, skip
+                            pass
                 except Exception as e:
                     logger.debug(f"Could not extract error details from response: {e}")
             
@@ -341,6 +336,61 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             # Re-raise the exception
             raise
     
+    @staticmethod
+    def _route_pattern(request: Request) -> Optional[str]:
+        """Path template of the route that will serve the request.
+
+        Routing runs after this middleware, so `scope["route"]` is not set yet: match the
+        app's routes the way the router will. A method mismatch still names the template.
+        """
+
+        partial = None
+        for route in getattr(getattr(request.scope.get("app"), "router", None), "routes", ()):
+            try:
+                match, _ = route.matches(request.scope)
+            except Exception:
+                continue
+            if match == Match.FULL:
+                return getattr(route, "path", None)
+            if match == Match.PARTIAL and partial is None:
+                partial = getattr(route, "path", None)
+        return partial
+
+    @staticmethod
+    async def _read_error_body(response: Response) -> Optional[bytes]:
+        """Return a JSON error body, replaying it to the client when it arrives as a stream.
+
+        `call_next` hands back a streamed response, so the body has to be drained and put
+        back. Only JSON bodies up to `_MAX_AUDITED_ERROR_BODY_BYTES` are captured; a larger
+        one is streamed on unchanged.
+        """
+
+        body = getattr(response, "body", None)
+        if isinstance(body, (bytes, bytearray)):
+            return bytes(body)
+        iterator = getattr(response, "body_iterator", None)
+        if iterator is None or not response.headers.get("content-type", "").startswith("application/json"):
+            return None
+
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in iterator:
+            chunk = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > _MAX_AUDITED_ERROR_BODY_BYTES:
+                break
+
+        async def replay():
+            for chunk in chunks:
+                yield chunk
+            if size > _MAX_AUDITED_ERROR_BODY_BYTES:
+                async for chunk in iterator:
+                    yield chunk
+
+        response.body_iterator = replay()
+        return b"".join(chunks) if size <= _MAX_AUDITED_ERROR_BODY_BYTES else None
+
     def _get_client_ip(self, request: Request) -> Optional[str]:
         """
         Extract client IP address from request.

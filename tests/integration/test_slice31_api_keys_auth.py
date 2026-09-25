@@ -339,6 +339,45 @@ class TestValidateApiKeyAdapterContract:
         assert valid_token["token"].split(".", 1)[1] not in response.text
         assert "secret" not in body["api_key"]
 
+    async def test_validate_api_key_adapter_cached_key_rejects_forged_secret(
+        self, client, fake_redis, valid_token,
+        patched_audit_logger, patched_audit_ids, patched_db_connection,
+        patched_db_error_logger,
+    ):
+        """A warm validation cache must not accept sk_{public_id}.<any secret>."""
+        forged = f"sk_{valid_token['public_id']}.{'A' * 43}"
+
+        with patch("src.middleware.authentication.validate_api_key_lookup") as mock_lookup, \
+             patch("src.middleware.authentication.get_project_by_id", return_value=_make_mock_project(
+                 project_id="proj-1", project_hash="prj-test-hash-001", project_name="Test Project"
+             )), \
+             patch("src.Util.db.db_users.get_user_by_id", return_value=_make_mock_user(
+                 user_id="usr-1", user_hash="usr-owner", user_type="root", username="apiowner",
+             )):
+            mock_lookup.return_value = {
+                "id": "key-safe-1",
+                "public_id": valid_token["public_id"],
+                "owner_user_id": "usr-1",
+                "project_id": "proj-1",
+                "validation_status": "valid",
+                "secret_hash": valid_token["secret_hash"],
+            }
+
+            warm = await client.post(
+                "/auth/validate-api-key",
+                headers={"X-API-Key": valid_token["token"], "User-Agent": "test"},
+            )
+            assert warm.status_code == 200
+            assert fake_redis.exists(f"apikey:{valid_token['public_id']}")
+
+            forged_response = await client.post(
+                "/auth/validate-api-key",
+                headers={"X-API-Key": forged, "User-Agent": "test"},
+            )
+
+        assert forged_response.status_code == 401
+        assert forged not in forged_response.text
+
     async def test_validate_api_key_adapter_rejects_both_auth_headers(
         self, client, valid_token,
         patched_audit_logger, patched_audit_ids, patched_db_connection,

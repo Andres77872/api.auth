@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.integration.admin_scope_support import ADMIN, AUTH, CONSUMER_ADMIN, MEMBER_A, ROOT, USERS, router_client
+from tests.integration.admin_scope_support import ADMIN, AUTH, CONSUMER_ADMIN, MEMBER_A, MEMBER_B, ROOT, USERS, router_client
 
 
 pytestmark = pytest.mark.usefixtures("patched_db_error_logger")
@@ -234,9 +234,9 @@ async def _bulk_assign(caller, user_hashes, role_names):
 
 @pytest.mark.asyncio
 async def test_bulk_role_assignment_cannot_grant_reserved_permissions_or_target_the_caller():
-    privileged, privileged_assign = await _bulk_assign(ADMIN, [MEMBER_A.user_hash], ["superusers"])
-    own, own_assign = await _bulk_assign(ADMIN, [ADMIN.user_hash, MEMBER_A.user_hash], ["readers"])
-    ordinary, ordinary_assign = await _bulk_assign(ADMIN, [MEMBER_A.user_hash], ["readers"])
+    privileged, privileged_assign = await _bulk_assign(ADMIN, [MEMBER_B.user_hash], ["superusers"])
+    own, own_assign = await _bulk_assign(ADMIN, [ADMIN.user_hash, MEMBER_B.user_hash], ["readers"])
+    ordinary, ordinary_assign = await _bulk_assign(ADMIN, [MEMBER_B.user_hash], ["readers"])
     by_root, root_assign = await _bulk_assign(ROOT, [ROOT.user_hash], ["superusers"])
 
     assert privileged.status_code == 403, privileged.text
@@ -247,3 +247,95 @@ async def test_bulk_role_assignment_cannot_grant_reserved_permissions_or_target_
     ordinary_assign.assert_called_once()
     assert by_root.status_code == 200, by_root.text
     root_assign.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_bulk_role_assignment_cannot_replace_a_role_granting_reserved_permissions():
+    """Like PUT /roles/users/{user_hash}/role: the user's current role is checked too."""
+    demote, demote_assign = await _bulk_assign(ADMIN, [MEMBER_B.user_hash, MEMBER_A.user_hash], ["readers"])
+    by_root, root_assign = await _bulk_assign(ROOT, [MEMBER_A.user_hash], ["readers"])
+
+    assert demote.status_code == 403, demote.text
+    assert demote.json()["error"]["details"]["user_hashes"] == [MEMBER_A.user_hash]
+    demote_assign.assert_not_called()
+    assert by_root.status_code == 200, by_root.text
+    root_assign.assert_called_once()
+
+
+# ── /permissions assignments (src/routes/permission_assignments.py) ───────────
+
+PERMS = "src.routes.permission_assignments"
+TEAM = SimpleNamespace(id="ug-team", group_hash="UGH-TEAM", group_name="team")
+ASSIGNMENT_WRITERS = (
+    "assign_permission_group_to_user_group", "remove_permission_group_from_user_group",
+    "assign_permission_group_to_user", "remove_permission_group_from_user",
+)
+
+
+async def _assign(caller, method, path, **kwargs):
+    """Call a /permissions route as `caller`; returns the response and the writers it reached."""
+    role_db = FakeRoleDB()
+    writers = {name: MagicMock(return_value=True) for name in ASSIGNMENT_WRITERS}
+    session = SimpleNamespace(user_id=caller.id, user_hash=caller.user_hash, permissions=[])
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{PERMS}.validate_session", return_value=session))
+        stack.enter_context(patch(f"{PERMS}.get_user_by_hash", side_effect=lambda user_hash, **kw: USERS.get(user_hash)))
+        stack.enter_context(patch(f"{PERMS}.get_user_group_by_hash", side_effect={TEAM.group_hash: TEAM}.get))
+        # The router's guard admits a consumer holding manage_roles from any source.
+        stack.enter_context(patch(f"{PERMS}.check_user_has_permission_extended", side_effect=role_db.check_user_has_permission))
+        stack.enter_context(patch(f"{PERMS}.is_root_user", side_effect=lambda user_id: user_id == ROOT.id, create=True))
+        stack.enter_context(patch(f"{PERMS}.global_roles", role_db))
+        for name, writer in writers.items():
+            stack.enter_context(patch(f"{PERMS}.{name}", writer))
+        async with router_client(PERMS) as client:
+            response = await getattr(client, method)(path, headers=AUTH, **kwargs)
+    return response, {name for name, writer in writers.items() if writer.called}
+
+
+def _assignment_routes(group_hash):
+    """(method, path, kwargs, writer) for every route that assigns or removes a permission group."""
+    return [
+        ("post", f"/permissions/admin/user-groups/{TEAM.group_hash}/permission-groups",
+         {"data": {"permission_group_hash": group_hash}}, "assign_permission_group_to_user_group"),
+        ("delete", f"/permissions/admin/user-groups/{TEAM.group_hash}/permission-groups/{group_hash}",
+         {}, "remove_permission_group_from_user_group"),
+        ("post", f"/permissions/admin/user-groups/{TEAM.group_hash}/permission-groups/bulk",
+         {"data": {"permission_group_hashes": ["GH-PLAIN", group_hash]}}, "assign_permission_group_to_user_group"),
+        ("post", f"/permissions/users/{MEMBER_A.user_hash}/permission-groups",
+         {"data": {"permission_group_hash": group_hash}}, "assign_permission_group_to_user"),
+        ("delete", f"/permissions/users/{MEMBER_A.user_hash}/permission-groups/{group_hash}",
+         {}, "remove_permission_group_from_user"),
+    ]
+
+
+ASSIGNMENT_ROUTE_IDS = ["user-group-assign", "user-group-remove", "user-group-bulk", "user-assign", "user-remove"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", NON_ROOT, ids=NON_ROOT_IDS)
+@pytest.mark.parametrize("method, path, kwargs, writer", _assignment_routes("GH-PRIV"), ids=ASSIGNMENT_ROUTE_IDS)
+async def test_non_root_cannot_assign_or_remove_groups_granting_reserved_permissions(caller, method, path, kwargs, writer):
+    """`manage_roles` via a group assignment unlocks this router, so its names must be root-only here too."""
+    response, reached = await _assign(caller, method, path, **kwargs)
+
+    assert response.status_code == 403, f"{method.upper()} {path}: {response.status_code} {response.text}"
+    assert response.json()["error"]["code"] == "AUTHZ_2002"
+    assert writer not in reached  # the bulk route writes nothing, not even GH-PLAIN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, path, kwargs, writer", _assignment_routes("GH-PLAIN"), ids=ASSIGNMENT_ROUTE_IDS)
+async def test_ordinary_group_assignments_are_unchanged_for_manage_roles_holders(method, path, kwargs, writer):
+    response, reached = await _assign(CONSUMER_ADMIN, method, path, **kwargs)
+
+    assert response.status_code == 200, f"{method.upper()} {path}: {response.status_code} {response.text}"
+    assert writer in reached
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, path, kwargs, writer", _assignment_routes("GH-PRIV"), ids=ASSIGNMENT_ROUTE_IDS)
+async def test_root_assigns_and_removes_groups_granting_reserved_permissions(method, path, kwargs, writer):
+    response, reached = await _assign(ROOT, method, path, **kwargs)
+
+    assert response.status_code == 200, f"{method.upper()} {path}: {response.status_code} {response.text}"
+    assert writer in reached

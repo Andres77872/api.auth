@@ -1,186 +1,179 @@
-# Email Subsystem — Architecture
+# Email architecture
 
-How transactional auth email actually ships in `api.auth`: the durable outbox-worker delivery pipeline, the provider abstraction, template versioning/rendering, idempotency, rate limiting, and the no-real-send safety guard. This describes internals; for endpoint shapes see [reference.md](reference.md). Ops and deploy specifics are operational procedures and live with the runbooks under `docs/RUNBOOKS/`, outside this suite.
+How a transactional email moves from a request to the provider, and the design choices behind
+each step. Endpoint contracts and configuration are in [reference.md](reference.md); rollout and
+recovery procedures are in the [email activation runbook](../../RUNBOOKS/email-activation.md).
 
----
+## Components
 
-## Delivery pipeline (outbox worker)
+| Component | Location | Role |
+| --- | --- | --- |
+| Enqueue paths | Activation and reset stored procedures in `schemas/stored_procedures/14_email_activation.sql`; `src/routes/internal_email.py` | Insert an `email_messages` row with an encrypted render payload |
+| Outbox tables | `schemas/tables/09_email_activation_tables.sql` | `email_messages`, `email_delivery_attempts`, `email_suppressions`, `email_idempotency_keys`, `email_template_catalog`, `email_templates` |
+| Worker | `src/workers/email_worker.py` | Claims, renders, sends, retries, dead-letters, purges |
+| Providers | `src/Util/email/resend_provider.py`, `src/Util/email/mailpit.py`, `src/Util/email/fake_provider.py` | Deliver one rendered message |
+| Templates | `src/Util/email/templates.py`, `src/Util/email/template_validation.py`, `src/Util/db/db_email_templates.py` | Resolve, validate and render templates |
+| Admin template API | `src/routes/email_templates.py` | Edit, preview, test, disable, roll back |
+| Webhook | `src/routes/email_webhooks.py` | Apply provider delivery events and suppressions |
+| Config and guards | `src/Util/email/config.py` | Parse settings, readiness, no-real-send guard |
+| Rate limiter | `src/Util/email/rate_limit.py` | Redis buckets for sends, consumes, resends and failed logins |
+| Crypto helpers | `src/Util/email/security.py` | Recipient hashing, masking, link tokens, payload encryption |
 
-The API never sends mail inline. Request handlers enqueue a durable row in the MySQL **email outbox**; a separate worker process (`src/workers/email_worker.py`, run as `python -m src.workers.email_worker`) drains it.
+## Delivery pipeline
 
 ```text
-enqueue (MySQL outbox row, encrypted render payload)
-        │
-        ▼
-EmailWorker.drain_once()
-   ├─ claim_email_messages(worker_id, limit, lease_seconds)   # leased batch, FOR UPDATE SKIP LOCKED
-   ├─ for each claimed message:  process_message()
-   │     ├─ skip if delivery disabled            → status "disabled"
-   │     ├─ suppression check (row flag or is_recipient_suppressed)
-   │     │      → record sanitized attempt + finalize "suppressed"
-   │     ├─ decrypt transient render payload IN MEMORY (EMAIL_PAYLOAD_KEY / Fernet)
-   │     ├─ render_email_template(template_code, variables)   # strict latest catalog/DB lookup
-   │     ├─ provider.send(EmailSendRequest)
-   │     ├─ on success → record attempt "sent" + finalize "sent" (+ provider_message_id)
-   │     ├─ on disabled template → record cancelled attempt + finalize "cancelled"
-   │     ├─ on template DB lookup failure → retry with EMAIL_TEMPLATE_LOOKUP_FAILED
-   │     ├─ on EmailTemplateError (render) → permanent failure → finalize "dead"
-   │     └─ on EmailProviderError / other → retryable failure
-   │            → compute_next_retry (full jitter) → finalize "retry"
-   │            → or "dead" once attempts ≥ max_attempts (or non-retryable)
-   └─ record worker heartbeat (SystemMetrics)
+request handler / stored procedure
+  INSERT email_messages (status pending, render_payload_ciphertext = Fernet(variables))
+        |
+        v
+EmailWorker.drain_once()                      (skipped entirely while delivery is disabled)
+  sp_claim_email_messages(worker_id, batch, lease)
+     rows that are pending/retry and due, or processing with an expired lease,
+     ordered by priority then age, locked FOR UPDATE SKIP LOCKED, set to processing
+  for each message:
+     suppressed (row flag or active email_suppressions entry)?
+        -> attempt "suppressed", finalize suppressed (EMAIL_SUPPRESSED)
+     decrypt payload in memory
+     render_email_template(code, variables, fail_closed_on_db_error=True)
+     provider.send(...)
+        ok                          -> attempt "sent", finalize sent (+ provider_message_id)
+        template disabled           -> finalize cancelled (EMAIL_TEMPLATE_DISABLED)
+        catalog unreadable          -> retry (EMAIL_TEMPLATE_LOOKUP_FAILED)
+        render error                -> finalize dead (EMAIL_RENDER_FAILED)
+        provider error              -> retry, or dead if non-retryable (EMAIL_PROVIDER_FAILED)
+        anything else               -> retry (EMAIL_WORKER_FAILED)
+  write heartbeat to Redis (TTL 120 seconds)
+        |
+        v
+provider webhook -> sp_apply_email_provider_event -> delivered / bounced / complained
 ```
 
-Key properties:
+- **The outbox is the ledger.** Redis only holds rate-limit counters, dedupe markers and
+  heartbeats. A message survives restarts, disabled delivery and provider outages.
+- **Leases make concurrent workers safe.** A claimed row is `processing` until
+  `EMAIL_WORKER_LEASE_SECONDS` expire; a crashed worker's rows are then claimed again.
+- **Payloads are transient.** Variables (links, masked addresses) are encrypted with
+  `EMAIL_PAYLOAD_KEY`, decrypted only in worker memory, and cleared from the row when the message
+  reaches `sent` or a terminal status.
+- **Attempts are sanitized.** Each attempt row stores the recipient hash, status, provider
+  message ID and a scrubbed error, never the address, links or provider bodies.
+- **Suppression lookup fails open.** If the suppression query errors, the worker sends anyway.
 
-- **Durable first.** The outbox row is the canonical ledger; Redis is only support infrastructure (rate limits, dedupe, wake/heartbeat). A row stays durable even when delivery is disabled.
-- **Leased claims.** `claim_email_messages` takes a worker lease (`EMAIL_WORKER_LEASE_SECONDS`, default 300s) using `FOR UPDATE SKIP LOCKED`, so multiple workers can run concurrently without double-sending.
-- **Transient render payload.** Variable values (which may include links/PII) are stored encrypted (`render_payload_ciphertext`, Fernet via `EMAIL_PAYLOAD_KEY`) and decrypted only in worker memory at send time. They are never logged.
-- **Suppression skip.** A suppressed recipient (row flag or hashed-ledger lookup) is finalized `suppressed` and never sent.
-- **Sanitized attempts.** Every attempt is recorded via `record_email_delivery_attempt` with PII-stripped metadata only — hashed recipient, status, provider message id, sanitized error. Raw recipient/links/provider bodies never reach the attempt log.
+### Retries and dead-lettering
 
-### Retry and dead-letter
+A failed attempt increments `attempt_count`. When the new count reaches the row's
+`max_attempts` (`8` for every enqueue path), or the error is permanent, the message becomes
+`dead`. Otherwise it becomes `retry` with `next_attempt_at` set to a random delay between 0 and
+the cap `EMAIL_WORKER_BACKOFF_SECONDS[attempt_count]` (the last cap repeats). Resend send errors
+are always treated as retryable.
 
-On a retryable failure the worker computes a **full-jitter** delay: it picks the cap from `EMAIL_WORKER_BACKOFF_SECONDS` (`10,30,120,600,1800,3600,7200,14400` by default) indexed by attempt count, then randomizes uniformly in `[0, cap]` to avoid retry stampedes. Once the attempt count reaches `EMAIL_WORKER_MAX_ATTEMPTS` (default 8) — or the failure is non-retryable, or rendering fails permanently — the message is dead-lettered (`finalize` status `dead`).
+### Run modes and retention
 
-### Run modes and retention purge
+- `python -m src.workers.email_worker` loops: drain, maybe purge, sleep
+  `EMAIL_WORKER_POLL_SECONDS`. SIGTERM and SIGINT stop it after the current batch.
+- `--once` drains one batch and exits without purging.
+- Every `EMAIL_RETENTION_PURGE_INTERVAL_SECONDS` (default `3600`; `0` disables) the loop calls
+  `sp_email_retention_purge`, even while delivery is disabled. It clears render payloads past
+  `payload_purge_at` or 30 days old, clears `recipient_email` and `last_error_message` after 30
+  days, deletes `user_email_link_tokens` rows (hashed link tokens, never the secrets) 30 days
+  after they were consumed, revoked or expired, strips attempt metadata after 365 days, and
+  expires old idempotency records. The 30- and 365-day windows are fixed in SQL.
 
-- `run_forever()` (default) loops: drain → maybe-purge → sleep `EMAIL_WORKER_POLL_SECONDS`. It installs SIGTERM/SIGINT handlers for graceful stop.
-- `--once` processes a single batch and exits (used in tests / one-shot redrive). In `--once` mode the retention purge does **not** run.
-- In long-running mode the worker periodically calls `sp_email_retention_purge` on the `EMAIL_RETENTION_PURGE_INTERVAL_SECONDS` cadence (default hourly; `0` disables). The purge is idempotent and concurrency-safe; it redacts transient render payloads and plaintext recipients, deletes expired link tokens, strips old attempt metadata, and retires expired idempotency keys.
+### Deployment
 
-### Running in a container
+The worker is a separate process; `src/main.py` does not start it.
 
-The worker is a **separate process** from the API (`src/main.py` has no lifespan hook and the worker loop blocks). On the systemd host that is the `api-auth-email-worker` --user service via `scripts/run_email_worker.sh`. Under Docker the production image runs **both** processes in one container via `scripts/docker-entrypoint.sh` (the `Dockerfile` `CMD`): it launches `python -m src.workers.email_worker` and `uvicorn src.main:app` as siblings, forwards SIGTERM/SIGINT to both, and exits if either dies so the orchestrator restarts the container.
+- **Host**: `scripts/run_email_worker.sh` sources `.env` and runs the worker from `.venv` (used by
+  a systemd user service).
+- **Container**: `scripts/docker-entrypoint.sh`, the image's `CMD`, starts the email worker, the
+  Patreon and billing workers and the API in one container, forwards SIGTERM/SIGINT, and exits
+  when any of them exits. The worker ID is `EMAIL_WORKER_ID` or `container-$HOSTNAME`.
 
-> `scripts/run_email_worker.sh` is **not** for containers — it sources a `.env` file (excluded by `.dockerignore`) and uses `.venv/bin/python`. The container entrypoint reads config from the process environment instead.
+Configuration comes from the process environment and is read at import time, so the worker needs
+the same database, Redis and email variables as the API. With delivery enabled but readiness
+`not_ready`, the worker raises at start.
 
-With a valid access session, `GET /system/health` reports `email_worker: unknown` when the worker process is missing (no Redis heartbeat) and, when delivery is enabled but provider config is absent, `email_provider: not_ready`. For both to go green the container must receive, via `--env-file`/compose `environment:` (never baked into the image): DB/Redis vars (`DB_HOST`, `DB_USER`, `DB_MYSQL_PASSWORD`, `DB_NAME`, `REDIS_HOST`, … — read at **import time**), `EMAIL_DELIVERY_ENABLED=true`, `EMAIL_PROVIDER=resend`, `EMAIL_FROM_ADDRESS`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_SENDER_DOMAIN_VERIFIED=true` (prod), plus the operational peppers/keys (`EMAIL_TOKEN_PEPPER`, `EMAIL_HASH_PEPPER`, `EMAIL_IDEMPOTENCY_PEPPER`, `EMAIL_PAYLOAD_KEY`). Each container replica runs its own worker with a distinct `--worker-id` (derived from `HOSTNAME`); leased claims keep concurrent workers safe.
+`GET /system/health` (valid access session) reports `email_provider` readiness and an
+`email_worker` status: `disabled`, `not_ready`, `healthy` (a heartbeat exists) or `unknown` (no
+heartbeat).
 
----
+## Providers
 
-## Provider abstraction
+`EmailProvider` (`src/Util/email/provider.py`) has `send`, `verify_webhook` and `health_check`.
 
-`EmailProvider` is a `Protocol` (`src/Util/email/provider.py`) with three methods:
+| `EMAIL_PROVIDER` | Class | Notes |
+| --- | --- | --- |
+| `resend` | `ResendProvider` | Resend SDK; passes the message's idempotency key; webhooks verified with Svix |
+| `mailpit` | `MailpitProvider` | Plain SMTP to `MAILPIT_SMTP_HOST:MAILPIT_SMTP_PORT` for local capture |
+| `fake` | `FakeEmailProvider` | Records sends in memory; accepted only in a test runtime |
 
-| Method | Purpose |
-|--------|---------|
-| `send(EmailSendRequest) -> EmailSendResult` | Deliver one rendered message |
-| `verify_webhook(raw_body, headers) -> list[dict]` | Verify and parse a provider webhook |
-| `health_check() -> dict` | Report provider readiness |
+With delivery disabled the worker holds a `DisabledEmailProvider` and does not claim rows. The
+webhook route always verifies with `RESEND_WEBHOOK_SECRET`, whatever `EMAIL_PROVIDER` is.
 
-The concrete provider is selected by `EMAIL_PROVIDER`:
+## Templates
 
-| Value | Class | Use |
-|-------|-------|-----|
-| `resend` | `ResendProvider` | Real send via Resend; webhook verified with Svix |
-| `mailpit` | `MailpitProvider` | Local dev SMTP capture |
-| `fake` (default) | `FakeEmailProvider` | Tests / no-op default |
+### Storage and resolution
 
-Both the worker (`_provider_from_config`) and the admin `send-test` handler (`_provider_from_config`) resolve the provider the same way. `EmailProviderError` carries a `retryable` flag and sanitized metadata only.
+- `email_template_catalog` has one row per code: purpose, allowed and required variables,
+  built-in or dynamic, enabled flag, `revision`, and who disabled it.
+- `email_templates` keeps every version; one is active per code.
+- Built-in codes also have in-code bodies in `src/Util/email/templates.py`.
 
----
+`resolve_template` reads the catalog and the active version. A built-in code with no stored
+version uses its in-code body (`source: code`); a dynamic code must have a stored version. The
+worker, the admin API and `send-template` resolve with `fail_closed_on_db_error=True`, so a
+catalog read error never falls back to a default that might bypass a disabled flag. Because the
+worker resolves right before rendering, any edit, disable or rollback committed before that point
+applies to queued messages.
 
-## Template resolution, versioning, and rendering
+The version-1 rows seeded by `schemas/tables/09_email_activation_tables.sql` are insert-only:
+`scripts/schema_sync.py` can re-run the file without overwriting operator versions. A new
+built-in body ships as a new version through the template API.
 
-Templates have catalog metadata plus versioned bodies:
+### Rendering
 
-- **`email_template_catalog`** — one row per template code. It stores purpose, allowed/required variables, built-in vs dynamic state, enabled/disabled state, revision, and disabled audit metadata.
-- **`email_templates`** — append-only version rows. One version is active per code.
-  The version-1 rows seeded by `schemas/tables/09_email_activation_tables.sql` are insert-only: `scripts/schema_sync.py` re-executes that file against existing databases, and a re-run never rewrites a body or re-activates version 1 beside a version saved since. A changed built-in body ships as a new version through the template API. A retired template code is deactivated and its catalog row removed; its version rows are kept.
-- **`code` defaults** — built-in fallback bodies in `src/Util/email/templates.py` for built-in codes only.
+`render_template_parts` is the only render path; the worker, preview and send-test all use it, so
+previews match real mail. It:
 
-The worker resolves templates immediately before rendering each claimed message with `fail_closed_on_db_error=True`. Guarantee: any template create/update/disable/rollback committed before render starts is honored. A send already rendering may finish with the version it resolved.
+1. rejects placeholders outside the allowlist;
+2. fills the base defaults and checks required variables;
+3. HTML-escapes values for the HTML part and substitutes with `string.Template` (no attribute or
+   expression access, unlike `str.format`);
+4. adds the `X-Transactional-Scope`, `X-Template-*` and `X-Entity-Ref-ID` headers and never a
+   `List-Unsubscribe` header.
 
-Worker delivery rules:
-
-- Enabled built-in template with no active DB version may use its in-code default.
-- Enabled dynamic template must have an active DB version.
-- Disabled template raises `EmailTemplateDisabled`; the worker records a `cancelled` attempt and finalizes the message `cancelled` with `EMAIL_TEMPLATE_DISABLED`.
-- Template DB lookup failure raises `EmailTemplateLookupError`; the worker retries with `EMAIL_TEMPLATE_LOOKUP_FAILED` and does not fall back.
-- Invalid active template/render failure is permanent and dead-letters as `EMAIL_RENDER_FAILED`.
-
-Non-worker editor paths may still use built-in code defaults for preview/offline resilience, but real delivery fails closed on catalog lookup failures so disabled or dynamic state cannot be bypassed.
-
-Admin edits go through `db_email_templates`:
-
-- `create_dynamic_template(...)` creates a dynamic internal code and version 1 atomically. Dynamic purposes are limited to `delivery_operation` and `security_notification`.
-- `save_and_activate_template(...)` writes a **new active version** (PUT). Each save bumps the version; prior versions remain.
-- `disable_template(code, disabled_by)` is the DELETE behavior. It preserves history, sets `is_enabled=false`, and bumps `revision`.
-- `list_template_versions(code)` / `get_template_version(code, version)` back the GET history and rollback lookup.
-- `rollback_template(code, version)` validates and re-activates a stored prior version, sets `is_enabled=true`, and bumps `revision`.
-
-Dynamic templates use catalog `allowed_variables` and `required_variables`; required variables must be a subset of allowed variables and must appear in the subject/html/text before a version can be saved or restored.
-
-### The single render funnel
-
-`render_template_parts` is the **one** place subject/html/text become a delivered message. The worker (`render_email_template` → `render_transactional_template`), admin **preview**, and admin **send-test** all funnel through it, so preview/test output is byte-identical to a real send. It:
-
-1. validates every placeholder against the per-code allowlist (`validate_template_identifiers`);
-2. fills base-variable defaults and enforces `required_variables`;
-3. HTML-escapes values, then substitutes with `string.Template` (`$name`) — **not** `str.format`, eliminating attribute/expression injection on admin-editable text;
-4. sets transactional headers (`X-Transactional-Scope`, `X-Template-Code`, optional `X-Template-Version`, `X-Template-Revision`, `X-Entity-Ref-ID`) and **omits** `List-Unsubscribe*` (this is auth email, not marketing).
-
-The admin save path additionally runs `validate_template_draft` (placeholder allowlist + required-var presence + HTML safety + render smoke test) before persisting.
-
----
+Saves additionally run `validate_template_draft` (length limits, HTML tag and URL allowlist,
+render test). The validator rejects rather than strips, so the stored document is exactly what
+the author wrote.
 
 ## Idempotency
 
-Two independent dedupe layers:
-
-- **Outbound send.** Each `EmailSendRequest` carries an `idempotency_key` = the message's `provider_idempotency_key` (falling back to the message id), so a provider retry of the same message does not duplicate mail.
-- **Inbound webhook events.** `_mark_event_seen` records each provider event id in Redis (`email_webhook_event_key`, 24h TTL, `SET NX`) as a fast route-level guard. The **DB stored procedure is the durable authority** and also dedupes by provider event id; the Redis layer is best-effort and falls through to DB dedupe on a Redis error. Peppers/TTLs are driven by `EMAIL_IDEMPOTENCY_PEPPER` / `EMAIL_IDEMPOTENCY_TTL_SECONDS`.
-
----
+- **Outbound**: each send passes `provider_idempotency_key` (or the message ID) to the provider,
+  so a retried send of the same message is not delivered twice by Resend. The key is unique per
+  provider in `email_messages`.
+- **Webhook events**: a Redis `SET NX` marker (24 hours) drops repeats quickly; the stored
+  procedure also skips an event ID already present in `email_delivery_attempts`. A Redis error
+  falls through to the database check. If the database update fails, the marker is deleted
+  before the `500`, so the provider's retry is applied rather than dropped as a duplicate.
+- **Public email routes** (activation resend, forgot password) store `Idempotency-Key` replays in
+  `email_idempotency_keys`, hashed with `EMAIL_IDEMPOTENCY_PEPPER` and kept for
+  `EMAIL_IDEMPOTENCY_TTL_SECONDS`.
 
 ## Rate limiting
 
-`EmailRateLimiter` (`src/Util/email/rate_limit.py`) uses fixed-window Redis buckets keyed by **non-PII hashed material only** (raw addresses, tokens, links never appear in keys). The admin `send-test` endpoint reuses the send buckets under `purpose="email_template_test"`:
-
-| Bucket | Default |
-|--------|---------|
-| recipient / hour | 3 |
-| recipient / day | 10 |
-| user / hour | 5 |
-| IP / hour | 20 |
-| resend cooldown | 60s |
-
-The limiter **fails closed** on a Redis error (`fail_closed_on_redis_error=True`) — when Redis is unavailable it raises `RateLimitExceeded` rather than allowing an unmetered send.
-
----
+`EmailRateLimiter` uses fixed-window Redis counters whose keys contain only hashes. Send buckets
+are per purpose: recipient per hour and per day, user per hour, IP per hour. Consume, resend
+cooldown and failed-login buckets protect the public flows. The limiter fails closed: if Redis is
+unavailable, the request is refused. Limits are read at import time.
 
 ## Safety guards
 
-### No-real-send guard
-
-`load_email_config(validate_real_send_guard=True)` calls `_enforce_no_real_send_guard`: in an explicit **test runtime** (`APP_ENV` in `test`/`testing`/`pytest`, or under pytest) with `EMAIL_PROVIDER=resend` and real credentials present, a real send is **blocked** unless `EMAIL_ALLOW_REAL_SEND_IN_TESTS=true`. `SAFE_TEST_PROVIDERS = {fake, mailpit}` are always safe. This prevents accidental real mail during automated tests.
-
-> A development box that *should* send real mail must run as `APP_ENV=development` (a non-test runtime) — see the runbook's "dev-box-that-sends" note.
-
-### Readiness states
-
-`validate_email_readiness(config)` returns one of `disabled` / `not_ready` / `ready` without contacting the provider:
-
-- `disabled` — `EMAIL_DELIVERY_ENABLED=false`.
-- `not_ready` — missing or invalid config (the `missing[]` list names the keys): `EMAIL_FROM_ADDRESS`, or a set-but-malformed `EMAIL_REPLY_TO_ADDRESS`; for `resend` also `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_SENDER_DOMAIN_VERIFIED` in prod; for `mailpit` host/port.
-- `ready` — everything required is present.
-
-`send-test` refuses to send unless readiness is `ready`.
-
----
-
-## Where things live
-
-| Concern | Module |
-|---------|--------|
-| Admin template API | `src/routes/email_templates.py` |
-| Inbound webhook | `src/routes/email_webhooks.py` |
-| Worker | `src/workers/email_worker.py` |
-| Provider protocol + DTOs | `src/Util/email/provider.py` |
-| Config + guards + readiness | `src/Util/email/config.py` |
-| Templates + render funnel | `src/Util/email/templates.py` |
-| Draft validation | `src/Util/email/template_validation.py` |
-| Rate limiter | `src/Util/email/rate_limit.py` |
-| DB template versioning | `src/Util/db/db_email_templates.py` |
-| Delivery/suppression DB | `src/Util/db/db_email.py` |
+- **No real sends in tests.** When the runtime is a test runtime (`APP_ENV` in `test`, `testing`,
+  `pytest`, or running under pytest), delivery is enabled, the provider is `resend` and
+  `RESEND_API_KEY` is set, `load_email_config` raises unless
+  `EMAIL_ALLOW_REAL_SEND_IN_TESTS=true`. A development machine that should send real mail sets
+  `APP_ENV=development`.
+- **Readiness.** `validate_email_readiness` returns `disabled`, `not_ready` (with `missing[]`) or
+  `ready` from configuration alone. Send-test and the worker require `ready`.
+- **Recipient privacy.** Addresses are hashed with `EMAIL_HASH_PEPPER` (HMAC-SHA-256) for lookups
+  and shown masked; the plaintext `recipient_email` is kept only until the retention purge.

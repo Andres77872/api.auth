@@ -1,193 +1,111 @@
-# Roles Architecture
+# Roles architecture
 
-Technical architecture of the global roles system as it actually exists in `api.auth`.
+Components, storage, invariants, and design decisions behind the `/roles` API. How the stored data
+becomes effective permissions is in [Permission resolution](../permissions/resolution.md).
 
----
+## Components
 
-## Data Model
+| Layer | Location |
+| --- | --- |
+| Routes (prefix `/roles`, OpenAPI tag "Global Role System") | `src/routes/global_roles.py` |
+| Database access | `src/Util/db/db_global_roles.py` |
+| Stored procedures | `schemas/stored_procedures/05_global_roles.sql` |
+| Tables and foreign keys | `schemas/tables/02_create_tables.sql`, `schemas/tables/04_add_constraints.sql` |
+| Reserved permission names | `src/Util/admin_scope.py` |
+| Activity triggers | `schemas/triggers/02_permission_activity_triggers.sql` |
+| Bulk role assignment | `src/routes/bulk_operations.py`, `src/Util/bulk_operations.py` |
 
-### `roles` Table
+## Tables
 
-| Column | Type | Constraints | Default | Notes |
-|--------|------|-------------|---------|-------|
-| `id` | VARCHAR(64) | PK | — | Format: `role_<16 hex chars>` |
-| `role_hash` | VARCHAR(255) | UNIQUE | — | SHA256-based, 32 chars |
-| `role_name` | VARCHAR(100) | UNIQUE, NOT NULL | — | Machine-readable, immutable after creation |
-| `role_display_name` | VARCHAR(255) | NOT NULL | — | Human-readable label |
-| `role_description` | TEXT | NULLABLE | — | Optional description |
-| `role_priority` | INT | NOT NULL | 50 | Range 0-100, used for `ORDER BY` only |
-| `is_system_role` | BOOLEAN | NOT NULL | FALSE | Protects from deletion |
-| `is_active` | BOOLEAN | NOT NULL | TRUE | Soft delete flag |
-| `created_at` | DATETIME | NOT NULL | NOW() | — |
-| `updated_at` | DATETIME | NULLABLE | — | — |
-| `created_by` | VARCHAR(64) | NULLABLE | — | User ID of creator |
+| Table | Unique keys | Notes |
+| --- | --- | --- |
+| `roles` | `role_hash`, `role_name` | `role_name` `VARCHAR(100)`, `role_display_name` `VARCHAR(255)`, `role_description` `TEXT`, `role_priority` `INT` default `50`, `is_system_role`, `is_active`, `created_at`, `updated_at`, `created_by` |
+| `global_permission_groups` | `group_hash`, `group_name` | `group_category` `VARCHAR(50)` default `general` |
+| `global_permissions` | `permission_hash`, `permission_name` | `permission_category` `VARCHAR(50)` default `general` |
+| `role_permission_groups` | `(role_id, permission_group_id)` | Link with `assigned_*`, `removed_*`, `is_active` |
+| `global_permission_group_permissions` | `(permission_group_id, permission_id)` | Link with `granted_*`, `removed_*`, `is_active` |
+| `role_project_catalog` | `(role_id, project_id)` | `catalog_purpose` `VARCHAR(255)`, `notes`, `added_*`, `removed_*`, `is_active` |
+| `users.role_id` | — | Nullable; foreign key to `roles.id` with `ON DELETE SET NULL` (never fired, since nothing hard-deletes roles) |
 
-### Hash Generation
+All tables use `utf8mb4_unicode_ci`, so the unique names are case- and accent-insensitive. Internal
+IDs are a prefix (`role_`, `pg_`, `perm_`, `rpg_`, `pgp_`, `rpc_`) plus 16 hex characters; public hashes
+are 32 hex characters of a SHA-256 over the name and a timestamp. No roles, groups, or permissions are
+seeded by the schema.
 
-- `role_hash`: `sha256("role:{role_name}:{timestamp}")[:32]` — deterministic per name + timestamp
-- `role_id`: `role_{sha256("role:{timestamp}")[:16]}`
+`schemas/docs/permissions.md` is the schema-level reference for these tables and procedures.
 
-### Related Tables
+## Procedures and direct SQL
 
-| Table | Purpose |
-|-------|---------|
-| `roles` | Global role definitions |
-| `role_permission_groups` | Junction: role ↔ permission group (supports soft delete) |
-| `global_permission_groups` | Permission group definitions with categories |
-| `global_permission_group_permissions` | Junction: permission group ↔ permission (supports soft delete) |
-| `global_permissions` | Individual permission definitions |
-| `role_project_catalog` | Junction: role ↔ project (METADATA ONLY) |
-| `users.role_id` | FK to `roles.id` — one role per user |
+| Operation | Implementation |
+| --- | --- |
+| Create, read, list, update roles, groups, permissions | `sp_global_create_*`, `sp_global_get_*_by_hash`, `sp_global_list_*`, `sp_global_update_*` |
+| Delete role | `sp_global_delete_role` |
+| Delete permission group, delete permission | Direct `UPDATE ... SET is_active = 0` on the object row only |
+| Link group to role, permission to group | `sp_global_assign_permission_group_to_role`, `sp_global_assign_permission_to_group` (upserts) |
+| Unlink | Direct `UPDATE ... SET is_active = 0, removed_at = NOW()` on the active link |
+| Read links | `sp_global_get_role_permission_groups`, `sp_global_get_permission_group_permissions` |
+| Assign, read role | `sp_global_assign_role_to_user`, `sp_global_get_user_role` |
+| Remove role | Direct `UPDATE users SET role_id = NULL` |
+| Catalog | `sp_global_add_role_to_project_catalog`, `sp_global_get_project_cataloged_roles`, `sp_global_remove_role_from_project_catalog` |
+| Auth-time resolver, `/roles` guard | `sp_global_get_user_permissions`, `sp_global_check_user_has_permission` |
+| Bulk role lookup | Direct `SELECT` by `role_name` on active roles |
 
----
+Defined but not called: `sp_global_delete_permission_group` and `sp_global_delete_permission` (both
+would also deactivate group memberships), `sp_global_remove_permission_from_group`,
+`sp_global_remove_permission_group_from_role`, `sp_global_remove_role_from_user`.
 
-## Route Organization
+## Invariants
 
-All 28 role-related endpoints live in **one file**: `src/routes/global_roles.py`.
+- **Soft delete everywhere.** Roles, groups, permissions, links, and catalog entries are only ever
+  flagged inactive. Names stay unique across active and inactive rows, so a deleted name cannot be
+  reused.
+- **Lookups see active rows only.** Every by-hash lookup and every list filters on `is_active`, so a
+  soft-deleted object answers `404` and cannot be restored or unlinked through the API.
+- **Deletes do not cascade.** Deleting a role leaves `users.role_id`, its group links, and catalog rows
+  in place. Deleting a group leaves its role links and memberships active. Deleting a permission leaves
+  its memberships active. The effect of each on resolution is in
+  [Soft-delete effects](../permissions/resolution.md#soft-delete-effects).
+- **One role per user.** `users.role_id` is a single column; assignment overwrites it.
+- **Links are upserts.** Linking twice re-activates the same row and refreshes `assigned_at`/`granted_at`;
+  it never fails as a duplicate.
+- **Nothing is cached here.** Writes do not invalidate sessions. Consumer permissions are recomputed on
+  every token validation and served from a `session_full` entry that lives `VALIDATE_CACHE_TTL`
+  seconds (default `30`).
+- **Trigger logging is partial.** Triggers write `activity_logs` rows for inserts and updates of roles,
+  groups, and permissions, and for inserts of links. Link re-activation and soft removal are updates
+  on the link tables, which have no update trigger, so they are not logged there.
 
-| Section | Endpoints |
-|---------|-----------|
-| Role CRUD | POST/GET/PUT/DELETE `/roles/roles` + `/roles/roles/{hash}` |
-| Role ↔ Permission Group | POST/GET/DELETE `/roles/roles/{hash}/permission-groups` |
-| Permission Group CRUD | Full CRUD on `/roles/permission-groups` + permissions sub-routes |
-| Permission CRUD | Full CRUD on `/roles/permissions` |
-| User Role Assignment | GET `/roles/users/me/role`, PUT/GET/DELETE `/roles/users/{hash}/role` |
-| Project Catalog | POST/GET/DELETE `/roles/projects/{hash}/catalog/roles` |
+## Reserved permission names
 
-Router prefix: `/roles`
-OpenAPI tag: "Global Role System"
+Routers and middleware trust some names when they appear in session permissions: `admin` opens
+`verify_admin_access` and most admin guards, `manage_users` opens user-group administration, and so
+on. A consumer's session permissions come from its role, so anyone who could put such a name into a
+role could grant it, including to themselves. The `/roles` router therefore lets only root create,
+edit, move, or hand out these names, and forbids non-root callers from changing their own role. The
+list and the exact root-only operations are in
+[Roles reference](reference.md#reserved-permission-names).
 
-**Related module:** `src/routes/permission_assignments.py` (prefix `/permissions`) handles the SECONDARY permission assignment model (permission groups → user groups/users directly). This is a separate authorization path.
+Names are compared with `collation_key`, which mirrors `utf8mb4_unicode_ci` (case, accents, width,
+surrounding spaces), so a look-alike such as `Ádmin` is caught.
 
----
+The checks read only active groups and permissions, through the same flags as the role-derived
+resolver (`sp_global_get_user_permissions`), so a role can never grant a reserved name the check does
+not see. A soft-deleted permission group grants nothing, even while still linked. The `/permissions`
+assignment routes apply the same root-only rule to permission groups, because a user-group or direct
+grant of `manage_roles` opens that router.
 
-## Entity Relationships
+## Design decisions
 
-```
-users.role_id ──→ roles.id
-                      │
-                      ├──→ role_permission_groups ──→ global_permission_groups ──→ global_permission_group_permissions ──→ global_permissions
-                      │
-                      └──→ role_project_catalog ──→ projects  (METADATA ONLY)
-
-user_groups ──→ user_group_permission_groups ──→ global_permission_groups  (independent of roles)
-users ──→ user_permission_groups ──→ global_permission_groups  (direct assignment, independent of roles)
-
-user_groups ──→ user_group_project_group_roles ──→ roles  (project-scoped roles, separate system)
-```
-
-| Relationship | Table | Type | Notes |
-|-------------|-------|------|-------|
-| User → Role | `users.role_id` | 1:1 (nullable) | Each user has ONE global role |
-| Role → Permission Groups | `role_permission_groups` | M:N | Junction with soft delete |
-| Permission Group → Permissions | `global_permission_group_permissions` | M:N | Junction with soft delete |
-| Role → Project (catalog) | `role_project_catalog` | M:N | METADATA ONLY, not auth |
-| User Group → Role (scoped) | `user_group_project_group_roles` | M:N | Project-scoped roles, separate from global |
-
----
-
-## Auth Guards
-
-### `require_admin` in `global_roles.py`
-
-```
-require_admin(session_data)
-  ├─► allow if user_type in {root, admin}
-  └─► if user_type == consumer:
-        └─► check_user_has_permission(user_id, "manage_roles")
-              └─► sp_global_check_user_has_permission (ROLE-ONLY)
-```
-
-**Critical:** this uses the **role-only** permission check. A consumer with `manage_roles` granted via user-group assignment or direct assignment would be **DENIED** here, even though they have the permission.
-
-### `require_admin` in `permission_assignments.py`
-
-```
-require_admin(session_data)
-  ├─► allow if user_type in {root, admin}
-  └─► if user_type == consumer:
-        └─► check_user_has_permission_extended(user_id, "manage_roles")
-              └─► sp_check_user_has_permission_extended (ROLE + USER-GROUP + DIRECT)
-```
-
-**This is an inconsistency between the two guards.** A consumer with `manage_roles` granted via user-group or direct assignment passes this guard (the `/permissions` admin routes) but is denied by the `/roles` guard above. Root/admin users pass both before the fallback.
-
-### Read endpoints
-
-Most GET endpoints only require a valid session (any authenticated user). They do not check permissions.
-
----
-
-## Permission Resolution Paths
-
-There are **two** permission resolution paths in this system. The full explanation — including the critical auth-vs-inspection gap, practical examples, and known limitations — lives in **[../permissions/resolution.md](../permissions/resolution.md)**.
-
-Summary:
-
-- **Path A (Auth/Session)**: `sp_global_get_user_permissions` resolves **role only**. Used during login, session creation, and `validate_session`.
-- **Path B (Inspection)**: `sp_get_user_all_permissions` resolves **all three sources** (role + user-group + direct). Used by `GET /permissions/users/me/permissions`.
-
-The gap means permissions assigned via user groups or directly to users are visible through inspection endpoints but **not** enforced during authentication.
-
----
-
-## Session and Cache Behavior
-
-- Role assignment changes do **not** automatically invalidate existing sessions
-- The session payload embeds role-derived permissions at login time
-- After role changes, the user must re-login, refresh, or switch project to get updated session permissions
-- Self-query endpoints (`/permissions/users/me/...`) resolve fresh from the DB and reflect changes immediately
-
----
-
-## Soft Delete Behavior
-
-- Role deletion sets `is_active = FALSE`
-- Permission group removal from role sets `is_active = FALSE, removed_at = NOW()` on the junction row
-- **No cascade:** deleting a role does NOT clear `users.role_id` — users retain a reference to a soft-deleted role
-- The `sp_global_get_user_role` SP checks `r.is_active = TRUE`, so it returns NULL for soft-deleted roles, but the FK reference persists in the DB
-
----
-
-## Important Caveats
-
-### `role_priority` is ordering metadata, not permission precedence
-
-- Used only in `ORDER BY role_priority DESC, role_name ASC` for list queries
-- Does NOT affect which permissions take effect
-- Does NOT influence auth-time resolution
-
-### `role_name` is immutable
-
-- The UPDATE stored procedure does not include `role_name`
-- Once created, a role's machine-readable name cannot be changed
-
-### `is_system_role` is not settable via API
-
-- The create endpoint does not expose `is_system_role`
-- System roles must be created via direct DB access
-- System roles are blocked from API deletion: `DELETE /roles/roles/{hash}` returns 403 `OPERATION_NOT_ALLOWED` (`AUTHZ_2009`)
-
-### Project catalog is metadata only
-
-- Catalog endpoints have `"note": "This is METADATA ONLY"` in responses
-- Cataloging a role does NOT restrict which roles can be assigned to users
-- Any role can be assigned to any user regardless of project catalog entries
-
-### Category is not DB-enforced
-
-- `group_category` accepts any string at the DB level
-- API documentation says `general, admin, api, data` but nothing prevents other values
-
----
-
-## Related Documentation
-
-- **[Roles Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
-- **[Permission Resolution](../permissions/resolution.md)** — The critical auth-vs-inspection gap
-- **[Permissions Suite](../permissions/README.md)** — Extended permission resolution and assignment paths
+- **Global, not per project.** Roles, groups, and permissions have no project column; a permission such
+  as `manage_users` means the same everywhere. Which projects a user can enter is decided by user and
+  project groups ([groups](../groups/README.md)).
+- **Delegation through `manage_roles`.** `require_admin` lets a consumer whose role grants
+  `manage_roles` manage roles. The check is live and role-only, so user-group and direct grants do not
+  count. Managing user groups needs `manage_users` instead; the route code calls this intentional
+  least privilege.
+- **`role_priority` is ordering metadata.** It sorts role listings and the project role catalog and
+  plays no part in resolution.
+- **Catalogs are metadata.** The project role catalog drives UI suggestions; no guard or resolver reads
+  it.
+- **System roles.** `is_system_role` can only be set in the database. The API refuses to delete such a
+  role but lets it be edited.

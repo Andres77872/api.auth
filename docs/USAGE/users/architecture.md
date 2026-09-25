@@ -1,276 +1,151 @@
-# Users Architecture
+# Users architecture
 
-Technical architecture of the users system as it actually exists in `api.auth`.
+How the users domain is built: the model, where the data lives, how scoping and revocation work,
+and the design choices behind them. The request-by-request view is in
+[request-flow.md](request-flow.md).
 
----
-
-## Core Runtime Model
-
-The user model is not just "users with roles". The repo combines a 3-tier type system with group-based project reach:
+## Model
 
 ```text
-ROOT      → global access
-ADMIN     → USER → admin USER_GROUP → PROJECT_GROUP → PROJECT
-CONSUMER  → USER → USER_GROUP       → PROJECT_GROUP → PROJECT
-                          ↘
-                            ROLE / PERMISSION_GROUP data affects capabilities
+root      -> every active project (no group membership needed)
+admin     -> USER -> admin_<project_id> USER_GROUP -> PROJECT_GROUP -> PROJECT   (assigned projects)
+          -> USER -> other USER_GROUPs            -> PROJECT_GROUP -> PROJECT   (extra reach)
+consumer  -> USER -> USER_GROUP                   -> PROJECT_GROUP -> PROJECT
 ```
 
-Two separate concerns exist at the same time:
-
-- **Reach**: which projects the user can access
-- **Capability**: what the user can do once there
-
-`/users/*` primarily documents the user entity and reach inspection. Roles and permission groups are separate systems.
-
----
-
-## Real Tables Behind the Model
-
-| Table | Purpose |
-|------|---------|
-| `users` | Core user record, `user_type`, `role_id`, activation state |
-| `user_emails` | Activated-email authority for email login and recovery eligibility |
-| `user_email_link_tokens` | Hash-only purpose-scoped link-token store for activation and password recovery |
-| `email_outbox` | Durable transactional auth-email delivery queue |
-| `user_group_members` | Membership bridge from user to user group |
-| `user_group_project_groups` | Bridge from user groups to project groups |
-| `project_group_members` | Bridge from project groups to projects |
-| `bulk_operations_log` | Audit-style tracking for bulk user operations |
-
-The crucial architectural point is still:
-
-```text
-USER → USER_GROUP → PROJECT_GROUP → PROJECT
-```
-
-There is no active direct user-to-project table in the intended model.
-
----
-
-## Email Identity Lifecycle
-
-Email is a **separate identity from the user record**. `user_emails` is the
-authoritative store; `users.email` is a deprecated compatibility shadow that the
-lifecycle stored procedures keep loosely in sync (primary email only) and that
-**never grants login by itself**. Email is optional for registration and account
-use.
-
-Each `user_emails` row carries a `status`:
-
-| Status | Meaning | Login / reset eligible? |
-|--------|---------|--------------------------|
-| `pending` | Added but not yet activated via a link token | No |
-| `activated` | Activated through a hash-only token; usable identity | Yes |
-| `removed` | Soft-removed by the owner; `removed_at` set | No |
-| `suppressed` | Hard-bounced/complained per provider webhook | No |
-
-Key invariants and flows:
-
-- **Uniqueness** is DB-enforced via two **VIRTUAL** generated columns —
-  `active_activated_email` (at most one activated, non-removed row per normalized
-  address, globally) and `primary_user_id` (at most one active primary per user).
-  They must stay `VIRTUAL` because `user_id` carries an `ON DELETE CASCADE` FK and
-  MySQL forbids cascade actions on the base column of a `STORED` generated column.
-- **Login** (`sp_user_login`) resolves username first, then an `activated`,
-  non-removed `user_emails` row by normalized address — so an email-shaped
-  username cannot be shadowed and the deprecated `users.email` cannot grant login.
-- **Activation** (`sp_consume_email_activation_token`) flips `pending → activated`,
-  auto-selects the first activated email as primary, and rejects a global
-  conflict (another account already activated the address) without activating.
-- **Password recovery** (`sp_password_reset_link_enqueue`) is activated-email-only;
-  `pending`/`removed`/`suppressed`/unknown identifiers keep the generic `202`
-  posture and enqueue nothing.
-- **Suppression**: a provider hard-bounce/complaint webhook flips the matching
-  `activated` row to `suppressed` (and clears `is_primary`), removing it from
-  login and recovery while username login still works.
-
-### HTTP surface for the email lifecycle
-
-The `user_emails` lifecycle is operated at the HTTP layer by six endpoints in
-`src/routes/users.py`:
-
-| Lifecycle action | Endpoint | Caller |
-|------------------|----------|--------|
-| List own emails | `GET /users/me/emails` | Any authenticated user (owner view) |
-| Add + enqueue activation | `POST /users/me/emails` | Any authenticated user |
-| Resend activation | `POST /users/me/emails/{email_id}/resend` | Any authenticated user |
-| Soft-remove | `DELETE /users/me/emails/{email_id}` | Any authenticated user |
-| Select primary | `POST /users/me/emails/{email_id}/primary` | Any authenticated user |
-| Inspect a target user's emails | `GET /users/{user_hash}/emails` | Root or admin (masked/hash view) |
-| Re-trigger a target user's activation | `POST /users/{user_hash}/emails/{email_id}/resend` | Root or admin |
-
-The send-side routes use the generic `202` / `429 + Retry-After` posture, a
-resend cooldown (`EMAIL_RESEND_COOLDOWN_SECONDS`, default 60s), and optional
-`Idempotency-Key` replay. Removing or re-pointing the primary email revokes the
-caller's other sessions while keeping the current one. Full request/response
-detail is in [email-management.md](email-management.md).
-
-Tokens, the durable outbox, the worker, webhooks, suppression, retention, and
-rollback are documented in `docs/RUNBOOKS/email-activation.md`.
-
----
-
-## Route and Layer Split
-
-### User entity routes
-
-- Route file: `src/routes/users.py` (19 endpoints)
-- Covers profile, access summary, list/search, details, update, status, password reset, soft/permanent delete, one type-change route, and the per-user email-management group (`/users/me/emails*` and the root/admin `/users/{user_hash}/emails*` routes — see [email-management.md](email-management.md))
-
-### User type routes
-
-- Route file: `src/routes/user_types_auth.py`
-- Covers root/admin creation, type info, stricter type updates, listing by type, stats, and admin-project assignment
-
-### Bulk user routes
-
-- Route file: `src/routes/bulk_operations.py`
-- Covers `bulk-update` and `bulk-delete`
-
-### DB layer
-
-- Main DB module: `src/Util/db/db_users.py`
-- Access bridge helpers: `src/Util/db/db_user_groups.py`
-- User-type helpers: `src/Util/db/__init__.py`
-
----
-
-## How Users Relate to Groups, Project Groups, and Projects
-
-### Consumer users
-
-- join one or more user groups through `user_group_members`
-- inherit accessible projects through the user-group ↔ project-group bridge
-- get effective permissions from the broader authorization system
-
-### Admin users
-
-- are still plain `users` rows with `user_type='admin'`
-- gain project reach by being inserted into project-specific admin groups
-- `create_admin_user()` and admin-project assignment helpers use `sp_find_admin_group_for_project` and group membership to wire that access
-
-### Root users
-
-- are created as `users.user_type='root'`
-- do not need group membership to log in globally
-- still may have accessible projects returned for UI convenience, but root auth is not bounded by those project links
-
----
-
-## Session Embedding Model
-
-### Auth route payload
-
-`src/routes/auth.py:_create_session()` stores this data in Redis:
-
-- `session_id`
-- `user_id`
-- `user_hash`
-- `user_type`
-- `project_id`
-- `project_hash`
-- `project_name`
-- `user_group_ids`
-- `user_group_names`
-
-This is why `/auth/validate` can return group names directly from session payload.
-
-### Middleware validation path
-
-`src/middleware/authentication.py` uses `validate_session()` from `db_users.py`, which:
-
-- loads the cached session payload
-- re-resolves the project by `project_hash`
-- reconstructs groups/permissions according to `user_type`
-
-Important consequence:
-
-- some views are driven by cached login/session context
-- some permission/group checks are rebuilt during validation
-- operators should expect **stale-session edge cases** after access-model changes until re-login, refresh, or project switching happens
-
----
-
-## Cache and Invalidation Behavior
-
-`src/Util/cache_manager.py` manages:
-
-- session cache (`SESSION_TTL = 3600`)
-- access-check cache (`1800`)
-- permission-check cache (`1800`)
-- user-type/user-info cache (`3600`)
-
-User-focused invalidation triggers documented in code:
-
-- `update_user()` → `invalidate_user_cache(user_id)`
-- `update_user_type()` → `invalidate_user_cache(user_id)`
-- `delete_user()` → `invalidate_user_cache(user_id)`
-- `PUT /users/{hash}/status?is_active=false` → `invalidate_user_sessions(user_id)` and `invalidate_user_cache(user_id)`
-- `DELETE /users/{hash}` → same session/cache invalidation cascade after soft delete
-
-Operational implication:
-
-- **status changes and deletes** aggressively revoke access
-- **group/role/permission changes** may still require re-login or project switching for clients to observe the new state consistently
-
----
-
-## Lifecycle Architecture
-
-### Self-registration
-
-- entry point: `POST /auth/register`
-- requires a valid `user_group_hash`
-- registration is blocked if that user group is not linked to at least one project
-
-### Root/admin creation
-
-- entry point: `POST /user-types/root` and `POST /user-types/admin`
-- admin creation validates projects first, then wires admin-group membership
-
-### Status change and deletion
-
-- status changes are handled in `src/routes/users.py` and explicitly clear sessions/cache on deactivation
-- deletion uses `sp_delete_user`, which also deactivates active user-group memberships
-
-### Password change and recovery
-
-- self-service password rotation is owned by `POST /auth/password/change`, not profile update
-- `PUT /users/profile` rejects password-equivalent fields before the DB update helper runs
-- password recovery is link-only and uses activated `user_emails` plus hash-only `user_email_link_tokens`
-- reset-link consumption creates no session; authenticated change preserves the current session and revokes other sessions/families
-
-### Type changes
-
-- `PATCH /users/{hash}/type` = enum-focused legacy path
-- `PUT /user-types/{hash}/type` = stricter path with admin project assignment requirement
-
----
-
-## What Is Intentionally Outside the Users Routes
-
-The users suite should not be confused with the whole auth model.
-
-Outside this route family:
-
-- group membership CRUD lives under `/admin/user-groups`
-- project reach wiring lives under user-group ↔ project-group routes
-- global role assignment lives under `/roles/users/{hash}/role`
-- permission-group assignment lives under `/permissions/...`
-
-If you try to use `/users/*` to model all access, you will create a quilombo because the repo intentionally separates the user entity from the access topology.
-
----
-
-## Related Documentation
-
-- **[Users Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Email Management](email-management.md)**
-- **[User Types](user-types.md)**
-- **[Bulk Operations](bulk-operations.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+- **Reach** (which projects a user can use) always comes from user-group membership, except for
+  root, whom `sp_get_user_accessible_projects` gives every active, non-archived project. There is no
+  direct user-to-project table.
+- **Admin assignment** is membership of a project's `admin_<project_id>` user group. `POST /projects`
+  creates that group and grants it the project; the `/user-types/admin/...` routes add and remove
+  members. See [User types](user-types.md#how-admin-assignment-works).
+- **Capability** (what a user may do inside a project) comes from global roles and permission
+  groups, managed by the [roles](../roles/README.md) and [permissions](../permissions/README.md)
+  suites. The `capabilities` list in type info is descriptive only.
+- **Email identity** is separate from the account: `user_emails` holds any number of addresses with
+  their own lifecycle; `users.email` is a legacy shadow of the primary one.
+
+## Where the data lives
+
+| Table | Holds |
+| --- | --- |
+| `users` | Account: `user_hash`, `username` (unique), legacy `email`, `password_hash`, `user_type`, `role_id`, `is_active` |
+| `user_group_members` | User to user group memberships (`is_active`, `assigned_at`, `removed_at`) |
+| `user_group_project_groups` | User group to project group grants |
+| `project_group_members` | Project group to project links |
+| `user_emails` | Email addresses, status, primary flag and timestamps |
+| `user_email_link_tokens` | Hashes of activation and password-reset links; the link secrets are never stored |
+| `email_messages` | Durable outbox of queued emails, delivered by the email worker |
+| `email_idempotency_keys` | Stored `202` replies for `Idempotency-Key` retries |
+
+Stored procedures by operation:
+
+| Operation | Procedures |
+| --- | --- |
+| Look up, list, count, search | `sp_get_user_by_hash`, `sp_get_user_type`, `sp_list_users_with_access`, `sp_count_users`, `sp_search_users` |
+| Create | `sp_create_root_user`, `sp_create_admin_user`, `sp_create_consumer_user` |
+| Update | `sp_update_user`, `sp_update_user_type` |
+| Delete | `sp_delete_user` (soft), `sp_hard_delete_user` |
+| Reach and admin assignment | `sp_get_user_accessible_projects`, `sp_get_admin_assigned_projects`, `sp_get_admin_project_assignments_with_details`, `sp_find_admin_group_for_project`, `sp_find_admin_groups_for_user_in_project` |
+| Email lifecycle | `sp_user_email_add_and_enqueue`, `sp_user_email_resend_and_enqueue`, `sp_consume_email_activation_token`, `sp_user_email_remove`, `sp_user_email_set_primary`, `sp_user_email_list_for_user`, `sp_admin_user_email_list`, `sp_admin_password_reset_link_enqueue` |
+
+Code map: routes in `src/routes/users.py`, `src/routes/user_types_auth.py` and
+`src/routes/bulk_operations.py`; account helpers in `src/Util/db/db_users.py`; email helpers in
+`src/Util/db/db_email.py` and `src/Util/email/`; scope checks in `src/Util/admin_scope.py`; bulk logic
+in `src/Util/bulk_operations.py`; session revocation in `src/Util/auth_lifecycle.py`. Tables and
+procedures are defined under `schemas/`.
+
+## Scoping
+
+Two scope models coexist:
+
+| Model | Admin's projects | Used by |
+| --- | --- | --- |
+| Overlap | Every project the admin reaches (`sp_get_user_accessible_projects`) | list, detail, `PUT /users/{user_hash}`, status, soft delete |
+| Assigned scope | Only projects whose admin group the admin belongs to (`resolve_admin_scope`) | search, reset-password, admin email routes, type info, list by type |
+
+`src/Util/admin_scope.py` implements the assigned-scope model. Its rules:
+
+- Only `root` and `admin` user types have any scope. Session permissions such as `admin` or
+  `manage_users` coming from a consumer's global role grant nothing on these routes.
+- The caller's type and assignments are read from the database on each request, not from the
+  session, so a demotion or unassignment applies to the next call.
+- Admins are always in scope for themselves.
+
+Root reaches every project, so both models exclude root targets explicitly: an admin's overlap and
+scope never contain a root user (`_require_target_in_admin_projects` in `src/routes/users.py`,
+`user_in_scope` in `src/Util/admin_scope.py`).
+
+The bulk routes require a root or admin caller and apply the assigned-scope model to each target
+([Bulk user operations](bulk-operations.md#authorization)).
+
+## Email identity invariants
+
+Rules and statuses are listed in [User email management](email-management.md#address-lifecycle).
+The database enforces them:
+
+- Two `VIRTUAL` generated columns with unique indexes: `active_activated_email` (one activated,
+  non-removed row per normalized address, across all users) and `primary_user_id` (one activated
+  primary per user). They must stay `VIRTUAL`: `user_id` has an `ON DELETE CASCADE` foreign key, and
+  MySQL forbids cascading actions on a base column of a `STORED` generated column.
+- Triggers on `user_emails` normalize the address, reject primary flags on non-activated or removed
+  rows, and cap each user at 5 `pending` + `activated` rows.
+- `sp_user_login` resolves a username first, then an activated, non-removed address, so an
+  email-shaped username cannot be shadowed and `users.email` never grants login.
+- Only hashes of link tokens are stored; tokens, links and message payloads never appear in API
+  responses.
+
+## Sessions, revocation and caching
+
+Sign-in stores each access session in Redis as `session:{access_jti}` and indexes it per user in
+`user_sessions:{user_id}`; refresh families are indexed in `user_refresh_families:{user_id}`.
+
+Every authenticated request re-validates: the access JWT, the Redis session and family, that the user
+still exists and is active (otherwise their auth state is revoked), and that the session's project is
+still reachable (for admins: still assigned). So an inactive user's tokens stop working on their next
+use even when nothing revoked them.
+
+| Event | Effect on sessions |
+| --- | --- |
+| Deactivation, soft delete, hard delete, bulk deactivation, bulk delete | `revoke_user_auth_state`: every access session and refresh family of the user |
+| Type change (any route) | `revoke_user_auth_state` when the type actually changes |
+| Email activation, password reset through a link | `revoke_user_auth_state` |
+| Password change, email removal, primary change | `revoke_user_auth_state_except_current`: all but the caller's session and family |
+| Username or legacy email update (own profile or by an admin) | None; sessions stay valid |
+| Admin project removed | Nothing immediately; a session on that project is revoked on its next use |
+
+`src/Util/cache_manager.py` caches user data (`USER_INFO_TTL`, `3600` seconds) and access and
+permission checks (`1800` seconds). The user update, status, type change, password change, soft delete
+and hard delete helpers call `invalidate_user_cache`. It drops those entries and the user's derived
+`session_full:*` validation cache, but keeps the `session:*` access sessions: those are auth state, not
+cache, and are only removed by the revocation calls in the table above.
+
+A type change revokes everything because a session carries the user type and, for root and admin, its
+permission set, and refresh rotation carries both forward; only a new sign-in reflects the new type.
+The username stored in an existing session is not rewritten, so a renamed user's `/auth/validate`
+shows the new name after their next sign-in.
+
+## Account lifecycle
+
+| Path | Creates or changes | Notes |
+| --- | --- | --- |
+| `POST /auth/register` | `consumer` in a user group | Public; tokens only if the group reaches an active project |
+| External sign-in | `consumer` | Created by the OAuth pipeline; see the [OAuth suite](../oauth/README.md) |
+| `POST /user-types/root`, `POST /user-types/admin` | `root`, `admin` | Root-only; admin creation adds admin-group memberships |
+| Type change routes, bulk update | `user_type` | Only `PUT /user-types/{user_hash}/type` assigns an admin project |
+| Soft delete, bulk delete, bulk deactivation | `is_active = 0` | Row, addresses and history are kept; no route reactivates |
+| Hard delete | Removes the row | Root-only; foreign keys cascade |
+
+Design choices visible in the code:
+
+- **Soft delete by default.** Offboarding keeps the row so audit history and references stay intact.
+  Soft delete also deactivates group memberships; deactivation through bulk update does not.
+- **Hard delete is a root-only deep clean.** `sp_hard_delete_user` is a single `DELETE`; foreign keys
+  with `ON DELETE CASCADE` remove owned data (sessions, API keys, email rows and tokens, external
+  accounts, memberships, direct permission-group grants, billing and Patreon records) and `ON DELETE
+  SET NULL` clears audit and ownership references, so shared projects and user groups survive
+  without an owner. This is also the only way to free addresses held by a soft-deleted account.
+- **Enumeration-safe email sends.** Send routes return one generic `202` so they cannot be used to
+  learn which addresses exist; only rate limiting is reported.
+- **Password changes live in the auth routes.** `PUT /users/profile` rejects password fields;
+  `POST /auth/password/change` verifies the current password and applies the shared policy.

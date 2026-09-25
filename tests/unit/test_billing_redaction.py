@@ -161,3 +161,84 @@ def test_api_audit_logger_contract_must_add_stripe_signature_and_raw_body_exclus
 
     assert "stripe-signature" in headers, "Stripe-Signature must be classified as sensitive before webhook route ships"
     assert "/webhooks/stripe" in raw_body_exclusions, "/webhooks/stripe raw bodies must be excluded from unsafe audit capture"
+
+
+# ─── Public identifiers and opaque consumer JSON ─────────────────────────────
+# Project and billing group hashes are 64-hex tokens (secrets.token_hex(32).upper()); the
+# free-text sanitizer masks any 64-hex run, which used to mask them in every S2S response
+# and in the Checkout metadata sent to Stripe.
+
+PROJECT_HASH_64 = "7CCC926F2F5FEB07C973606EB2DF02BC3607C9C5B80A104DF5AAC9A1991F6173"
+GROUP_HASH_64 = "A" * 64
+
+
+def test_public_hash_identifiers_survive_redaction_verbatim():
+    from src.Util.billing.redaction import redact_billing_sensitive_data
+
+    redacted = redact_billing_sensitive_data(
+        {
+            "user_hash": "usr-5b8c7c1e-7f3a-4d2b-9c61-0a1b2c3d4e5f",
+            "project_hash": PROJECT_HASH_64,
+            "nested": {"billing_group_hash": GROUP_HASH_64},
+        }
+    )
+
+    assert redacted["user_hash"] == "usr-5b8c7c1e-7f3a-4d2b-9c61-0a1b2c3d4e5f"
+    assert redacted["project_hash"] == PROJECT_HASH_64
+    assert redacted["nested"]["billing_group_hash"] == GROUP_HASH_64
+
+
+def test_64_hex_values_stay_masked_outside_public_identifier_fields():
+    from src.Util.billing.redaction import REDACTED, redact_billing_sensitive_data, sanitize_billing_sensitive_text
+
+    redacted = redact_billing_sensitive_data({"reason": PROJECT_HASH_64, "note": f"digest {PROJECT_HASH_64}"})
+
+    assert redacted["reason"] == REDACTED
+    assert PROJECT_HASH_64 not in redacted["note"]
+    assert PROJECT_HASH_64 not in sanitize_billing_sensitive_text(f"project_hash={PROJECT_HASH_64}")
+
+
+def test_public_identifier_fields_do_not_launder_provider_ids_or_secrets():
+    from src.Util.billing.redaction import redact_billing_sensitive_data
+
+    redacted = redact_billing_sensitive_data(
+        {"user_hash": "cus_test_fixture_project_001", "project_hash": "sk_test_fixture_do_not_use"}
+    )
+
+    assert "cus_test_fixture_project_001" not in json.dumps(redacted)
+    assert "sk_test_fixture_do_not_use" not in json.dumps(redacted)
+
+
+def test_catalog_features_keep_consumer_key_names_and_pass_the_dto_guard():
+    """`features` keys like `card` or `*secret*` used to turn the S2S catalog read into a 500."""
+
+    from src.Util.billing.redaction import assert_billing_dto_is_safe, redact_billing_sensitive_data
+
+    payload = {
+        "success": True,
+        "billing_group_hash": GROUP_HASH_64,
+        "subscriptions": [
+            {
+                "plan_code": "plus",
+                "features": {"card": "gold", "secret_level": 3, "fingerprint_scanner": True, "tiers": [{"brand": "x"}]},
+            }
+        ],
+    }
+
+    redacted = redact_billing_sensitive_data(payload)
+    assert_billing_dto_is_safe(redacted)
+
+    assert redacted["subscriptions"][0]["features"] == payload["subscriptions"][0]["features"]
+    assert redacted["billing_group_hash"] == GROUP_HASH_64
+
+
+def test_catalog_feature_values_are_still_scrubbed_of_provider_ids():
+    from src.Util.billing.redaction import BillingRedactionError, assert_billing_dto_is_safe, redact_billing_sensitive_data
+
+    payload = {"subscriptions": [{"features": {"card": "price_test_fixture_magic_worlds_plus_monthly"}}]}
+
+    redacted = redact_billing_sensitive_data(payload)
+    assert "price_test_fixture" not in json.dumps(redacted)
+    assert set(redacted["subscriptions"][0]["features"]) == {"card"}
+    with pytest.raises(BillingRedactionError):
+        assert_billing_dto_is_safe(payload)

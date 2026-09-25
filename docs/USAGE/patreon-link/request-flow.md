@@ -1,355 +1,191 @@
-# Patreon Link Request Flow
+# Patreon link request flow
 
-This document describes the request flows for the Patreon account-link and entitlement surface in `api.auth`.
+What each Patreon request and worker pass does, in order. Fields, response bodies and
+status codes are in [reference.md](reference.md); the design behind the steps is in
+[architecture.md](architecture.md).
 
-Patreon is **entitlement/link only**. It is not local authentication authority, it does not create sessions, and it does not add Patreon-derived fields to JWTs, refresh-token state, session payloads, cookies, or `/auth/validate`.
+## Link request
 
-## Route Map
+`POST /auth/patreon/link/request`, from the signed-in user.
 
-| Flow | Route | Caller | Authority |
-| --- | --- | --- | --- |
-| Link request | `POST /auth/patreon/link/request` | Authenticated local user | Existing local session plus recent local reauthentication |
-| Link confirm | `POST /auth/patreon/link/confirm` | Authenticated local user | Existing local session plus recent local reauthentication plus email-loop proof |
-| Link status | `GET /auth/patreon/link/status` | Authenticated local user | Existing local session for the owning user only |
-| Unlink | `DELETE /auth/patreon/link` | Authenticated local user | Existing local session plus recent local reauthentication |
-| Webhook | `POST /webhooks/patreon` | Patreon webhook sender | `X-Patreon-Signature` HMAC-MD5 over exact raw body |
-| S2S read | `GET /internal/users/{user_hash}/entitlements` | Magic Worlds/internal service | Dedicated internal bearer credential |
-| S2S manual resync | `POST /internal/users/{user_hash}/entitlements/patreon/resync` | Magic Worlds/internal service or operator workflow | Dedicated internal bearer credential |
+1. The access session is validated; there must be a local user (`401` otherwise).
+2. Recent authentication is required: a sign-in or an OAuth reauth of this session
+   within `OAUTH_RECENT_REAUTH_SECONDS`. Otherwise `401` `AUTH_1008`.
+3. The link-request bucket is spent (user, IP, hint): `429` with the neutral body.
+4. The proof-send bucket is spent (user, IP, recipient), on every request and before
+   Patreon is contacted: `429` with the neutral body.
+5. The Patreon configuration is loaded. Linking must be on and ready (creator token, the
+   four peppers and secrets, at least one configured campaign) and
+   `explicit_user_intent` must be `true`; otherwise the neutral `202` is returned.
+6. Non-consumer accounts get the neutral `202`.
+7. Without a `patreon_email_hint`, no member is looked up and the neutral `202` is
+   returned. Otherwise every configured campaign is paged through the creator API and the
+   member whose Patreon e-mail equals the hint is selected.
+8. No member, or a member without an e-mail (hidden or empty): neutral `202`, recorded as
+   `patreon_link_rejected` (`member_not_available`, `patreon_email_hidden_or_null`).
+9. The member must belong to a configured campaign and carry user and member ids. The
+   tier-map mirror is refreshed, then a proof is created in `patreon_link_proofs` and its
+   e-mail queued in `email_messages` (template `patreon_link_proof`) to the member's
+   Patreon e-mail. The link in the e-mail is
+   `<public base URL>/auth/patreon/link/confirm?token=<lookup_id>.<secret>`.
+10. `patreon_link_proof_requested` is recorded and the neutral `202` is returned.
 
-Forbidden and absent Patreon auth routes remain forbidden:
+Any provider, database or e-mail failure also ends in the neutral `202`. The proof is
+delivered by the transactional e-mail worker, not by this request.
 
-- `/auth/patreon/login` — forbidden and absent.
-- `/auth/patreon/authorize` — forbidden and absent.
-- `/auth/patreon/callback` — forbidden and absent.
-- `/auth/patreon/token` — forbidden and absent.
+## Link confirm
 
-## 1. Link Request Flow
+`POST /auth/patreon/link/confirm`, from the same signed-in user, with the token from the
+e-mail. The e-mailed URL points at a `POST`-only route, so the front end reads `token`
+from it and posts it.
 
-`POST /auth/patreon/link/request` starts a local-account-owned link proof. The caller must already be authenticated locally and must satisfy recent local reauthentication. A Patreon request never starts a local login session.
+1. Session and recent authentication as for the request: `401`, `401` `AUTH_1008`.
+2. The proof-consume bucket is spent (user, IP, lookup id; never the secret): `429`.
+3. Linking must be on with a proof pepper, and the token must parse into lookup id and
+   secret; otherwise the neutral `202` (`link_status: pending`).
+4. The proof is consumed in the database, bound to this user: it must be pending,
+   unexpired and match the secret. A wrong secret counts an attempt; 8 wrong attempts
+   block the proof. Anything but a fresh consumption returns the neutral `202`.
+5. `patreon_link_proof_consumed` is recorded.
+6. The conflict check refuses, with the neutral `202`, when the Patreon account is
+   linked to another user (`provider_identity_unavailable`) or this user already has a
+   Patreon link (`active_patreon_link_exists`).
+7. The link is created (`user_external_accounts`, membership row).
+8. The member is read again from Patreon and classified; the snapshot, current
+   entitlement and history are stored. If that fails, a `pending` entitlement is stored
+   and a resync of this user is queued. The link is never undone at this point.
+9. `patreon_linked` is recorded and `200` is returned with `link_status: linked` and the
+   entitlement.
 
-```text
-Browser / SPA
-  │ local authenticated request
-  │ POST /auth/patreon/link/request
-  │ body: patreon_email_hint?, explicit_user_intent, confirm_email_match?
-  ▼
-api.auth auth_patreon route
-  │ validate existing local session
-  │ require recent local reauthentication
-  │ rate-limit link request
-  │ require explicit user intent
-  │ verify Patreon linking config is ready
-  ▼
-Patreon creator API lookup
-  │ configured campaigns only
-  │ optional email hint narrows lookup only
-  │ email hint is not durable authority
-  ▼
-proof decision
-  ├─ non-null Patreon member email available
-  │    create hash-only proof token and enqueue proof email
-  └─ hidden/null Patreon email or unavailable member
-       return generic accepted posture; no active link and no entitlement grant
-```
+Linking never activates or changes a local e-mail address and never issues credentials.
 
-### Link request rules
+## Link status
 
-- `patreon_email_hint` is a lookup hint only.
-- Proof is delivered only to the Patreon member email returned by the creator-owned Patreon API.
-- Hidden or null Patreon email blocks v1 automated activation.
-- The response is generic and enumeration-safe: it does not reveal whether the email belongs to a patron, whether the membership exists, or whether another local user is linked.
-- The response must not include access tokens, refresh tokens, session cookies, API keys, raw Patreon IDs, emails, signatures, provider payloads, hashes, hash prefixes, or audit rows.
+`GET /auth/patreon/link/status`, from the signed-in user.
 
-## 2. Link Confirm Flow
+1. The access session is validated (no recent authentication needed).
+2. The status bucket is spent (user, IP): `429` with `link_status: none` and the free
+   entitlement.
+3. The caller's current entitlement row is read and normalized. `stale` is computed
+   here from `stale_after`. A read failure answers `link_status: none` with the free
+   entitlement, still `200`.
 
-`POST /auth/patreon/link/confirm` consumes the email-loop proof and activates the Patreon link only when all authority checks pass.
+There is no user selector: only the caller's own state is readable.
 
-```text
-User receives proof at Patreon-returned member email
-  │
-  │ POST /auth/patreon/link/confirm
-  │ body: token OR lookup_id + secret, explicit_user_intent
-  ▼
-api.auth auth_patreon route
-  │ validate existing local session
-  │ require recent local reauthentication
-  │ rate-limit proof consumption
-  │ parse split proof token
-  │ hash submitted proof material
-  ▼
-DB proof consume
-  │ atomically match lookup_id + token_hash
-  │ enforce pending, unexpired, single-use proof
-  │ enforce proof bound to current local user
-  ▼
-provider identity conflict check
-  ├─ provider identity linked to another user → generic rejection
-  ├─ same user already linked to another active identity → relink required
-  └─ clear → activate link
-       create user_external_accounts(provider='patreon') authority row
-       create/update membership row
-       classify initial entitlement or mark pending source-of-truth resync
-```
+## Unlink
 
-### Link confirm rules
+`DELETE /auth/patreon/link`, from the signed-in user.
 
-- Proof consumption is atomic and single-use.
-- Malformed, unknown, expired, already consumed, wrong-purpose, wrong-user, or rate-limited tokens produce a generic response.
-- Link authority is the Patreon provider identity represented through HMAC/fingerprint material, not email equality.
-- Link activation must not activate local email state.
-- Link activation must not issue local sessions or credential material.
+1. Session and recent authentication: `401`, `401` `AUTH_1008`.
+2. The unlink bucket is spent (user, IP): `429`.
+3. `sp_patreon_unlink_account` marks the external account and membership `unlinked`,
+   sets the current entitlement to `free` with `link_status: unlinked`, and appends a
+   history row.
+4. `patreon_unlinked` is recorded and `200` is returned. If nothing was linked or the
+   procedure refused, the answer is the neutral `202` with `link_status: none`.
 
-## 3. Status Flow
+Sessions, refresh tokens, cookies and API keys are untouched.
 
-`GET /auth/patreon/link/status` returns the current user's safe normalized link state and entitlement summary.
+## Webhook
 
-```text
-Browser / SPA
-  │ GET /auth/patreon/link/status
-  │ existing local session only
-  ▼
-api.auth auth_patreon route
-  │ validate caller's local session
-  │ rate-limit status read
-  │ read current Patreon status for caller's user_id/user_hash only
-  ▼
-safe DTO serialization
-  │ link_status
-  │ entitlement.status
-  │ plan_code / tier_code / tier_name when safe
-  │ last_synced_at / stale_after when safe
-  ▼
-Browser-safe response
-```
+`POST /webhooks/patreon`, from Patreon.
 
-### Status rules
+1. The raw body is read before anything else.
+2. Invalid configuration, webhooks off or no secret: `503`.
+3. `X-Patreon-Signature` must be the HMAC-MD5 of the exact raw bytes with
+   `PATREON_WEBHOOK_SECRET`, compared in constant time. On failure the signature-failure
+   bucket for the source IP is spent (`429` once exhausted, else `401`) and
+   `patreon_webhook_rejected` is recorded. Nothing reaches the ledger.
+4. An event outside `PATREON_ALLOWED_WEBHOOK_EVENTS` is recorded in the ledger as
+   `ignored` and answered `200`.
+5. The body is parsed; member, campaign and user ids are hashed; the delivery hash is
+   computed over event, member, campaign and body digest.
+6. The delivery is recorded as `received`. If it cannot be recorded: `500` (Patreon
+   redelivers). A duplicate is answered `200` without reprocessing, unless the earlier
+   attempt `failed` or has been `received`/`processing` for over 10 minutes.
+7. A body without a member document queues a resync where possible and is answered
+   `200`.
+8. The Patreon user must be linked to a local account; otherwise the delivery is
+   `ignored`.
+9. A complete member document from a create or update event is classified and stored
+   directly (snapshot, entitlement, history), downgrades included, and
+   `patreon_entitlement_changed` or `patreon_tier_map_miss` is recorded. A partial
+   document, a `*:delete` event or an unmapped tier queues a `webhook_resync` job
+   instead.
+10. The ledger row is marked `processed` or `ignored` and `200` is returned. If
+    processing throws, a resync is queued, the row is marked `failed`, and the answer is
+    `200` when the resync was queued, `500` when it was not.
 
-- There is no caller-supplied user selector.
-- Another user's Patreon state cannot be probed through the route.
-- Stale snapshots must be labeled stale/degraded through normalized fields instead of being presented as fresh.
-- The response must not include raw Patreon IDs, campaign IDs, tier IDs, raw or masked Patreon email, signatures, payloads, hashes, hash prefixes, fingerprints, audit rows, tokens, or secrets.
+## Worker pass
 
-## 4. Unlink Flow
+`src/workers/patreon_sync_worker.py` (started by `scripts/run_patreon_worker.sh`) loops
+every `PATREON_SYNC_WORKER_POLL_SECONDS`. With `PATREON_SYNC_ENABLED` off it only runs
+maintenance.
 
-`DELETE /auth/patreon/link` soft-unlinks Patreon for the authenticated local user.
+1. The tier-map mirror is refreshed if the configuration changed.
+2. Up to `PATREON_SYNC_WORKER_BATCH_SIZE` due jobs are claimed with a lease of
+   `PATREON_SYNC_JOB_LEASE_SECONDS`, lowest `priority` number first (forced resyncs use
+   `1`, others `5`), and processed:
+   - `full_campaign` — page through every configured campaign (or the one named);
+   - `user_member` — scan configured campaigns for the member linked to the user;
+   - `webhook_resync` — re-read one member by its hash;
+   - `campaign_member`, `retention`, `token_refresh` are supported but nothing queues
+     them.
+3. If no job was claimed and a sweep is due, a full sweep of every configured campaign
+   runs inline. The first sweep runs at start-up; the next is due
+   `PATREON_SYNC_INTERVAL_SECONDS` plus up to `PATREON_SYNC_JITTER_SECONDS` later.
+4. Every member read is classified and stored like a webhook update. After a complete
+   sweep with no member failures, linked memberships Patreon no longer returned become
+   `former`/free with the link kept.
+5. Failures: a Patreon `429` retries after Patreon's own retry hint; other failures
+   retry after `PATREON_SYNC_BACKOFF_SECONDS[attempt]` plus jitter; a `401` marks the
+   stored creator token revoked and, with refresh on, refreshes it at once. After 8
+   attempts the job fails. Nothing is written on failure, so entitlements keep their last
+   value and age into `stale`.
+6. Maintenance: with token refresh on, the creator token is checked hourly and refreshed
+   `PATREON_CREATOR_TOKEN_REFRESH_MARGIN_SECONDS` before it expires (the first check after
+   start-up refreshes once to learn the expiry); the retention purge runs at start-up and
+   every 24 hours.
 
-```text
-Browser / SPA
-  │ DELETE /auth/patreon/link
-  │ existing local session + recent reauth
-  ▼
-api.auth auth_patreon route
-  │ validate local session
-  │ require recent local reauthentication
-  │ rate-limit unlink
-  ▼
-DB soft unlink
-  │ user_external_accounts(provider='patreon') -> unlinked
-  │ patreon_memberships -> unlinked
-  │ current entitlement -> free/unlinked or revoked/unlinked
-  │ append entitlement history
-  ▼
-safe unlink response
-```
+Enqueueing is idempotent: a request identical to a queued job returns that job
+(`deduplicated`) and can pull it forward; a request that arrives while the job runs makes
+it run once more after it completes successfully.
 
-### Unlink rules
+## Manual resync
 
-- Unlink is soft and auditable.
-- Unlink stops future Patreon-backed entitlement projection unless a new link lifecycle completes.
-- Unlink does not revoke local sessions, JWTs, refresh-token state, cookies, or API keys because Patreon is not local login authority.
-- Link, snapshot, entitlement, and unlink history are preserved indefinitely in privacy-minimized form.
+`POST /internal/users/{user_hash}/entitlements/patreon/resync` (S2S) and
+`POST /admin/patreon/resync` (root dashboard) both queue a job for the worker; neither
+reads Patreon itself.
 
-## 5. Webhook Flow
+S2S, in order: bearer check (`401`), S2S bucket (`429` generic), sync-enqueue bucket
+(`429` `status: rate_limited`), sync off (`202` `disabled`), unknown or inactive user
+(`202` `degraded`), then a `user_member` job is queued (`202` `queued`) and
+`patreon_sync_started` is recorded.
 
-`POST /webhooks/patreon` is a fast path for entitlement changes. It is not a browser route and does not require a local user session.
+Dashboard, in order: root check (`403`), sync off or invalid configuration (`200`
+`disabled`), `user_hash` required for `scope: user` (`400`), sync-enqueue bucket with its
+own counter (`429` `INT_7005`), unknown user (`404`), no active membership (`200`
+`not_linked`), then a `user_member` job or, for `scope: all`, one `full_campaign` job is
+queued (`200` `queued`).
 
-```text
-Patreon
-  │ POST /webhooks/patreon
-  │ headers: X-Patreon-Event, X-Patreon-Signature
-  │ body: exact raw JSON:API bytes
-  ▼
-api.auth webhook route
-  │ read exact raw bytes before parsing
-  │ verify X-Patreon-Signature with HMAC-MD5(raw_body, webhook_secret)
-  │ reject missing/malformed/invalid signatures before mutation
-  │ apply configured member/pledge event allow-list
-  ▼
-delivery ledger
-  │ derive local delivery_hash from event/member/campaign/body digest
-  │ duplicate/replay -> safe success, no repeated side effects
-  ▼
-classification / resync decision
-  ├─ Patreon user not linked to anyone
-  │    acknowledge and ignore (no resync: nothing to update)
-  ├─ complete verified member document (create/update) + mapped tier
-  │    update snapshot/current entitlement (downgrades included) and append history
-  └─ partial payload, *:delete event, or unmapped tier
-       enqueue source-of-truth resync; no destructive downgrade from partial data
-  │
-  ▼
-ledger outcome: processed | ignored | failed (failed deliveries are reprocessed on redelivery)
-```
+## S2S entitlement read
 
-### Webhook rules
+`GET /internal/users/{user_hash}/entitlements`, from the companion service.
 
-- Only exact raw-body verification is trusted.
-- Body normalization, parsing before verification, altered whitespace, altered encoding, or changed bytes must fail verification.
-- Unsupported events are ignored or recorded safely without entitlement mutation.
-- Duplicate deliveries are idempotent because Patreon does not provide a native delivery ID.
-- Partial or ambiguous webhook payloads must not revoke or downgrade paid entitlement without source-of-truth confirmation. A complete, signed member document is Patreon's own statement of the member's current state and is applied directly, so cancellations and declines take effect without waiting for a sweep.
-- Patreon sends no event timestamp, so per-delivery ordering cannot be judged; the scheduled sweep corrects a late redelivery.
-- A source-of-truth read that completes without finding a linked member (Patreon drops deleted members from campaign reads) downgrades that membership to `former`/free. The link itself stays, so the user can pledge again without relinking.
+1. The Patreon configuration is loaded; the S2S switch must be on, a bearer configured,
+   and the presented bearer must match in constant time. Otherwise `401`. Cookies and
+   user tokens are never considered.
+2. The S2S bucket is spent (user hash, calling client, IP): `429`.
+3. The current entitlement row for `user_hash` is read and normalized through the
+   allow-listed DTO; `stale` is computed from `stale_after`.
+4. No row, or an unknown or inactive user: the free projection, `200`. A read error:
+   `404`.
 
-Configured allowed event defaults:
+The read never issues sessions and never changes local authentication state.
 
-- `members:create`
-- `members:update`
-- `members:delete`
-- `members:pledge:create`
-- `members:pledge:update`
-- `members:pledge:delete`
+## Retention
 
-## 6. Scheduled Resync Flow
-
-Scheduled resync is the source-of-truth correction path for all configured campaigns.
-
-```text
-PatreonSyncWorker
-  │ enabled by PATREON_SYNC_ENABLED
-  │ scheduled interval + jitter
-  ▼
-full configured campaign sweep
-  │ fetch campaign member pages through creator API
-  │ include user and currently_entitled_tiers evidence
-  │ obey API timeout, page cap, retry, and backoff policy
-  ▼
-classifier
-  │ normalize patron status
-  │ apply campaign-scoped tier map
-  │ resolve highest-priority mapped tier
-  │ mark unknown tier as fail-safe/no paid grant
-  ▼
-persistence
-  │ update current entitlement
-  │ append snapshot/history
-  │ record tier-map misses and health
-```
-
-### Scheduled resync rules
-
-- Scheduled resync evaluates each configured campaign.
-- Provider 429 responses back off using provider/local retry policy.
-- Provider outages, timeouts, and creator-token failures preserve last-known paid snapshots as stale/degraded instead of destructive downgrade.
-- With no current trusted snapshot, provider failure fails closed for new paid grants.
-
-## 7. Manual Resync Flow
-
-Manual resync is accepted through the internal S2S endpoint and processed by the worker queue.
-
-```text
-Magic Worlds / operator S2S caller
-  │ POST /internal/users/{user_hash}/entitlements/patreon/resync
-  │ Authorization: Bearer <PATREON_S2S_BEARER_TOKEN>
-  ▼
-api.auth internal_patreon route
-  │ constant-time bearer check
-  │ reject cookies/browser sessions as authority
-  │ S2S rate-limit
-  │ sync enqueue rate-limit
-  │ verify sync feature is enabled
-  ▼
-patreon_sync_jobs
-  │ enqueue user_member/manual_resync job
-  │ return safe accepted/queued/disabled/rate_limited/degraded response
-  ▼
-PatreonSyncWorker
-  │ claim job
-  │ scan configured campaigns or targeted member evidence
-  │ classify and persist through same source-of-truth path
-```
-
-### Manual resync rules
-
-- The request body may carry only safe controls such as `force` or a redacted `reason`.
-- The response may include `accepted`, `status`, `user_hash`, `retry_after_seconds`, `not_before`, `correlation_id`, and `contract_version`.
-- It must not expose raw provider selectors, campaign IDs, member IDs, tier IDs, provider payloads, hashes, fingerprints, tokens, or secrets.
-
-## 8. Internal S2S Entitlement Read Flow
-
-`GET /internal/users/{user_hash}/entitlements` is the only v1 contract for Magic Worlds entitlement consumption.
-
-```text
-Magic Worlds
-  │ existing identity/session validation remains separate
-  │ GET /internal/users/{user_hash}/entitlements
-  │ Authorization: Bearer <PATREON_S2S_BEARER_TOKEN>
-  ▼
-api.auth internal_patreon route
-  │ constant-time dedicated bearer verification
-  │ no cookie/session authority
-  │ S2S rate-limit
-  │ read current normalized entitlement by user_hash
-  ▼
-safe S2S DTO
-  │ user_hash
-  │ contract_version
-  │ entitlement.external_source
-  │ entitlement.status
-  │ entitlement.plan_code / tier_code / tier_name
-  │ entitlement.link_status
-  │ next_renewal_at / grace_period_until / last_synced_at / stale_after
-  │ classification_version
-```
-
-### S2S rules
-
-- Unauthorized requests return generic denial and must not reveal whether the user hash, Patreon link, campaign, tier, or entitlement exists.
-- The endpoint must not accept browser cookies as authority.
-- The endpoint must not issue sessions or mutate local authentication state.
-- S2S fields are normalized and allow-listed; raw Patreon internals are server-only.
-
-## 9. Retention Flow
-
-Retention is bounded by artifact sensitivity.
-
-```text
-PatreonSyncWorker retention_only mode or retention job
-  │
-  ▼
-sp_patreon_retention_purge / DB wrapper
-  ├─ purge proof requests 24h after expiry
-  ├─ purge webhook delivery hashes/idempotency ledger after 90d
-  ├─ purge encrypted raw-payload quarantine within 30d max
-  └─ preserve link, snapshot, entitlement, and unlink history indefinitely
-```
-
-### Retention rules
-
-| Artifact | Retention |
-| --- | --- |
-| Proof requests | 24 hours after expiry, then purged or irreversibly stripped. |
-| Webhook hashes / delivery ledger | 90 days. |
-| Raw payload quarantine | Disabled by default; if enabled, encrypted/server-only and purged within 30 days maximum. |
-| Link history, membership/snapshot history, entitlement history, unlink history | Indefinite, privacy-minimized. |
-
-Indefinite history must not require indefinite raw provider payloads, raw emails, signatures, tokens, or secrets.
-
-## 10. Failure and Rollback Flow Summary
-
-| Condition | Flow behavior |
-| --- | --- |
-| Missing Patreon config | Keep feature disabled/not-ready; local auth and Google OAuth unaffected. |
-| Link proof delivery failure | Generic public posture; no active link; no entitlement grant. |
-| Provider 429 | Back off and preserve existing snapshots as stale/degraded. |
-| Creator token refresh failure | Degraded health; preserve last-known snapshots; fail closed for new grants. |
-| Partial webhook | Enqueue resync or mark stale; no destructive downgrade. |
-| Manual rollback | Disable flags/ingress/worker/S2S and clear only Patreon Redis namespaces; preserve DB history. |
-
-## Related Documentation
-
-- [Overview](README.md)
-- [Architecture](architecture.md)
-- [Scenarios](scenarios.md)
-- [Reference](reference.md)
-- [Troubleshooting](troubleshooting.md)
+The worker's purge (`sp_patreon_retention_purge`) deletes expired proofs, old webhook
+ledger rows and finished sync jobs, and blanks expired quarantined payloads. Links,
+memberships, snapshots and entitlement history are never purged. Windows are in
+[Retention windows](reference.md#retention-windows).

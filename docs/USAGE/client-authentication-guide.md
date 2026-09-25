@@ -1,896 +1,591 @@
-# Client Authentication & Session Integration Guide
+# Client integration guide
 
-Practical guide for integrating with the `api.auth` authentication system from browser, mobile, and server-side clients.
+How to build browser, mobile and server clients on top of the `/auth` API: which transport to use,
+what the server sets, where to keep tokens, how to refresh safely, and how to react to errors. The
+request and response contract of each endpoint is in [Authentication](authentication-usage-cases.md);
+this page links there instead of repeating it.
 
-> **For raw endpoint documentation** (request/response shapes, parameters, error codes), see **[Authentication Usage Cases](authentication-usage-cases.md)**.
-> This guide focuses on **client-side integration patterns** and **code examples**.
+## Choose a transport
 
----
+| Client | Transport | Why |
+| --- | --- | --- |
+| Browser app on the **same site** as the API (for example `app.example.com` and `api.example.com`) | HttpOnly cookies set by the API | Tokens never reach JavaScript; the browser sends and rotates them |
+| Browser app on **another site**, or a server-rendered web app | A backend-for-frontend (BFF) that holds the tokens and uses bearer mode | The auth cookies are `SameSite=Strict` and are not sent cross-site |
+| Mobile and desktop apps | `Authorization: Bearer <access_token>`, refresh token in OS secure storage | No cookie jar to rely on |
+| Scripts, CLIs, back-end services acting as a user | Bearer | Same as mobile |
+| A service that receives a user's API key | `POST /auth/validate-api-key` with `X-API-Key` | Resolves the key's owner, project and permissions; the key is not a general credential ([details](authentication-usage-cases.md#validate-an-api-key)) |
 
-## Table of Contents
-- [Overview](#overview)
-- [Authentication Flow](#authentication-flow)
-- [Token & Cookie Details](#token--cookie-details)
-- [Supported Protected-Route Credentials](#supported-protected-route-credentials)
-- [OAuth Sign-in](#oauth-sign-in)
-- [Email Activation and Reset Links](#email-activation-and-reset-links)
-- [Password Changes](#password-changes)
-- [API Keys](#api-keys)
-- [Client Integration Patterns](#client-integration-patterns)
-- [Code Examples](#code-examples)
-- [Error Handling](#error-handling)
-- [Security Considerations](#security-considerations)
+Every sign-in path (password login, platform login, registration, OAuth callback) returns the token
+pair in the JSON body **and** sets it as cookies, so one API serves both styles.
 
----
+## What the server sets
 
-## Overview
+| Cookie | Carries | `Path` | `Max-Age` | Attributes |
+| --- | --- | --- | --- | --- |
+| `session_token` | Access token | `/` | Access-token lifetime: `900` seconds by default (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly`, `Secure`, `SameSite=Strict`, host-only (no `Domain`) |
+| `refresh_token` | Refresh token | `/auth` | Remaining family lifetime: `259200` seconds (72 hours) after each rotation, or the seconds left of the 30-day `remember_me` window | `HttpOnly`, `Secure`, `SameSite=Strict`, host-only |
 
-The API uses a **true access/refresh token model**:
-- **Access tokens** (default 15-minute expiry) authorize protected requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
-- **Refresh tokens** authorize only `/auth/refresh` and rotate the session family. They are 72h-sliding by default, or a 30-day absolute window when the user logs in with `remember_me=true`.
-- **API keys** are validated through `POST /auth/validate-api-key` (`X-API-Key` header); see [API Keys](#api-keys).
-- **Cookies** (browsers, SPAs) can carry both tokens automatically.
-- **Bearer header** clients use the access token manually and must store/use the refresh token separately.
-- **Plan projection** is returned for project-scoped consumers by login, `/auth/validate`, and API-key validation. It is response data, not token or session authority.
+- Both cookies are set by `POST /auth/login`, `/auth/platform/login`, `/auth/register` (when it
+  issues tokens), `/auth/refresh`, `/auth/switch-project` and the OAuth callback.
+- `POST /auth/logout` clears both. A failed refresh does **not** clear them; the client must treat
+  the session as over.
+- The access cookie expires with the access token, so after 15 minutes the browser stops sending
+  it and protected calls return `401` until the client refreshes.
+- `session_token` is a legacy name: the cookie holds the access token, never a refresh credential.
+- When a request carries both `Authorization: Bearer` and the cookie, the header wins.
 
-### Key Integration Points
+Token lifetimes, rotation and revocation rules are in
+[Authentication: tokens and sessions](authentication-usage-cases.md#tokens-and-sessions).
 
-| Concern | Detail |
-|---------|--------|
-| Content-Type (auth routes) | `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/switch-project` use `application/x-www-form-urlencoded` (form fields). The email/password JSON routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`, `/auth/password/change`) use `application/json`. `/auth/validate-api-key` carries no body (header auth). |
-| Content-Type (other routes) | Older CRUD/admin mutations are mainly form-encoded. Email-template, provider, internal S2S, audit-export, and selected bulk routes use JSON; webhooks use signed raw bytes. Follow each route's OpenAPI request schema. |
-| User-Agent | **Required on every request**. Missing it returns 422. |
-| CORS | Set `ALLOWED_ORIGINS` explicitly for every deployment. `.env.example` is the maintained template. When unset, CORS, early-reject responses, and email-link origin checks share one built-in list (`DEFAULT_ALLOWED_ORIGINS` in `src/Util/auth_constants.py`) of localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai` — do not depend on it. |
-| Cookies | `session_token` carries the access token; `refresh_token` carries the refresh token. Both are HTTP-only, Secure, SameSite=Strict. |
+## Browser requirements
 
----
+- **Same site.** `SameSite=Strict` cookies are sent only when the page and the API share a
+  registrable domain. `app.example.com` → `api.example.com` works; `app.example.net` →
+  `api.example.com` does not, whatever CORS allows. Use a BFF in that case.
+- **HTTPS.** `Secure` cookies are stored and sent only over HTTPS. Chromium- and Firefox-based
+  browsers make an exception for `http://localhost`; a plain-HTTP LAN IP or hostname never receives
+  the cookies (use HTTPS or bearer mode there).
+- **CORS with credentials.** When the page origin differs from the API origin (another subdomain or
+  port), add the exact origin to `ALLOWED_ORIGINS` and call `fetch` with `credentials: 'include'`.
+  The API answers listed origins with `Access-Control-Allow-Credentials: true` and allows every
+  method and request header.
+- **Root path.** The refresh cookie is scoped to `Path=/auth`. Serve the API at the root of its
+  origin; behind a proxy that adds a prefix (`/api/auth/refresh`), the browser never sends the
+  refresh cookie unless the proxy rewrites cookie paths.
+- **User-Agent.** Browsers send their own. Do not set it in `fetch`: some browsers ignore it and
+  others turn the request into a preflighted one. Non-browser clients must send one on every
+  request.
 
-## Authentication Flow
+> [!NOTE]
+> The API has no CSRF-token mechanism. Cross-site request forgery is blocked by `SameSite=Strict`
+> (cookies are not attached to requests started from another site) and CORS keeps other origins
+> from reading responses. `SameSite` does not stop requests from a sibling subdomain of the same
+> site, so do not host untrusted content under the API's registrable domain.
 
-```
-1. Check Availability (optional)    → POST /auth/check-availability
-2. Register                         → POST /auth/register        → access + refresh token pair
-3. Login (subsequent visits)        → POST /auth/login           → access + refresh token pair
-4. Validate access token            → GET  /auth/validate        → access cookie or Bearer access token
-5. Refresh access token             → POST /auth/refresh         → refresh cookie/body only; rotates refresh token
-6. Switch Project (optional)        → POST /auth/switch-project  → recent sign-in + current refresh token
-7. Change Password (optional)       → POST /auth/password/change → access token + current password; no new session
-8. Logout                           → POST /auth/logout          → access/refresh cookies cleared; family revoked (an expired access token is accepted)
-```
+## Token storage
 
-For detailed endpoint parameters and response shapes, see [Authentication Usage Cases](authentication-usage-cases.md).
+| Client | Access token | Refresh token |
+| --- | --- | --- |
+| Same-site browser app | `session_token` cookie only; ignore the copies in the JSON body | `refresh_token` cookie only |
+| BFF or server-rendered app | Server memory or its session store; the browser gets only the BFF's own session cookie | Server-side session store, encrypted at rest |
+| Mobile and desktop | Memory | iOS Keychain, Android Keystore, or the OS credential store |
+| Scripts and services | Memory | Secret manager, or a file readable only by the service account |
 
----
+Never put tokens in `localStorage`, `sessionStorage`, URLs, logs, crash reports or analytics events.
+The same applies to user API keys: treat them like passwords.
 
-## Token & Cookie Details
+## Refresh strategy
 
-| Property | Value |
-|----------|-------|
-| Access Token | Short-lived JWT (default 15 min, `expires_in: 900`) returned as `access_token` and deprecated `session_token` alias |
-| Refresh Token | JWT returned as `refresh_token` in JSON and `refresh_token` cookie. 72-hour sliding by default (`refresh_expires_in: 259200`); 30-day absolute window when `remember_me=true` (`refresh_expires_in` ≈ `2592000`, non-sliding) |
-| Access Cookie | `session_token`, HTTP-only, Secure, SameSite=Strict, access-token TTL |
-| Refresh Cookie | `refresh_token`, HTTP-only, Secure, SameSite=Strict, path compatible with `/auth/refresh`. Max-Age tracks the refresh family TTL (72h sliding, or ~30 days when `remember_me=true`) |
-| Session Storage | Redis-backed `session:{access_jti}` plus refresh family records |
-| Refresh Strategy | Strict single-use refresh-token rotation; reused/old refresh tokens revoke the family. Default rotation slides the 72h window; a `remember_me=true` family keeps its fixed `absolute_expires_at` and does not slide |
-| Replay Grace | Re-presenting the refresh token that was *just* rotated returns `401 REFRESH_TOKEN_REPLAYED` **without** revoking the family, for `REFRESH_REPLAY_GRACE_SECONDS` (default 10s). This covers a lost response, an offline retry, or a second tab. Any older token, or the same token after the window, is reuse: `401 REFRESH_TOKEN_REUSED` and the family dies. Set the env var to `0` for strict zero-tolerance |
-| Remember Me | Optional `remember_me` form field on `/auth/login` and `/auth/platform/login` (default `false`). `true` switches the family from 72h-sliding to a 30-day absolute window. Successful login, refresh, and switch-project responses return the mode as top-level `remember_me`; `/auth/validate` returns it under `session.remember_me` |
-| Session Plan | A response-only, subscription-only object for project-scoped consumers: `provider`, six-state `state`, `active`, opaque plan/tier codes, expiry fields, and `cancel_at_period_end`. It is not embedded in auth tokens or Redis session state. |
+- **Refresh on `401`, once.** When a protected call returns `401`, refresh and retry the call once.
+  If the retry fails too, stop: the session is over.
+- **Or refresh ahead of time.** Every token-pair response has `expires_at`; refreshing about a
+  minute before it avoids failed calls. Keep the `401` path as the fallback.
+- **One refresh at a time per family.** Two concurrent refreshes present the same refresh token:
+  within the replay grace (default `10` seconds) the loser gets `401 AUTH_1022` and must use the
+  winner's pair; after it, the server treats the second use as theft (`AUTH_1015`) and revokes the
+  family. Funnel refreshes through a single in-flight promise, lock or queue.
+- **Swap both tokens every time.** Each refresh or project switch invalidates the previous access
+  token immediately, not at its expiry. Calls already in flight with the old token get `401`; retry
+  them with the new one.
+- **One family per client instance.** Do not share a token pair between processes, devices or
+  users: independent refreshes collide and trigger reuse detection. Log in once per instance, or
+  make one component responsible for refreshing.
+- **Plan for the end.** A default family ends 72 hours after its last refresh; a `remember_me`
+  family ends 30 days after sign-in regardless of activity. Then a new login is needed.
+- **Project switching needs a fresh sign-in.** `/auth/switch-project` works only within 300 seconds
+  of the sign-in; after that it returns `401 AUTH_1008` and refreshing does not help. Offer a login
+  with the target `project_hash` instead.
 
-`POST /auth/refresh` **does not** accept `Authorization: Bearer <access_token>` and does not upgrade legacy session/access tokens. Send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
+What to do when `POST /auth/refresh` fails:
 
-`POST /auth/switch-project` additionally requires **recent authentication**: the
-session must have signed in within `recent_reauth_seconds` (default 300s), or have
-completed an OAuth reauth (`POST /auth/oauth/{connection}/reauth/start`) within that
-window. The sign-in time travels in the access token's `auth_time` claim and is kept
-unchanged by `/auth/refresh` and by project switches, so refreshing does not renew
-it. Otherwise the switch returns `401 MFA_REQUIRED`: sign in again (or reauthenticate
-through OAuth) and retry. The same rule gates API-key create/update/revoke, OAuth
-link/unlink, and Patreon link/unlink.
+| Code | Meaning | Client action |
+| --- | --- | --- |
+| `AUTH_1022` | This refresh token was rotated seconds ago by another request | Use the newer pair (a browser already has it as cookies) and retry the original call |
+| `AUTH_1015`, `AUTH_1017` | Reuse detected, or the family was revoked | Clear local state and go to login |
+| `AUTH_1013`, `AUTH_1014`, `AUTH_1019` | No, invalid or expired refresh token | Go to login |
+| `AUTH_1016`, `AUTH_1018` | Cookie and form value differ, or an access token was sent | Fix the client; send only the current refresh token |
+| `AUTH_1020` | The user or project is no longer valid | Go to login; the user may have lost access |
 
-`POST /auth/refresh` returns `plan` for project-scoped consumers, like login.
-The switch-project response body still does not expose it; call
-`GET /auth/validate` with the new access token after a switch when the client
-needs the current project plan projection.
+## Handling errors
 
----
+Errors use the [standard error envelope](errors.md#standard-error-envelope)
+`{"status": "error", "error": {"code", "category", "message"}}`, except the middleware bodies listed
+under [other error bodies](errors.md#other-error-bodies). Branch on `error.code` and the HTTP
+status, never on the message text; `error.details` is not returned in production except for
+request-validation failures and rate limits.
 
-## Supported Protected-Route Credentials
+| Status | Typical codes | Client action |
+| --- | --- | --- |
+| `400` | `VAL_3001`, `VAL_3002`, `VAL_3007` | Fix the input. For `VAL_3007`, show general password guidance; the reasons are not returned in production. |
+| `401` on a protected route | `AUTH_1003` | Refresh once and retry once |
+| `401` on login or password change | `AUTH_1001` | Show one generic "invalid credentials" message; do not refresh |
+| `401` on project switch | `AUTH_1008` | Ask the user to sign in again for that project |
+| `401` on refresh | `AUTH_1013` to `AUTH_1022` | See the refresh table above |
+| `403` | `AUTHZ_2001`, `AUTHZ_2002`, `AUTHZ_2003` | Show "access denied"; refreshing does not change it |
+| `409` | `CONF_5001`, `CONF_5002` | Ask for another username or email |
+| `413`, `422` | none: body is `{"status": "Error", "action": "..."}` | Request too large, or `User-Agent` missing; fix the client |
+| `429` | `INT_7005` | Wait for the `Retry-After` seconds before trying again |
+| `5xx` | `INT_*`, `DB_*` | Retry idempotent calls with backoff |
 
-For protected endpoints, clients must use one of the currently wired session credentials:
+Public email routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`) answer
+`202` whether or not the account or link exists. Show the same neutral message for every `202`
+and never tell the user whether an address is registered.
 
-| Client type | Credential to send |
-|-------------|--------------------|
-| Browser/SPA | `session_token` cookie carrying the access JWT |
-| API clients, scripts, mobile apps, server-to-server callers | `Authorization: Bearer <access_token>` |
+## Integration patterns
 
-Do not send refresh tokens to protected endpoints. Refresh tokens are accepted only by `/auth/refresh`.
+### Same-site browser app
 
----
+1. Sign in with `fetch(..., { credentials: 'include' })` and a form body; keep only the non-secret
+   parts of the response (`user`, `project`, `accessible_projects`, `expires_at`).
+2. Call protected routes with `credentials: 'include'`; the browser attaches `session_token`.
+3. On `401`, call `POST /auth/refresh` with no body (the `refresh_token` cookie is sent because the
+   path starts with `/auth`), then retry once.
+4. On startup, call `GET /auth/validate` to learn whether a session exists; it refreshes through
+   step 3 when the access cookie has already expired.
+5. Log out with `POST /auth/logout`. If it returns `401` because the access cookie expired, refresh
+   first and log out again so the family is revoked, then clear local state either way.
 
-## OAuth Sign-in
+### Backend-for-frontend
 
-A client can also obtain a session through an external identity provider. The
-integration is a backend concern — your server mints a short-lived `init_token`
-with its project API key and the browser posts it to `/auth/oauth/start` — and it
-is documented in the [OAuth suite](oauth/README.md).
+The BFF signs in with bearer mode, stores the pair server-side keyed by its own session, and
+forwards calls with `Authorization: Bearer`. It must serialize refreshes per user session. When it
+relays `POST /auth/password/forgot` or the email routes under `/users/me/emails`, it should send the
+browser origin in `X-Public-Base-Url` so emailed links point back to that frontend (the origin must
+be listed in `ALLOWED_ORIGINS`); otherwise the links use the API's own origin unless the deployment
+pins `AUTH_EMAIL_PUBLIC_BASE_URL`.
 
-For everything after the callback, this guide applies unchanged: the callback
-returns the same `LoginResponse` and sets the same cookies as a password login,
-so token storage, refresh handling, and logout are identical.
+### Mobile and desktop apps
 
----
+Send `Authorization: Bearer <access_token>` on every call and a descriptive `User-Agent`. Keep the
+refresh token in secure storage, refresh through one serialized path, and persist the new refresh
+token before using the new access token, so a crash never leaves the app holding a rotated-away
+token. Clear both on logout or on a terminal refresh error.
 
-## Email Activation and Reset Links
+### Scripts and services
 
-Email is optional. Clients must not block registration or account use just because a user has no activated email.
+Use the same bearer flow as mobile apps. A service that calls the API on behalf of many users needs
+one token pair per user session; a service that only needs to verify a user's API key calls
+`POST /auth/validate-api-key` with `X-API-Key` and no `Authorization` header (sending both returns
+`400`).
 
-Client rules:
+### Email links
 
-- `POST /auth/email/verify`, `/auth/password/forgot`, and `/auth/password/reset` return generic `202` when syntactically processable.
-- Activation/reset consumes do **not** create login sessions.
-- Forgot-password recovery only enqueues for active activated email rows; pending, removed, suppressed, unknown, or legacy-only emails keep the same generic public posture.
-- After successful activation/reset, prompt the user to login with password.
-- If the server returns `429`, honor the `Retry-After` header.
-- Use `Idempotency-Key` for add/resend/forgot/reset submissions that may be retried by the client. Reusing a key with a different route, recipient, purpose, or body is a semantic conflict.
-- Never log full activation/reset URLs, token `secret`, raw `Idempotency-Key`, or full recipient email.
+The emailed activation and reset links open `/auth/email/verify?token=...` and
+`/auth/password/reset?token=...` on your frontend. Read the token from the query string once, remove
+it from the address bar with `history.replaceState`, and POST it as JSON. A `202` does not say whether
+the link was valid: after a reset, tell the user to log in with the new password and to request a
+new link if that fails. Neither route signs the user in.
 
-```javascript
-async function submitActivationToken(token) {
-  const response = await fetch('/auth/email/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'User-Agent': 'my-app/1.0' },
-    body: JSON.stringify({ token }),
-    credentials: 'include'
-  });
-  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
-  if (response.status !== 202) throw new Error('Activation request was not accepted');
-  return { accepted: true }; // not proof of token validity
+## Code examples
+
+The examples cover the endpoints in [Authentication](authentication-usage-cases.md) and read
+response fields at the top level of the JSON body (`access_token`, `user`, `error.code`).
+
+### Browser client (TypeScript)
+
+Cookie mode for a same-site app. Tokens in response bodies are deliberately ignored.
+
+```typescript
+// authClient.ts
+export const API = 'https://api.example.com';
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string,
+    readonly retryAfter: number | null = null,
+  ) {
+    super(message);
+  }
 }
-```
 
-Forgot/reset handling follows the same generic-response rule:
+export async function toApiError(response: Response): Promise<ApiError> {
+  let body: any = null;
+  try {
+    body = await response.json();
+  } catch {
+    // 413 and 422 middleware responses do not use the standard envelope
+  }
+  const retryAfter = response.headers.get('Retry-After');
+  return new ApiError(
+    response.status,
+    body?.error?.code,
+    body?.error?.message ?? body?.action ?? `HTTP ${response.status}`,
+    retryAfter ? Number(retryAfter) : null,
+  );
+}
 
-```javascript
-async function requestPasswordReset(identifier) {
-  const response = await fetch('/auth/password/forgot', {
+// 401 codes that a refresh cannot fix: wrong password, and "sign in again" for project switching.
+const NOT_REFRESHABLE = new Set(['AUTH_1001', 'AUTH_1008']);
+
+let refreshing: Promise<void> | null = null;
+
+/** Rotate the pair once, however many callers ask at the same time. */
+export function refreshSession(): Promise<void> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      const response = await fetch(`${API}/auth/refresh`, { method: 'POST', credentials: 'include' });
+      if (response.ok) return;
+      const error = await toApiError(response);
+      if (error.code === 'AUTH_1022') return; // another tab just rotated; its cookies are already set
+      throw error; // the session is over: send the user to login
+    })().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+/** fetch() for protected routes: sends the cookies, refreshes once on 401 and retries once. */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const send = () => fetch(`${API}${path}`, { ...init, credentials: 'include' });
+  const response = await send();
+  if (response.status !== 401) return response;
+  const { code } = await toApiError(response.clone());
+  if (code && NOT_REFRESHABLE.has(code)) return response;
+  await refreshSession();
+  return send();
+}
+
+export interface ProjectRef {
+  project_hash: string;
+  project_name: string;
+}
+
+export interface LoginResult {
+  user: { user_hash: string; username: string; email: string | null; user_type: string | null };
+  project: ProjectRef | null;
+  accessible_projects: ProjectRef[];
+  expires_at: string;
+  refresh_expires_at: string;
+  remember_me: boolean;
+}
+
+async function postForm(path: string, fields: Record<string, string>): Promise<any> {
+  const response = await fetch(`${API}${path}`, {
+    method: 'POST',
+    body: new URLSearchParams(fields), // sent as application/x-www-form-urlencoded
+    credentials: 'include',            // lets the browser store the Set-Cookie headers
+  });
+  if (!response.ok) throw await toApiError(response);
+  return response.json();
+}
+
+/** project_hash is required for every user type on /auth/login. */
+export function login(username: string, password: string, projectHash: string, rememberMe = false): Promise<LoginResult> {
+  const fields: Record<string, string> = { username, password, project_hash: projectHash };
+  if (rememberMe) fields.remember_me = 'true';
+  return postForm('/auth/login', fields);
+}
+
+/** Root and admin only; the session has no project. */
+export function platformLogin(username: string, password: string, rememberMe = false): Promise<LoginResult> {
+  const fields: Record<string, string> = { username, password };
+  if (rememberMe) fields.remember_me = 'true';
+  return postForm('/auth/platform/login', fields);
+}
+
+/** Signs the new consumer in when the group reaches a project (token fields are null otherwise). */
+export function register(username: string, password: string, userGroupHash: string, email?: string) {
+  const fields: Record<string, string> = { username, password, user_group_hash: userGroupHash };
+  if (email) fields.email = email; // stored only; activate it via /users/me/emails before using it to log in
+  return postForm('/auth/register', fields);
+}
+
+/** Works within 300 seconds of sign-in; afterwards throws AUTH_1008: call login() with projectHash. */
+export async function switchProject(projectHash: string): Promise<{ project: ProjectRef; user_groups: string[] }> {
+  const response = await apiFetch('/auth/switch-project', {
+    method: 'POST',
+    body: new URLSearchParams({ project_hash: projectHash }), // the refresh cookie is sent automatically
+  });
+  if (!response.ok) throw await toApiError(response);
+  return response.json();
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const response = await apiFetch('/auth/password/change', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  // AUTH_1001 wrong current password, VAL_3007 weak password, INT_7005 rate limit (see retryAfter)
+  if (!response.ok) throw await toApiError(response);
+}
+
+export async function logout(): Promise<void> {
+  try {
+    // apiFetch refreshes first if the access cookie already expired, so the family is revoked.
+    await apiFetch('/auth/logout', { method: 'POST' });
+  } catch {
+    // The refresh token is gone too: nothing is left to revoke.
+  }
+}
+
+/** Always resolves on 202, which does not reveal whether the account exists. */
+export async function requestPasswordReset(identifier: string, idempotencyKey = crypto.randomUUID()): Promise<void> {
+  // Reuse the same idempotencyKey when retrying the same submission.
+  const response = await fetch(`${API}/auth/password/forgot`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'User-Agent': 'my-app/1.0',
-      'Idempotency-Key': crypto.randomUUID(),
+      'Idempotency-Key': idempotencyKey,
+      'X-Public-Base-Url': location.origin, // emailed link returns here; must be in ALLOWED_ORIGINS
     },
     body: JSON.stringify({ email_or_username: identifier }),
-    credentials: 'include'
   });
-  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
-  if (response.status !== 202) throw new Error('Reset request was not accepted');
-  return { accepted: true }; // not proof that the account exists
+  if (response.status !== 202) throw await toApiError(response); // 400 VAL_3002 or 429 INT_7005
 }
 
-async function submitPasswordReset(token, newPassword) {
-  const response = await fetch('/auth/password/reset', {
+/** Call once when an emailed link page loads: returns the token and strips it from the address bar. */
+export function takeLinkToken(): string {
+  const token = new URLSearchParams(location.search).get('token') ?? '';
+  history.replaceState(null, '', location.pathname); // keep the link token out of history and referrers
+  return token;
+}
+
+async function postLinkToken(path: string, body: Record<string, string>): Promise<void> {
+  const response = await fetch(`${API}${path}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'my-app/1.0',
-      'Idempotency-Key': crypto.randomUUID(),
-    },
-    body: JSON.stringify({ token, new_password: newPassword }),
-    credentials: 'include'
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
-  if (response.status === 429) throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
-  if (response.status !== 202) throw new Error('Reset request was not accepted');
-  return { accepted: true }; // prompt for login; no session was created
+  if (response.status !== 202) throw await toApiError(response); // 400 or 429; 202 covers every link outcome
+}
+
+/** Page for /auth/email/verify?token=... */
+export function activateEmail(token: string): Promise<void> {
+  return postLinkToken('/auth/email/verify', { token });
+}
+
+/** Page for /auth/password/reset?token=...; a 400 VAL_3007 rejects the password, so keep the token for a retry. */
+export function resetPassword(token: string, newPassword: string): Promise<void> {
+  return postLinkToken('/auth/password/reset', { token, new_password: newPassword });
 }
 ```
 
-Activated-email login is still normal password login. Send the activated email in the existing `username` form field with `project_hash`:
+### Python client (requests)
 
-```javascript
-async function loginWithActivatedEmail(email, password, projectHash) {
-  const formData = new URLSearchParams({
-    username: email,
-    password,
-    project_hash: projectHash,
-  });
-
-  const response = await fetch('/auth/login', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: formData,
-    credentials: 'include'
-  });
-
-  if (!response.ok) throw new Error('Login failed');
-  return await response.json();
-}
-```
-
----
-
-## Password Changes
-
-Clients must use `POST /auth/password/change` for authenticated password rotation. Do not send `password`, `current_password`, `new_password`, `password_confirmation`, or password-hash shaped fields to `PUT /users/profile`; profile updates reject password mutation before touching the user update helper.
-
-```javascript
-async function changePassword(currentPassword, newPassword) {
-  const response = await fetch('/auth/password/change', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: JSON.stringify({
-      current_password: currentPassword,
-      new_password: newPassword,
-    }),
-    credentials: 'include'
-  });
-
-  if (response.status === 429) {
-    throw new Error(`Retry after ${response.headers.get('Retry-After')} seconds`);
-  }
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Password change failed'));
-  }
-  return await response.json(); // no replacement token/session is returned
-}
-```
-
-Client behavior rules:
-
-- A successful change preserves the authorizing session and revokes other sessions/families; keep using the current access/refresh pair until normal expiry/refresh.
-- The response does not include replacement tokens, passwords, password hashes, token secrets, full links, or provider payloads.
-- Wrong `current_password` uses generic `AUTH_1001` invalid-credentials posture; do not branch UI copy into "wrong password vs account state" variants.
-- Weak `new_password` returns `VAL_3007` with safe `reason_codes` such as `too_short`, `common_password`, `obvious_identifier_derivation`, or `repeated_or_sequential`, plus `min_length`.
-- Rate limits return `429` with `Retry-After` and `INT_7005`; back off instead of retry-looping.
-
----
-
-## API Keys
-
-API keys have full lifecycle support **and** a dedicated validation endpoint, `POST /auth/validate-api-key`, which accepts the `X-API-Key` header. They are **not yet** a general substitute for an access/session JWT on the broader set of protected routes.
-
-What clients can do today:
-
-- Create, list, inspect, update, and revoke API keys through `/users/api-keys` and admin `/api-keys` endpoints.
-- Receive the full key value only once at creation time.
-- Rely on server-side hashing, storage, cache validation, expiration, and revocation behavior for the key records.
-- Validate a key and resolve the owner's user/project/permissions through `POST /auth/validate-api-key` (the API-key analog of `GET /auth/validate`).
-
-Validating an API key:
-
-```javascript
-async function validateApiKey(apiKey) {
-  const response = await fetch('/auth/validate-api-key', {
-    method: 'POST',
-    headers: {
-      'X-API-Key': apiKey, // format: sk_<public_id>.<secret>
-      'User-Agent': 'my-app/1.0',
-    },
-    // Do NOT also send Authorization; sending both returns 400 "ambiguous_credentials".
-  });
-  if (!response.ok) throw new Error('API key validation failed');
-  return await response.json(); // { valid, auth_method: "api_key", user, project, api_key: { key_id, public_id }, user_groups, permissions }
-}
-```
+Bearer mode with in-memory tokens, one retry after a refresh, and a lock so concurrent threads
+never rotate the same refresh token twice.
 
 ```python
-# requests: validate an API key (do not also send Authorization)
-response = requests.post(
-    f"{BASE_URL}/auth/validate-api-key",
-    headers={'X-API-Key': api_key, 'User-Agent': 'my-app/1.0'},
-)
-response.raise_for_status()
-context = response.json()  # auth_method == "api_key"; never includes the raw key/secret
-```
+import http.cookiejar
+import os
+import threading
+from typing import Any, Optional
 
-Rules for `/auth/validate-api-key`:
-
-- Authenticate with the `X-API-Key` header only. Sending **both** `Authorization` and `X-API-Key` returns `400` with `detail: "ambiguous_credentials"`.
-- The response never contains the raw key or its secret; only a secret-safe `api_key { key_id, public_id }` object.
-- Invalid, missing, revoked, or expired keys return `401`.
-
-Current limitation on other routes:
-
-- `X-API-Key: sk_<public_id>.<secret>` by itself still returns `401` on general protected endpoints such as `/users/profile`; only `/auth/validate-api-key` honors it.
-- Middleware may read the key and set request/audit context, but that context does not yet satisfy route authorization on those routes.
-- API-key lifecycle/management endpoints still require Bearer access JWT or `session_token` cookie authentication.
-
-Expected future behavior:
-
-API tokens generated for a specific user and project should authenticate **any** protected route as that user. That requires a unified auth dependency and route migration. Until then, use `POST /auth/validate-api-key` to validate keys, and use Bearer access JWTs or the `session_token` cookie for other protected requests.
-
----
-
-## Client Integration Patterns
-
-### Browser Applications (Cookies)
-
-Browsers automatically handle both the `session_token` access cookie and `refresh_token` cookie. Your client code must send `credentials: 'include'` and serialize refresh attempts so two concurrent refreshes do not reuse the same refresh token:
-
-```javascript
-fetch('/auth/login', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'my-app/1.0',
-  },
-  body: new URLSearchParams({ username, password, project_hash: projectHash }),
-  credentials: 'include',  // Critical: sends/receives cookies
-});
-```
-
-No manual token storage is required for browser clients. Cookies are inaccessible to JavaScript (XSS protection), and `/auth/refresh` can use the `refresh_token` cookie.
-
-### Mobile / Server-to-Server (Bearer Header)
-
-Extract `access_token` and `refresh_token` from the login/register/platform-login response. Use the access token in `Authorization` for protected requests; use the refresh token only on `/auth/refresh`:
-
-```python
-# Login
-response = requests.post(f"{BASE_URL}/auth/login", data={
-    'username': username,
-    'password': password,
-    'project_hash': project_hash,
-}, headers={'User-Agent': 'my-app/1.0'})
-tokens = response.json()
-access_token = tokens['access_token']
-refresh_token = tokens['refresh_token']
-
-# Subsequent requests
-requests.get(f"{BASE_URL}/users/profile", headers={
-    'Authorization': f'Bearer {access_token}',
-    'User-Agent': 'my-app/1.0',
-})
-
-# Refresh: no Authorization Bearer; send refresh_token cookie/body only
-response = requests.post(
-    f"{BASE_URL}/auth/refresh",
-    data={'refresh_token': refresh_token},
-    headers={'User-Agent': 'my-app/1.0'},
-)
-tokens = response.json()
-access_token = tokens['access_token']
-refresh_token = tokens['refresh_token']
-```
-
-Store both tokens in secure storage (Keychain on iOS, KeyStore on Android). Never store tokens in plain text, URLs, or logs.
-
----
-
-## Code Examples
-
-### JavaScript/TypeScript (Browser)
-
-```javascript
-function authErrorMessage(error, fallback) {
-  return error?.error?.message || error?.detail?.message || fallback;
-}
-
-let refreshInFlight = null;
-
-async function refreshAccessToken() {
-  // Browser flow: refresh_token cookie is sent automatically.
-  // Never send Authorization: Bearer <access_token> to /auth/refresh.
-  if (!refreshInFlight) {
-    refreshInFlight = fetch('https://api.example.com/auth/refresh', {
-      method: 'POST',
-      headers: { 'User-Agent': 'my-app/1.0' },
-      credentials: 'include'
-    }).finally(() => { refreshInFlight = null; });
-  }
-
-  const response = await refreshInFlight;
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Refresh failed; user must log in again'));
-  }
-
-  return await response.json(); // includes new access_token + refresh_token fields
-}
-
-async function fetchWithAuthRetry(url, options = {}) {
-  let response = await fetch(url, { ...options, credentials: 'include' });
-  if (response.status !== 401) return response;
-
-  await refreshAccessToken();
-  response = await fetch(url, { ...options, credentials: 'include' });
-  return response;
-}
-
-// Registration
-async function register(username, password, email, groupHash) {
-  const formData = new URLSearchParams();
-  formData.append('username', username);
-  formData.append('password', password);
-  formData.append('email', email);
-  formData.append('user_group_hash', groupHash);
-
-  const response = await fetch('https://api.example.com/auth/register', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: formData,
-    credentials: 'include'
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Registration failed'));
-  }
-
-  // Response includes access_token, refresh_token, and session_token access alias.
-  return await response.json();
-}
-
-// Login
-// NOTE: projectHash is REQUIRED for ALL users on /auth/login (root, admin, consumer)
-// Root/admin may use /auth/platform/login if they want login without project_hash
-// rememberMe is optional (default false); true => 30-day absolute refresh family
-// instead of the default 72-hour sliding window.
-async function login(username, password, projectHash, rememberMe = false) {
-  if (!projectHash) {
-    throw new Error('projectHash is required for all users on /auth/login');
-  }
-  const formData = new URLSearchParams();
-  formData.append('username', username);
-  formData.append('password', password);
-  formData.append('project_hash', projectHash);
-  if (rememberMe) formData.append('remember_me', 'true');
-
-  const response = await fetch('https://api.example.com/auth/login', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: formData,
-    credentials: 'include'
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Login failed'));
-  }
-
-  // Response includes access_token, refresh_token, and session_token access alias.
-  return await response.json();
-}
-
-// Platform Login (root/admin only, no project_hash)
-// rememberMe is optional (default false); true => 30-day absolute refresh family.
-async function platformLogin(username, password, rememberMe = false) {
-  const formData = new URLSearchParams();
-  formData.append('username', username);
-  formData.append('password', password);
-  if (rememberMe) formData.append('remember_me', 'true');
-
-  const response = await fetch('https://api.example.com/auth/platform/login', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: formData,
-    credentials: 'include'
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Platform login failed'));
-  }
-
-  // Response includes platform access_token + refresh_token with no project binding.
-  return await response.json();
-}
-
-// Validate Session
-async function validateSession() {
-  const response = await fetch('https://api.example.com/auth/validate', {
-    method: 'GET',
-    headers: { 'User-Agent': 'my-app/1.0' },
-    credentials: 'include'
-  });
-
-  if (!response.ok) return null;
-  return await response.json();
-}
-
-// Switch Project
-async function switchProject(projectHash) {
-  const formData = new URLSearchParams();
-  formData.append('project_hash', projectHash);
-
-  const response = await fetch('https://api.example.com/auth/switch-project', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'my-app/1.0',
-    },
-    body: formData,
-    credentials: 'include'
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Switch failed'));
-  }
-
-  // Response includes the new project-scoped access_token + refresh_token pair.
-  return await response.json();
-}
-
-// Logout
-async function logout() {
-  const response = await fetch('https://api.example.com/auth/logout', {
-    method: 'POST',
-    headers: { 'User-Agent': 'my-app/1.0' },
-    credentials: 'include'
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(authErrorMessage(error, 'Logout failed'));
-  }
-
-  return await response.json();
-}
-```
-
-### Python (with requests library)
-
-```python
 import requests
-from typing import Optional, Dict, Any
 
-BASE_URL = "https://api.example.com"
+NOT_REFRESHABLE = {"AUTH_1001", "AUTH_1008"}
+
+
+class ApiError(Exception):
+    def __init__(self, response: requests.Response) -> None:
+        try:
+            error = response.json().get("error") or {}
+        except ValueError:
+            error = {}
+        self.status = response.status_code
+        self.code: Optional[str] = error.get("code")
+        self.retry_after = response.headers.get("Retry-After")
+        super().__init__(error.get("message") or f"HTTP {response.status_code}")
+
 
 class AuthClient:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers['User-Agent'] = 'my-app/1.0'
-        self.access_token = None
-        self.refresh_token = None
+    def __init__(self, base_url: str, user_agent: str = "my-app/1.0") -> None:
+        self.base_url = base_url.rstrip("/")
+        self.http = requests.Session()
+        self.http.headers["User-Agent"] = user_agent
+        # Bearer mode: ignore Set-Cookie so a cookie jar never competes with the stored tokens.
+        self.http.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+        self.access_token: Optional[str] = None
+        self.refresh_token: Optional[str] = None
+        self._lock = threading.RLock()
 
-    def _store_tokens(self, result: Dict[Any, Any]) -> None:
-        self.access_token = result.get('access_token') or result.get('session_token')
-        self.refresh_token = result.get('refresh_token')
+    def _store(self, body: dict) -> dict:
+        with self._lock:
+            self.access_token = body.get("access_token")
+            self.refresh_token = body.get("refresh_token")
+        return body
 
-    def register(self, username: str, password: str,
-                 user_group_hash: str, email: Optional[str] = None) -> Dict[Any, Any]:
-        data = {'username': username, 'password': password, 'user_group_hash': user_group_hash}
-        if email:
-            data['email'] = email
+    def _post_form(self, path: str, data: dict, headers: Optional[dict] = None) -> dict:
+        response = self.http.post(f"{self.base_url}{path}", data=data, headers=headers)
+        if not response.ok:
+            raise ApiError(response)
+        return response.json()
 
-        response = self.session.post(f"{BASE_URL}/auth/register", data=data)
-        response.raise_for_status()
-        result = response.json()
-        self._store_tokens(result)
-        return result
-
-    def login(self, username: str, password: str,
-              project_hash: str, remember_me: bool = False) -> Dict[Any, Any]:
-        """Login. project_hash is REQUIRED for ALL users (root, admin, consumer) on /auth/login.
-        Root/admin may use /auth/platform/login if they want login without project_hash.
-        remember_me defaults to False; True issues a 30-day absolute refresh family
-        instead of the default 72-hour sliding window."""
-        data = {'username': username, 'password': password, 'project_hash': project_hash}
+    def login(self, username: str, password: str, project_hash: str, remember_me: bool = False) -> dict:
+        data = {"username": username, "password": password, "project_hash": project_hash}
         if remember_me:
-            data['remember_me'] = 'true'
+            data["remember_me"] = "true"
+        return self._store(self._post_form("/auth/login", data))
 
-        response = self.session.post(f"{BASE_URL}/auth/login", data=data)
-        response.raise_for_status()
-        result = response.json()
-        self._store_tokens(result)
-        return result
+    def platform_login(self, username: str, password: str, remember_me: bool = False) -> dict:
+        data = {"username": username, "password": password}
+        if remember_me:
+            data["remember_me"] = "true"
+        return self._store(self._post_form("/auth/platform/login", data))
 
-    def refresh(self) -> Dict[Any, Any]:
-        """Refresh using refresh_token only. Do not send Authorization Bearer here."""
-        if not self.refresh_token:
-            raise ValueError("No refresh token. Please login first.")
-        response = self.session.post(
-            f"{BASE_URL}/auth/refresh",
-            data={'refresh_token': self.refresh_token},
+    def register(self, username: str, password: str, user_group_hash: str, email: Optional[str] = None) -> dict:
+        data = {"username": username, "password": password, "user_group_hash": user_group_hash}
+        if email:
+            data["email"] = email
+        # Token fields are null when the group reaches no active project.
+        return self._store(self._post_form("/auth/register", data))
+
+    def refresh(self, stale_access_token: Optional[str] = None) -> None:
+        with self._lock:
+            if stale_access_token is not None and self.access_token != stale_access_token:
+                return  # another thread already rotated the pair
+            if not self.refresh_token:
+                raise RuntimeError("Not signed in")
+            self._store(self._post_form("/auth/refresh", {"refresh_token": self.refresh_token}))
+
+    def request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+        """Call a protected route; on a refreshable 401, rotate once and retry once."""
+        extra_headers = kwargs.pop("headers", None) or {}
+
+        def send(token: Optional[str]) -> requests.Response:
+            headers = {**extra_headers, "Authorization": f"Bearer {token}"}
+            return self.http.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
+
+        token = self.access_token
+        response = send(token)
+        if response.status_code == 401 and ApiError(response).code not in NOT_REFRESHABLE:
+            self.refresh(stale_access_token=token)  # raises ApiError when a new login is needed
+            response = send(self.access_token)
+        return response
+
+    def validate(self) -> dict:
+        response = self.request("GET", "/auth/validate")
+        if not response.ok:
+            raise ApiError(response)
+        return response.json()
+
+    def switch_project(self, project_hash: str) -> dict:
+        # Not routed through request(): the retry would resend a refresh token that was just rotated.
+        with self._lock:
+            body = self._post_form(
+                "/auth/switch-project",
+                {"project_hash": project_hash, "refresh_token": self.refresh_token},
+                headers={"Authorization": f"Bearer {self.access_token}"},
+            )  # ApiError AUTH_1008 after 300 seconds: call login() with this project_hash
+            return self._store(body)
+
+    def change_password(self, current_password: str, new_password: str) -> None:
+        response = self.request(
+            "POST",
+            "/auth/password/change",
+            json={"current_password": current_password, "new_password": new_password},
         )
-        response.raise_for_status()
-        result = response.json()
-        self._store_tokens(result)
-        return result
+        if not response.ok:
+            raise ApiError(response)  # AUTH_1001, VAL_3007, or INT_7005 with retry_after
 
-    def validate_session(self) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        response = self.session.get(f"{BASE_URL}/auth/validate", headers=headers)
-        response.raise_for_status()
-        return response.json()
+    def logout(self) -> None:
+        try:
+            response = self.request("POST", "/auth/logout")
+            if not response.ok:
+                raise ApiError(response)
+        except (ApiError, RuntimeError):
+            pass  # nothing left to revoke
+        finally:
+            self._store({})
 
-    def switch_project(self, project_hash: str) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        response = self.session.post(
-            f"{BASE_URL}/auth/switch-project",
-            headers=headers,
-            data={'project_hash': project_hash, 'refresh_token': self.refresh_token}
-        )
-        response.raise_for_status()
-        result = response.json()
-        self._store_tokens(result)
-        return result
 
-    def logout(self) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        response = self.session.post(f"{BASE_URL}/auth/logout", headers=headers)
-        response.raise_for_status()
-        self.access_token = None
-        self.refresh_token = None
-        return response.json()
+def validate_api_key(base_url: str, api_key: str) -> dict:
+    """Resolve a user API key. Never send an Authorization header with it (400)."""
+    response = requests.post(
+        f"{base_url.rstrip('/')}/auth/validate-api-key",
+        headers={"X-API-Key": api_key, "User-Agent": "my-service/1.0"},
+    )
+    if not response.ok:
+        raise ApiError(response)
+    return response.json()  # auth_method, user, project, api_key {key_id, public_id}, permissions
 
-    def get_profile(self) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        response = self.session.get(f"{BASE_URL}/users/profile", headers=headers)
-        response.raise_for_status()
-        return response.json()
 
-    def update_profile(self, username: Optional[str] = None,
-                       email: Optional[str] = None) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        data = {}
-        if username: data['username'] = username
-        if email: data['email'] = email
-
-        response = self.session.put(f"{BASE_URL}/users/profile", headers=headers, data=data)
-        response.raise_for_status()
-        return response.json()
-
-    def change_password(self, current_password: str, new_password: str) -> Dict[Any, Any]:
-        headers = self._get_auth_headers()
-        response = self.session.post(
-            f"{BASE_URL}/auth/password/change",
-            headers=headers,
-            json={
-                'current_password': current_password,
-                'new_password': new_password,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def _get_auth_headers(self) -> Dict[str, str]:
-        if not self.access_token:
-            raise ValueError("Not authenticated. Please login first.")
-        return {'Authorization': f'Bearer {self.access_token}'}
+client = AuthClient("https://api.example.com")
+client.login("alice", os.environ["ALICE_PASSWORD"], project_hash=os.environ["PROJECT_HASH"])
+profile = client.request("GET", "/users/profile").json()
 ```
 
-### React Hook Example
+### React hook (TypeScript)
+
+Session state for a same-site app, built on the browser client above.
 
 ```typescript
 // useAuth.ts
-import { useState, useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  type ProjectRef,
+  apiFetch,
+  login as apiLogin,
+  logout as apiLogout,
+  switchProject as apiSwitchProject,
+} from './authClient';
 
-interface User {
+interface SessionUser {
   user_hash: string;
   username: string;
-  email: string;
-  user_type: string;
-}
-
-interface Project {
-  project_hash: string;
-  project_name: string;
-  project_description?: string;
+  user_type: string | null;
 }
 
 interface AuthState {
-  user: User | null;
-  project: Project | null;
-  accessibleProjects: Project[];
-  isAuthenticated: boolean;
-  isLoading: boolean;
+  user: SessionUser | null;
+  project: ProjectRef | null;
+  accessibleProjects: ProjectRef[];
+  loading: boolean;
 }
 
+const SIGNED_OUT: AuthState = { user: null, project: null, accessibleProjects: [], loading: false };
+
 export function useAuth() {
-  const [authState, setAuthState] = useState<AuthState>({
-    user: null, project: null, accessibleProjects: [],
-    isAuthenticated: false, isLoading: true,
-  });
+  const [state, setState] = useState<AuthState>({ ...SIGNED_OUT, loading: true });
 
-  useEffect(() => { validateSession(); }, []);
-
-  const validateSession = useCallback(async () => {
+  const reload = useCallback(async () => {
     try {
-      const response = await fetch('/auth/validate', {
-        credentials: 'include',
-        headers: { 'User-Agent': 'my-app/1.0' },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setAuthState({
-          user: data.user, project: data.project,
-          accessibleProjects: [], isAuthenticated: true, isLoading: false,
-        });
-      } else {
-        setAuthState(prev => ({ ...prev, isLoading: false }));
+      const response = await apiFetch('/auth/validate'); // refreshes once if the access cookie expired
+      if (!response.ok) {
+        setState(SIGNED_OUT);
+        return;
       }
+      const data = await response.json();
+      // /auth/validate has no accessible_projects; keep the list from the last login.
+      setState(prev => ({ ...prev, user: data.user, project: data.project, loading: false }));
     } catch {
-      setAuthState(prev => ({ ...prev, isLoading: false }));
+      setState(SIGNED_OUT); // the refresh failed: a new login is needed
     }
   }, []);
 
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
   const login = useCallback(async (username: string, password: string, projectHash: string, rememberMe = false) => {
-    // projectHash is REQUIRED for ALL users (root, admin, consumer) on /auth/login
-    // rememberMe is optional (default false); true => 30-day absolute refresh family.
-    const formData = new URLSearchParams();
-    formData.append('username', username);
-    formData.append('password', password);
-    formData.append('project_hash', projectHash);
-    if (rememberMe) formData.append('remember_me', 'true');
-
-    const response = await fetch('/auth/login', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'my-app/1.0',
-      },
-      body: formData,
-      credentials: 'include',
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error?.error?.message || 'Login failed');
-    }
-
-    const data = await response.json();
-    setAuthState({
-      user: data.user, project: data.project,
-      accessibleProjects: data.accessible_projects,
-      isAuthenticated: true, isLoading: false,
-    });
+    const data = await apiLogin(username, password, projectHash, rememberMe);
+    setState({ user: data.user, project: data.project, accessibleProjects: data.accessible_projects, loading: false });
     return data;
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch('/auth/logout', {
-      method: 'POST',
-      headers: { 'User-Agent': 'my-app/1.0' },
-      credentials: 'include',
-    });
-    setAuthState({
-      user: null, project: null, accessibleProjects: [],
-      isAuthenticated: false, isLoading: false,
-    });
+    await apiLogout();
+    setState(SIGNED_OUT);
   }, []);
 
   const switchProject = useCallback(async (projectHash: string) => {
-    const formData = new URLSearchParams();
-    formData.append('project_hash', projectHash);
-
-    const response = await fetch('/auth/switch-project', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'my-app/1.0',
-      },
-      body: formData,
-      credentials: 'include',
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error?.error?.message || 'Switch failed');
-    }
-
-    const data = await response.json();
-    setAuthState(prev => ({ ...prev, project: data.project }));
+    const data = await apiSwitchProject(projectHash); // ApiError AUTH_1008: prompt for a new login
+    setState(prev => ({ ...prev, project: data.project }));
     return data;
   }, []);
 
-  return { ...authState, login, logout, switchProject, validateSession };
+  return { ...state, login, logout, switchProject, reload };
 }
 ```
 
----
+## Related
 
-## Error Handling
-
-### Standard Error Response
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "AUTH_1001",
-    "category": "authentication",
-    "message": "Invalid username or password"
-  }
-}
-```
-
-Always parse client-facing text from `error.message`, not from legacy `detail.message`.
-
-### Common Error Codes
-
-For the complete error code catalog, see [Error Reference](errors.md).
-
-| Status | Code | When | Resolution |
-|--------|------|------|------------|
-| 401 | `INVALID_CREDENTIALS` | Wrong username/password | Verify credentials |
-| 401 | `SESSION_EXPIRED` | Token expired | Re-authenticate |
-| 401 | `SESSION_INVALID` | Token malformed | Re-authenticate |
-| 401 | `ACCOUNT_INACTIVE` | User is inactive | Contact admin |
-| 401 | `REFRESH_TOKEN_INVALID` | Refresh token invalid/expired/revoked | Re-authenticate |
-| 401 | `REFRESH_TOKEN_REUSED` | Consumed refresh token replayed outside the grace window; family revoked | Clear tokens and re-authenticate |
-| 401 | `REFRESH_TOKEN_REPLAYED` | The refresh token you just rotated was sent again within the grace window; family left intact | Use the newer token from the refresh that already succeeded; re-authenticate only if you never received it |
-| 401 | `MFA_REQUIRED` | `/auth/switch-project` called more than 300s after the session signed in (and no OAuth reauth since) | Sign in again or complete an OAuth reauth, then retry the switch (`/auth/refresh` does not help) |
-| 401 | `TOKEN_TYPE_INVALID` | Refresh token used as access token, or access token used for refresh | Use the right token type |
-| 401 | `TOKEN_EXPIRED` | JWT `exp` elapsed | Refresh access token or re-authenticate |
-| 401 | `SESSION_REVOKED` | Access session or family revoked | Re-authenticate |
-| 400 | `WEAK_PASSWORD` | Shared password policy rejected a new password | Show safe reason codes and ask for a stronger passphrase |
-| 400 | `INVALID_INPUT` | Profile password mutation or unsupported password-control field | Use `/auth/password/change` or reset-link recovery |
-| 403 | `ACCESS_DENIED` | No project access | Contact admin |
-| 403 | `PROJECT_ACCESS_DENIED` | Cannot access requested project | Use accessible project |
-| 400 | `MISSING_REQUIRED_FIELD` | Required parameter missing | Include all required fields |
-| 409 | `USERNAME_EXISTS` | Username taken | Choose different username |
-| 409 | `EMAIL_EXISTS` | Email registered | Use different email |
-| 422 | — | Missing `User-Agent` header | Add `User-Agent` to every request |
-| 429 | `RATE_LIMIT_EXCEEDED` | Login/email/change-password bucket exceeded | Honor `Retry-After` |
-
----
-
-## Security Considerations
-
-### Token Storage
-
-**Browser Applications**: Use HTTP-only cookies (automatically handled by API). Cookie is inaccessible to JavaScript (XSS protection).
-
-**Mobile/Desktop Applications**: Store token in secure storage (Keychain on iOS, KeyStore on Android). Include token in `Authorization` header. Never store in plain text.
-
-**API Keys**: Store API keys like credentials. They are validated through `POST /auth/validate-api-key` (`X-API-Key` header), but are not yet accepted as auth on other protected routes until the API-key auth dependency is wired into them.
-
-**Avoid**: localStorage/sessionStorage (XSS vulnerable), URL parameters, console logging.
-
-### Session Lifecycle
-
-```
-Token Created (Login/Register)
-    ↓
-Access Token Active (short-lived, default 15 min)
-    ↓
-Refresh Token Rotation (72h sliding family by default, or 30-day absolute when remember_me=true; old refresh token becomes invalid)
-    ↓
-Logout or Expiration
-    ↓
-Access sessions and refresh family invalidated
-```
-
-### HTTPS Required
-
-All authentication endpoints MUST use HTTPS in production. The API sets cookies with the `Secure` flag.
-
-### CORS & SameSite
-
-The `session_token` cookie uses `SameSite=Strict`. Ensure your client is served from the same domain or configure CORS appropriately.
-
----
-
-## Migration and Rollback Notes for Clients
-
-- This is a breaking auth-contract deployment: clients using the old "send the session/access token to `/auth/refresh`" flow will receive HTTP 401.
-- Users with legacy sessions may need to log in again so the server can issue a refresh-family-backed token pair.
-- Deployments must configure `JWT_SECRET_KEY`; missing configuration fails outside explicit tests and cannot be fixed client-side.
-- Clients should serialize refresh calls. A late duplicate refresh attempt is treated as refresh-token reuse and revokes the whole family.
-- On rollback to a pre-refresh-family release, tokens issued by this release may not be usable; operators may clear/expire `refresh_family:*`, `refresh_token:*`, `refresh_used:*`, and `revoked_family:*` Redis namespaces and require re-login.
-
----
-
-## Related Documentation
-
-- **[Authentication Usage Cases](authentication-usage-cases.md)** — Raw endpoint documentation: login, register, session management, project switching
-- **[Error Reference](errors.md)** — Complete error code catalog and troubleshooting
-- **[Getting Started](getting-started.md)** — Platform setup and first steps
-
+- [Authentication](authentication-usage-cases.md) — endpoint contract, lifetimes, error codes per route
+- [Getting started](getting-started.md) — configuration, `ALLOWED_ORIGINS`, first user
+- [Error reference](errors.md) — envelope and full code catalog
+- [OAuth suite](oauth/README.md) — external identity sign-in; afterwards this guide applies unchanged
+- [API keys suite](api-keys/README.md) — creating and revoking user API keys

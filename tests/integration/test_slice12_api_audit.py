@@ -156,4 +156,7 @@ async def test_audit_middleware_extracts_user_context(
     # User context should be extracted from request.state (set by AuthContextMiddleware)
     assert call_kwargs["user_id"] == "1"
     assert call_kwargs["session_id"] is not None
+    # Never token bytes: undecodable tokens are reduced to a keyed hash
+    assert call_kwargs["session_id"].startswith("tokhash:")
+    assert "payload" not in call_kwargs["session_id"]
     assert call_kwargs["client_ip"] is not None

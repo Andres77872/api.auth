@@ -29,6 +29,7 @@ CHECKOUT_PATH = f"/internal/users/{USER_HASH}/billing/checkout"
 PORTAL_PATH = f"/internal/users/{USER_HASH}/billing/portal"
 PURCHASE_PATH = f"/internal/users/{USER_HASH}/billing/purchases/bpu_fixture_credit_001?project_hash={PROJECT_HASH}"
 RESYNC_PATH = f"/internal/users/{USER_HASH}/billing/resync"
+RETURN_ORIGIN = "https://app.example.test"
 
 SAFE_TOP_LEVEL_FIELDS = {"success", "message", "user_hash", "project_hash", "provider", "billing", "purchases", "contract_version"}
 SAFE_BILLING_FIELDS = {
@@ -251,6 +252,7 @@ async def test_checkout_and_portal_responses_are_url_plus_opaque_refs_only(monke
     monkeypatch.setenv("STRIPE_CHECKOUT_ENABLED", "true")
     monkeypatch.setenv("STRIPE_PORTAL_ENABLED", "true")
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", RETURN_ORIGIN)
     _patch_ready_group(monkeypatch)
     checkout_body = {
         "project_hash": PROJECT_HASH,
@@ -287,6 +289,7 @@ async def test_checkout_and_portal_fail_closed_without_ready_group_or_customer(m
     monkeypatch.setenv("STRIPE_CHECKOUT_ENABLED", "true")
     monkeypatch.setenv("STRIPE_PORTAL_ENABLED", "true")
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", RETURN_ORIGIN)
     checkout_body = {
         "project_hash": PROJECT_HASH,
         "provider": "stripe",
@@ -317,6 +320,7 @@ async def test_checkout_idempotent_retry_and_conflict_are_neutral(monkeypatch):
     monkeypatch.setenv("STRIPE_BILLING_ENABLED", "true")
     monkeypatch.setenv("STRIPE_CHECKOUT_ENABLED", "true")
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", RETURN_ORIGIN)
     _patch_ready_group(monkeypatch)
     body = {
         "project_hash": PROJECT_HASH,
@@ -416,3 +420,185 @@ async def test_purchase_status_read_is_404_when_the_purchase_is_not_in_this_user
 
     assert response.status_code == 404
     assert response.json() == {"success": False, "message": "Resource not found."}
+
+
+# ─── Real identifier formats ─────────────────────────────────────────────────
+# `user_hash` is `usr-<uuid4>`; project and billing group hashes are 64 uppercase hex
+# characters. The fixture hashes above are neither, which hid both S2S read defects.
+
+REAL_USER_HASH = "usr-5b8c7c1e-7f3a-4d2b-9c61-0a1b2c3d4e5f"
+REAL_PROJECT_HASH = "7CCC926F2F5FEB07C973606EB2DF02BC3607C9C5B80A104DF5AAC9A1991F6173"
+REAL_GROUP_HASH = "0F1E2D3C4B5A69788796A5B4C3D2E1F00F1E2D3C4B5A69788796A5B4C3D2E1F0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "customer_ref",
+    ["bcust-de7711233f9b877f28ac38c9b1495e1a", "bcustref-0123456789abcdef01234567"],
+    ids=["issued-by-checkout", "issued-by-older-webhook"],
+)
+async def test_paying_user_status_read_returns_the_stored_subscription(monkeypatch, customer_ref: str):
+    """A stored customer ref used to fail the response model; the route then answered `free`."""
+
+    _enable_s2s(monkeypatch)
+    route_module = _future_route_module()
+    monkeypatch.setattr(
+        route_module,
+        "get_current_by_user_project",
+        lambda **_: {
+            "user_hash": REAL_USER_HASH,
+            "project_hash": REAL_PROJECT_HASH,
+            "billing_group_hash": REAL_GROUP_HASH,
+            "provider": "stripe",
+            "status": "active",
+            "plan_code": "magic_worlds_plus",
+            "tier_code": "artisan",
+            "link_status": "linked",
+            "cancel_at_period_end": False,
+            "current_period_end": "2030-02-01T00:00:00",
+            "classification_version": 2,
+            "customer_ref": customer_ref,
+            "subscription_ref": "bsub-b2dbca0a1198e8051126c02b578465c4",
+        },
+    )
+    async with _billing_client() as client:
+        response = await client.get(
+            f"/internal/users/{REAL_USER_HASH}/billing?project_hash={REAL_PROJECT_HASH}", headers=_auth_headers()
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["user_hash"] == REAL_USER_HASH
+    assert payload["project_hash"] == REAL_PROJECT_HASH, "the 64-hex project hash must not come back as ***FILTERED***"
+    billing = payload["billing"]
+    assert billing["status"] == "active"
+    assert billing["plan_code"] == "magic_worlds_plus"
+    assert billing["customer_ref"] == customer_ref
+    assert billing["subscription_ref"] == "bsub-b2dbca0a1198e8051126c02b578465c4"
+    assert "***FILTERED***" not in response.text
+    _assert_no_raw_provider_leaks(payload, context="paying user status read")
+
+
+@pytest.mark.asyncio
+async def test_catalog_read_returns_features_with_provider_like_key_names_and_the_group_hash(monkeypatch):
+    """A `features` key such as `card` or one containing `secret`/`fingerprint` used to make this read 500."""
+
+    _enable_s2s(monkeypatch)
+    route_module = _future_route_module()
+    features = {"card": "gold", "secret_level": 3, "fingerprint_scanner": True, "credits": 0}
+    monkeypatch.setattr(
+        route_module,
+        "list_catalog_for_project",
+        lambda **_: [
+            {
+                "project_hash": REAL_PROJECT_HASH,
+                "billing_group_hash": REAL_GROUP_HASH,
+                "provider": "stripe",
+                "item_type": "subscription_plan",
+                "plan_code": "plus",
+                "display_name": "Plus",
+                "currency": "usd",
+                "unit_amount": 999,
+                "recurring_interval": "month",
+                "lookup_key": "plus_monthly",
+                "features": features,
+                "active": 1,
+            }
+        ],
+    )
+    async with _billing_client() as client:
+        response = await client.get(f"/internal/projects/{REAL_PROJECT_HASH}/billing/catalog", headers=_auth_headers())
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_hash"] == REAL_PROJECT_HASH
+    assert payload["billing_group_hash"] == REAL_GROUP_HASH
+    assert payload["subscriptions"][0]["features"] == features
+
+
+def _checkout_body(project_hash: str = PROJECT_HASH) -> dict[str, Any]:
+    return {
+        "project_hash": project_hash,
+        "provider": "stripe",
+        "intent_type": "subscription",
+        "price_ref": {"ref_type": "lookup_key", "value": "magic_worlds_plus_monthly"},
+        "plan_code": "magic_worlds_plus",
+        "tier_code": "artisan",
+        "success_url": "https://app.example.test/billing/success",
+        "cancel_url": "https://app.example.test/billing/cancel",
+    }
+
+
+def _enable_hosted_flows(monkeypatch) -> Any:
+    for name in (
+        "BILLING_CHECKOUT_ENABLED",
+        "BILLING_PORTAL_ENABLED",
+        "STRIPE_BILLING_ENABLED",
+        "STRIPE_CHECKOUT_ENABLED",
+        "STRIPE_PORTAL_ENABLED",
+    ):
+        monkeypatch.setenv(name, "true")
+    _enable_s2s(monkeypatch)
+    route_module = _patch_ready_group(monkeypatch)
+    sessions: list[str] = []
+    monkeypatch.setattr(route_module, "create_checkout_session", lambda **_: sessions.append("checkout"))
+    monkeypatch.setattr(route_module, "create_portal_session", lambda **_: sessions.append("portal"))
+    return sessions
+
+
+@pytest.mark.asyncio
+async def test_checkout_and_portal_refuse_every_return_url_while_the_allowlist_is_empty(monkeypatch):
+    sessions = _enable_hosted_flows(monkeypatch)
+    monkeypatch.delenv("BILLING_RETURN_URL_ALLOWLIST", raising=False)
+    monkeypatch.delenv("BILLING_ALLOWED_RETURN_ORIGINS", raising=False)
+    portal_body = {"project_hash": PROJECT_HASH, "provider": "stripe", "return_url": "https://evil.example.test/steal"}
+    async with _billing_client() as client:
+        checkout = await client.post(CHECKOUT_PATH, headers=_auth_headers(idem="idem-empty-allowlist"), json=_checkout_body())
+        portal = await client.post(PORTAL_PATH, headers=_auth_headers(idem="idem-portal-empty-allowlist"), json=portal_body)
+
+    assert checkout.status_code == 503, checkout.text
+    assert portal.status_code == 503, portal.text
+    assert sessions == [], "no Stripe session may be created without an allowlist"
+
+
+@pytest.mark.asyncio
+async def test_checkout_and_portal_reject_a_return_url_outside_the_allowlist(monkeypatch):
+    sessions = _enable_hosted_flows(monkeypatch)
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", "https://other.example.test")
+    portal_body = {"project_hash": PROJECT_HASH, "provider": "stripe", "return_url": "https://app.example.test/billing"}
+    async with _billing_client() as client:
+        checkout = await client.post(CHECKOUT_PATH, headers=_auth_headers(idem="idem-outside-allowlist"), json=_checkout_body())
+        portal = await client.post(PORTAL_PATH, headers=_auth_headers(idem="idem-portal-outside-allowlist"), json=portal_body)
+
+    assert checkout.status_code == 422, checkout.text
+    assert portal.status_code == 422, portal.text
+    assert sessions == []
+
+
+@pytest.mark.asyncio
+async def test_resync_request_queues_a_user_level_job_the_worker_can_resolve(monkeypatch):
+    """The job carries the user and billing group; the worker resolves the Stripe refs from them."""
+
+    _enable_s2s(monkeypatch)
+    monkeypatch.setenv("BILLING_SYNC_ENABLED", "true")
+    route_module = _future_route_module()
+    monkeypatch.setattr(
+        route_module,
+        "resolve_user_billing_group",
+        lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-1"},
+    )
+    jobs: list[dict[str, Any]] = []
+    monkeypatch.setattr(route_module, "enqueue_sync_job", lambda **kwargs: jobs.append(kwargs) or {"job_id": kwargs["job_id"]})
+    async with _billing_client() as client:
+        response = await client.post(
+            f"/internal/users/{REAL_USER_HASH}/billing/resync",
+            headers=_auth_headers(),
+            json={"project_hash": REAL_PROJECT_HASH, "reason": "support_ticket"},
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "queued"
+    assert response.json()["project_hash"] == REAL_PROJECT_HASH
+    [job] = jobs
+    assert job["job_type"] == "webhook_resync"
+    assert job["user_id"] == "usr-1" and job["billing_group_id"] == "bg-1"

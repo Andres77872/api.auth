@@ -1,193 +1,202 @@
-# API Keys Usage
+# API keys usage
 
-Day-to-day flows for issuing and managing API keys in `api.auth`. Two families are covered:
-the **self-service** family (`/users/api-keys`, the caller's own keys) and the **admin** family
-(`/api-keys`, keys for other users within scope).
+One task per section. Field tables, defaults and error codes are in [reference.md](reference.md);
+suite-wide rules (form bodies, recent authentication, expiry) are in
+[README.md](README.md#rules-and-caveats).
 
-> Conventions for this whole suite:
-> - API version `2.2.0`; every request needs a `User-Agent` header (missing → `422`).
-> - All write endpoints (`POST`, `PUT`, `DELETE`) take **form fields**
->   (`application/x-www-form-urlencoded`), not JSON.
-> - `{key_id}` in a path is always the key's **`public_id`** (the ~12-char base64url segment),
->   never the numeric DB id and never the full token.
-> - Create / update / delete require **recent re-authentication** (step-up). Reads do not.
+The examples use `$TOKEN` for an access token and `$PUBLIC_ID` for a key's `public_id`.
 
----
+## Manage your own keys
 
-## Self-Service Lifecycle (`/users/api-keys`)
+Any signed-in user can manage the keys they own under `/users/api-keys`.
 
-All five endpoints require a logged-in session (`verify_session`) and operate **only** on keys
-the caller owns. Source: `src/routes/user_api_keys.py`.
+### Create a key
 
-### 1. Create a key — `POST /users/api-keys`
-
-Form fields:
-
-| Field | Required | Notes |
-|-------|----------|-------|
-| `project_hash` | yes | Must be a project the caller can access (else `403 PROJECT_ACCESS_DENIED`) |
-| `name` | no | Defaults to `API Key - YYYY-MM-DD` if omitted |
-| `description` | no | Free text |
-| `expires_at` | no | ISO 8601, **future-only** (else `400 INVALID_INPUT`) |
-
-Requires step-up re-auth. The response includes the **one-time** full token at `data.api_key`
-and the message *"API key created successfully. Save this token — it will not be shown again."*
+`POST /users/api-keys` — form fields `project_hash` (required), `name`, `description`,
+`expires_at`. Needs recent authentication.
 
 ```bash
 curl -X POST "http://localhost:8000/users/api-keys" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-app/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH&name=ci-runner&expires_at=2026-12-31T00:00:00Z"
+  -d "project_hash=$PROJECT_HASH" \
+  -d "name=ci-runner" \
+  -d "expires_at=2027-01-01T00:00:00Z"
 ```
 
-Capture `data.api_key` immediately. It is the only time the secret is shown.
+The response message is "API key created successfully. Save this token — it will not be shown
+again." Store `data.api_key` (the full token) now; later responses never include it. Keep
+`data.public_id` to address the key.
 
-### 2. List your keys — `GET /users/api-keys`
+```json
+{
+  "success": true,
+  "message": "API key created successfully. Save this token — it will not be shown again.",
+  "data": {
+    "id": "Xk3pQ9aL2mNb",
+    "public_id": "Xk3pQ9aL2mNb",
+    "name": "ci-runner",
+    "description": null,
+    "project_id": "7c1e4f0a-2b1d-4c55-9a8e-0f2b6d3e9a11",
+    "owner_user_id": "2f9d1c3b-5e7a-4b8c-9d0e-1a2b3c4d5e6f",
+    "is_active": true,
+    "expires_at": "2027-01-01T00:00:00",
+    "last_used_at": null,
+    "created_at": "2026-09-24T10:00:00",
+    "updated_at": null,
+    "revoked_at": null,
+    "revoke_reason": null,
+    "fingerprint": "a1b2c3d4e5f6",
+    "secret_last4": "Wq7Z",
+    "hash_algorithm": "hmac-sha256-v1",
+    "api_key": "sk_Xk3pQ9aL2mNb.<43-character secret>"
+  }
+}
+```
 
-Query params: `project_hash` (optional), `active_only` (bool, default `false`),
-`limit` (1–200, default `50`), `offset` (≥0, default `0`).
+A project you do not reach returns `403` `AUTHZ_2003`; an unknown `project_hash` returns `404`.
+
+### List your keys
+
+`GET /users/api-keys` — query `project_hash`, `active_only`, `limit` (1–200, default `50`),
+`offset`.
 
 ```bash
-curl -X GET "http://localhost:8000/users/api-keys?active_only=true&limit=50" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
+curl "http://localhost:8000/users/api-keys?limit=50&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-**Paginate-then-filter caveat:** the underlying fetch is paged first, then `project_hash` and
-`active_only` are applied in Python and `total` is recomputed as the length of the filtered slice.
-So `total` is a post-filter count while pagination is pre-filter. See
-[troubleshooting.md](troubleshooting.md).
+Returns `data.keys`, `data.total`, `data.limit`, `data.offset`. Revoked and expired keys are
+included.
 
-### 3. Get one key — `GET /users/api-keys/{key_id}`
+> [!WARNING]
+> `project_hash` and `active_only` are applied to the page after `limit`/`offset`, and `total`
+> then counts only that filtered page. To see every key of one project, page through the
+> unfiltered list and filter on the client.
 
-`{key_id}` is the `public_id`. Ownership is enforced; a missing **or** non-owned key both return
-`404 API_KEY_NOT_FOUND` (existence is not leaked). The secret / `secret_hash` is never returned.
+### Get one key
+
+`GET /users/api-keys/{key_id}`
 
 ```bash
-curl -X GET "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
+curl "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### 4. Update a key — `PUT /users/api-keys/{key_id}`
+A key you do not own returns the same `404` `NF_4010` as a missing key.
 
-Form fields (all optional, but **at least one** is required or `400 INVALID_INPUT`): `name`,
-`description`, `expires_at`. Requires step-up re-auth. Ownership enforced (`404` otherwise).
+### Rename a key or change its expiry
+
+`PUT /users/api-keys/{key_id}` — form fields `name`, `description`, `expires_at`; send at least
+one. Needs recent authentication.
 
 ```bash
 curl -X PUT "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-app/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "description=rotated&expires_at=2027-01-01T00:00:00Z"
+  -d "expires_at=2027-06-30T00:00:00Z"
 ```
 
-**Reactivation:** extending `expires_at` past `NOW()` on an already-expired key reactivates it.
+Returns the updated key object. A future `expires_at` makes an expired key usable again. A revoked
+key returns `400` `AUTH_1012`.
 
-### 5. Revoke a key — `DELETE /users/api-keys/{key_id}`
+### Revoke a key
 
-Requires step-up re-auth. Ownership enforced. Revocation **immediately invalidates the Redis
-cache** so the key stops authenticating at once. Revoking a key that is already inactive returns
-`400 API_KEY_REVOKED`; an unknown or non-owned key returns `404`. The user route has **no**
-`revoke_reason` field.
+`DELETE /users/api-keys/{key_id}` — no body. Needs recent authentication.
 
 ```bash
 curl -X DELETE "http://localhost:8000/users/api-keys/$PUBLIC_ID" \
-  -H "Authorization: Bearer $TOKEN" -H "User-Agent: my-app/1.0"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
----
+Returns `data.key_id` and `data.revoked_at`. The key stops validating immediately. A key that is
+already inactive returns `400` `AUTH_1012`.
 
-## Admin Lifecycle (`/api-keys`)
+## Manage keys as an administrator
 
-All seven endpoints require `verify_admin_access` (root **or** admin). Root is unrestricted;
-admins are limited to projects they administer (via `check_admin_project_access`). Source:
-`src/routes/api_keys.py`.
+Root and admin users manage keys under `/api-keys`. Admins are limited to projects they administer.
 
-### Create on behalf of a user — `POST /api-keys`
+### Create a key for a user
 
-Form fields:
-
-| Field | Required | Notes |
-|-------|----------|-------|
-| `user_hash` | yes | The key owner |
-| `project_hash` | yes | Admin must administer it (root bypasses) |
-| `name` | no | Defaults to `API Key - {username}` |
-| `description` | no | Free text |
-| `expires_at` | no | ISO 8601, future-only |
-
-Requires step-up re-auth. Scope rules: root unrestricted; admin must have project access **and**
-the `manage_users` effective permission when the target is **another** user (creating a key for
-**yourself** is always allowed). Response includes the one-time token at `data.api_key`. For a
-non-root caller, an inactive owner or an owner without access to the project returns
-`409 STATE_CONFLICT`; an unknown `user_hash` or `project_hash` returns `404`.
+`POST /api-keys` — form fields `user_hash` and `project_hash` (required), `name`, `description`,
+`expires_at`. Needs recent authentication.
 
 ```bash
 curl -X POST "http://localhost:8000/api-keys" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: ops/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hash=$USER_HASH&project_hash=$PROJECT_HASH&name=service-key"
+  -d "user_hash=$USER_HASH" \
+  -d "project_hash=$PROJECT_HASH" \
+  -d "name=billing-sync"
 ```
 
-### List within scope — `GET /api-keys`
+The token is in `data.api_key`, once. Hand it to the owner over a secure channel.
 
-Query params: `user_hash`, `project_hash`, `active_only` (default `false`), `limit` (1–200,
-default `50`), `offset` (≥0).
+An admin needs `manage_users` in the project to create a key for someone else (`403` `AUTHZ_2002`
+otherwise). If the owner is inactive or does not reach the project, or the project is inactive or
+archived, the database refuses the key with `409` `CONF_5005`. Root skips the owner-access check,
+not the owner and project state checks.
 
-- **Root must supply `user_hash` or `project_hash`** — there is no list-all path. Omitting both →
-  `400 INVALID_INPUT` *"Root users must provide at least user_hash or project_hash filter"*.
-- An admin **without** a project filter aggregates keys across all their accessible projects
-  (results are truncated to `limit`; `total` is the summed per-project counts).
-- A `project_hash` filter is scope-checked; a `user_hash` filter additionally verifies the target
-  user shares at least one project with the admin (`ACCESS_DENIED` otherwise).
+### List keys by user or project
+
+`GET /api-keys` — query `user_hash`, `project_hash`, `active_only`, `limit`, `offset`.
 
 ```bash
-curl -X GET "http://localhost:8000/api-keys?project_hash=$PROJECT_HASH&active_only=true" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "User-Agent: ops/1.0"
+curl "http://localhost:8000/api-keys?project_hash=$PROJECT_HASH&active_only=true" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### Get one — `GET /api-keys/{key_id}`
+Root must pass `user_hash` or `project_hash` (`400` otherwise). An admin with no filter gets keys
+from every project they administer. See [admin list filters](reference.md#admin-list-filters) for
+how each combination pages and counts.
 
-`{key_id}` is the `public_id`. The admin must have scope over the key's project (root bypasses);
-missing → `404 API_KEY_NOT_FOUND`. No `secret_hash`.
+### List one user's keys
 
-### Update — `PUT /api-keys/{key_id}`
+`GET /api-keys/users/{user_hash}` — query `limit`, `offset`. `active_only` is accepted but ignored.
 
-Form fields `name` / `description` / `expires_at`; at least one required. Requires step-up re-auth.
-Admin must have project scope. Extending `expires_at` reactivates an expired key.
+```bash
+curl "http://localhost:8000/api-keys/users/$USER_HASH?limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
 
-### Revoke — `DELETE /api-keys/{key_id}`
+Returns `data.user_hash`, `data.username`, `data.keys`, `data.total`. An admin sees only keys in
+projects they administer, and the user must reach at least one of them (`403` `AUTHZ_2001`
+otherwise).
 
-Requires step-up re-auth. Admin must have project scope. Takes an **optional** `revoke_reason`
-form field (the user route has none). Immediate Redis cache invalidation; re-revoking returns
-`400 API_KEY_REVOKED`.
+### List one project's keys
+
+`GET /api-keys/projects/{project_hash}` — query `active_only`, `limit`, `offset`.
+
+```bash
+curl "http://localhost:8000/api-keys/projects/$PROJECT_HASH?active_only=true" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Returns `data.project_hash`, `data.project_name`, and keys with `owner_username` and
+`owner_user_hash`.
+
+### Inspect, update or revoke any key in scope
+
+- `GET /api-keys/{key_id}` returns the key with project and owner details.
+- `PUT /api-keys/{key_id}` takes the same form fields as the self-service update. It has no
+  `manage_users` check.
+- `DELETE /api-keys/{key_id}` takes an optional `revoke_reason` (up to 255 characters).
 
 ```bash
 curl -X DELETE "http://localhost:8000/api-keys/$PUBLIC_ID" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: ops/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "revoke_reason=employee offboarded"
 ```
 
-### Audit by user — `GET /api-keys/users/{user_hash}`
+Update and revoke need recent authentication.
 
-Lists all keys for a specific user. Admin must share at least one project with the target (root
-bypasses); for non-root, returned keys are filtered to the admin's projects and `total` is
-recomputed. Response includes `user_hash` and `username`. Query params: `active_only`, `limit`,
-`offset`.
+## Validate a key
 
-### Audit by project — `GET /api-keys/projects/{project_hash}`
+A service that receives a key sends it in `X-API-Key`, with no `Authorization` header:
 
-Lists all keys scoped to a project. Admin must administer the project (root bypasses). Response
-includes `project_hash` and `project_name`. Query params: `active_only`, `limit`, `offset`.
+```bash
+curl -X POST "http://localhost:8000/auth/validate-api-key" \
+  -H "X-API-Key: $API_KEY"
+```
 
----
-
-## Validating a Key (cross-link)
-
-Issued keys are consumed via `POST /auth/validate-api-key`, which is **header-based**: send the
-raw token in `X-API-Key` (not `Authorization: Bearer`). Sending **both** `Authorization` and
-`X-API-Key` returns `400 ambiguous_credentials`. This endpoint is part of the **auth suite** — see
-[Authentication Usage Cases](../authentication-usage-cases.md) and the example in
-[scenarios.md](scenarios.md).
+A valid key returns `valid: true` with the owner, project, `api_key.public_id`, groups and
+permissions. Failure statuses are listed in [reference.md](reference.md#validation-endpoint); the
+full contract is in
+[Authentication usage cases](../authentication-usage-cases.md#validate-an-api-key).

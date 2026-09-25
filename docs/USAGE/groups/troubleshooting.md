@@ -1,135 +1,155 @@
-# Groups Troubleshooting, Caveats, and Best Practices
+# Groups troubleshooting
 
-Things that commonly confuse operators working with the groups system in `api.auth`.
+Symptom, cause and fix. Error codes are explained in [errors.md](../errors.md); route contracts
+are in [reference.md](reference.md).
 
----
+## Access problems
 
-## Troubleshooting
+### A user cannot reach a project
 
-### User cannot access a project
+Cause: one link of the chain is missing or inactive, the project is archived, or the user is an
+admin user (admins log in only to projects they are assigned to administer).
 
-Check the full chain, not just one piece.
+Fix: walk the chain from the user side.
 
-1. Is the user in the expected user group?
+1. Which groups is the user in?
+
    ```bash
-   curl -X GET "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
-     -H "Authorization: Bearer $TOKEN"
-   ```
-2. Does that user group have a project-group link?
-   ```bash
-   curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
-     -H "Authorization: Bearer $TOKEN"
-   ```
-3. Does the project group actually contain the project?
-   ```bash
-   curl -X GET "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
+   curl "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
      -H "Authorization: Bearer $TOKEN"
    ```
 
-If any link in that chain is missing, access resolution breaks.
+2. Which project groups does each group reach, and which projects are behind them?
 
----
+   ```bash
+   curl "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
+     -H "Authorization: Bearer $TOKEN"
+   ```
 
-### Changes do not show up immediately
+   `accessible_project_groups` lists the grants; `accessible_projects` lists the reachable
+   projects. A project missing from `accessible_projects` while its project group is listed is
+   either not in that project group or archived.
 
-Common causes:
+3. Is the project in the project group?
 
-- the user's current session still contains old group context
-- the user needs to log in again or switch project context
-- cached access or permission data has not been refreshed yet
+   ```bash
+   curl "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
+     -H "Authorization: Bearer $TOKEN"
+   ```
 
-Practical fix order:
+   `assigned_projects` omits archived projects. No endpoint shows the archive flag; check
+   `projects.archived` in the database.
 
-1. verify the DB-facing API calls succeeded
-2. re-login or switch project
-3. if needed, clear/invalidate cache through admin/system endpoints
+Login answers `403` `AUTHZ_2003` when the requested project is not reachable, and `403`
+`AUTHZ_2001` when the consumer reaches no project at all.
 
----
+### A user keeps access right after a revoke or delete
 
-### Bulk membership assignment only partially succeeds
+Cause: one of these:
 
-The bulk endpoint reports successes and failures individually. Read the response body, don't just look at HTTP 200.
+- another user group still grants the same project. Revocation keeps sessions that another
+  chain still covers;
+- the request uses an API key. Validation results are cached for `60` seconds and group changes
+  do not clear them;
+- the user is root, who reaches every active, non-archived project without groups.
 
-Typical causes:
+Fix: check the user's other groups (first step above). For immediate API-key cut-off, revoke the
+key ([API keys](../api-keys/usage.md)).
 
-- one or more `user_hash` values are invalid
-- some users are already assigned
-- some previously inactive assignments were reactivated
+### A user was logged out after a group change
 
----
+Cause: expected. Deleting a user group or project group, revoking a grant and removing a project
+from a project group revoke the project sessions and refresh-token families of users who lost the
+project. A removed member's token is refused on its next request.
 
-### A group delete removed more access than expected
+Fix: the user logs in again with a project they still reach.
 
-This is the expected cascade.
+### A newly granted project does not appear in the current session
 
-Deleting a user group soft-deactivates:
+Cause: a session is bound to one project. The grant is effective, but the existing session does
+not move.
 
-- the group itself
-- member rows in `user_group_members`
-- access links in `user_group_project_groups`
+Fix: log in with the new `project_hash`, or call `POST /auth/switch-project`, which requires
+recent authentication ([authentication](../authentication-usage-cases.md)). Group names reported
+for a session can lag by up to `30` seconds (`VALIDATE_CACHE_TTL`).
 
-It also **revokes the affected members' live project sessions** (`reason="user_group_deleted"`), so those users are kicked out and must re-authenticate. The same active session revocation fires when you revoke a user-group → project-group link (`user_group_project_group_access_revoked`), delete a project group (`project_group_deleted`), or remove a project from a project group (`project_removed_from_group`).
+### A permission group is attached but the user still gets 403
 
-So if you only wanted to remove one project's reach, revoke the project-group link first instead of deleting the entire user group — and expect affected users to be logged out of the impacted projects either way.
+Cause: permission groups attached to a user group show up in the permission inspection endpoints
+but are not used for authorization, which reads global-role permissions.
 
----
+Fix: grant the permission through the user's global role. See
+[permission resolution](../permissions/resolution.md).
 
-## Current Caveats
+## Errors from group routes
 
-### Hierarchical group columns are not public CRUD features
+### 403 on every user-group route
 
-`parent_group_id` exists in schema tables, and SQL includes hierarchy views, cycle-prevention triggers, and recursive permission logic. The active group-management route layer, however, does not expose `parent_group_id` as a create/update field and the DB helper paths pass `NULL`.
+Cause: the session carries neither `admin` nor `manage_users`. A consumer whose role has
+`manage_roles` can use project-group routes but not user-group routes.
 
-So: do not operate hierarchy through the public group CRUD API. If you rely on SQL-layer hierarchy behavior, verify it directly at the database/procedure level.
+Fix: use a root or admin session, or have root grant `manage_users` through the consumer's
+global role.
 
-### Dedicated test coverage now exists
+### 403 on project-group routes
 
-Group behavior is covered by focused integration suites, including `test_slice11_admin_project_groups.py` (project-group CRUD + non-admin 403), `test_slice19_ug_pg_link_orchestration.py` (UG→PG grant/revoke wiring), `test_groups_of_groups_contract.py` (groups-of-groups endpoint contracts and 404/403 paths), `test_auth_group_project_flows.py`, and the default-group orchestration slices (`test_slice18_project_default_groups_orchestration.py`, `test_slice24_real_default_groups.py`). These run against the real app with middleware active. Still verify environment-specific edge cases before high-risk admin changes, but the "no focused coverage" caveat is no longer accurate.
+Cause: the session carries neither `admin` nor `manage_roles`.
 
----
+Fix: as above, with `manage_roles`.
 
-## Best Practices
+### 403 changing an `admin_` group
 
-### 1. Treat user groups as global organizational units
+Cause: only root may create, rename, delete, or change members or grants of such a group. The
+message is "Only root users may change project admin groups". Case and accents are ignored, so
+`Admin_x` counts too.
 
-Don't create one user group per tiny action. Use them for stable team or access buckets.
+Fix: call as root. To make someone a project administrator, use
+`PUT /user-types/admin/{user_hash}/projects` ([user types](../users/user-types.md)). To name an
+ordinary group, pick a name that does not start with `admin_`.
 
-### 2. Treat project groups as reusable access containers
+### 409 creating or renaming a group
 
-If the same set of projects is granted repeatedly, create or reuse a project group instead of wiring access project by project in your mental model.
+Cause: the name is used by another group of the same kind, including deleted groups. Comparison
+ignores case.
 
-### 3. Separate access from capability
+Fix: choose another name. Deleted groups cannot be restored through the API.
 
-- project groups = where a team can go
-- permission groups = what a team can do there
+### Updating a project group returns 500
 
-Mixing those concepts is how people create a quilombo in access control.
+Cause: the request had neither `group_name` nor `description` (or both were empty, which counts as
+omitted). Unlike the user-group route, which answers `400`, the project-group route answers `500`
+`INT_7001` ("Update failed").
 
-### 4. Use explicit names for temporary groups
+Fix: send at least one non-empty field. A description cannot be cleared.
 
-Examples:
-- `contractors_q2_2026`
-- `migration_team_april_2026`
-- `readonly_support_weekend`
+### Revoking a grant returns 500
 
-### 5. Review deletes before executing them
+Cause: there is no active grant between the two groups (already revoked, never granted, or removed
+by a group delete).
 
-Before deleting a user group, inspect:
-- members
-- project-group links
-- any permission-group assignments tied to the team
+Fix: list the grants first with `GET /admin/user-groups/{group_hash}/project-groups`.
 
-### 6. Expect session refresh after material group changes
+### Bulk add returns 200 but some users were not added
 
-If group changes affect login context, accessible projects, or cached group names, plan for re-login, refresh, or project switching.
+Cause: the bulk route answers `200` once the group exists. Unknown or inactive users are listed in
+`errors[]`; other failures appear in `results[]` with `status: "error"`.
 
----
+Fix: read `summary.error_count`, then retry the failed hashes with the single-add route to get a
+specific `404`.
 
-## Related Documentation
+### 404 for a group hash that used to work
 
-- **[Groups Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
+Cause: the group was deleted. Lookups return active groups only, and a deleted group keeps its
+hash but cannot be reactivated through the API.
+
+Fix: list groups with `GET /admin/user-groups` or `GET /admin/project-groups` to find the
+replacement.
+
+## Things that do not work as they look
+
+- **`parent_group_id` has no effect.** Hierarchy exists in the schema, but no route sets it and the
+  access chain never follows it.
+- **`derived_projects` and `total_derived_projects` are always empty or `0`.** Read
+  `accessible_projects` instead.
+- **`user_` and `readonly_` default groups grant the same reach.** The names carry no permission
+  difference; capabilities come from global roles.

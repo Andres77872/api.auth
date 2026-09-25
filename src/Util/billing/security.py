@@ -249,6 +249,39 @@ def reencrypt_provider_ref(**kwargs: Any) -> EncryptedProviderRef:
     return rotate_provider_ref(**kwargs)
 
 
+def provider_ref_evidence(raw_id: str | None, *, kind: str, config: Any, provider: str = "stripe") -> dict[str, Any] | None:
+    """Encrypted ref + HMAC + fingerprint for one raw provider id, as the billing tables store it.
+
+    ``config`` is a ``BillingConfig``. Returns None when the id is empty or the provider-ref
+    key, key id, or HMAC secret is not configured.
+    """
+
+    text = str(raw_id or "").strip()
+    key = getattr(config, "provider_ref_encryption_key", None)
+    key_id = getattr(config, "provider_ref_encryption_key_id", None)
+    hmac_secret = getattr(config, "id_hmac_secret", None)
+    if not text or not key or not key_id or not hmac_secret:
+        return None
+    encrypted = encrypt_provider_ref(raw_ref=text, key=key, key_id=key_id, provider=provider)
+    digest = hmac_provider_ref(provider=provider, kind=kind, raw_id=text, secret=hmac_secret)
+    return {
+        "ciphertext": encrypted.ciphertext,
+        "hmac": digest,
+        "fingerprint": provider_ref_fingerprint(digest=digest),
+        "key_id": encrypted.key_id,
+    }
+
+
+def provider_ref_hmac_or_none(raw_id: str | None, *, kind: str, config: Any, provider: str = "stripe") -> bytes | None:
+    """HMAC of one raw provider id for lookups; None when the id or the HMAC secret is missing."""
+
+    text = str(raw_id or "").strip()
+    secret = getattr(config, "id_hmac_secret", None)
+    if not text or not secret:
+        return None
+    return hmac_provider_ref(provider=provider, kind=kind, raw_id=text, secret=secret)
+
+
 def raw_body_sha256(raw_body: bytes | bytearray | memoryview) -> bytes:
     if not isinstance(raw_body, (bytes, bytearray, memoryview)):
         raise TypeError("raw_body must be exact bytes")
@@ -277,7 +310,9 @@ __all__ = [
     "hash_provider_ref",
     "hmac_billing_identifier",
     "hmac_provider_ref",
+    "provider_ref_evidence",
     "provider_ref_fingerprint",
+    "provider_ref_hmac_or_none",
     "raw_body_sha256",
     "raw_body_sha256_hex",
     "reencrypt_provider_ref",

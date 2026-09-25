@@ -1,104 +1,76 @@
-# Users Documentation
+# Users
 
-Detailed, repo-specific documentation for the user-management system implemented in `api.auth`.
+The users domain manages accounts: each user's profile, type (`root`, `admin` or `consumer`), email
+addresses and lifecycle from creation to deletion. End users call it to read their own access and
+manage their addresses; root and admin operators call it to find, update, deactivate and delete
+users, create operators and assign admins to projects. Group membership, roles and permissions are
+managed by other suites.
 
----
+## Key concepts
 
-## Overview
+- **User types.** `root` operates everything; `admin` administers the projects they are assigned
+  to; `consumer` is an end user. See [User types](user-types.md).
+- **Reach comes from groups.** Users reach projects through user group, project group and project
+  links; root reaches every active project. There is no direct user-to-project link.
+- **Admin assignment is group membership.** An admin is assigned to a project by joining its
+  `admin_<project_id>` user group.
+- **Email addresses are separate identities.** `user_emails` holds up to 5 pending or activated
+  addresses per user; only activated ones sign in or receive reset links. `users.email` is a legacy
+  shadow of the primary address.
+- **Soft delete by default.** Deactivation and soft delete keep the row; hard delete removes it and
+  everything the user owns. No route reactivates an account.
 
-The users domain in this repository is a **3-tier model** layered on top of the groups-of-groups access architecture:
+## Route families
 
-```text
-ROOT      → global administrative scope
-ADMIN     → assigned projects via admin user-group membership
-CONSUMER  → USER → USER_GROUP → PROJECT_GROUP → PROJECT
-```
+| Family | Routes | Caller | Details |
+| --- | --- | --- | --- |
+| Self-service | `GET`/`PUT /users/profile`, `GET /users/access-summary`, `/users/me/emails*` | Any signed-in user | [Usage](usage.md), [email management](email-management.md) |
+| User administration | `/users/list`, `/users/search/query`, `/users/{user_hash}` (read, update, status, reset-password, soft and hard delete, type), `/users/{user_hash}/emails*` | Root or admin; hard delete and type change root only | [Usage](usage.md) |
+| User types | `/user-types/*` (10 routes) | Root; type info, list by type and stats also admin | [User types](user-types.md) |
+| Bulk | `POST /admin/users/bulk-update`, `POST /admin/users/bulk-delete` | Root or admin with session permission `admin` or `manage_users` | [Bulk user operations](bulk-operations.md) |
 
-What matters operationally:
+`src/routes/users.py` registers 19 routes, `src/routes/user_types_auth.py` 10, and
+`src/routes/bulk_operations.py` 4 (2 of them documented here). The full inventory is in the
+[reference](reference.md#endpoints).
 
-- **`root` users** are global operators — they bypass group-membership validation on `/auth/login` but **still require `project_hash`** to log in. Root/admin can use `/auth/platform/login` if they need login without project binding (consumer users are rejected from platform login)
-- **`admin` users** are still normal `users` rows, but their reach comes from assignment to project-specific admin groups
-- **`consumer` users** get project reach through user groups and project groups, not direct user-to-project links
-- **`/users/*`** (19 endpoints) covers profile, access summary, list/search, detail, status, reset, soft delete, ROOT-only permanent delete, one type-change endpoint, and per-user email management (multi-email, primary email, activation resend)
-- **`/user-types/*`** covers root/admin creation, type inspection, admin-project assignment, and the stricter type-management path
-- **`/admin/users/bulk-*`** covers bulk update/delete for users only
+## Rules and caveats
 
----
+- Write routes take form fields; `POST /users/me/emails` also accepts JSON.
+- Admins are scoped two ways: by projects they *reach* (list, detail, update, status, soft delete)
+  and by projects they are *assigned* to (search, reset-password, email and type-info routes). See
+  [Caller rules](reference.md#caller-rules).
+- Root users reach every project but are outside every admin's scope: admins cannot read, update,
+  deactivate, delete, reset or list them, singly or in bulk.
+- Inactive users return `404` on every route except hard delete, and cannot be reactivated through
+  the API.
+- Updating a profile, username or legacy email keeps the user's sessions. Changing a user's type
+  signs them out everywhere (access sessions and refresh families).
+- Only `PUT /user-types/{user_hash}/type` assigns a project when promoting to `admin`.
+- Hard delete is root-only and irreversible; use it only when permanent removal is required.
+- Email send routes answer a generic `202`; `429` with `Retry-After` is the only detailed reply.
+- Passwords are changed in the auth routes. `POST /users/{user_hash}/reset-password` queues a link
+  and never returns a password or token.
 
-## Documents in This Suite
+## In this suite
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day profile, access summary, listing, detail, status, reset, delete, and update flows |
-| [email-management.md](email-management.md) | Per-user email lifecycle (multi-email, primary, activation resend) and admin/root email inspection/resend |
-| [user-types.md](user-types.md) | Root/admin creation, type lifecycle, admin project assignment, and type-management caveats |
-| [bulk-operations.md](bulk-operations.md) | Bulk update and bulk delete behavior, limits, error handling, and implementation caveats |
-| [architecture.md](architecture.md) | 3-tier model, tables, route split, group/project relationships, sessions, and cache invalidation |
-| [request-flow.md](request-flow.md) | End-to-end runtime flow for registration, login, listing, scoping, type changes, deactivation, and deletion |
-| [scenarios.md](scenarios.md) | Concrete curl-based workflows for onboarding, offboarding, access review, and admin lifecycle tasks |
-| [reference.md](reference.md) | Endpoint reference for `/users/*`, `/user-types/*`, and `/admin/users/bulk-*` |
-| [troubleshooting.md](troubleshooting.md) | Common failure modes, stale-session behavior, scoping confusion, and operator best practices |
+| Document | Purpose |
+| --- | --- |
+| [usage.md](usage.md) | Tasks: own profile and access, finding users, updating, deactivating, reset links, deleting |
+| [user-types.md](user-types.md) | Creating root and admin users, changing types, admin project assignment |
+| [email-management.md](email-management.md) | Adding, activating, removing and choosing email addresses; admin views |
+| [bulk-operations.md](bulk-operations.md) | Contract for bulk update and bulk delete |
+| [scenarios.md](scenarios.md) | End-to-end workflows: onboarding, admin setup, offboarding, incidents |
+| [reference.md](reference.md) | Endpoints, caller rules, fields, responses, errors, settings |
+| [request-flow.md](request-flow.md) | What each request does from authentication to stored procedures and Redis |
+| [architecture.md](architecture.md) | Model, tables, scoping design, revocation and lifecycle decisions |
+| [troubleshooting.md](troubleshooting.md) | Symptoms, causes and fixes |
 
----
+## Related
 
-## Core User Model in This Repo
-
-### User entity
-
-- Stored in `users`
-- `user_type` is an enum: `root`, `admin`, `consumer`
-- `role_id` exists as the global role attachment point
-- `is_active = 0` is the soft-delete/deactivation mechanism
-
-### Access model
-
-- **Consumers** reach projects through `user_group_members` → `user_group_project_groups` → `project_group_members`
-- **Admins** also reach projects through group membership, but typically through project admin groups discovered with `sp_find_admin_group_for_project`
-- **Roots** bypass **group-membership validation** on `/auth/login` (can access any project without group membership) — but they still require `project_hash` to specify the target project. Use `/auth/platform/login` for root/admin login without `project_hash`.
-
-### What `/users/*` does NOT manage directly
-
-- user-group membership
-- project-group wiring
-- role assignment
-- permission-group assignment
-
-Those live in the groups, roles, and permissions suites.
-
----
-
-## Recommended Reading Order
-
-1. Start with [usage.md](usage.md)
-2. Then read [architecture.md](architecture.md)
-3. Use [request-flow.md](request-flow.md) for runtime behavior
-4. Read [user-types.md](user-types.md) before changing user types or creating admins
-5. Read [bulk-operations.md](bulk-operations.md) before mass changes
-6. Keep [reference.md](reference.md) open while operating the API
-7. Use [scenarios.md](scenarios.md) and [troubleshooting.md](troubleshooting.md) for real workflows and failure handling
-
----
-
-## Scope and Caveats
-
-- This suite documents the active route layer in `src/routes/users.py` (19 endpoints, including the per-user email-management group and ROOT-only hard delete — see [email-management.md](email-management.md)), `src/routes/user_types_auth.py` (10 endpoints), and `src/routes/bulk_operations.py`
-- There are **two type-change routes**: `/users/{hash}/type` and `/user-types/{hash}/type`. They overlap, but they do **not** enforce the same constraints
-- Admin scoping is **not perfectly uniform** across list, search, and some user-type endpoints; caveats are called out where the code diverges
-- Admin password reset queues a secure reset link when the target has a primary activated email; it does not return a temporary password, reset token, reset link, full email, or provider payload
-- `DELETE /users/{user_hash}/hard` is a destructive ROOT-only deep-clean route. It is not an offboarding shortcut; use deactivation/soft-delete unless permanent removal and email release are explicitly required
-- `PUT /users/profile` rejects password-equivalent fields; use `POST /auth/password/change` for self-service password changes
-- Role/group assignment is intentionally managed outside the `/users/*` routes
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** - Complete usage index
-- **[Email Management](email-management.md)** - Per-user email lifecycle endpoints and admin/root email inspection/resend
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, registration, refresh, logout, project switching
-- **[Groups Documentation Suite](../groups/README.md)** - User groups, project groups, and the access bridge
-- **[Projects Documentation Suite](../projects/README.md)** - Project reach and project-scoped context
-- **[Permissions Documentation Suite](../permissions/README.md)** - Permission sources, direct assignments, and authorization caveats
-- **[Roles Documentation Suite](../roles/README.md)** - Global role CRUD and user role assignment
-- **[Admin Usage Cases](../admin-usage-cases.md)** - Dashboard, health, cache management, and admin operations outside the users domain
-- **Database schema** (`schemas/`) - SQL tables and stored procedures
+- [Usage documentation home](../README.md)
+- [Authentication usage](../authentication-usage-cases.md): sign-in, refresh, password change and reset
+- [Groups](../groups/README.md), [Projects](../projects/README.md), [Roles](../roles/README.md) and
+  [Permissions](../permissions/README.md) suites
+- [Email suite](../email/README.md): outbox, worker, templates and provider webhooks
+- [Admin usage cases](../admin-usage-cases.md): dashboard, cache, and the role and group bulk routes
+- [Error reference](../errors.md)

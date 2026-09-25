@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from src.Util.db_config import get_connection
+from src.Util.audit_session_id import audit_session_id
 from src.Util.auth_constants import (
     BILLING_INTERNAL_ROUTE_PREFIX,
     BILLING_INTERNAL_PROJECT_ROUTE_PREFIX,
@@ -108,6 +109,7 @@ class APIAuditLogger:
         '/docs',
         '/redoc',
         '/openapi.json',
+        '/documentation',  # rendered usage wiki, its search index and raw Markdown
         '/auth/validate',  # Phase 1.3: high-frequency, low-value validation — skip sync audit log
         '/webhooks/email',  # Provider webhooks verify raw bodies; never store raw payloads in API audit
     ]
@@ -634,6 +636,8 @@ class APIAuditLogger:
             filtered_body = APIAuditLogger.filter_sensitive_data(request_body) if request_body else None
             filtered_query = APIAuditLogger.filter_sensitive_data(request_query) if request_query else None
             filtered_metadata = APIAuditLogger.filter_sensitive_data(metadata) if metadata else None
+            # Readers of api_audit_log must never see token material
+            session_id = audit_session_id(session_id)
 
             with get_connection() as conn:
                 cursor = conn.cursor()

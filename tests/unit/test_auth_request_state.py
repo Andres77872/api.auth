@@ -291,3 +291,56 @@ async def test_auth_context_middleware_uses_session_cookie_for_state():
     assert request.state.user_id == "999"
     assert request.state.auth_method == "session"
     assert request.state.session_validation == mock_session
+
+
+# ==============================================================================
+# request.state.session_id never carries access-token material
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_auth_context_middleware_sets_session_id_claim_not_token():
+    from uuid import uuid4
+    from src.Util.JWT_Security import JWTTokenHandler
+    from src.middleware.auth_context import AuthContextMiddleware
+
+    session_id = str(uuid4())
+    token = JWTTokenHandler.create_access_token(session_id, "uhash_claim", "phash_claim")
+    session_data = SimpleNamespace(
+        user_id="usr-1", user_hash="uhash_claim", user_type="consumer", username=None,
+        permissions=[], groups=[], project_id="proj-1", project_hash="phash_claim",
+    )
+
+    request = MagicMock()
+    request.headers = {"Authorization": f"Bearer {token}"}
+    request.cookies = {}
+    request.url.path = "/users/profile"
+    request.state = SimpleNamespace()
+
+    async def call_next(req):
+        return Response("ok")
+
+    middleware = AuthContextMiddleware(app=MagicMock())
+    with patch("src.Util.db.db_enhanced.validate_session", return_value=session_data):
+        await middleware.dispatch(request, call_next)
+
+    assert request.state.session_id == session_id
+    assert request.state.auth_method == "session"
+
+
+def test_error_handler_context_never_carries_token_material():
+    from src.Util.JWT_Security import JWTTokenHandler
+    from src.middleware.error_handler import extract_user_context_from_request
+
+    token = JWTTokenHandler.create_access_token("sess-err", "uhash_err", "phash_err")
+
+    for state_value, expected in ((token, "sess-err"), ("key-123", "key-123"), (None, None)):
+        request = MagicMock()
+        request.state = SimpleNamespace(session_id=state_value)
+
+        assert extract_user_context_from_request(request)["session_id"] == expected
+
+    request = MagicMock()
+    request.state = SimpleNamespace(session_id=token[:256])
+    stored = extract_user_context_from_request(request)["session_id"]
+    assert stored.startswith("tokhash:")
+    assert token[:40] not in stored

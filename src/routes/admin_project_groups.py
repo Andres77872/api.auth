@@ -296,10 +296,7 @@ async def update_project_group_endpoint(
 
     **Responses:** 401 missing, invalid or expired access token; 403 missing permission; 404 unknown or deleted
     project group; 409 name already in use; 500 when neither field has a value.
-    \f
-    Developer note: ``update_project_group()`` calls ``sp_update_project_group`` with four arguments, but the
-    canonical procedure in ``schemas/stored_procedures/04_project_groups.sql`` takes three, so updates fail
-    against that schema.
+
     """
     # Get project group
     project_group = handle_db_operation(

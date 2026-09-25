@@ -372,6 +372,12 @@ async def test_duplicate_delivery_is_idempotent_and_does_not_repeat_side_effects
     assert first.status_code == 200
     assert second.status_code == 200
     assert len(capture.current_updates) <= 1, "replayed Patreon webhook must not repeat entitlement side effects"
+    replay_rows = [
+        call
+        for call in capture.activity_log.call_args_list
+        if str(getattr(call.args[0], "value", call.args[0])) == "patreon_webhook_replay_ignored"
+    ]
+    assert len(replay_rows) == 1, "the replayed delivery must record act-cat-082 exactly once"
     _assert_no_session_or_raw_provider_leaks(second, context="duplicate webhook response")
 
 

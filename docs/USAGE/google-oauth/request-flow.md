@@ -1,145 +1,81 @@
-# Google OAuth Request Flow
+# Google OAuth request flow
 
-> `/auth/google/*` are deprecated aliases onto the provider-agnostic pipeline; see the [OAuth reference](../oauth/reference.md). The diagrams below show the browser talking to `api.auth` directly for clarity. In the deployed BFF-mediated topology the companion backend sits in between: it calls `/start` and `/callback` server-to-server and owns delivery of the session to its own front end.
+What the deprecated `/auth/google/*` aliases do. Only `POST /auth/google/start` has its
+own logic; the other aliases run the shared pipeline described in the
+[OAuth request flow](../oauth/request-flow.md), with the connection key fixed to `google`.
+Examples use localhost placeholders only; never paste real Google codes, tokens, client
+credentials, raw `project_hash`, raw `user_group_hash` or production origins.
 
-All examples use localhost-only placeholders. Do not paste real Google codes, tokens, client credentials, raw `project_hash`, raw `user_group_hash`, or production origins into docs or smoke files.
+## Legacy start
 
-## Route Family
+`POST /auth/google/start`, called with a provider-init token minted by the companion
+backend.
 
-| Endpoint | Auth | Purpose |
-| --- | --- | --- |
-| `POST /auth/google/start` | Public, rate-limited | Redeem provider-init and redirect to Google. |
-| `GET /auth/google/callback` | Public redirect, rate-limited | Consume state, exchange code, validate ID token, then complete the state's purpose: issue a local session (login), link the identity to the initiating user (link), or record recent reauthentication (reauth). |
-| `POST /auth/google/link/start` | Existing local session + recent reauth | Start a Google link flow for a local consumer. |
-| `POST /auth/google/reauth/start` | Existing local session | Start Google step-up/reauth round-trip. |
-| `DELETE /auth/google/unlink` | Existing local session + recent reauth | Soft-unlink Google if fallback auth exists. |
+1. The body must be a JSON object without `project_hash` or `user_group_hash`, with a
+   `provider_init_token` of at most 4,096 characters: `400` `EXT_8012`. A forbidden field
+   also records `google_oauth_provider_init_rejected`.
+2. The Google bindings that accept the legacy handshake are found. Under
+   `OAUTH_CONFIG_SOURCE=env` that is the environment connection, available when
+   `GOOGLE_OAUTH_ENABLED` is on (`403` `EXT_8011`) and `GOOGLE_OAUTH_CLIENT_ID` is set
+   (`503` `EXT_8010`). Under `db` it is every usable binding with connection key `google`
+   and `init_mode: legacy_redeem`; none answers `403` `EXT_8011`.
+3. Exactly one binding must own the pair of redirect URI (the requested one, else the
+   binding's only one; the environment binding falls back to its first) and return origin
+   (the requested one; the environment binding falls back to its first): `400`
+   `EXT_8013`. Bindings of different projects are never merged.
+4. The start and provider-init redeem buckets are spent: `429` `EXT_8030`.
+5. The token is redeemed with one server-to-server `POST` to the redeem URL, carrying the
+   redeem bearer, with a 5-second timeout and no redirects. The answer is validated:
+   active, provider `google`, audience `api.auth` when present, a known purpose, a
+   `project_hash`, an allowed return origin equal to the one in use, and a lifetime of at
+   most `600` seconds. Under `db`, the project must be the binding's and a group, if
+   present, the binding's default group. Any failure: `401` `EXT_8012` and
+   `google_oauth_provider_init_rejected` with the reason.
+6. State, nonce and PKCE verifier are stored in Redis for the login purpose with the
+   redeemed project (and, for the environment binding, the redeemed group as the
+   provisioning group) and `remember_me` from the body.
+7. The answer is `303` to Google with the `oauth_state` cookie on path `/auth/google`, and
+   `google_oauth_started` is recorded. State storage failure: `401` `EXT_8014`; any other
+   failure: `503` `EXT_8010`.
 
-> Provider boundary: the route family below is Google OAuth login/link behavior. Patreon has separate link request/confirm/status/unlink, webhook, sync, and internal S2S flows documented in [Patreon account linking](../patreon-link/README.md); those flows are entitlement/link only and do not produce `LoginResponse`, local session cookies, or refresh tokens.
-
-> Unlike `link/start`, the `reauth/start` handler is **not** gated by provisioning mode and does **not** pre-require recent reauth (`require_recent_reauthentication`); it only initiates a Google step-up round-trip (`prompt=login`). Any failure returns `OAUTH_PROVISIONING_DENIED` / `EXT_8024` (`401`). The `link/start` handler calls `require_recent_reauthentication` and requires provisioning mode `link_only`/`both`. Linking and re-authentication complete inside the callback; there is no separate finish route.
-
-## Login Start
-
-```text
-Browser -> magic-worlds-api
-  POST /auth/provider-init/google
-  no strict hashes in request
-
-magic-worlds-api -> Browser
-  provider_init_token only
-
-Browser -> api.auth
-  POST /auth/google/start
-  provider_init_token, redirect_uri, return_origin
-
-api.auth -> magic-worlds-api
-  server-to-server redeem with bearer trust boundary
-
-api.auth -> Redis
-  state + nonce + PKCE verifier, TTL <= 600 seconds
-
-api.auth -> Browser
-  303 Location: Google authorization URL
-```
-
-Start request body:
-
-```json
-{
-  "provider_init_token": "REPLACE_ME_OPAQUE_LOCAL_TOKEN",
-  "redirect_uri": "http://localhost:8000/auth/google/callback",
-  "return_origin": "http://localhost:3000",
-  "remember_me": false
-}
-```
-
-The Google authorization URL includes:
+The Google authorization URL carries:
 
 - `response_type=code`
+- `client_id` and `redirect_uri`
 - `scope=openid email`
-- `state=<random>`
-- `nonce=<random>`
-- `code_challenge=<S256 verifier challenge>`
-- `code_challenge_method=S256`
+- `state` and `nonce` (256-bit random each)
+- `code_challenge` with `code_challenge_method=S256`
+- `prompt=login` for reauth
 
 It must not include `profile`, `offline_access`, `access_type=offline`, or refresh-token consent parameters.
 
 ## Callback
 
-```text
-Google -> api.auth
-  GET /auth/google/callback?code=<opaque>&state=<random>
+`GET /auth/google/callback` behaves exactly like `GET /auth/oauth/callback`: the state is
+consumed first, the code is exchanged once with the PKCE verifier, the ID token is
+verified (RS256, `kid` with one JWKS refetch, issuer, audience, `azp`, expiry, nonce,
+hosted domain, `google-auth` cross-check), Google token material is dropped, and the
+purpose stored in the state decides the result: a `LoginResponse` with local session
+cookies, a linked identity, or `{"reauthenticated": true}`. It accepts `code`, `state`
+and `error`; `error_description` is ignored and there is no `iss` parameter. Activity is
+recorded with the `google_oauth_*` codes.
 
-api.auth
-  1. audit callback with redacted query
-  2. rate-limit callback/state consume
-  3. consume Redis state before code exchange
-  4. exchange code once with PKCE verifier
-  5. validate ID token: RS256, JWKS, iss, aud, azp, exp/iat, nonce, hosted-domain allow-list
-  6. discard token response and raw id token
-  7. resolve local consumer by provider-sub HMAC
-  8. enforce provisioning and project access policy
-  9. issue existing local token pair and cookies
-```
+## Link, reauth and unlink
 
-Success surface:
+| Alias | Runs | Notes |
+| --- | --- | --- |
+| `POST /auth/google/link/start` | The shared link start for the `google` binding of the session's project | Needs recent authentication and provisioning mode `link_only` or `both`; a session, provisioning or recent-authentication failure answers `401` `EXT_8024`. |
+| `POST /auth/google/reauth/start` | The shared reauth start | No provisioning check and no recent authentication needed; sends `prompt=login`. |
+| `DELETE /auth/google/unlink` | The shared unlink | Needs recent authentication and a usable password; revokes every session of the user. |
 
-- Existing `LoginResponse` shape.
-- Existing `session_token` access cookie and `refresh_token` cookie.
-- Local session tokens only; Google access, refresh, and id token material is not persisted or returned.
+Linking and reauthentication complete inside the callback; there is no finish route.
+Recent authentication counts the same whether the session came from a password login or
+from Google.
 
-Failure surface:
+## Middleware and audit
 
-- Neutral `EXT_8xxx` response.
-- Optional correlation ID.
-- No account existence, provider-sub ownership, project/group membership, strict hash, Google token, code, state, nonce, or verifier disclosure.
-
-## Link Existing Local Account
-
-```text
-Authenticated consumer + recent reauth
-  -> POST /auth/google/link/start
-  -> Google round-trip
-  -> GET /auth/google/callback (the state record carries purpose=link and the initiating user)
-  -> identity linked to that user; no new session is issued
-```
-
-Linking is allowed only when provisioning mode is `link_only` or `both`. The Google provider-sub must not already be actively linked to another user. Google `email_verified` does not activate local email.
-
-## Reauth / Step-up
-
-`POST /auth/google/reauth/start` starts a Google round-trip for operations that require recent proof. The implementation may request `prompt=login`; it still must not request `offline_access`, `access_type=offline`, or Google refresh tokens.
-
-Recent reauth applies consistently to sensitive operations regardless of whether the original local session was created by password login or Google OAuth.
-
-## Unlink
-
-```text
-Authenticated consumer + recent reauth
-  -> DELETE /auth/google/unlink
-  -> verify fallback auth method exists
-  -> sp_unlink_external_account(status='unlinked')
-  -> revoke affected local auth state
-  -> ExternalIdentityUnlinkResponse
-```
-
-If Google is the only usable auth method, unlink is refused until fallback local authentication exists. The response must not expose raw provider identifiers.
-
-## Cookie and Session Notes
-
-- OAuth transaction cookie: short-lived, `SameSite=Lax`, no Google token material.
-- Local session cookies: existing `session_token` and `refresh_token` names/semantics.
-- `/auth/google/start` and `/auth/google/callback` skip normal session extraction in `AuthContextMiddleware`, but API audit remains active and records `auth_method='oauth'`.
-
-## No Strict-Hash Browser Leakage
-
-Never send these fields from the browser to `api.auth`:
-
-```json
-{
-  "project_hash": "<do-not-send>",
-  "user_group_hash": "<do-not-send>"
-}
-```
-
-If a browser payload contains those fields, route handling must reject or ignore them safely and must not create OAuth state from them.
+`/auth/google/start` and `/auth/google/callback` skip session extraction in
+`AuthContextMiddleware` (no local session exists yet); the link, reauth and unlink aliases
+do not. API audit stays active on all of them with `auth_method='oauth'` and the tags
+`authentication`, `oauth`, `google_oauth` and `external_idp`; responses of `400` and above
+are security events, and OAuth secrets are redacted.

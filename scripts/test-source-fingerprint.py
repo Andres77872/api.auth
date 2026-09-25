@@ -23,6 +23,7 @@ OPTIONAL_ROOT_FILES = (
     ".coveragerc",
     "pytest.ini",
     "requirements.txt",
+    "requirements-assistant.txt",
     "requirements-test.txt",
     "Dockerfile",
     "Dockerfile.e2e",

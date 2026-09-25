@@ -473,7 +473,7 @@ definition. Additional authoritative procedure families are:
 | `13_api_keys.sql` | 8 | API-key lifecycle and validation |
 | `15_external_accounts.sql` | 5 | External identity linking |
 | `16_patreon_entitlements.sql` | 21 | Patreon link/entitlement facts |
-| `17_billing_provider_facts.sql` | 14 | Provider-neutral billing facts |
+| `17_billing_provider_facts.sql` | 17 | Provider-neutral billing facts |
 | `18_billing_groups.sql` | 28 | Billing groups, catalog, credentials, and session-plan resolution |
 
 ---
@@ -596,12 +596,15 @@ definition. Additional authoritative procedure families are:
 | `trg_after_ugpgr_update` | `user_group_project_group_roles` | UPDATE | `role_removed` |
 | `trg_after_ugpgr_delete` | `user_group_project_group_roles` | DELETE | `role_removed` |
 
-### Email Activation Triggers (`04_email_activation_triggers.sql`) - 6 Triggers
+### Email Activation Triggers (`04_email_activation_triggers.sql`) - 8 Triggers
 
 Guard rails and activity logging for the transactional-auth email lifecycle
 (`user_emails`, `user_email_link_tokens`, `email_messages`). See the schema file
 for the exact trigger set; together with the stored procedures they keep
 payload-purge timing, status transitions, and email activity events consistent.
+`trg_email_messages_after_insert` records `email_message_enqueued` and
+`trg_email_messages_after_update` records `email_message_dead_lettered` when a
+message moves to `dead`.
 
 ---
 
@@ -746,10 +749,10 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Collation**: utf8mb4_unicode_ci
 - **Tables**: 73
 - **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
-- **Stored Procedures**: 316
+- **Stored Procedures**: 318
 - **Functions**: 1
 - **Views**: 18
-- **Triggers**: 123 total (108 activity/domain triggers plus 15 validation triggers in table setup)
+- **Triggers**: 125 total (110 activity/domain triggers plus 15 validation triggers in table setup)
 - **Activity Types**: 111 seeded (including 21 provider-agnostic `oauth_*` rows, `act-cat-107` to `act-cat-127`); 16 billing IDs reserved in runtime but not yet seeded
 
 ---

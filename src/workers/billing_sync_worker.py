@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -30,8 +31,9 @@ from src.Util.billing import sync as billing_sync
 from src.Util.billing.config import load_billing_config
 from src.Util.billing.provider import BillingSyncJob, BillingSyncResult
 from src.Util.billing.redaction import redact_billing_sensitive_data, sanitize_billing_sensitive_text
-from src.Util.billing.security import EncryptedProviderRef
+from src.Util.billing.security import EncryptedProviderRef, provider_ref_evidence, provider_ref_hmac_or_none
 from src.Util.db import db_billing
+from src.Util.stripe import classifier as stripe_classifier
 from src.Util.stripe import sync as stripe_source_sync
 from src.Util.stripe.account import StripeAccountNotReadyError, get_stripe_client_for_group
 from src.Util.stripe.client import StripeBillingClient
@@ -209,25 +211,86 @@ def _to_sync_result(value: Any, *, job: billing_sync.ClaimedBillingSyncJob) -> B
     return BillingSyncResult(provider=job.provider, job_id=job.job_id, status=billing_sync.SYNC_JOB_STATUS_COMPLETED)
 
 
+def _ciphertext_bytes(ciphertext: Any) -> bytes | None:
+    if isinstance(ciphertext, memoryview):
+        ciphertext = ciphertext.tobytes()
+    if isinstance(ciphertext, str):
+        return ciphertext.encode("utf-8") or None
+    if isinstance(ciphertext, (bytes, bytearray)):
+        return bytes(ciphertext) or None
+    return None
+
+
 def _encrypted_ref_from_row(row: Mapping[str, Any], *ciphertext_names: str) -> EncryptedProviderRef | None:
     key_id = _text_field(row, "provider_ref_key_id", "key_id", "encryption_key_id")
     if not key_id:
         return None
     for name in ciphertext_names:
-        ciphertext = row.get(name)
-        if ciphertext is None:
-            continue
-        if isinstance(ciphertext, memoryview):
-            ciphertext = ciphertext.tobytes()
-        if isinstance(ciphertext, str):
-            ciphertext_bytes = ciphertext.encode("utf-8")
-        elif isinstance(ciphertext, bytes):
-            ciphertext_bytes = ciphertext
-        else:
-            continue
+        ciphertext_bytes = _ciphertext_bytes(row.get(name))
         if ciphertext_bytes:
             return EncryptedProviderRef(ciphertext=ciphertext_bytes, key_id=key_id)
     return None
+
+
+def _context_ref(context: Mapping[str, Any], ciphertext_name: str, key_id_name: str) -> EncryptedProviderRef | None:
+    """One encrypted ref from a `sp_billing_get_sync_context` row, whose key ids are per ref."""
+
+    key_id = _text_field(context, key_id_name)
+    ciphertext_bytes = _ciphertext_bytes(context.get(ciphertext_name))
+    if not key_id or not ciphertext_bytes:
+        return None
+    return EncryptedProviderRef(ciphertext=ciphertext_bytes, key_id=key_id)
+
+
+def _stripe_id(value: Any) -> str | None:
+    """A Stripe reference field is an id string, or the expanded object carrying `id`."""
+
+    if isinstance(value, Mapping):
+        value = value.get("id")
+    text = str(value or "").strip()
+    return text or None
+
+
+def _first_price_id(subscription: Mapping[str, Any]) -> str | None:
+    items = subscription.get("items")
+    data = items.get("data") if isinstance(items, Mapping) else None
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return _stripe_id(data[0].get("price"))
+    return None
+
+
+def _usable_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return None if not text or text.lower() == "free" else text
+
+
+def _datetime_from_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _datetime_from_epoch(value: Any) -> datetime | None:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(seconds, tz=timezone.utc) if seconds > 0 else None
+
+
+def _payload_hash(payload: Mapping[str, Any]) -> bytes:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).digest()
+
+
+_TERMINAL_DISPUTE_STATUSES = frozenset({"dispute_won", "dispute_lost"})
+# Completed jobs that found nothing in Stripe to write back.
+_NOOP_COMPLETION_REASONS = frozenset({"no_provider_refs", "no_provider_subscription"})
 
 
 class BillingSyncWorker:
@@ -462,7 +525,8 @@ class BillingSyncWorker:
                 raw_result = await _maybe_await(method(provider_job))
             return _to_sync_result(raw_result, job=job)
 
-        operational_refs = await self._operational_refs_for_job(job=job, row=row)
+        context = await self._sync_context_for_job(job)
+        operational_refs = await self._operational_refs_for_job(job=job, row=row, context=context)
         client = self._client_for_job(job)
         raw_result = stripe_source_sync.source_of_truth_resync(
             job=provider_job,
@@ -470,7 +534,277 @@ class BillingSyncWorker:
             operational_refs=operational_refs,
             decryption_keys_by_id=getattr(self.config, "decryption_keys_by_id", {}),
         )
-        return _to_sync_result(raw_result, job=job)
+        return await self._write_back(job=job, context=context, result=_to_sync_result(raw_result, job=job))
+
+    async def _sync_context_for_job(self, job: billing_sync.ClaimedBillingSyncJob) -> dict[str, Any]:
+        """Local identity + encrypted refs for a job (`sp_billing_get_sync_context`); {} when unavailable."""
+
+        method = getattr(self.db, "get_sync_context", None)
+        if not callable(method):
+            return {}
+        billing_group_id = job.billing_group_id or _text_field(job.sanitized_metadata or {}, "billing_group_id")
+        try:
+            return _plain_mapping(
+                await _maybe_await(
+                    method(
+                        provider=job.provider,
+                        user_id=job.user_id,
+                        billing_group_id=billing_group_id,
+                        subscription_id=job.subscription_id,
+                        purchase_id=job.purchase_id,
+                    )
+                )
+            )
+        except Exception as exc:
+            logger.debug("Billing sync context unavailable: %s", type(exc).__name__)
+            return {}
+
+    async def _write_back(
+        self,
+        *,
+        job: billing_sync.ClaimedBillingSyncJob,
+        context: Mapping[str, Any],
+        result: BillingSyncResult,
+    ) -> BillingSyncResult:
+        """Persist the fetched Stripe object as normalized facts; a failed write retries the job."""
+
+        if str(result.status or "").strip().lower() != billing_sync.SYNC_JOB_STATUS_COMPLETED or not result.provider_object:
+            return result
+        try:
+            if result.object_type == "subscription":
+                reason = await self._write_subscription_fact(
+                    job=job,
+                    context=context,
+                    subscription=result.provider_object,
+                    fetched_by=_text_field(result.safe_metadata or {}, "fetched_by"),
+                )
+            elif result.object_type in {"charge", "payment_intent"}:
+                reason = await self._write_purchase_fact(
+                    job=job, context=context, provider_object=result.provider_object, object_type=result.object_type
+                )
+            else:
+                reason = "unsupported_object"
+        except Exception as exc:
+            logger.warning("Billing sync write-back failed: %s", type(exc).__name__)
+            return BillingSyncResult(
+                provider=result.provider,
+                job_id=result.job_id,
+                status=billing_sync.SYNC_JOB_STATUS_RETRY,
+                retryable=True,
+                reason="fact_write_failed",
+                safe_metadata=result.safe_metadata,
+            )
+        if reason is not None:
+            # Fetched but not attributable to a local user/purchase: repeating the job cannot help.
+            return BillingSyncResult(
+                provider=result.provider,
+                job_id=result.job_id,
+                status=billing_sync.SYNC_JOB_STATUS_FAILED,
+                retryable=False,
+                reason=reason,
+                safe_metadata=result.safe_metadata,
+            )
+        return BillingSyncResult(
+            provider=result.provider,
+            job_id=result.job_id,
+            status=billing_sync.SYNC_JOB_STATUS_COMPLETED,
+            reason="facts_written",
+            safe_metadata=result.safe_metadata,
+        )
+
+    async def _lookup_provider_refs(self, *, billing_group_id: str | None, **raw_ids: str | None) -> dict[str, Any]:
+        """Local rows and catalog labels for fetched provider ids (`sp_billing_resolve_event_scope`)."""
+
+        method = getattr(self.db, "resolve_event_scope", None)
+        if not callable(method):
+            return {}
+        kinds = {
+            "subscription_id_hmac": ("subscription", "subscription_id"),
+            "payment_intent_id_hmac": ("payment_intent", "payment_intent_id"),
+            "charge_id_hmac": ("charge", "charge_id"),
+            "customer_id_hmac": ("customer", "customer_id"),
+            "price_id_hmac": ("price", "price_id"),
+        }
+        args = {
+            arg: provider_ref_hmac_or_none(raw_ids.get(name), kind=kind, config=self.config, provider=constants.STRIPE_PROVIDER_NAME)
+            for arg, (name, kind) in kinds.items()
+        }
+        if not any(args.values()):
+            return {}
+        try:
+            return _plain_mapping(
+                await _maybe_await(
+                    method(provider=constants.STRIPE_PROVIDER_NAME, billing_group_id=billing_group_id, checkout_ref=None, **args)
+                )
+            )
+        except Exception as exc:
+            logger.debug("Billing sync ref lookup unavailable: %s", type(exc).__name__)
+            return {}
+
+    async def _write_subscription_fact(
+        self,
+        *,
+        job: billing_sync.ClaimedBillingSyncJob,
+        context: Mapping[str, Any],
+        subscription: Mapping[str, Any],
+        fetched_by: str | None = None,
+    ) -> str | None:
+        user_id = job.user_id or _text_field(context, "user_id")
+        billing_group_id = job.billing_group_id or _text_field(context, "billing_group_id") or _text_field(job.sanitized_metadata or {}, "billing_group_id")
+        if not user_id or not billing_group_id:
+            return "missing_local_scope"
+        raw_subscription_id = _stripe_id(subscription.get("id"))
+        lookup = await self._lookup_provider_refs(
+            billing_group_id=billing_group_id,
+            subscription=raw_subscription_id,
+            customer=_stripe_id(subscription.get("customer")),
+            price=_first_price_id(subscription),
+        )
+        if _text_field(lookup, "user_id") and _text_field(lookup, "user_id") != user_id:
+            return "provider_object_owned_by_another_user"
+        matched_row = lookup if _text_field(lookup, "matched_by") == "subscription" else {}
+        if not matched_row and fetched_by == "subscription_ref" and _text_field(context, "subscription_id"):
+            # Fetched through the context row's own ref, so it is that row.
+            matched_row = {
+                "subscription_id": context.get("subscription_id"),
+                "subscription_ref": context.get("subscription_ref"),
+                "plan_code": context.get("subscription_plan_code"),
+                "tier_code": context.get("subscription_tier_code"),
+                "tier_name": context.get("subscription_tier_name"),
+            }
+        customer_id = _text_field(context, "customer_id") or _text_field(lookup, "customer_id")
+        if not customer_id:
+            return "missing_local_customer"
+
+        metadata = subscription.get("metadata") if isinstance(subscription.get("metadata"), Mapping) else {}
+        classification = stripe_classifier.classify_subscription_object(subscription)
+        safe_meta = _plain_mapping(classification.safe_metadata)
+        evidence = provider_ref_evidence(raw_subscription_id, kind="subscription_id", config=self.config, provider=constants.STRIPE_PROVIDER_NAME)
+        observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        await _maybe_await(
+            self.db.observe_subscription(
+                snapshot_id=f"bss-{uuid.uuid4().hex}",
+                history_id=f"beh-{uuid.uuid4().hex}",
+                current_id=f"bec-{uuid.uuid4().hex}",
+                subscription_id=_text_field(matched_row, "subscription_id") or f"bsubrow-{uuid.uuid4().hex[:24]}",
+                customer_id=customer_id,
+                user_id=user_id,
+                billing_group_id=billing_group_id,
+                provider=constants.STRIPE_PROVIDER_NAME,
+                subscription_ref=_text_field(matched_row, "subscription_ref")
+                or _text_field(metadata, "api_auth_subscription_ref", "subscription_ref")
+                or f"bsub-{uuid.uuid4().hex}",
+                provider_subscription_id_ciphertext=evidence["ciphertext"] if evidence else None,
+                provider_subscription_id_hmac=evidence["hmac"] if evidence else None,
+                provider_subscription_id_fingerprint=evidence["fingerprint"] if evidence else None,
+                provider_ref_key_id=evidence["key_id"] if evidence else None,
+                observed_at=observed_at,
+                sync_source="api_pull",
+                normalized_status=classification.subscription_status or "unknown",
+                plan_code=_text_field(metadata, "consumer_plan_code", "plan_code")
+                or _usable_label(matched_row.get("plan_code"))
+                or _usable_label(lookup.get("catalog_plan_code")),
+                tier_code=_text_field(metadata, "consumer_tier_code", "tier_code")
+                or _text_field(matched_row, "tier_code")
+                or _text_field(lookup, "catalog_tier_code"),
+                tier_name=_text_field(metadata, "consumer_tier_name", "tier_name")
+                or _text_field(matched_row, "tier_name")
+                or _text_field(lookup, "catalog_tier_name"),
+                cancel_at_period_end=bool(safe_meta.get("cancel_at_period_end")),
+                current_period_end=_datetime_from_iso(safe_meta.get("current_period_end")),
+                trial_end=_datetime_from_iso(safe_meta.get("trial_end")),
+                payload_hash=_payload_hash(subscription),
+                is_complete=not classification.resync_required,
+                requires_resync=classification.resync_required,
+                stale_after=None,
+                reason="source_of_truth_resync",
+                safe_metadata={"sync_job_type": job.job_type, "classification_version": 2},
+            )
+        )
+        self._invalidate_user_sessions(user_id)
+        return None
+
+    async def _write_purchase_fact(
+        self,
+        *,
+        job: billing_sync.ClaimedBillingSyncJob,
+        context: Mapping[str, Any],
+        provider_object: Mapping[str, Any],
+        object_type: str,
+    ) -> str | None:
+        purchase_id = _text_field(context, "purchase_id")
+        purchase_ref = _text_field(context, "purchase_ref")
+        user_id = _text_field(context, "user_id") or job.user_id
+        project_id = _text_field(context, "project_id") or job.project_id
+        billing_group_id = _text_field(context, "billing_group_id") or job.billing_group_id
+        if not (purchase_id and purchase_ref and user_id and project_id and billing_group_id):
+            return "missing_local_purchase"
+        known_status = _text_field(context, "purchase_status")
+        if object_type == "charge":
+            status = stripe_classifier.purchase_status_from_charge(provider_object)
+            raw_charge_id = _stripe_id(provider_object.get("id"))
+            raw_payment_intent_id = _stripe_id(provider_object.get("payment_intent"))
+        else:
+            status = stripe_classifier.purchase_status_from_payment_intent(provider_object)
+            raw_charge_id = _stripe_id(provider_object.get("latest_charge"))
+            raw_payment_intent_id = _stripe_id(provider_object.get("id"))
+        if status == "disputed" and known_status in _TERMINAL_DISPUTE_STATUSES:
+            # The charge only says it was disputed; the recorded outcome is more precise.
+            status = known_status
+        if status == "unknown" and known_status:
+            return None
+        first_seen = status != known_status
+        created_at = _datetime_from_epoch(provider_object.get("created"))
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        payment_intent_evidence = provider_ref_evidence(raw_payment_intent_id, kind="payment_intent_id", config=self.config, provider=constants.STRIPE_PROVIDER_NAME)
+        charge_evidence = provider_ref_evidence(raw_charge_id, kind="charge_id", config=self.config, provider=constants.STRIPE_PROVIDER_NAME)
+        await _maybe_await(
+            self.db.record_purchase_event(
+                purchase_id=purchase_id,
+                history_id=f"bph-{uuid.uuid4().hex}",
+                user_id=user_id,
+                project_id=project_id,
+                billing_group_id=billing_group_id,
+                customer_id=_text_field(context, "customer_id"),
+                provider=constants.STRIPE_PROVIDER_NAME,
+                purchase_ref=purchase_ref,
+                checkout_ref=_text_field(context, "checkout_ref"),
+                status=status,
+                credit_product_code=_text_field(context, "credit_product_code"),
+                quantity=_int_field(context, "quantity", default=0) or None,
+                provider_payment_intent_id_ciphertext=payment_intent_evidence["ciphertext"] if payment_intent_evidence else None,
+                provider_payment_intent_id_hmac=payment_intent_evidence["hmac"] if payment_intent_evidence else None,
+                provider_payment_intent_id_fingerprint=payment_intent_evidence["fingerprint"] if payment_intent_evidence else None,
+                provider_charge_id_ciphertext=charge_evidence["ciphertext"] if charge_evidence else None,
+                provider_charge_id_hmac=charge_evidence["hmac"] if charge_evidence else None,
+                provider_charge_id_fingerprint=charge_evidence["fingerprint"] if charge_evidence else None,
+                provider_ref_key_id=(charge_evidence or payment_intent_evidence or {}).get("key_id"),
+                observed_at=now,
+                sync_source="api_pull",
+                # paid_at comes from Stripe; refund/dispute times are only known when first seen here.
+                paid_at=created_at if status != "pending" and status != "unknown" else None,
+                refunded_at=now if first_seen and "refund" in status else None,
+                disputed_at=now if first_seen and "dispute" in status else None,
+                stale_after=None,
+                reason="source_of_truth_resync",
+                safe_metadata={"sync_job_type": job.job_type, "classification_version": 2},
+            )
+        )
+        return None
+
+    @staticmethod
+    def _invalidate_user_sessions(user_id: str | None) -> None:
+        """Best-effort: drop the user's derived ``session_full:*`` entries so a repaired plan shows on
+        the next /auth/validate. Access sessions stay valid; a resync must not sign anyone out."""
+
+        if not user_id:
+            return
+        try:
+            from src.Util.cache_manager import cache_manager
+
+            cache_manager.invalidate_user_full_sessions(user_id)
+        except Exception as exc:
+            logger.debug("Session cache invalidation after billing resync skipped: %s", type(exc).__name__)
 
     def _client_for_job(self, job: billing_sync.ClaimedBillingSyncJob) -> StripeBillingClient | None:
         if self._client_injected:
@@ -494,12 +828,15 @@ class BillingSyncWorker:
     async def _finalize_sync_job(self, *, job: billing_sync.ClaimedBillingSyncJob, result: BillingSyncResult) -> BillingWorkerItemResult:
         result_status = str(result.status or billing_sync.SYNC_JOB_STATUS_COMPLETED).strip().lower()
         if result_status == billing_sync.SYNC_JOB_STATUS_COMPLETED:
-            await self._complete_job(job_id=job.job_id, status=billing_sync.SYNC_JOB_STATUS_COMPLETED)
+            # A no-op completion keeps its reason on the job row, as `sync_disabled_noop` does.
+            noop_reason = result.reason if result.reason in _NOOP_COMPLETION_REASONS else None
+            await self._complete_job(job_id=job.job_id, status=billing_sync.SYNC_JOB_STATUS_COMPLETED, last_error=noop_reason)
             return BillingWorkerItemResult(
                 status=billing_sync.SYNC_JOB_STATUS_COMPLETED,
                 job_id=job.job_id,
                 job_type=job.job_type,
                 provider=job.provider,
+                reason=_safe_error_text(result.reason) if result.reason else None,
                 safe_metadata=_safe_metadata(result.safe_metadata),
             )
 
@@ -587,8 +924,26 @@ class BillingSyncWorker:
             logger.warning("Billing sync job completion failed: %s", "completion_unavailable")
             return None
 
-    async def _operational_refs_for_job(self, *, job: billing_sync.ClaimedBillingSyncJob, row: Mapping[str, Any]) -> dict[str, EncryptedProviderRef]:
+    async def _operational_refs_for_job(
+        self,
+        *,
+        job: billing_sync.ClaimedBillingSyncJob,
+        row: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, EncryptedProviderRef]:
         refs: dict[str, EncryptedProviderRef] = {}
+
+        for name, ciphertext_name, key_id_name in (
+            ("customer", "provider_customer_id_ciphertext", "customer_provider_ref_key_id"),
+            ("subscription", "provider_subscription_id_ciphertext", "subscription_provider_ref_key_id"),
+            ("charge", "provider_charge_id_ciphertext", "purchase_provider_ref_key_id"),
+            ("payment_intent", "provider_payment_intent_id_ciphertext", "purchase_provider_ref_key_id"),
+        ):
+            ref = _context_ref(context or {}, ciphertext_name, key_id_name)
+            if ref is not None:
+                refs[name] = ref
+        if refs:
+            return refs
 
         for method_name in ("get_billing_operational_refs_for_sync_job", "get_operational_refs_for_billing_sync_job"):
             method = getattr(self.db, method_name, None)
@@ -616,6 +971,10 @@ class BillingSyncWorker:
         elif job.job_type in {billing_sync.JOB_TYPE_PURCHASE, billing_sync.JOB_TYPE_WEBHOOK_RESYNC}:
             purchase_refs = await self._purchase_refs_for_job(job)
             refs.update(purchase_refs)
+            if not refs and job.job_type == billing_sync.JOB_TYPE_WEBHOOK_RESYNC:
+                customer_ref = await self._customer_ref_for_job(job)
+                if customer_ref is not None:
+                    refs["customer"] = customer_ref
         return refs
 
     def _refs_from_mapping(self, row: Mapping[str, Any]) -> dict[str, EncryptedProviderRef]:

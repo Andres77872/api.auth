@@ -30,6 +30,7 @@ declare -A REAL_DB_ONLY_TARGETS=(
   ["tests/integration/test_oauth_real_db.py"]=1
   ["tests/integration/test_billing_real_db.py"]=1
   ["tests/integration/test_api_key_procedures_real_db.py"]=1
+  ["tests/integration/test_permission_resolution_real_db.py"]=1
   ["tests/integration/test_patreon_real_db.py"]=1
 )
 

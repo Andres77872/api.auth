@@ -46,6 +46,9 @@ def _event() -> VerifiedProviderEvent:
             "type": "customer.subscription.updated",
             "data": {
                 "object": {
+                    "id": "sub_test_group_route_1",
+                    "object": "subscription",
+                    "customer": "cus_test_group_route_1",
                     "metadata": {
                         "user_hash": "usrh_x",
                         "project_hash": "prjh_x",
@@ -90,6 +93,9 @@ async def test_path_scoped_webhook_threads_url_group_into_observe(monkeypatch):
         lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "meta-group"},
     )
     monkeypatch.setattr(module, "record_webhook_delivery", lambda **_: {"delivery_status": "accepted"})
+    monkeypatch.setattr(module, "resolve_event_scope", lambda **_: None)
+    # billing_subscriptions.customer_id is required: the event's Stripe customer is upserted first.
+    monkeypatch.setattr(module, "upsert_customer", lambda **_: {"customer_id": "bcustrow-1"})
 
     def _capture_observe(**kwargs: Any):
         captured.update(kwargs)
@@ -104,6 +110,7 @@ async def test_path_scoped_webhook_threads_url_group_into_observe(monkeypatch):
     assert resp.status_code == 200
     assert captured.get("billing_group_id") == "bg-url-1", captured
     assert captured.get("user_id") == "usr-1"
+    assert captured.get("customer_id") == "bcustrow-1"
     # never carries a project_id on the group-scoped subscription write
     assert "project_id" not in captured
 

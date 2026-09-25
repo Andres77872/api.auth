@@ -180,6 +180,7 @@ async def test_resync_required_webhook_persists_refs_and_enqueues_typed_subscrip
     captured: dict[str, Any] = {"observe": {}, "job": {}}
 
     monkeypatch.setattr(route_module, "resolve_user_billing_group", lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-1"})
+    monkeypatch.setattr(route_module, "resolve_event_scope", lambda **_: None)
     monkeypatch.setattr(route_module, "record_webhook_delivery", lambda **_: {"delivery_status": "accepted"})
     monkeypatch.setattr(route_module, "upsert_customer", lambda **_: {"customer_id": "bcust-1"})
     monkeypatch.setattr(route_module, "_invalidate_user_sessions", lambda *_args, **_kwargs: None)

@@ -30,6 +30,14 @@ PATCH_FILES = (
     # OAuth catalog/connections/bindings. Listed before the procedure and trigger files:
     # the external-account triggers validate the provider against oauth_provider_catalog.
     "tables/13_oauth_connections.sql",
+    "tables/14_assistant.sql",
+    # sp_delete_user: reported the memberships update's ROW_COUNT, so deleting a user
+    # without active group memberships looked like a failure.
+    "stored_procedures/01_user_management.sql",
+    # Permission resolvers: soft-deleted roles, permission groups and user groups used to
+    # keep granting (sp_global_get_user_permissions, sp_get_user_all_permissions, ...).
+    "stored_procedures/05_global_roles.sql",
+    "stored_procedures/06_permission_assignments.sql",
     # sp_update_api_key: keys without an expiry used to be reported as "API key not found".
     "stored_procedures/13_api_keys.sql",
     "stored_procedures/14_email_activation.sql",
@@ -39,6 +47,9 @@ PATCH_FILES = (
     "stored_procedures/17_billing_provider_facts.sql",
     "stored_procedures/18_billing_groups.sql",
     "stored_procedures/19_oauth_connections.sql",
+    # api_key_expired when sp_cleanup_expired_api_keys deactivates a key.
+    "triggers/03_api_key_activity_triggers.sql",
+    # email_message_enqueued / email_message_dead_lettered from the outbox row.
     "triggers/04_email_activation_triggers.sql",
     "triggers/05_external_accounts_triggers.sql",
     "triggers/06_patreon_entitlements_triggers.sql",

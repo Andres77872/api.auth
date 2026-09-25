@@ -84,6 +84,25 @@ class TestGetAuditLogs:
         assert result[0]["http_method"] == "GET"
         assert result[0]["username"] == "adminuser"
         assert result[0]["project_name"] == "Test Project"
+        assert result[0]["session_id"] == "sess-1"
+
+    @patch("src.Util.db.db_audit_analytics.get_connection")
+    def test_masks_legacy_access_token_prefix_in_session_id(self, mock_get_conn):
+        # Rows written before the fix stored the first 256 chars of the bearer JWT.
+        from src.Util.JWT_Security import JWTTokenHandler
+
+        token = JWTTokenHandler.create_access_token("sess-legacy", "usr-hash-1", "prj-hash-1")
+        legacy_row = ("audit-legacy", "req-1", "GET", "/users/profile", None,
+                      "usr-1", "consumer", token[:256]) + (None,) * 25
+        cur = _make_mock_cursor(fetchall_rows=[legacy_row])
+        mock_get_conn.return_value = _make_mock_connection(cur)
+
+        result = get_audit_logs()
+
+        stored = result[0]["session_id"]
+        assert stored.startswith("tokhash:")
+        assert token[:40] not in stored
+        assert "." not in stored
 
 
 # ─── count_audit_logs ───────────────────────────────────────────────────────

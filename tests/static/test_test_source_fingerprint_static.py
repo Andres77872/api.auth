@@ -43,6 +43,7 @@ def test_declares_the_complete_source_and_root_config_scope():
         ".coveragerc",
         "pytest.ini",
         "requirements.txt",
+        "requirements-assistant.txt",
         "requirements-test.txt",
         "Dockerfile",
         "Dockerfile.e2e",

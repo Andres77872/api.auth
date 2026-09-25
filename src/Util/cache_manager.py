@@ -114,7 +114,12 @@ class CacheManager:
             except Exception:
                 continue
 
-        # Phase 2.1c: Also scan and invalidate full-session cache keys
+        # Phase 2.1c: Also invalidate full-session cache keys
+        return invalidated_count + self.invalidate_user_full_sessions(user_id)
+
+    def invalidate_user_full_sessions(self, user_id: str) -> int:
+        """Drop the user's derived ``session_full:*`` entries; the access sessions stay valid."""
+        invalidated_count = 0
         for key in self._iter_keys(f"{SESSION_FULL_PREFIX}*", count=100):
             try:
                 raw = self.redis.get(key)
@@ -612,11 +617,17 @@ class CacheManager:
 
     def invalidate_user_cache(self, user_id: str) -> bool:
         """
-        Invalidate all cache entries for a specific user including their sessions
-        
+        Invalidate the derived cache entries for a specific user.
+
+        Drops access/permission/user-type/user-info entries and the user's
+        ``session_full:*`` validation cache. The ``session:*`` access-session records
+        are authoritative auth state, not cache, and are kept: a profile or password
+        change must not sign the user out. Revoke sessions explicitly with
+        ``invalidate_user_sessions`` or ``auth_lifecycle.revoke_user_auth_state``.
+
         Args:
             user_id: User ID
-            
+
         Returns:
             Success status
         """
@@ -633,8 +644,8 @@ class CacheManager:
             for pattern in patterns:
                 deleted_count += self._delete_pattern(pattern)
             
-            # Also invalidate all sessions for this user
-            deleted_count += self.invalidate_user_sessions(user_id)
+            # Rebuild validated sessions from fresh data; the sessions themselves stay valid
+            deleted_count += self.invalidate_user_full_sessions(user_id)
 
             logger.info(f"Invalidated {deleted_count} cache entries for user_{user_id}")
             return True

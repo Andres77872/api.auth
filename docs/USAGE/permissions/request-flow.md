@@ -1,196 +1,111 @@
-# Permissions Request and Data Flow
+# Permissions request flow
 
-End-to-end runtime flows for how the permissions system behaves in `api.auth`.
+What happens to a `/permissions` request, from the token to the stored procedure. What the resolved
+permissions mean is in [Permission resolution](resolution.md).
 
----
+## Authenticating the request
 
-## Flow 1: Session Validation Before Authorization
+Every route in the suite starts the same way.
 
-```
-CLIENT REQUEST
-  └─► Authorization header or `session_token` cookie
-        └─► HTTPBearerOrCookie
-              └─► validate_session(access_token)
-                    ├─► access JWT signature/exp/type/claim checks
-                    ├─► Redis `session:{access_jti}` + `refresh_family:{family_id}` checks
-                    ├─► derived `session_full:{access_jti}` cache only after lifecycle checks
-                    └─► user-type-specific reconstruction
-```
+1. The app middleware runs first (request validation, API audit logging, auth context). The
+   auth-context middleware only records the caller on `request.state`; it never rejects.
+2. `HTTPBearerOrCookie` takes the token from `Authorization: Bearer ...`, else from the
+   `session_token` cookie. No token: `401`. `X-API-Key` is not read.
+3. `validate_session(token)` hands a JWT to `validate_access_session`:
+   1. decode the access token (signature, expiry, `type`, required claims);
+   2. load `session:{access_jti}` from Redis and match it against the claims;
+   3. require the refresh family to be active;
+   4. `reconstruct_auth_context`: user still exists and is active, session project still active and
+      not archived, and for a consumer, still reaches that project through a user group; consumer
+      permissions are recomputed from the role;
+   5. return `session_full:{access_jti}` if cached (`VALIDATE_CACHE_TTL`, default `30` seconds),
+      otherwise build and cache it.
 
-### What happens next
+   Any failure: `401` `AUTH_1003`.
 
-- **root**: global access session
-- **admin**: project assignment validated for current project context
-- **consumer**: current project membership is rechecked and role-derived permissions are rebuilt
-
-If validation fails, the route usually returns an auth error before any permission logic even starts.
-
----
-
-## Flow 2: Extended Permission Check (`/permissions/users/me/permissions/check/{name}`)
-
-This endpoint checks the three-source union.
-
-```
-GET /permissions/users/me/permissions/check/{permission_name}
-  └─► permission_assignments.require_valid_session
-        └─► check_user_has_permission_extended(user_id, permission_name)
-              └─► sp_check_user_has_permission_extended
-                    ├─► permission groups from the caller's role
-                    ├─► permission groups from user groups the caller directly belongs to
-                    └─► permission groups directly assigned to the caller
-                          └─► has_permission: true if any source grants it
+```text
+request ─► middleware ─► HTTPBearerOrCookie ─► validate_session
+                                                 └─ validate_access_session
+                                                      ├─ JWT checks
+                                                      ├─ Redis session + refresh family
+                                                      ├─ reconstruct_auth_context (DB)
+                                                      └─ session_full:{jti} cache (30 s)
+        ─► require_valid_session | require_admin ─► handler ─► stored procedure ─► JSON
 ```
 
-### What to expect
+## Admin guard
 
-- there is no root/admin bypass: the answer comes only from the three sources
-- like `GET /permissions/users/me/permissions`, the procedure does not check
-  whether the role, permission group, or user group itself is soft-deleted, so
-  a permission reachable only through one of those can still count
-- use `/permission-sources` to see which source granted the permission (it
-  skips soft-deleted roles and groups, so it can list fewer sources)
+`require_admin` in `src/routes/permission_assignments.py` runs after validation:
 
----
+1. Load the caller with `get_user_by_hash`.
+2. User type `root` or `admin`: pass. There is no project-scope check.
+3. Otherwise call `check_user_has_permission_extended(user_id, "manage_roles")`, which runs
+   `sp_check_user_has_permission_extended` over role, direct user-group membership, and direct
+   assignments, following only active roles, user groups, permission groups, links, and permissions.
+   `false`, or an error during the check: `403` `AUTHZ_2002`.
 
-## Flow 3: Writing Through the `/roles` API
+The guard is a FastAPI dependency, so it runs before any path lookup.
 
-Example: create a role or permission group.
+## Assigning a permission group
 
-```
-POST /roles/roles
-  └─► global_roles.require_admin
-        ├─► valid session required
-        ├─► allow if user_type in {root, admin}
-        └─► otherwise check `manage_roles` through role-only resolver
-              └─► db_global_roles.check_user_has_permission
-                    └─► sp_global_check_user_has_permission
-```
+Example: `POST /permissions/admin/user-groups/{group_hash}/permission-groups`.
 
-After the guard passes:
+1. Guard as above.
+2. `get_user_group_by_hash` (`sp_get_user_group_by_hash`, active groups only). Missing: `404`
+   `NF_4003`.
+3. `db_global_roles.get_permission_group_by_hash` (`sp_global_get_permission_group_by_hash`, active
+   groups only). Missing: `404` `NF_4011`.
+4. `_require_root_for_reserved`: unless `is_root_user(caller)` (live user type), a group containing a
+   reserved permission name (active permissions only, `src/Util/admin_scope.py`) gives `403`
+   `AUTHZ_2002`. The removal routes run the same check.
+5. `sp_assign_permission_group_to_user_group` inserts into `user_group_permission_groups`, or on the
+   unique key `(user_group_id, permission_group_id)` re-activates the row and resets
+   `assigned_at`/`assigned_by`.
+6. On a first insert, trigger `trg_after_ugpermg_insert` writes an `activity_logs` row.
+7. `200` with the user group and permission group.
 
-- route resolves referenced user/role/group records
-- DB layer calls stored procedures in `05_global_roles.sql`
-- write succeeds or raises conflict/not-found/internal errors
+No cache is invalidated: the assignment is not part of any auth-time set.
 
-### Caveat
+The direct-user variant resolves the target with `get_user_by_hash` (active users only, `404`
+`NF_4001`) and calls `sp_assign_permission_group_to_user`, which also overwrites `notes`. Removals call
+`sp_remove_permission_group_from_user_group` or `sp_remove_permission_group_from_user`, which set
+`is_active = FALSE`, `removed_at`, and `removed_by` on an active row; the route answers `200` whether
+or not a row matched.
 
-This flow does **not** use the extended permission union for consumer admin access. It is narrower.
+## Bulk assignment
 
----
+`POST /permissions/admin/user-groups/{group_hash}/permission-groups/bulk`:
 
-## Flow 4: Writing Through the `/permissions` Admin API
+1. Guard, then resolve the user group (`404` `NF_4003` stops the request).
+2. Look up every distinct hash. Non-root caller and any group containing a reserved permission name:
+   `403` `AUTHZ_2002` with `details.permission_group_hashes`, nothing written.
+3. For each `permission_group_hashes` value, in order: if the group was not found, record
+   `success: false`; otherwise run the single-assignment procedure. An exception is caught and
+   recorded as that item's `error`.
+4. `200` with `results`, `success_count`, and `total_count`. Items are committed one by one; there
+   is no rollback.
 
-Example: assign a permission group to a user group.
+## Inspecting your own permissions
 
-```
-POST /permissions/admin/user-groups/{group_hash}/permission-groups
-  └─► permission_assignments.require_admin
-        ├─► valid session required
-        ├─► allow if user_type in {root, admin}
-        └─► otherwise check `manage_roles` through the extended resolver
-              └─► check_user_has_permission_extended
-                    └─► sp_check_user_has_permission_extended
-                          └─► role, user-group, or direct assignment
-```
+| Route | Path through the code |
+| --- | --- |
+| `GET /permissions/users/me/permissions` | `require_valid_session` → `get_user_all_permissions` → `sp_get_user_all_permissions` |
+| `GET /permissions/users/me/permissions/check/{permission_name}` | `require_valid_session` → `check_user_has_permission_extended` → `sp_check_user_has_permission_extended` |
+| `GET /permissions/users/me/permission-sources` | `require_valid_session` → `get_user_permission_sources` → `sp_get_user_permission_sources`, then grouped by `source_type` in Python |
+| `GET /permissions/users/me/permission-groups` | `require_valid_session` → `get_user_permission_groups` → `sp_get_user_permission_groups` |
 
-After the guard passes:
+Each reads the database directly for the caller's `user_hash`; nothing is cached.
 
-1. resolve user group by hash
-2. resolve permission group by hash
-3. call `assign_permission_group_to_user_group(...)`
-4. stored procedure writes to `user_group_permission_groups`
+## Catalog writes
 
-This is the main team-scale assignment path for root/admin callers.
+`POST /permissions/projects/{project_hash}/permission-group-catalog/{pg_hash}`:
 
----
+1. Guard.
+2. `get_project_by_hash` (active projects only; archived projects pass). Missing: `404` `NF_4002`.
+3. Permission-group lookup. Missing: `404` `NF_4011`.
+4. `sp_add_permission_group_to_project_catalog` inserts into `permission_group_project_catalog`, or
+   re-activates the row, keeping stored `catalog_purpose`/`notes` where the new value is `NULL`.
+5. `200` with a `note` that the catalog is metadata only.
 
-## Flow 5: Current-User Effective Permission Listing
-
-```
-GET /permissions/users/me/permissions
-  └─► require_valid_session
-        └─► get_user_all_permissions(user_id)
-              └─► sp_get_user_all_permissions
-                    ├─► permissions from role-linked groups
-                    ├─► permissions from user-group-linked groups
-                    └─► permissions from direct-user-linked groups
-```
-
-The output is a deduplicated list of permission names.
-
-Use this flow when you want the operational answer to: _what can this user actually do right now according to the DB?_ 
-
----
-
-## Flow 6: Permission Source Breakdown
-
-```
-GET /permissions/users/me/permission-sources
-  └─► get_user_permission_sources(user_id)
-        └─► sp_get_user_permission_sources
-              ├─► role source rows
-              ├─► user-group source rows
-              └─► direct source rows
-```
-
-The route groups the result into:
-
-- `from_role`
-- `from_user_groups`
-- `from_direct_assignment`
-
-This is your best audit endpoint when an operator says, “why does this user have that permission?”
-
----
-
-## Flow 7: Session Refresh / Re-login After Changes
-
-```
-permission or group assignment changes
-  └─► DB state updated
-        ├─► some request paths see fresh state immediately
-        └─► some access-token/session-derived views still reflect prior login context
-              ├─► POST /auth/refresh with refresh_token cookie/body
-              ├─► POST /auth/switch-project with access token + current refresh token
-              └─► POST /auth/login again
-```
-
-### Practical meaning
-
-- self-query endpoints under `/permissions/users/me/...` are the best live verification paths
-- `/auth/validate` reflects the validated access session payload such as cached `user_group_names`
-- after major RBAC or group changes, refresh with the refresh token or re-login is the safe operator move
-
----
-
-## Flow 8: Catalog Metadata Flow
-
-Example: add a permission group to a project catalog.
-
-```
-POST /permissions/projects/{project_hash}/permission-group-catalog/{pg_hash}
-  └─► admin guard
-        └─► resolve project + permission group
-              └─► write metadata row in permission_group_project_catalog
-```
-
-That flow does **not** touch:
-
-- `user_group_permission_groups`
-- `user_permission_groups`
-- `role_permission_groups`
-- `global_permission_group_permissions`
-
-So it changes **documentation metadata**, not authorization.
-
----
-
-## Related Documentation
-
-- **[Permissions Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+`DELETE` runs `sp_remove_permission_group_from_project_catalog` and always answers `200`. No
+assignment table is touched by either.

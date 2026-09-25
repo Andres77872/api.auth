@@ -97,6 +97,13 @@ SENSITIVE_FIELD_FRAGMENTS = frozenset(
 )
 HOSTED_BILLING_URL_FIELDS = frozenset({"url", "checkout_url", "portal_url", "hosted_url"})
 HOSTED_BILLING_URL_PREFIXES = ("https://checkout.stripe.com/", "https://billing.stripe.com/")
+# Public identifiers that S2S callers send and must get back verbatim. Project and billing
+# group hashes are 64-hex tokens, which the text sanitizer would otherwise mask.
+BILLING_PUBLIC_IDENTIFIER_FIELDS = frozenset({"user_hash", "project_hash", "billing_group_hash"})
+PUBLIC_IDENTIFIER_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
+# Admin-authored JSON returned to consumers as-is. Its key names are consumer vocabulary
+# (a `card` or `secret_level` feature is legitimate), so only its values are sanitized.
+BILLING_OPAQUE_CONSUMER_FIELDS = frozenset({"features"})
 
 
 class BillingRedactionError(RuntimeError):
@@ -118,6 +125,34 @@ def _is_hosted_billing_url(key: Any, value: Any) -> bool:
     normalized = _normalize_field_name(key)
     text = str(value or "")
     return normalized in HOSTED_BILLING_URL_FIELDS and text.startswith(HOSTED_BILLING_URL_PREFIXES)
+
+
+def _is_public_identifier(key: Any, value: Any) -> bool:
+    if _normalize_field_name(key) not in BILLING_PUBLIC_IDENTIFIER_FIELDS or not isinstance(value, str):
+        return False
+    return bool(
+        PUBLIC_IDENTIFIER_VALUE_RE.match(value)
+        and not RAW_STRIPE_ID_RE.search(value)
+        and not RAW_STRIPE_SECRET_RE.search(value)
+    )
+
+
+def _is_opaque_consumer_field(key: Any) -> bool:
+    return _normalize_field_name(key) in BILLING_OPAQUE_CONSUMER_FIELDS
+
+
+def _redact_opaque_values(value: Any) -> Any:
+    """Sanitize every string value of opaque consumer JSON, keeping its key names."""
+
+    if isinstance(value, Mapping):
+        return {key: _redact_opaque_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_opaque_values(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_opaque_values(item) for item in value)
+    if isinstance(value, str):
+        return sanitize_billing_sensitive_text(value)
+    return value
 
 
 def sanitize_billing_sensitive_text(value: Any) -> str:
@@ -155,8 +190,10 @@ def redact_billing_sensitive_data(value: Any, *, _key: Any = None) -> Any:
         for key, item in value.items():
             if is_billing_sensitive_field(key):
                 redacted[key] = REDACTED
-            elif _is_hosted_billing_url(key, item):
+            elif _is_hosted_billing_url(key, item) or _is_public_identifier(key, item):
                 redacted[key] = item
+            elif _is_opaque_consumer_field(key) and isinstance(item, (Mapping, list, tuple)):
+                redacted[key] = _redact_opaque_values(item)
             else:
                 redacted[key] = redact_billing_sensitive_data(item, _key=key)
         return redacted
@@ -193,7 +230,7 @@ def _iter_mapping_items(value: Any):
             yield key, item
 
 
-def _contains_raw_provider_text(value: Any) -> bool:
+def _contains_raw_provider_text(value: Any, *, check_keys: bool = True) -> bool:
     if isinstance(value, str):
         return bool(
             RAW_STRIPE_ID_RE.search(value)
@@ -201,9 +238,13 @@ def _contains_raw_provider_text(value: Any) -> bool:
             or STRIPE_SIGNATURE_VALUE_RE.search(value)
         )
     if isinstance(value, Mapping):
-        return any(_contains_raw_provider_text(item) or is_billing_sensitive_field(key) for key, item in value.items())
+        return any(
+            _contains_raw_provider_text(item, check_keys=check_keys and not _is_opaque_consumer_field(key))
+            or (check_keys and is_billing_sensitive_field(key))
+            for key, item in value.items()
+        )
     if isinstance(value, (list, tuple, set)):
-        return any(_contains_raw_provider_text(item) for item in value)
+        return any(_contains_raw_provider_text(item, check_keys=check_keys) for item in value)
     return False
 
 
@@ -211,6 +252,11 @@ def assert_billing_dto_is_safe(value: Any) -> None:
     for key, item in _iter_mapping_items(value) or ():
         if is_billing_sensitive_field(key):
             raise BillingRedactionError("billing DTO contains forbidden provider field")
+        if _is_opaque_consumer_field(key):
+            # Consumer vocabulary: key names are not provider fields, values still must not be.
+            if _contains_raw_provider_text(item, check_keys=False):
+                raise BillingRedactionError("billing DTO contains forbidden provider data")
+            continue
         if _contains_raw_provider_text(item):
             raise BillingRedactionError("billing DTO contains forbidden provider data")
         if isinstance(item, Mapping):
@@ -241,6 +287,8 @@ def scrub_billing_metric_label(value: Any) -> str:
 
 __all__ = [
     "BILLING_FORBIDDEN_RESPONSE_FIELD_NAMES",
+    "BILLING_OPAQUE_CONSUMER_FIELDS",
+    "BILLING_PUBLIC_IDENTIFIER_FIELDS",
     "BillingRedactionError",
     "NORMALIZED_BILLING_FORBIDDEN_RESPONSE_FIELD_NAMES",
     "RAW_STRIPE_ID_RE",

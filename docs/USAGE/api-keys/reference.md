@@ -1,147 +1,234 @@
-# API Keys Endpoint and Operational Reference
+# API keys reference
 
-Reference for the API key surface in `api.auth`. API version `2.2.0`. Every request must send a
-`User-Agent` header (missing → `422`). All write endpoints take **form fields**
-(`application/x-www-form-urlencoded`). In every path, `{key_id}` is the key's **`public_id`**.
+The contract for the API key routes. Rules shared by the whole suite (auth, recent
+authentication, form bodies, expiry) are in [README.md](README.md#rules-and-caveats).
 
-Source files: `src/routes/user_api_keys.py`, `src/routes/api_keys.py`, `src/Util/api_key_security.py`.
+## Self-service endpoints
 
----
+Prefix `/users/api-keys`, dependency `verify_session`. Every route checks ownership; a key owned by
+someone else returns `404` `NF_4010`.
 
-## Self-Service Endpoints (`/users/api-keys`)
+| Path | Method | Recent auth | Input | Purpose |
+| --- | --- | --- | --- | --- |
+| `/users/api-keys` | POST | Yes | Form: [create fields](#create-fields) without `user_hash` | Create a key owned by the caller; returns the token once |
+| `/users/api-keys` | GET | No | Query: [list parameters](#list-parameters) | List the caller's keys |
+| `/users/api-keys/{key_id}` | GET | No | Path only | Get one of the caller's keys |
+| `/users/api-keys/{key_id}` | PUT | Yes | Form: [update fields](#update-fields) | Change name, description or expiry |
+| `/users/api-keys/{key_id}` | DELETE | Yes | No body | Revoke one of the caller's keys |
 
-Auth dependency: `verify_session` (any authenticated user). Authorization is **ownership-only** —
-a non-owned key returns `404 API_KEY_NOT_FOUND`.
+## Admin endpoints
 
-| Endpoint | Method | Step-up | Content Type | Params | Purpose |
-|----------|--------|---------|--------------|--------|---------|
-| `/users/api-keys` | POST | **Yes** | Form | `project_hash` (req), `name?`, `description?`, `expires_at?` | Create a key for the caller's own account; returns one-time `data.api_key` |
-| `/users/api-keys` | GET | No | Query | `project_hash?`, `active_only?` (def `false`), `limit?` (1–200, def `50`), `offset?` (≥0) | List the caller's own keys |
-| `/users/api-keys/{key_id}` | GET | No | - | path `key_id` (public_id) | Get one of the caller's own keys |
-| `/users/api-keys/{key_id}` | PUT | **Yes** | Form | `name?`, `description?`, `expires_at?` (≥1 required) | Update own key; extending `expires_at` reactivates an expired key |
-| `/users/api-keys/{key_id}` | DELETE | **Yes** | - | path `key_id` (public_id) | Revoke own key; immediate Redis cache invalidation (no `revoke_reason`) |
+Prefix `/api-keys`, dependency `verify_admin_access`. Root may act on any key. An admin must
+administer the key's project (`403` `AUTHZ_2001` otherwise).
 
----
+| Path | Method | Recent auth | Input | Purpose |
+| --- | --- | --- | --- | --- |
+| `/api-keys` | POST | Yes | Form: [create fields](#create-fields) | Create a key owned by `user_hash`; returns the token once |
+| `/api-keys` | GET | No | Query: `user_hash`, `project_hash`, [list parameters](#list-parameters) | List keys by user and/or project ([filter rules](#admin-list-filters)) |
+| `/api-keys/{key_id}` | GET | No | Path only | Get any key in scope, with project and owner details |
+| `/api-keys/{key_id}` | PUT | Yes | Form: [update fields](#update-fields) | Change name, description or expiry. No `manage_users` check. |
+| `/api-keys/{key_id}` | DELETE | Yes | Form: optional `revoke_reason` | Revoke any key in scope |
+| `/api-keys/users/{user_hash}` | GET | No | Query: [list parameters](#list-parameters) | List one user's keys |
+| `/api-keys/projects/{project_hash}` | GET | No | Query: [list parameters](#list-parameters) | List one project's keys |
 
-## Admin Endpoints (`/api-keys`)
+## Validation endpoint
 
-Auth dependency: `verify_admin_access` (root **or** admin). Root is unrestricted; admins are scoped
-to projects they administer via `check_admin_project_access`, and need the `manage_users` effective
-permission to act on **other** users' keys (self-service always allowed).
+| Path | Method | Auth | Purpose |
+| --- | --- | --- | --- |
+| `/auth/validate-api-key` | POST | `X-API-Key: sk_{public_id}.{secret}`; no `Authorization` header | Resolve a key to its owner context |
 
-| Endpoint | Method | Step-up | Content Type | Params | Purpose |
-|----------|--------|---------|--------------|--------|---------|
-| `/api-keys` | POST | **Yes** | Form | `user_hash` (req), `project_hash` (req), `name?`, `description?`, `expires_at?` | Create a key on behalf of a user; returns one-time `data.api_key` |
-| `/api-keys` | GET | No | Query | `user_hash?`, `project_hash?`, `active_only?`, `limit?` (1–200, def `50`), `offset?` | List keys in scope; **root must supply `user_hash` or `project_hash`** |
-| `/api-keys/{key_id}` | GET | No | - | path `key_id` (public_id) | Get a key by `public_id`; admin must have project scope |
-| `/api-keys/{key_id}` | PUT | **Yes** | Form | `name?`, `description?`, `expires_at?` (≥1 required) | Update a key; extending `expires_at` reactivates an expired key |
-| `/api-keys/{key_id}` | DELETE | **Yes** | Form | `revoke_reason?` (optional) | Revoke a key; immediate Redis cache invalidation |
-| `/api-keys/users/{user_hash}` | GET | No | Query | path `user_hash`; `active_only?`, `limit?`, `offset?` | List all keys for one user (admin must share a project) |
-| `/api-keys/projects/{project_hash}` | GET | No | Query | path `project_hash`; `active_only?`, `limit?`, `offset?` | List all keys for one project (admin must administer it) |
+The response (`ValidateApiKeyResponse`) has `success`, `valid`, `auth_method` (`"api_key"`),
+`user` (`user_hash`, `username`, `email`, `user_type`), `project` (`project_hash`,
+`project_name`), `api_key` (`key_id`, `public_id`), `user_groups[]`, `permissions[]` and, for
+consumer owners, `plan`. The key and secret are never echoed. The header `X-Auth-Process-Time`
+carries the handling time in milliseconds.
 
----
+Failures use the standard error envelope. `error.code` is the generic code for the status
+(`VAL_3001`, `AUTH_1003` or `AUTHZ_2001`); the specific reason is in `error.message`:
 
-## Validation Endpoint (cross-link — owned by the auth suite)
+| Status | `error.message` | Cause |
+| --- | --- | --- |
+| `400` | `ambiguous_credentials` | Both `Authorization` and `X-API-Key` were sent |
+| `401` | `Missing API key` | No `X-API-Key` header |
+| `401` | `Malformed API key: AUTH_1010` | Not `sk_{public_id}.{secret}` |
+| `401` | `API key not found: NF_4010` | Unknown `public_id` |
+| `401` | `Invalid API key: AUTH_1010` | The secret does not match |
+| `401` | `API key has been revoked: AUTH_1012` | `is_active` is false |
+| `401` | `API key has expired: AUTH_1011` | Past `expires_at` |
+| `401` | `API key owner is inactive: AUTH_1010` | The owner account is deactivated |
+| `403` | `API key owner lost project access: AUTHZ_2008` | The owner no longer reaches the project |
 
-| Endpoint | Method | Auth | Content Type | Purpose |
-|----------|--------|------|--------------|---------|
-| `/auth/validate-api-key` | POST | `X-API-Key` header (no session/JWT) | - | Validate a raw key; returns owner identity, project, groups, permissions |
+Permissions are resolved live: root owners get `admin` and `global_admin`; admin owners get `admin`
+and `project_admin` while they administer the project; consumers get their group names and
+global-role permissions. A valid result is cached in Redis under `apikey:{public_id}` for `60`
+seconds. The entry holds the key's `secret_hash`, never the secret, and a cache hit is used only
+after the presented secret matches it; a wrong secret, or an entry without a hash, goes through
+the full database check. Full walkthrough:
+[Authentication usage cases](../authentication-usage-cases.md#validate-an-api-key).
 
-- Send the raw token in the `X-API-Key` request header — **not** `Authorization: Bearer`.
-- Sending **both** `Authorization` and `X-API-Key` → `400` with detail `ambiguous_credentials`.
-- Response model `ValidateApiKeyResponse`: `success`, `valid`, `auth_method` (`"api_key"`),
-  `user` (`UserInfo`), `project` (`ProjectInfo`, may be `null`), `api_key`
-  (`ApiKeyInfo` → `key_id`, `public_id`), `user_groups[]`, `permissions[]`. The raw key and secret
-  are never echoed.
-- Full documentation: **[Authentication Usage Cases](../authentication-usage-cases.md)**.
+## Request fields
 
----
+### Create fields
 
-## Response Envelope
+| Field | Required | Default | Notes |
+| --- | --- | --- | --- |
+| `user_hash` | Admin route only, yes | — | Owner of the new key |
+| `project_hash` | Yes | — | Project the key is scoped to. Self-service: the caller must reach it (root: any active project). |
+| `name` | No | Self-service: `API Key - YYYY-MM-DD` (UTC date). Admin: `API Key - {owner username}` | Up to 100 characters |
+| `description` | No | `null` | Free text |
+| `expires_at` | No | Never expires | ISO 8601 in the future; no timezone means UTC |
 
-All owning endpoints return the standard envelope:
+### Update fields
+
+Send at least one of `name`, `description`, `expires_at`; otherwise `400` `VAL_3001`. An empty
+value counts as absent, so a field cannot be cleared. `expires_at` must be in the future. A
+future `expires_at` on an expired key makes it usable again (the trigger logs
+`api_key_reactivated` when the key had been deactivated). A revoked key cannot be updated
+(`400` `AUTH_1012`).
+
+### Revoke field
+
+| Field | Route | Notes |
+| --- | --- | --- |
+| `revoke_reason` | `DELETE /api-keys/{key_id}` only | Optional, up to 255 characters. Stored on the key and in the `api_key_revoked` activity row. |
+
+### List parameters
+
+| Parameter | Default | Range | Notes |
+| --- | --- | --- | --- |
+| `limit` | `50` | 1–200 | Page size |
+| `offset` | `0` | ≥ 0 | Keys to skip |
+| `active_only` | `false` | — | Keep keys with `is_active: true`. Ignored by `GET /api-keys/users/{user_hash}` and by `GET /api-keys` with `user_hash`. |
+| `project_hash` | — | — | `GET /users/api-keys` only: keep keys of this project |
+
+Results are ordered newest first.
+
+### Admin list filters
+
+`GET /api-keys` chooses its source from the filters:
+
+| Filters | Result |
+| --- | --- |
+| `user_hash` and `project_hash` | That user's keys in that project. Admin must administer the project. |
+| `user_hash` only | That user's keys; for an admin, only keys in projects they administer. The user must reach at least one of those projects (`403` `AUTHZ_2001` otherwise). |
+| `project_hash` only | That project's keys. Admin must administer the project. |
+| Neither, root caller | `400` `VAL_3001` "Root users must provide at least user_hash or project_hash filter" |
+| Neither, admin caller | Each administered project is read with the same `limit` and `offset`, the pages are concatenated and cut to `limit`; `total` is the sum of the project totals |
+
+## Responses
+
+All routes return `{"success": true, "message": "...", "data": {...}}`.
+
+### Key object
+
+`data` on create, get and update; each item of `data.keys` on lists. Built by
+`_format_key_response`; `secret_hash` is never included.
+
+| Field | Notes |
+| --- | --- |
+| `id` | Same value as `public_id` |
+| `public_id` | Use as `{key_id}` |
+| `name`, `description` | Labels |
+| `project_id`, `owner_user_id` | Internal IDs |
+| `is_active` | `false` after revocation, or within 5 minutes of `expires_at` passing, when the expiry sweep deactivates the key |
+| `expires_at` | `null` means the key never expires |
+| `last_used_at` | Set by `sp_validate_api_key` when the key passes its state checks (before the secret is compared); cache hits do not update it |
+| `created_at`, `updated_at` | Timestamps |
+| `revoked_at`, `revoke_reason` | Set by revocation |
+| `fingerprint` | First 6 bytes of `BLAKE2s(token)` as 12 hex characters |
+| `secret_last4` | Last 4 characters of the secret |
+| `hash_algorithm` | `hmac-sha256-v1` |
+| `api_key` | Create response only: the full `sk_{public_id}.{secret}` token |
+
+The create response omits values the insert does not return, so `last_used_at`, `updated_at`,
+`revoked_at` and `revoke_reason` are `null` there.
+
+Admin routes add the enrichment columns their procedure returns:
+
+| Route | Extra fields per key |
+| --- | --- |
+| `GET /api-keys/{key_id}` | `project_name`, `project_hash`, `owner_username`, `owner_user_hash`, `owner_user_type` |
+| `GET /api-keys/projects/{project_hash}`, `GET /api-keys` with `project_hash` only or no filter | `project_name`, `project_hash`, `owner_username`, `owner_user_hash` |
+| `GET /api-keys/users/{user_hash}`, `GET /api-keys` with `user_hash` | `project_name`, `project_hash` |
+
+### List payload
 
 ```json
 {
   "success": true,
-  "message": "API key created successfully",
-  "data": { "...": "..." }
+  "message": "API keys retrieved successfully",
+  "data": { "keys": [], "total": 0, "limit": 50, "offset": 0 }
 }
 ```
 
-### Per-key object (`data` on single-key calls; `data.keys[]` items on lists)
+`GET /api-keys/users/{user_hash}` adds `data.user_hash` and `data.username`.
+`GET /api-keys/projects/{project_hash}` adds `data.project_hash` and `data.project_name`.
 
-Built by `_format_key_response`. Always present:
+How `total` is counted differs by route:
 
-| Field | Notes |
-|-------|-------|
-| `id` | Numeric DB id |
-| `public_id` | The ~12-char base64url id — used as `{key_id}` in paths |
-| `name` | Label |
-| `description` | Free text |
-| `project_id` | Owning project (numeric) |
-| `owner_user_id` | Key owner (numeric) |
-| `is_active` | bool |
-| `expires_at` | ISO 8601 or `null` |
-| `last_used_at` | ISO 8601 or `null` |
-| `created_at` / `updated_at` | timestamps |
-| `revoked_at` / `revoke_reason` | set after revocation (`revoke_reason` admin-only) |
-| `fingerprint` | 12-hex BLAKE2s fingerprint of the full token |
-| `secret_last4` | last 4 chars of the secret, for confirmation |
-| `hash_algorithm` | `hmac-sha256-v1` |
+| Route | `total` |
+| --- | --- |
+| `GET /users/api-keys` without filters | All keys the caller owns |
+| `GET /users/api-keys` with `project_hash` or `active_only` | Only the matching keys **on the fetched page**. Filters run after `limit`/`offset`, so a page can be short even when more matches exist. |
+| Admin routes with `user_hash` | Every matching key the caller may see (filtering happens before paging) |
+| Admin project routes | All keys of the project that match `active_only` |
 
-Admin list/detail responses additionally surface enrichment columns when the stored procedures
-join them in: `project_name`, `project_hash`, `owner_username`, `owner_user_hash`,
-`owner_user_type`.
+### Revoke response
 
-**One-time token:** `api_key` (the full `sk_{public_id}.{secret}`) is present **only** in the
-`POST` create response (`include_token=True`). It never appears in list / get / update / delete.
-The `secret_hash` is never returned by any endpoint.
-
-### List payload
-
-`GET` list endpoints wrap items as:
-
-```jsonc
-{ "keys": [ ... ], "total": 12, "limit": 50, "offset": 0 }
+```json
+{
+  "success": true,
+  "message": "API key revoked successfully",
+  "data": { "key_id": "Xk3pQ9aL2mNb", "revoked_at": "2026-09-24T10:15:00.123456+00:00" }
+}
 ```
 
-`GET /api-keys/users/{user_hash}` adds `user_hash` and `username`;
-`GET /api-keys/projects/{project_hash}` adds `project_hash` and `project_name`.
-
-> **Caveat:** on `GET /users/api-keys` (and the per-key filters of the admin user-list path),
-> filtering is applied in Python **after** paging, and `total` is recomputed as the filtered
-> length. So `total` is a post-filter count while pagination is pre-filter. See
-> [troubleshooting.md](troubleshooting.md).
-
----
-
-## Error Codes
+## Error codes
 
 | Code | HTTP | Cause |
-|------|------|-------|
-| `API_KEY_NOT_FOUND` | 404 | Key missing, or not owned (user routes return this for non-owned keys to avoid leaking existence) |
-| `API_KEY_REVOKED` | 400 | Revoking a key that is already inactive (revoked, or deactivated after expiring) |
-| `INVALID_INPUT` | 400 | Bad/past `expires_at`, no-field update, or root list without a filter |
-| `PROJECT_ACCESS_DENIED` | 403 | Self-service create for a project the caller cannot access |
-| `ACCESS_DENIED` | 403 | Admin acting outside their project scope / on an out-of-scope user |
-| `INSUFFICIENT_PERMISSIONS` | 403 | Admin lacks `manage_users` for another user's key |
-| `STATE_CONFLICT` | 409 | Admin create (non-root caller): the owner is inactive or has no access to the project |
+| --- | --- | --- |
+| `AUTH_1008` | 401 | Recent authentication required for create, update or revoke |
+| `VAL_3001` | 400 | Malformed or past `expires_at`, update with no fields, or root `GET /api-keys` without a filter |
+| `AUTH_1012` | 400 | Update of a revoked key, or revoke of a key that is already inactive |
+| `AUTHZ_2003` | 403 | Self-service create for a project the caller does not reach |
+| `AUTHZ_2001` | 403 | Admin route: project or user outside the admin's scope |
+| `AUTHZ_2002` | 403 | Admin create for another user without `manage_users`; or a caller that is neither root nor admin on `GET /api-keys` and `GET /api-keys/users/{user_hash}` |
+| `NF_4010` | 404 | Unknown `key_id`, or (self-service) a key the caller does not own |
+| `NF_4004` | 404 | Unknown `user_hash` or `project_hash` |
+| `CONF_5005` | 409 | The database refused the create: owner inactive, project inactive or archived, or (non-root creator) owner without access to the project |
 
-See the global **[Errors Reference](../errors.md)** for the envelope and status mapping.
+A caller that is not root or admin and holds no `admin` permission is stopped earlier by
+`verify_admin_access` with `403` "Admin access required". See [Errors](../errors.md) for the
+envelope.
 
----
-
-## Key Format and Cryptography
+## Token format and cryptography
 
 Implemented in `src/Util/api_key_security.py`.
 
-- **Token**: `sk_{public_id}.{secret}` — `public_id` ~12 base64url chars (9 bytes),
-  `secret` ~43 base64url chars (32 bytes), joined by a single `.`.
-- **Stored hash**: `HMAC-SHA-256(API_KEY_PEPPER, "v1:{public_id}:{secret}")` as `BINARY(32)`;
-  label `hmac-sha256-v1`. The pepper is server-side and loaded at startup (fail-fast).
-- **Fingerprint**: first 6 bytes of `BLAKE2s(full_token)` → 12 hex chars.
-- **secret_last4**: last 4 chars of the secret.
-- **Verification**: splits on the last `.`, validates the `sk_` prefix and `public_id`, recomputes
-  the HMAC, and compares with `hmac.compare_digest` (constant-time). Malformed tokens are compared
-  against a dummy hash for timing-attack resistance.
+| Item | Value |
+| --- | --- |
+| Token | `sk_{public_id}.{secret}` |
+| `public_id` | 9 random bytes, base64url without padding: 12 characters |
+| `secret` | 32 random bytes, base64url without padding: 43 characters |
+| Stored hash | `HMAC-SHA-256(API_KEY_PEPPER, "v1:{public_id}:{secret}")`, `BINARY(32)` |
+| `hash_algorithm` label | `hmac-sha256-v1` |
+| `fingerprint` | `BLAKE2s(token, digest_size=6)` as 12 hex characters |
+| `secret_last4` | Last 4 characters of `secret` |
+| Verification | Split on the last `.`, check the `sk_` prefix and `public_id`, recompute the HMAC, compare with `hmac.compare_digest`. Malformed tokens are compared against a dummy hash so rejection takes the same time. |
+
+| Env var | Notes |
+| --- | --- |
+| `API_KEY_PEPPER` | Required. Read when `src/Util/api_key_security.py` is imported; the process fails to start without it. Changing it invalidates every existing key. |
+
+## Stored procedures
+
+| Procedure | Used by |
+| --- | --- |
+| `sp_create_api_key` | Both create routes. Re-checks owner and project state and, for non-root creators, the owner's project access. |
+| `sp_get_api_key_by_prefix` | Get, update and revoke lookups by `public_id` |
+| `sp_list_user_api_keys` | Self-service list and admin user listings |
+| `sp_list_project_api_keys` | Admin project listings |
+| `sp_update_api_key` | Both update routes. Refuses revoked keys; reactivates a deactivated expired key. |
+| `sp_revoke_api_key` | Both revoke routes. Only changes active keys. |
+| `sp_validate_api_key` | Key validation; returns the stored hash and a `validation_status` |
+| `sp_cleanup_expired_api_keys` | Deactivates expired keys. Run every 5 minutes by each API process (`src/Util/api_key_expiry.py`); the update trigger records `api_key_expired` per key. |

@@ -28,7 +28,7 @@ from src.Util.billing import sync as billing_sync
 from src.Util.billing.config import load_billing_config
 from src.Util.billing.provider import BillingClassificationResult, VerifiedProviderEvent
 from src.Util.billing.redaction import assert_no_billing_forbidden_fields, redact_billing_sensitive_data, sanitize_billing_sensitive_text
-from src.Util.billing.security import encrypt_provider_ref, hmac_provider_ref, provider_ref_fingerprint
+from src.Util.billing.security import provider_ref_evidence, provider_ref_hmac_or_none
 from src.Util.db import db_billing
 from src.Util.email.route_support import client_ip, user_agent
 from src.Util.error_handler import rate_limit_headers
@@ -52,6 +52,7 @@ record_purchase_event = db_billing.record_purchase_event
 upsert_customer = db_billing.upsert_customer
 resolve_user_project = db_billing.resolve_user_project
 resolve_user_billing_group = db_billing.resolve_user_billing_group
+resolve_event_scope = db_billing.resolve_event_scope
 get_billing_group_by_hash = db_billing.get_billing_group_by_hash
 enqueue_sync_job = billing_sync.enqueue_sync_job
 classify_stripe_event = stripe_classifier.classify_stripe_event
@@ -111,8 +112,9 @@ def _webhook_openapi_extra(*, secret_label: str) -> dict[str, Any]:
 _WEBHOOK_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": (
-            "`{\"success\": true, \"status\": ...}` with `accepted` (processed, or queued for resync), "
-            "`ignored_noop` (event type not handled), or `duplicate_replay_accepted` (already received)."
+            "`{\"success\": true, \"status\": ...}` with `accepted` (processed, queued for resync, or not "
+            "attributable to any user), `ignored_noop` (event type not handled or not in "
+            "`STRIPE_ALLOWED_WEBHOOK_EVENTS`), or `duplicate_replay_accepted` (already received)."
         )
     },
     401: {
@@ -429,10 +431,28 @@ def _event_object(event: Mapping[str, Any]) -> Mapping[str, Any]:
     return obj if isinstance(obj, Mapping) else {}
 
 
+def _invoice_subscription_details(obj: Mapping[str, Any]) -> Mapping[str, Any]:
+    """An invoice's subscription details: `parent.subscription_details` since Stripe API 2025-03-31."""
+
+    parent = obj.get("parent")
+    if isinstance(parent, Mapping) and isinstance(parent.get("subscription_details"), Mapping):
+        return parent["subscription_details"]
+    details = obj.get("subscription_details")
+    return details if isinstance(details, Mapping) else {}
+
+
 def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+    """The event object's metadata; invoices fall back to their subscription's metadata."""
+
     obj = _event_object(event)
-    metadata = obj.get("metadata") if isinstance(obj.get("metadata"), Mapping) else {}
-    return {str(key): value for key, value in metadata.items()} if isinstance(metadata, Mapping) else {}
+    merged: dict[str, Any] = {}
+    subscription_metadata = _invoice_subscription_details(obj).get("metadata")
+    if isinstance(subscription_metadata, Mapping):
+        merged.update({str(key): value for key, value in subscription_metadata.items()})
+    own_metadata = obj.get("metadata")
+    if isinstance(own_metadata, Mapping):
+        merged.update({str(key): value for key, value in own_metadata.items() if value not in (None, "")})
+    return merged
 
 
 def _synthetic_billing_group_id(project_hash: str | None) -> str:
@@ -455,28 +475,15 @@ def _datetime_from_iso(value: Any) -> datetime | None:
 
 
 def _provider_ref_evidence(raw_id: str | None, *, kind: str) -> dict[str, Any] | None:
-    text = str(raw_id or "").strip()
-    if not text:
-        return None
-    config = load_billing_config()
-    key = getattr(config, "provider_ref_encryption_key", None)
-    key_id = getattr(config, "provider_ref_encryption_key_id", None)
-    hmac_secret = getattr(config, "id_hmac_secret", None)
-    if not key or not key_id or not hmac_secret:
-        return None
-    encrypted = encrypt_provider_ref(raw_ref=text, key=key, key_id=key_id, provider=constants.STRIPE_PROVIDER_NAME)
-    digest = hmac_provider_ref(provider=constants.STRIPE_PROVIDER_NAME, kind=kind, raw_id=text, secret=hmac_secret)
-    return {
-        "ciphertext": encrypted.ciphertext,
-        "hmac": digest,
-        "fingerprint": provider_ref_fingerprint(digest=digest),
-        "key_id": encrypted.key_id,
-    }
+    return provider_ref_evidence(raw_id, kind=kind, config=load_billing_config(), provider=constants.STRIPE_PROVIDER_NAME)
 
 
-def _event_object_string(event: VerifiedProviderEvent, *names: str) -> str | None:
-    obj = _event_object(event.payload)
-    return _string_field(obj, *names)
+def _id_field(value: Any) -> str | None:
+    """A Stripe reference field is an id string, or the expanded object carrying `id`."""
+
+    if isinstance(value, Mapping):
+        return _string_field(value, "id")
+    return _string_field({"value": value}, "value")
 
 
 def _subscription_provider_id(event: VerifiedProviderEvent) -> str | None:
@@ -484,11 +491,13 @@ def _subscription_provider_id(event: VerifiedProviderEvent) -> str | None:
     object_type = str(obj.get("object") or "").strip().lower()
     if object_type == "subscription":
         return _string_field(obj, "id")
-    return _string_field(obj, "subscription")
+    if object_type == "invoice":
+        return _id_field(_invoice_subscription_details(obj).get("subscription")) or _id_field(obj.get("subscription"))
+    return _id_field(obj.get("subscription"))
 
 
 def _payment_intent_provider_id(event: VerifiedProviderEvent) -> str | None:
-    return _event_object_string(event, "payment_intent")
+    return _id_field(_event_object(event.payload).get("payment_intent"))
 
 
 def _charge_provider_id(event: VerifiedProviderEvent) -> str | None:
@@ -496,7 +505,40 @@ def _charge_provider_id(event: VerifiedProviderEvent) -> str | None:
     object_type = str(obj.get("object") or "").strip().lower()
     if object_type == "charge":
         return _string_field(obj, "id")
-    return _string_field(obj, "charge")
+    return _id_field(obj.get("charge"))
+
+
+def _customer_provider_id(event: VerifiedProviderEvent) -> str | None:
+    return _id_field(_event_object(event.payload).get("customer"))
+
+
+def _price_provider_id(event: VerifiedProviderEvent) -> str | None:
+    obj = _event_object(event.payload)
+    if str(obj.get("object") or "").strip().lower() != "subscription":
+        return None
+    items = obj.get("items")
+    data = items.get("data") if isinstance(items, Mapping) else None
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return _id_field(data[0].get("price"))
+    return None
+
+
+def _checkout_ref_from_event(event: VerifiedProviderEvent, metadata: Mapping[str, Any]) -> str | None:
+    ref = _string_field(metadata, "api_auth_checkout_ref", "checkout_ref")
+    if ref:
+        return ref
+    obj = _event_object(event.payload)
+    if str(obj.get("object") or "").strip().lower() == "checkout.session":
+        # Checkout sets client_reference_id to the checkout ref.
+        candidate = _string_field(obj, "client_reference_id")
+        if candidate and candidate.startswith("bco-"):
+            return candidate
+    return None
+
+
+def _usable_label(value: Any) -> str | None:
+    text = _string_field({"value": value}, "value")
+    return None if not text or text.lower() == "free" else text
 
 
 async def _upsert_customer_from_event(
@@ -505,13 +547,13 @@ async def _upsert_customer_from_event(
     scope: Mapping[str, Any],
     billing_group_id: str,
 ) -> str | None:
-    raw_customer_id = _event_object_string(event, "customer")
+    raw_customer_id = _customer_provider_id(event)
     evidence = _provider_ref_evidence(raw_customer_id, kind="customer_id")
     user_id = _string_field(scope, "user_id")
     if evidence is None or not user_id or not billing_group_id:
         return None
-    customer_id = f"bcust-{uuid.uuid4().hex[:24]}"
-    customer_ref = _string_field(_event_metadata(event.payload), "customer_ref", "api_auth_customer_ref") or f"bcustref-{uuid.uuid4().hex[:24]}"
+    customer_id = f"bcustrow-{uuid.uuid4().hex[:24]}"
+    customer_ref = _string_field(_event_metadata(event.payload), "customer_ref", "api_auth_customer_ref") or f"bcust-{uuid.uuid4().hex}"
     try:
         row = await _maybe_await(
             upsert_customer(
@@ -535,18 +577,28 @@ async def _upsert_customer_from_event(
 
 
 def _invalidate_user_sessions(user_id: str | None) -> None:
-    """Best-effort: drop the user's cached sessions so a plan transition shows promptly."""
+    """Best-effort: drop the user's derived ``session_full:*`` entries so the next validate
+    recomputes the plan.
+
+    The ``session:*`` access sessions are auth state, not a cache, and stay valid: a plan
+    transition must not sign the user out.
+    """
     if not user_id:
         return
     try:
         from src.Util.cache_manager import cache_manager
 
-        cache_manager.invalidate_user_sessions(user_id)
+        cache_manager.invalidate_user_full_sessions(user_id)
     except Exception as exc:
         logger.debug("Session cache invalidation after billing transition skipped: %s", type(exc).__name__)
 
 
-async def _resolve_scope_from_metadata(metadata: Mapping[str, Any]) -> Mapping[str, Any] | None:
+async def _resolve_scope_from_metadata(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Resolve `user_hash` + `project_hash` metadata to internal ids; None when they do not resolve.
+
+    Never invents ids: an event that cannot be tied to a real user writes no fact.
+    """
+
     user_hash = _string_field(metadata, "user_hash")
     project_hash = _string_field(metadata, "project_hash")
     if not user_hash or not project_hash:
@@ -557,16 +609,69 @@ async def _resolve_scope_from_metadata(metadata: Mapping[str, Any]) -> Mapping[s
         row = None
     item = _plain_mapping(row)
     if item and item.get("user_id") and item.get("project_id"):
-        item.setdefault("billing_group_id", item.get("billing_group_id") or _synthetic_billing_group_id(project_hash))
         return item
-    return {
-        "user_id": f"usr-{uuid.uuid5(uuid.NAMESPACE_URL, user_hash).hex[:24]}",
-        "project_id": f"prj-{uuid.uuid5(uuid.NAMESPACE_URL, project_hash).hex[:24]}",
-        "billing_group_id": _synthetic_billing_group_id(project_hash),
-        "user_hash": user_hash,
-        "project_hash": project_hash,
-        "synthetic_scope": True,
+    return None
+
+
+async def _lookup_event_refs(
+    event: VerifiedProviderEvent,
+    metadata: Mapping[str, Any],
+    *,
+    billing_group_id: str | None,
+) -> dict[str, Any]:
+    """Map the event's checkout ref and provider ids to rows api.auth already stored."""
+
+    config = load_billing_config()
+    provider = constants.STRIPE_PROVIDER_NAME
+    lookup_args = {
+        "checkout_ref": _checkout_ref_from_event(event, metadata),
+        "subscription_id_hmac": provider_ref_hmac_or_none(_subscription_provider_id(event), kind="subscription_id", config=config, provider=provider),
+        "payment_intent_id_hmac": provider_ref_hmac_or_none(_payment_intent_provider_id(event), kind="payment_intent_id", config=config, provider=provider),
+        "charge_id_hmac": provider_ref_hmac_or_none(_charge_provider_id(event), kind="charge_id", config=config, provider=provider),
+        "customer_id_hmac": provider_ref_hmac_or_none(_customer_provider_id(event), kind="customer_id", config=config, provider=provider),
+        "price_id_hmac": provider_ref_hmac_or_none(_price_provider_id(event), kind="price_id", config=config, provider=provider),
     }
+    if not any(lookup_args.values()):
+        return {}
+    try:
+        row = await _maybe_await(resolve_event_scope(provider=provider, billing_group_id=billing_group_id, **lookup_args))
+    except Exception as exc:
+        logger.debug("Stripe webhook ref lookup unavailable: %s", type(exc).__name__)
+        row = None
+    return _plain_mapping(row)
+
+
+async def _resolve_event_scope(
+    event: VerifiedProviderEvent,
+    metadata: Mapping[str, Any],
+    *,
+    billing_group_id: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Return (scope, lookup): who the event belongs to, and the local rows it maps to.
+
+    Metadata identifies the user and project when the object carries it (Checkout copies it
+    onto the Subscription and PaymentIntent). Rows matched by the checkout ref or by a
+    provider id are authoritative for the user and group; disputes and older objects without
+    metadata resolve through them alone.
+    """
+
+    metadata_scope = await _resolve_scope_from_metadata(metadata)
+    lookup = await _lookup_event_refs(
+        event,
+        metadata,
+        billing_group_id=billing_group_id or _string_field(metadata_scope or {}, "billing_group_id"),
+    )
+    lookup_user_id = _string_field(lookup, "user_id")
+    if not lookup_user_id:
+        return metadata_scope, lookup
+    if metadata_scope and _string_field(metadata_scope, "user_id") != lookup_user_id:
+        metadata_scope = None
+    scope = dict(metadata_scope or {})
+    for key in ("user_id", "project_id", "billing_group_id"):
+        value = _string_field(lookup, key)
+        if value:
+            scope[key] = value
+    return scope, lookup
 
 
 async def _enqueue_resync_for_event(
@@ -574,16 +679,20 @@ async def _enqueue_resync_for_event(
     event: VerifiedProviderEvent,
     classification: BillingClassificationResult,
     reason: str,
+    scope: Mapping[str, Any] | None,
     persisted_fact: Mapping[str, Any] | None = None,
 ) -> bool:
-    metadata = _event_metadata(event.payload)
-    scope = await _resolve_scope_from_metadata(metadata)
     fact = _plain_mapping(persisted_fact)
+    user_id = _string_field(scope or {}, "user_id")
+    billing_group_id = _string_field(fact, "billing_group_id") or _string_field(scope or {}, "billing_group_id")
+    if not user_id or not billing_group_id:
+        # The worker resolves what to fetch from the user and group; without them a job can only fail.
+        logger.debug("Stripe webhook resync skipped: event scope unresolved")
+        return False
     job_type = _string_field(fact, "job_type")
     subscription_id = _string_field(fact, "subscription_id")
     purchase_id = _string_field(fact, "purchase_id")
     customer_id = _string_field(fact, "customer_id")
-    billing_group_id = _string_field(fact, "billing_group_id") or _string_field(scope or {}, "billing_group_id")
     if job_type not in {billing_sync.JOB_TYPE_SUBSCRIPTION, billing_sync.JOB_TYPE_PURCHASE}:
         if subscription_id:
             job_type = billing_sync.JOB_TYPE_SUBSCRIPTION
@@ -603,7 +712,7 @@ async def _enqueue_resync_for_event(
             provider=constants.STRIPE_PROVIDER_NAME,
             job_type=job_type,
             secret=secret,
-            user_id=_string_field(scope or {}, "user_id"),
+            user_id=user_id,
             project_id=_string_field(scope or {}, "project_id"),
             billing_group_id=billing_group_id,
             customer_id=customer_id,
@@ -616,7 +725,7 @@ async def _enqueue_resync_for_event(
                 provider=constants.STRIPE_PROVIDER_NAME,
                 job_type=job_type,
                 job_id=f"bsync-{uuid.uuid4().hex}",
-                user_id=_string_field(scope or {}, "user_id"),
+                user_id=user_id,
                 project_id=_string_field(scope or {}, "project_id"),
                 billing_group_id=billing_group_id,
                 customer_id=customer_id,
@@ -639,36 +748,52 @@ async def _enqueue_resync_for_event(
         return False
 
 
+# Statuses a late `checkout.session.completed` (always `pending`) must not overwrite.
+_SUBSCRIPTION_STATUSES_AHEAD_OF_PENDING = frozenset({"incomplete", "trialing", "active", "past_due", "unpaid", "paused"})
+
+
 async def _persist_classification(
     event: VerifiedProviderEvent,
     classification: BillingClassificationResult,
     *,
     scope: Mapping[str, Any] | None,
     billing_group_id: str | None,
+    lookup: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any] | None:
     metadata = _event_metadata(event.payload)
     if not scope:
         return None
+    lookup = _plain_mapping(lookup)
     user_id = _string_field(scope, "user_id")
-    project_id = _string_field(scope, "project_id")
-    if not user_id or not project_id:
+    group_id = billing_group_id or _string_field(scope, "billing_group_id")
+    if not user_id or not group_id:
         return None
-    group_id = billing_group_id or _string_field(scope, "billing_group_id") or _synthetic_billing_group_id(project_id)
     safe_meta = _plain_mapping(classification.safe_metadata)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     try:
-        customer_id = await _upsert_customer_from_event(event=event, scope=scope, billing_group_id=group_id)
+        customer_id = await _upsert_customer_from_event(event=event, scope=scope, billing_group_id=group_id) or _string_field(lookup, "customer_id")
         if classification.subscription_status:
-            subscription_ref = _string_field(metadata, "subscription_ref", "api_auth_subscription_ref") or f"bsub-{uuid.uuid4().hex}"
-            subscription_id = f"bsubrow-{uuid.uuid4().hex[:24]}"
+            if not customer_id:
+                # billing_subscriptions.customer_id is required; the resync worker can recover it.
+                return None
+            subscription_ref = (
+                _string_field(metadata, "api_auth_subscription_ref", "subscription_ref")
+                or _string_field(lookup, "subscription_ref")
+                or f"bsub-{uuid.uuid4().hex}"
+            )
+            subscription_id = _string_field(lookup, "subscription_id") or f"bsubrow-{uuid.uuid4().hex[:24]}"
+            status = classification.subscription_status
+            known_status = _string_field(lookup, "subscription_status")
+            if status == "pending" and known_status in _SUBSCRIPTION_STATUSES_AHEAD_OF_PENDING:
+                status = known_status
             subscription_evidence = _provider_ref_evidence(_subscription_provider_id(event), kind="subscription_id")
-            await _maybe_await(
+            observed = await _maybe_await(
                 observe_subscription(
                     snapshot_id=f"bss-{uuid.uuid4().hex}",
                     history_id=f"beh-{uuid.uuid4().hex}",
                     current_id=f"bec-{uuid.uuid4().hex}",
                     subscription_id=subscription_id,
-                    customer_id=customer_id or f"bcust-{uuid.uuid4().hex[:24]}",
+                    customer_id=customer_id,
                     user_id=user_id,
                     billing_group_id=group_id,
                     provider=constants.STRIPE_PROVIDER_NAME,
@@ -679,10 +804,17 @@ async def _persist_classification(
                     provider_ref_key_id=subscription_evidence["key_id"] if subscription_evidence else None,
                     observed_at=now,
                     sync_source="webhook",
-                    normalized_status=classification.subscription_status,
-                    plan_code=_string_field(metadata, "plan_code", "consumer_plan_code") or safe_meta.get("plan_code"),
-                    tier_code=_string_field(metadata, "tier_code", "consumer_tier_code") or safe_meta.get("tier_code"),
-                    tier_name=_string_field(metadata, "tier_name", "consumer_tier_name") or safe_meta.get("tier_name"),
+                    normalized_status=status,
+                    plan_code=_string_field(metadata, "consumer_plan_code", "plan_code")
+                    or _usable_label(lookup.get("plan_code"))
+                    or _usable_label(lookup.get("catalog_plan_code"))
+                    or safe_meta.get("plan_code"),
+                    tier_code=_string_field(metadata, "consumer_tier_code", "tier_code")
+                    or _string_field(lookup, "tier_code", "catalog_tier_code")
+                    or safe_meta.get("tier_code"),
+                    tier_name=_string_field(metadata, "consumer_tier_name", "tier_name")
+                    or _string_field(lookup, "tier_name", "catalog_tier_name")
+                    or safe_meta.get("tier_name"),
                     cancel_at_period_end=bool(safe_meta.get("cancel_at_period_end")),
                     current_period_end=_datetime_from_iso(safe_meta.get("current_period_end")),
                     trial_end=_datetime_from_iso(safe_meta.get("trial_end")),
@@ -694,21 +826,29 @@ async def _persist_classification(
                     safe_metadata={"event_type": event.event_type, "classification_version": 2},
                 )
             )
-            # Entitlement may have transitioned — drop cached sessions so the next
-            # /auth/validate recomputes the plan promptly (best-effort).
+            # Entitlement may have transitioned — drop the cached validate results so the
+            # next /auth/validate recomputes the plan promptly (best-effort, no sign-out).
             _invalidate_user_sessions(user_id)
             return {
                 "job_type": billing_sync.JOB_TYPE_SUBSCRIPTION,
-                "subscription_id": subscription_id,
+                "subscription_id": _string_field(_plain_mapping(observed), "subscription_id") or subscription_id,
                 "customer_id": customer_id,
                 "billing_group_id": group_id,
             }
         if classification.purchase_status:
-            purchase_ref = _string_field(metadata, "purchase_ref", "api_auth_purchase_ref") or f"bpur-{uuid.uuid4().hex}"
-            purchase_id = f"bpe-{uuid.uuid4().hex}"
+            project_id = _string_field(scope, "project_id") or _string_field(lookup, "project_id")
+            if not project_id:
+                return None
+            purchase_ref = (
+                _string_field(metadata, "api_auth_purchase_ref", "purchase_ref")
+                or _string_field(lookup, "purchase_ref")
+                or f"bpur-{uuid.uuid4().hex}"
+            )
+            purchase_id = _string_field(lookup, "purchase_id") or f"bpe-{uuid.uuid4().hex}"
             payment_intent_evidence = _provider_ref_evidence(_payment_intent_provider_id(event), kind="payment_intent_id")
             charge_evidence = _provider_ref_evidence(_charge_provider_id(event), kind="charge_id")
-            await _maybe_await(
+            quantity = _safe_int(lookup.get("quantity"), 0) or None
+            recorded = await _maybe_await(
                 record_purchase_event(
                     purchase_id=purchase_id,
                     history_id=f"bph-{uuid.uuid4().hex}",
@@ -718,10 +858,11 @@ async def _persist_classification(
                     customer_id=customer_id,
                     provider=constants.STRIPE_PROVIDER_NAME,
                     purchase_ref=purchase_ref,
-                    checkout_ref=_string_field(metadata, "checkout_ref", "api_auth_checkout_ref"),
+                    checkout_ref=_string_field(metadata, "api_auth_checkout_ref", "checkout_ref") or _string_field(lookup, "checkout_ref"),
                     status=classification.purchase_status,
-                    credit_product_code=_string_field(metadata, "credit_product_code", "consumer_credit_product_code"),
-                    quantity=None,
+                    credit_product_code=_string_field(metadata, "consumer_credit_product_code", "credit_product_code")
+                    or _string_field(lookup, "credit_product_code"),
+                    quantity=quantity,
                     provider_payment_intent_id_ciphertext=payment_intent_evidence["ciphertext"] if payment_intent_evidence else None,
                     provider_payment_intent_id_hmac=payment_intent_evidence["hmac"] if payment_intent_evidence else None,
                     provider_payment_intent_id_fingerprint=payment_intent_evidence["fingerprint"] if payment_intent_evidence else None,
@@ -741,7 +882,7 @@ async def _persist_classification(
             )
             return {
                 "job_type": billing_sync.JOB_TYPE_PURCHASE,
-                "purchase_id": purchase_id,
+                "purchase_id": _string_field(_plain_mapping(recorded), "purchase_id") or purchase_id,
                 "customer_id": customer_id,
                 "billing_group_id": group_id,
             }
@@ -813,11 +954,26 @@ def _resolve_group_webhook_secret(billing_group_hash: str) -> tuple[str | None, 
     return group_id, getattr(secrets, "webhook_secret", None)
 
 
-async def _process_event(request: Request, event: VerifiedProviderEvent, *, billing_group_id: str | None) -> JSONResponse:
+def _event_type_enabled(stripe_config: Any, event_type: str) -> bool:
+    """`STRIPE_ALLOWED_WEBHOOK_EVENTS` narrows the handled event types (it can never widen them)."""
+
+    allowed = getattr(stripe_config, "allowed_webhook_events", None)
+    if allowed is None:
+        return True
+    return str(event_type or "").strip() in set(allowed)
+
+
+async def _process_event(
+    request: Request,
+    event: VerifiedProviderEvent,
+    *,
+    billing_group_id: str | None,
+    stripe_config: Any = None,
+) -> JSONResponse:
     """Shared post-verification processing for both the global and path-scoped routes."""
 
     metadata = _event_metadata(event.payload)
-    scope = await _resolve_scope_from_metadata(metadata)
+    scope, lookup = await _resolve_event_scope(event, metadata, billing_group_id=billing_group_id)
     group_id = (
         billing_group_id
         or _string_field(scope or {}, "billing_group_id")
@@ -840,6 +996,17 @@ async def _process_event(request: Request, event: VerifiedProviderEvent, *, bill
         )
         return _webhook_json_response(status_code=200, status="duplicate_replay_accepted")
 
+    if not _event_type_enabled(stripe_config, event.event_type):
+        await record_stripe_webhook_activity(
+            ActivityType.STRIPE_WEBHOOK_RECEIVED,
+            event="webhook_ignored",
+            outcome="event_type_disabled",
+            request=request,
+            status_code=200,
+            details={"event_type": event.event_type, "ignored": True, "allowed_event": False},
+        )
+        return _webhook_json_response(status_code=200, status="ignored_noop")
+
     try:
         raw_classification = await _maybe_await(classify_stripe_event(event=event.payload))
         classification = _classification_result(raw_classification, event.event_type)
@@ -849,6 +1016,7 @@ async def _process_event(request: Request, event: VerifiedProviderEvent, *, bill
             event=event,
             classification=BillingClassificationResult(provider="stripe", event_type=event.event_type),
             reason="classifier_failed",
+            scope=scope,
         )
         await record_stripe_webhook_activity(
             ActivityType.STRIPE_WEBHOOK_RECEIVED,
@@ -871,7 +1039,13 @@ async def _process_event(request: Request, event: VerifiedProviderEvent, *, bill
         )
         return _webhook_json_response(status_code=200, status="ignored_noop")
 
-    persisted_fact = await _persist_classification(event, classification, scope=scope, billing_group_id=group_id)
+    persisted_fact = await _persist_classification(
+        event,
+        classification,
+        scope=scope,
+        billing_group_id=billing_group_id or _string_field(scope or {}, "billing_group_id"),
+        lookup=lookup,
+    )
     persisted = persisted_fact is not None
     resync_enqueued = False
     if classification.resync_required or not persisted:
@@ -879,6 +1053,7 @@ async def _process_event(request: Request, event: VerifiedProviderEvent, *, bill
             event=event,
             classification=classification,
             reason=classification.reason or "webhook_source_of_truth_resync",
+            scope=scope,
             persisted_fact=persisted_fact,
         )
 
@@ -925,13 +1100,18 @@ async def receive_stripe_webhook(request: Request) -> JSONResponse:
     **Request:** the Stripe event JSON exactly as Stripe sent it. The event `api_version` must
     equal the Stripe API version this server is pinned to.
 
-    **Processing:** the user, project, and billing group are resolved from the event object's
-    metadata (`user_hash`, `project_hash`), which checkout sets. Handled event types
-    (`checkout.session.completed`, `customer.subscription.created`/`updated`/`deleted`,
-    `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`/
-    `closed`) update subscription or purchase facts; other types are acknowledged and ignored.
-    Duplicate deliveries are acknowledged without reprocessing. When facts cannot be written,
-    a resync job is queued for the billing sync worker.
+    **Processing:** the user, project, and billing group come from the event object's metadata
+    (`user_hash`, `project_hash`), which Checkout sets on the session and copies onto the
+    Subscription and PaymentIntent it creates (invoices use their subscription's metadata).
+    Events without it (disputes, objects created before that copy existed) resolve through
+    rows already stored: the Checkout ref, then the subscription, payment intent, charge, or
+    customer id. Handled event types (`checkout.session.completed`,
+    `customer.subscription.created`/`updated`/`deleted`, `invoice.paid`,
+    `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`/`closed`, narrowed by
+    `STRIPE_ALLOWED_WEBHOOK_EVENTS`) update subscription or purchase facts; other types are
+    acknowledged and ignored. Duplicate deliveries are acknowledged without reprocessing. When
+    a fact cannot be written for a resolved user, a resync job is queued for the billing sync
+    worker; an event that resolves to no user writes nothing.
     \f
     Resolves the billing group from event metadata during persistence. Only inside a pytest
     process does ``_debug_fixture_now`` verify the pinned fixture signatures at their own
@@ -964,7 +1144,7 @@ async def receive_stripe_webhook(request: Request) -> JSONResponse:
     except Exception:
         return await _signature_failure_response(request=request, event_type="unknown", status_code=401)
 
-    return await _process_event(request, _normalize_event(event), billing_group_id=None)
+    return await _process_event(request, _normalize_event(event), billing_group_id=None, stripe_config=stripe_config)
 
 
 @router.post(
@@ -1044,7 +1224,7 @@ async def receive_stripe_webhook_for_group(
     except Exception:
         return await _signature_failure_response(request=request, event_type="unknown", status_code=401)
 
-    return await _process_event(request, _normalize_event(event), billing_group_id=group_id)
+    return await _process_event(request, _normalize_event(event), billing_group_id=group_id, stripe_config=stripe_config)
 
 
 def _assert_webhook_route_hardening() -> None:

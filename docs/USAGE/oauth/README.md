@@ -1,138 +1,111 @@
-# OAuth Sign-in (Provider-agnostic)
+# OAuth
 
-Sign-in with external identity providers, configured **per project in the
-database** and implemented through **provider adapters**. Any project can enable
-Google, GitHub, Discord, Microsoft or a generic OpenID Connect provider without
-touching the service's environment or restarting it.
+Sign-in, account linking and step-up reauthentication with external identity providers
+(Google, GitHub, Discord, Microsoft Entra ID and generic OpenID Connect). A project's
+backend starts a sign-in with its project API key; `api.auth` runs the provider round trip
+and answers with the same local session a password login produces. Which providers a
+project offers is configuration in the database, managed through `/admin/oauth/*`, so
+enabling a provider needs no deployment and no restart.
 
-| Document | Contents |
-| --- | --- |
-| [Reference](reference.md) | Endpoints, administration API, readiness checks, deployment settings, identity key, migration steps |
-| [Google OAuth (deprecated aliases)](../google-oauth/README.md) | The original `/auth/google` route family, still served, and the `GOOGLE_OAUTH_*` environment configuration it reads |
+## Key concepts
 
-## Flow
+| Concept | What it is | Managed by |
+| --- | --- | --- |
+| Provider type | A kind of provider: adapter code in the service plus a row in the provider catalog, whose `status` is the run-time kill switch. Built in: `google`, `github`, `discord`, `microsoft`, `oidc` (seeded `disabled`). `patreon` is listed as link-only and is configured by the [Patreon integration](../patreon-link/README.md), not here. | Root |
+| Connection | One OAuth client registration at one provider: client id, scopes, restrictions, endpoints (generic OIDC only) and an encrypted, write-only client secret. Identified by `connection_hash`. One connection can serve many projects. | Root |
+| Project binding | One project using one connection under a project-local `connection_key` (for example `google`): `enabled`, `login_enabled`, `link_enabled`, provisioning mode, default user group, existing-user policy, optional state TTL, and exact-match redirect URI and return origin allow-lists. | Root, or an admin of the project |
+| Configuration source | `OAUTH_CONFIG_SOURCE=env` (default) serves one Google connection built from the `GOOGLE_OAUTH_*` variables; `db` serves connections and bindings from the database. | Deployment |
+| Identity key | An external account is stored as `(identity_namespace, HMAC-SHA256(provider-sub pepper, subject))`. Never the e-mail and never the raw subject. | Automatic |
+
+A binding can be used only when every layer allows it: the catalog status, the
+connection status, the connection's credentials, the binding's `enabled` flag and the
+project itself, checked on every request, plus `OAUTH_ENABLED`, which gates `init` and
+`start`. `GET /admin/oauth/projects/{project_hash}/readiness` reports which layer is
+missing.
+
+## How a sign-in works
 
 ```text
-Project backend --> api.auth   POST /auth/oauth/init      X-API-Key: <project key>
-                                 { "connection": "google", "return_origin": "https://app.example" }
-                <-- init_token (opaque, single use, 300 s)
-
-Browser / BFF   --> api.auth   POST /auth/oauth/start     { "init_token", "redirect_uri" }
-                <-- 303 Location: provider authorize URL
-
-Provider        --> backend callback --> api.auth   GET /auth/oauth/callback?code&state
-                <-- LoginResponse + session cookies
+Browser        Project backend                        api.auth                        Provider
+   | click "Sign in" |                                     |                               |
+   |---------------->| POST /auth/oauth/init  (X-API-Key)  |                               |
+   |                 |------------------------------------>| project from key, group from  |
+   |                 |<---------------- init_token --------| binding; token single-use     |
+   |                 | POST /auth/oauth/start {init_token} |                               |
+   |                 |------------------------------------>| consume token, store state,   |
+   |                 |<------ 303 Location: authorize URL --| nonce and PKCE verifier       |
+   |<-- redirect ----|                                     |                               |
+   |------------------------------------------------------------------------------------>|
+   |<------------------------------ redirect to the binding's redirect URI ---------------|
+   |---------------->| GET /auth/oauth/callback?code&state |                               |
+   |                 |------------------------------------>| consume state, exchange code, |
+   |                 |<-- LoginResponse + session cookies -| verify identity, issue tokens |
+   |<-- your own session delivery (cookie, one-time code, ...)                              |
 ```
 
-The project is derived from the API key and the provisioning group from the
-project's binding. A caller can never choose either.
+The redirect URI registered at the provider is normally the project backend's callback,
+which relays `code` and `state` to `/auth/oauth/callback`. The callback always answers
+JSON; it never redirects the browser back to the return origin.
 
-## Enabling a Provider for a Project
+## Route families
 
-1. Create an OAuth client at the provider and register the project's redirect URI there.
-2. Root: create a connection, store its client secret, test, activate.
-3. Project admin: bind the project to the connection, choose the provisioning mode and default user group, add the exact redirect URI and return origin, enable the binding.
-4. Check the readiness endpoint; every check must pass.
-
-New bindings are created disabled and unusable until a redirect URI and a return
-origin exist.
-
-## Integrating a Project Backend
-
-A consuming backend needs one credential — a project-scoped API key — and three
-calls. Nothing about the provider is compiled into the backend: adding a second
-provider later is an administration change, not a deployment.
-
-### 1. Render the login page from data
-
-```bash
-curl -X GET "https://auth.example/auth/oauth/providers" \
-  -H "X-API-Key: $PROJECT_API_KEY" \
-  -H "User-Agent: my-backend/1.0"
-```
-
-Returns only the connections that are enabled for **this** project and currently
-usable for login:
-
-```json
-{
-  "success": true,
-  "providers": [
-    {"connection": "google", "provider_type": "google", "display_name": "Google"}
-  ]
-}
-```
-
-Render one button per entry and pass `connection` back verbatim. An empty list
-means no provider is ready — show no buttons rather than a broken one, and read
-`GET /admin/oauth/projects/{project_hash}/readiness` to find out why.
-
-### 2. Mint an init token when the user clicks a button
-
-```bash
-curl -X POST "https://auth.example/auth/oauth/init" \
-  -H "X-API-Key: $PROJECT_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "User-Agent: my-backend/1.0" \
-  -d '{"connection": "google", "return_origin": "https://app.example"}'
-```
-
-| Field | Required | Notes |
+| Family | Routes | Caller and authentication |
 | --- | --- | --- |
-| `connection` | yes | A `connection` value from the providers list. |
-| `return_origin` | yes | Must match a return origin on the binding by exact string equality. |
-| `purpose` | no | Only `login` is accepted; it is also the default. |
-| `remember_me` | no | Boolean default for the session; `/auth/oauth/start` may override it. |
+| Server-to-server | `POST /auth/oauth/init`, `GET /auth/oauth/providers` | Project backend, user API key in `X-API-Key` |
+| Public round trip | `POST /auth/oauth/start`, `GET` and `POST /auth/oauth/callback` | Anyone holding a valid init token or state; rate limited |
+| Signed-in user | `POST /auth/oauth/{connection}/link/start`, `POST /auth/oauth/{connection}/reauth/start`, `DELETE /auth/oauth/{connection}/link`, `GET /auth/oauth/links` | Access token (`Authorization: Bearer` or the `session_token` cookie); link and unlink also need recent authentication |
+| Administration | `/admin/oauth/*` (20 routes) | Root or admin user whose session has the `admin` permission; writes that touch secrets, connections or the catalog are root-only |
+| Deprecated aliases | `/auth/google/*` (5 routes) | See the [Google OAuth suite](../google-oauth/README.md) |
 
-`project_hash`, `user_group_hash`, `project` and `user_group` are **rejected**,
-not ignored — the project comes from the API key and the group from the binding.
-Sending one returns `EXT_8012` (`400`).
+## Rules and caveats
 
-The response carries `Cache-Control: no-store`. Treat `init_token` as a
-credential: it is single-use, expires in 300 seconds, and must reach the browser
-over the backend's own authenticated response — never a URL parameter, a log, or
-a third party.
+- **JSON bodies.** Every `/auth/oauth/*` and `/admin/oauth/*` body is JSON, except
+  `POST /auth/oauth/callback`, which takes form fields (`response_mode=form_post`).
+- **The caller never chooses scope.** The project comes from the API key and the
+  provisioning group from the binding. `init` rejects `project_hash`, `user_group_hash`,
+  `project` and `user_group`; `start` rejects `project_hash` and `user_group_hash`.
+- **Single-use credentials.** The init token (300 seconds) and the OAuth state (at most
+  600 seconds) are each consumed once. State is consumed before the code exchange, so a
+  cancelled or failed round trip cannot be replayed.
+- **Exact matching.** Redirect URIs and return origins match by exact string equality.
+  No prefixes, wildcards or trailing-slash tolerance.
+- **Nothing is merged by e-mail.** When a new identity carries the e-mail of an existing
+  local account, sign-in is refused. Providers that verify e-mail (Google, GitHub,
+  Discord) get `EXT_8032`, telling the user to sign in and link; Microsoft and generic
+  OIDC, whose e-mail claim is administrator-controlled, get the neutral `EXT_8024`.
+- **Consumers only.** OAuth sign-in resolves only active `consumer` accounts. Root and
+  admin users cannot sign in this way.
+- **Provider tokens are never stored.** Access, refresh and ID tokens are dropped before
+  any identity or session work. The session issued is an ordinary local session:
+  refresh, validate, switch-project and logout behave as after a password login.
+- **One identity per provider namespace.** A user can hold at most one active link per
+  identity namespace (for example one Google account).
+- **Unlink signs the user out everywhere** and is refused unless the account has a usable
+  password to fall back on.
+- **Environment source limits.** With `OAUTH_CONFIG_SOURCE=env` only the `google`
+  connection exists, and its binding has no default user group: `/auth/oauth/init` then
+  signs in and links existing users but cannot auto-create new ones. Use
+  `OAUTH_CONFIG_SOURCE=db` for per-project provisioning.
+- **Neutral errors.** Public messages never say which check failed. Branch on
+  `error.code`; operators read the `sub_reason` in the activity log.
 
-### 3. Hand the token to the browser
+## In this suite
 
-The browser (or the backend acting as a BFF) posts the token to `/auth/oauth/start`
-and follows the `303`:
-
-```bash
-curl -X POST "https://auth.example/auth/oauth/start" \
-  -H "Content-Type: application/json" \
-  -H "User-Agent: my-client/1.0" \
-  -d '{"init_token": "...", "redirect_uri": "https://app.example/oauth/return"}'
-```
-
-`redirect_uri` may be omitted only when the binding has exactly one. The provider
-then calls `/auth/oauth/callback`, which completes the exchange and returns the
-ordinary `LoginResponse` plus the usual session cookies. From that point the
-session is an ordinary local session: refresh, validate, switch-project and
-logout all behave exactly as they do after a password login.
-
-### Error handling
-
-Callback failures are deliberately neutral — the public message never says which
-check failed. Branch on `error.code`, not on the message:
-
-| Code | What the client should do |
+| Document | Purpose |
 | --- | --- |
-| `EXT_8031` | The user cancelled at the provider. Show "sign-in cancelled", not an error. |
-| `EXT_8032` | A local account already owns this verified e-mail. Ask the user to sign in with their existing method, then link the provider. Accounts are never merged by e-mail. |
-| `EXT_8012` | The init token was unknown, expired, or already used. Mint a new one and restart. |
-| `EXT_8013` | The redirect URI or return origin is not on the binding's allow-list. |
-| `EXT_8030` | Rate limited. Honor `Retry-After`. |
-| `EXT_8010` / `EXT_8011` | The provider is not available for this project. Check readiness. |
+| [README.md](README.md) | Concepts, route families and rules (this page). |
+| [usage.md](usage.md) | Tasks: enable a provider for a project, integrate a backend, link, reauthenticate, unlink. |
+| [request-flow.md](request-flow.md) | What each request does step by step: init, start, callback, link, reauth, unlink. |
+| [reference.md](reference.md) | Endpoints, fields, response shapes, provider types, readiness checks, error codes, settings, Redis keys, activity codes. |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause and fix for failed sign-ins and configuration problems. |
 
-The full family is in the [error reference](../errors.md#oauth--external-identity-ext_80xx).
+## Related
 
-### Checklist for a new project
-
-- [ ] Project API key issued and stored as a server-side secret.
-- [ ] Connection active, credentials stored and tested (root).
-- [ ] Binding enabled with provisioning mode, default user group, redirect URIs and return origins (project admin).
-- [ ] Redirect URI registered identically at the provider — exact string equality, no trailing-slash drift.
-- [ ] Readiness endpoint returns no failing check.
-- [ ] Login page renders from `GET /auth/oauth/providers` rather than a hardcoded list.
-- [ ] `EXT_8031` and `EXT_8032` handled as ordinary outcomes, not crashes.
+- [Google OAuth (deprecated aliases)](../google-oauth/README.md) — `/auth/google/*`, the
+  legacy provider-init handshake and the `GOOGLE_OAUTH_*` configuration.
+- [Patreon account linking](../patreon-link/README.md) — entitlement linking, never sign-in.
+- [API keys](../api-keys/README.md) — the credential a project backend uses for `init`.
+- [OAuth runbook](../../RUNBOOKS/oauth.md) — migration to the database source, key and
+  secret rotation, emergency switches.
+- [Error reference](../errors.md#oauth--external-identity-ext_80xx) — the `EXT_80xx` catalog.
+- [Design record](../../agnostic_oauth/README.md) — why the feature is shaped this way.

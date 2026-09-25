@@ -16,14 +16,14 @@ Global Role System API Endpoints (router prefix ``/roles``)
   permissions, so only root may create them or move them into a role -- directly
   or through a group -- or assign/remove a role that grants them. Non-root callers
   also cannot change their own role.
+- Soft deletes revoke: the role-derived resolver (``sp_global_get_user_permissions`` /
+  ``sp_global_check_user_has_permission``) checks the ``is_active`` flag of every hop,
+  the permission group's own included, which are the same rows the reserved-name
+  check reads.
 
 Known defects (described in the affected route descriptions; code unchanged):
 - ``remove_role_from_user`` returns False (-> 500) when the user has no role,
   because the UPDATE changes zero rows.
-- ``delete_permission_group`` only flips the group's ``is_active`` flag. Role
-  links and group->permission links stay active, and the role-derived resolver
-  (``sp_global_get_user_permissions`` / ``sp_global_check_user_has_permission``)
-  never checks the group's flag, so role holders keep those permissions.
 """
 
 import logging
@@ -743,10 +743,11 @@ async def delete_permission_group(
     """
     Soft-delete a permission group (marks it inactive; its name stays reserved).
 
-    The group disappears from listings and lookups, but its role links and permission
-    memberships are left active and role-derived permission resolution does not check the
-    group's status, so consumers whose role links it **keep its permissions**. To revoke access,
-    unlink the group from roles (or remove its permissions) before deleting it.
+    The group disappears from listings and lookups and stops granting its permissions through
+    every source: consumers whose role links it lose them from the auth-time permission set
+    (within the session-validation cache), and user-group and direct assignments of it no
+    longer count. Its role links, assignments and permission memberships are left in place
+    as history; the group cannot be restored through the API.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants

@@ -49,6 +49,12 @@ DEAD_KEYS = (
     "GOOGLE_OAUTH_DEFAULT_USER_GROUP_HASH",
     # Read by nothing; it documented test-only sign-in code paths that no longer exist.
     "PYTEST_VERSION",
+    # Billing settings that were parsed but never consumed: nothing captured raw Stripe
+    # payloads (the flag only made readiness demand its key), and no writer set
+    # `stale_after` from the stale window.
+    "BILLING_RAW_PAYLOAD_CAPTURE_ENABLED",
+    "BILLING_RAW_PAYLOAD_ENCRYPTION_KEY",
+    "BILLING_SYNC_STALE_AFTER_SECONDS",
 )
 ORIGIN_CONSTANT = "DEFAULT_ALLOWED_ORIGINS"
 ORIGIN_CONSTANT_MODULE = "src.Util.auth_constants"

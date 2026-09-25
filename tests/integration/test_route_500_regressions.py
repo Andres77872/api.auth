@@ -23,6 +23,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from src.Util import bulk_operations as bulk_helpers
+from src.Util.admin_scope import AdminScope
 from src.Util.db import db_global_roles
 from src.Util.db.db_permission_assignments import check_user_has_permission_extended
 from src.Util.error_handler import DatabaseError, ErrorCode
@@ -141,6 +142,8 @@ async def test_admin_statistics_routes_return_metrics(db, path, helper, args, bo
 def bulk_admin():
     with patch.object(bulk_routes, "validate_session", return_value=_session()), \
          patch.object(bulk_routes, "get_user_by_hash", return_value=_user()), \
+         patch.object(bulk_routes, "resolve_admin_scope", return_value=AdminScope("usr-admin-id", "root")), \
+         patch("src.Util.auth_lifecycle.revoke_user_auth_state"), \
          patch.object(bulk_helpers, "log_activity"), \
          patch.object(bulk_routes.ActivityLogger, "log_bulk_user_delete"), \
          patch.object(bulk_routes.ActivityLogger, "log_bulk_role_assignment"), \
@@ -485,6 +488,8 @@ def billing_enabled(monkeypatch):
     ):
         monkeypatch.setenv(name, "true")
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", BILLING_TOKEN)
+    # An empty allowlist refuses every Checkout/Portal request with 503 before the key is read.
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", "https://app.example.test")
 
 
 @pytest.mark.asyncio

@@ -1,423 +1,213 @@
-# Permissions Usage
+# Permissions usage
 
-Day-to-day operational guide for the permissions system used in `api.auth`.
+One task per section for the `/permissions` API. Examples assume the API at
+`http://localhost:8000` and an access token in `$TOKEN`; "admin" routes need a `root` or `admin`
+user, or a consumer holding `manage_roles` from any source. Field rules and response shapes are in
+[Permissions reference](reference.md). To create permission groups or change a user's role, use
+[Roles usage](../roles/usage.md).
 
----
+> [!IMPORTANT]
+> Assignments made here appear in the inspection endpoints but do not change what route guards
+> allow a consumer, except the `manage_roles` fallback of these `/permissions` admin routes. To change
+> a consumer's auth-time permissions, change the permission groups of their role. See
+> [Permission resolution](resolution.md).
 
-## Before You Start
+Only root may assign or remove a permission group that contains a
+[reserved permission name](../roles/reference.md#reserved-permission-names) (`admin`,
+`manage_roles`, ...); for anyone else these routes answer `403` `AUTHZ_2002` and write nothing.
 
-Use this decision rule:
+## Assign permission groups to a user group
 
-- **Role assignment** → standard baseline for a job function
-- **User-group permission-group assignment** → preferred team-scale capability model
-- **Direct user permission-group assignment** → exceptions, temporary access, or overrides
+### Assign one group
 
-If you need project reach, that is a **groups/projects problem**, not a permissions problem. Permissions control **what a user can do**, not **which projects they can enter**.
-
----
-
-## Permission Groups
-
-Permission groups are reusable bundles of individual permissions.
-
-### Create a permission group
+`POST /permissions/admin/user-groups/{group_hash}/permission-groups` — admin, form field
+`permission_group_hash`:
 
 ```bash
-curl -X POST "http://localhost:8000/roles/permission-groups" \
+curl -X POST "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=content_management&group_display_name=Content Management&group_description=Create and edit content&group_category=content"
-```
-
-### List permission groups
-
-```bash
-curl -X GET "http://localhost:8000/roles/permission-groups?category=content&limit=50&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Inspect one permission group and its permissions
-
-```bash
-curl -X GET "http://localhost:8000/roles/permission-groups/$PG_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Update a permission group
-
-```bash
-curl -X PUT "http://localhost:8000/roles/permission-groups/$PG_HASH" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_display_name=Content Management Pro&group_description=Editorial and publishing operations&group_category=content"
-```
-
-### Delete a permission group
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/permission-groups/$PG_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Add a permission to a permission group
-
-```bash
-curl -X POST "http://localhost:8000/roles/permission-groups/$PG_HASH/permissions/$PERMISSION_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### List permissions inside a permission group
-
-```bash
-curl -X GET "http://localhost:8000/roles/permission-groups/$PG_HASH/permissions" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Remove a permission from a permission group
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/permission-groups/$PG_HASH/permissions/$PERMISSION_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## Permissions
-
-Individual permissions are the atomic capability names checked by the RBAC layer.
-
-### Create a permission
-
-```bash
-curl -X POST "http://localhost:8000/roles/permissions" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_name=publish_content&permission_display_name=Publish Content&permission_description=Allows publishing workflow&permission_category=content"
-```
-
-### List permissions
-
-```bash
-curl -X GET "http://localhost:8000/roles/permissions?category=content&limit=50&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Inspect one permission
-
-```bash
-curl -X GET "http://localhost:8000/roles/permissions/$PERMISSION_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Update a permission
-
-```bash
-curl -X PUT "http://localhost:8000/roles/permissions/$PERMISSION_HASH" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_display_name=Publish Content Pro&permission_description=Allows publish and release operations&permission_category=content"
-```
-
-### Delete a permission
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/permissions/$PERMISSION_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## Roles
-
-Roles are the global baseline path. Each user has one role at most.
-
-### Create a role
-
-```bash
-curl -X POST "http://localhost:8000/roles/roles" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_name=content_editor&role_display_name=Content Editor&role_description=Default editorial role&role_priority=40"
-```
-
-### List roles
-
-```bash
-curl -X GET "http://localhost:8000/roles/roles?limit=50&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Inspect one role
-
-```bash
-curl -X GET "http://localhost:8000/roles/roles/$ROLE_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Update a role
-
-```bash
-curl -X PUT "http://localhost:8000/roles/roles/$ROLE_HASH" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_display_name=Senior Content Editor&role_description=Editorial baseline with review duties&role_priority=60"
-```
-
-### Delete a role
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Attach a permission group to a role
-
-```bash
-curl -X POST "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$PG_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### List a role's permission groups
-
-```bash
-curl -X GET "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Remove a permission group from a role
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$PG_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Assign a role to a user
-
-```bash
-curl -X PUT "http://localhost:8000/roles/users/$USER_HASH/role" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "role_hash=$ROLE_HASH"
-```
-
-### Inspect a user's role
-
-```bash
-curl -X GET "http://localhost:8000/roles/users/$USER_HASH/role" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Remove a user's role
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/users/$USER_HASH/role" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## User-Group Permission Assignments
-
-This is the preferred organizational model.
-
-### Assign a permission group to a user group
-
-```bash
-curl -X POST "http://localhost:8000/permissions/admin/user-groups/$GROUP_HASH/permission-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "permission_group_hash=$PG_HASH"
 ```
 
-### Bulk-assign multiple permission groups to a user group
+Returns `user_group` and `permission_group` (`hash`, `name`). Re-assigning a group that was removed
+re-activates the same link. Only direct members of the user group are affected; child or parent
+groups are not.
+
+### Assign several groups at once
+
+`POST /permissions/admin/user-groups/{group_hash}/permission-groups/bulk` — repeat
+`permission_group_hashes` once per hash:
 
 ```bash
-curl -X POST "http://localhost:8000/permissions/admin/user-groups/$GROUP_HASH/permission-groups/bulk" \
+curl -X POST "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups/bulk" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "permission_group_hashes=$PG_A" \
-  -d "permission_group_hashes=$PG_B" \
-  -d "permission_group_hashes=$PG_C"
+  -d "permission_group_hashes=$PG_B"
 ```
 
-Read the response body carefully. This endpoint reports partial success per permission group.
+The response is `200` even if items fail. Compare `success_count` with `total_count` and read the
+per-hash `results[].error`. The one exception is a reserved-name group listed by a non-root caller:
+the whole request fails with `403` (`details.permission_group_hashes`) and nothing is assigned.
 
-### List permission groups attached to a user group
+### List a user group's permission groups
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/admin/user-groups/$GROUP_HASH/permission-groups" \
+curl "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Remove a permission group from a user group
+Returns `permission_groups` (active links to active groups, with `assigned_at`) and `count`.
+
+### Remove a group from a user group
 
 ```bash
-curl -X DELETE "http://localhost:8000/permissions/admin/user-groups/$GROUP_HASH/permission-groups/$PG_HASH" \
+curl -X DELETE "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups/$PG_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
----
+Returns `200` whether or not the group was assigned.
 
-## Direct User Permission Assignments
+## Assign permission groups directly to a user
 
-Use this path for exceptions, temporary access, or one-off overrides.
+### Assign a group to a user
 
-### Assign a permission group directly to a user
+`POST /permissions/users/{user_hash}/permission-groups` — admin, form fields
+`permission_group_hash` and optional `notes`:
 
 ```bash
 curl -X POST "http://localhost:8000/permissions/users/$USER_HASH/permission-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_group_hash=$PG_HASH&notes=Temporary migration access"
+  --data-urlencode "permission_group_hash=$PG_HASH" \
+  --data-urlencode "notes=Temporary Q3 reporting access"
 ```
 
-### List direct permission groups for a user
+Returns `user`, `permission_group`, and `notes`. Re-assigning overwrites `notes`, and omitting
+`notes` clears them. The target user must be active.
+
+### List a user's direct groups
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/users/$USER_HASH/permission-groups" \
+curl "http://localhost:8000/permissions/users/$USER_HASH/permission-groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Remove a direct permission-group assignment
+Returns `direct_permission_groups` (with `notes`) and `count`. Groups the user gets through their
+role or user groups are not included.
+
+### Remove a direct assignment
 
 ```bash
 curl -X DELETE "http://localhost:8000/permissions/users/$USER_HASH/permission-groups/$PG_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
----
+Returns `200` whether or not the group was directly assigned. Role and user-group paths are not
+touched.
 
-## Current-User Queries
+## Inspect your own permissions
 
-These endpoints are the safest operator-facing way to verify what the API currently resolves for a user.
+These routes accept any access token and always answer for the caller.
 
-### Get my role
+### List your permissions from all sources
 
 ```bash
-curl -X GET "http://localhost:8000/roles/users/me/role" \
+curl "http://localhost:8000/permissions/users/me/permissions" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Get my effective permissions from all sources
+Returns `permissions` (distinct names from role, user groups, and direct assignments) and `count`.
+This is not the list route guards use, and it omits the built-in permissions of `root`/`admin`.
+
+### Check one permission
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/users/me/permissions" \
+curl "http://localhost:8000/permissions/users/me/permissions/check/manage_roles" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Check one permission name
+Returns `permission` and `has_permission`, from the same three sources. `true` for `manage_roles`
+means the caller can use the `/permissions` admin routes; it says nothing about `/roles`.
+
+### See where your permission groups come from
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/users/me/permissions/check/manage_roles" \
+curl "http://localhost:8000/permissions/users/me/permission-sources" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### List my direct permission groups only
+Returns `sources.from_role`, `sources.from_user_groups`, `sources.from_direct_assignment`, and
+`summary` counts. Only `from_role` feeds the auth-time set.
+
+### List your direct permission groups
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/users/me/permission-groups" \
+curl "http://localhost:8000/permissions/users/me/permission-groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Break down my permission sources
+Direct assignments only. Your role is at `GET /roles/users/me/role`.
+
+## Find where a permission group is used
+
+### User groups that have it
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/users/me/permission-sources" \
+curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/user-groups" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Important caveat: `permission-groups` for `me` returns **direct assignments only**, not the role and user-group paths. Use `permissions` or `permission-sources` if you need the full picture.
+Admin. Returns active user groups with an active assignment of the group.
 
----
+### Users with a direct assignment
 
-## Catalog Operations (Metadata Only)
+```bash
+curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/users" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-These routes help operators organize recommended permission groups and roles per project. They do **not** change authorization behavior.
+Admin. Returns `users_with_direct_assignment` (including `email`, `user_type`, and `notes`). Users
+who get the group through a role or user group are not listed. No endpoint lists the roles that link
+a group; walk `GET /roles/roles` and `GET /roles/roles/{role_hash}/permission-groups` instead.
 
-### Add a permission group to a project's catalog
+## Catalog permission groups for a project
+
+Catalog entries are suggestions for UIs. They do not grant or restrict anything.
+
+### Add a group to a project catalog
+
+`POST /permissions/projects/{project_hash}/permission-group-catalog/{pg_hash}` — admin, optional form
+fields `catalog_purpose` and `notes`:
 
 ```bash
 curl -X POST "http://localhost:8000/permissions/projects/$PROJECT_HASH/permission-group-catalog/$PG_HASH" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "catalog_purpose=Standard editorial permissions&notes=UI suggestion only"
+  --data-urlencode "catalog_purpose=Recommended for editorial teams"
 ```
 
-### List permission groups cataloged for a project
+Re-adding re-activates the entry; omitted fields keep their stored values. Any active project can be
+used, not only the caller's.
+
+### List a project's catalog
 
 ```bash
-curl -X GET "http://localhost:8000/permissions/projects/$PROJECT_HASH/permission-group-catalog" \
+curl "http://localhost:8000/permissions/projects/$PROJECT_HASH/permission-group-catalog" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### Remove a permission group from a project's catalog
+Any access token; there is no project-membership check.
+
+### List the projects that catalog a group
+
+```bash
+curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/project-catalog" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Remove a group from a project catalog
 
 ```bash
 curl -X DELETE "http://localhost:8000/permissions/projects/$PROJECT_HASH/permission-group-catalog/$PG_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### See which projects catalog a permission group
-
-```bash
-curl -X GET "http://localhost:8000/permissions/permissions/groups/$PG_HASH/project-catalog" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Yes, the route really is `/permissions/permissions/groups/...` because the router prefix is `/permissions` and the route path also begins with `/permissions/groups/...`.
-
-### Add a role to a project's role catalog
-
-```bash
-curl -X POST "http://localhost:8000/roles/projects/$PROJECT_HASH/catalog/roles/$ROLE_HASH" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "catalog_purpose=Standard engineering role&notes=Recommendation only"
-```
-
-### List cataloged roles for a project
-
-```bash
-curl -X GET "http://localhost:8000/roles/projects/$PROJECT_HASH/catalog/roles" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Remove a role from the project catalog
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/projects/$PROJECT_HASH/catalog/roles/$ROLE_HASH" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## Permission-Group Usage Queries
-
-Use these when you need to audit where a permission group is in use.
-
-### Which user groups have this permission group?
-
-```bash
-curl -X GET "http://localhost:8000/permissions/permissions/groups/$PG_HASH/user-groups" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Which users have this permission group directly?
-
-```bash
-curl -X GET "http://localhost:8000/permissions/permissions/groups/$PG_HASH/users" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-The second route reports **direct assignments only**. It does not enumerate users who inherit that same permission group through roles or user groups.
-
----
-
-## Related Documentation
-
-- **[Permissions Overview](README.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+Returns `200` whether or not the group was cataloged.

@@ -1,121 +1,84 @@
-# Google OAuth Architecture
+# Google OAuth architecture
 
-Google OAuth/OIDC is an additive, consumer-only authentication path. It validates Google identity, then hands control back to the existing `api.auth` local identity, project access, session, audit, and refresh-token lifecycle.
+Google OAuth is a consumer-only sign-in path: Google authenticates the external identity,
+`api.auth` authorizes local access and issues its own session. Since the provider-agnostic
+pipeline landed, Google is one adapter among several; this page records what is specific
+to Google and to the legacy BFF handshake behind `/auth/google/*`. The shared design
+(state, PKCE and nonce, identity resolution, sessions) is in the
+[OAuth request flow](../oauth/request-flow.md).
 
-## Provider Boundary: Google vs Patreon
-
-Google may login/link: a successful Google OAuth/OIDC callback can resolve or create the local consumer and then issue the existing local session after project authorization. Patreon is entitlement/link only; its proof, webhook, sync, and S2S flows never issue local sessions and are covered in [Patreon account linking](../patreon-link/README.md).
-
-Do not copy Google callback/session semantics into Patreon docs or code. The shared external-account schema preserves HMAC provider-sub authority for both providers, but only Google participates in the local login/session lifecycle.
-
-## Architecture Decisions
+## Decisions
 
 | Decision | Why |
 | --- | --- |
-| Provider-init is issued by `magic-worlds-api` as an opaque token | The companion already owns strict project/group scope. The browser must not receive raw `project_hash` or `user_group_hash`. |
-| OAuth state is Redis-only | State, nonce, and PKCE verifier are ephemeral security material. Redis provides TTL and atomic consume; MySQL is for durable identity, not temporary OAuth state. |
-| Google identity authority is provider `sub`, stored as HMAC | Email is mutable and unsafe for primary linking. Raw provider `sub` is not persisted. |
-| Local email activation remains authoritative | Google `email_verified` is a snapshot only and must not activate local email. |
-| Successful Google login reuses local `LoginResponse` | Existing `/auth/validate`, `/auth/refresh`, `/auth/logout`, cookies, and project-scoped session semantics stay consistent. |
-| Activity fits `act-cat-064..074` | Keeps audit/activity catalog drift under control and uses generic `auth_method='oauth'`. |
+| Scope is exactly `openid email` | The ID token's `sub` and `email` are all sign-in needs. No profile data, no offline access, no Google refresh token. |
+| Identity is the HMAC of Google's `sub`, namespace `google` | E-mail is mutable and unsafe as a link key; the raw `sub` is never stored. Google's `sub` is the same for every client id, so a person is the same user at every project. |
+| `email_verified` is a snapshot only | Local e-mail ownership is proven only by the local activation flow. |
+| Successful sign-in reuses the local `LoginResponse` | `/auth/validate`, `/auth/refresh`, `/auth/logout` and project switching work unchanged; there is no parallel OAuth session model. |
+| Endpoints are compiled in | A `google` connection can never point the server at configuration-supplied URLs. |
+| Verification cross-checks `google-auth` | Local RS256/JWKS verification and the `google-auth` library must agree on the critical claims (can be switched off per database connection with `provider_params.google_auth_cross_check: false`). |
+| The alias handshake is BFF-mediated (legacy) | The companion backend owned the project and group; the browser received only an opaque `provider_init_token`. `/auth/oauth/init` now makes the companion-side token store unnecessary. |
+| Aliases keep their own activity codes | Existing dashboards and alerts on `act-cat-064..074` keep working. |
 
-## System Data Flow
+## Legacy BFF topology
 
 ```text
 Browser/SPA
-  |
-  | 1. POST /auth/provider-init/google
-  |    body contains no project_hash/user_group_hash
+  | 1. asks the companion to start Google sign-in (no project_hash, no user_group_hash)
   v
-magic-worlds-api BFF
-  |-- reads strict project/group scope server-side
-  |-- creates opaque provider_init_token, single-use, TTL <= 600 seconds
-  |-- audit owner for issuance
-  |
-  | 2. returns provider_init_token only
-  v
-Browser/SPA
-  |
-  | 3. POST http://localhost:8000/auth/google/start
-  |    provider_init_token + localhost redirect/return origin
+Companion backend (magic-worlds-api in the original deployment)
+  |-- reads project and group server-side
+  |-- mints an opaque, single-use provider_init_token (lifetime <= 600 seconds)
+  | 2. POST /auth/google/start {provider_init_token, redirect_uri, return_origin}
   v
 api.auth
-  |-- redeems provider_init_token server-to-server
-  |-- validates provider/purpose/audience/return origin
-  |-- creates Redis state, nonce, PKCE verifier
-  |-- redirects to Google with scope=openid email
+  |-- redeems the token server-to-server at the companion (bearer, no redirects)
+  |-- validates provider, audience, project, return origin and lifetime
+  |-- stores state, nonce and PKCE verifier in Redis (TTL <= 600 seconds)
+  | 3. 303 Location: Google authorization URL, scope=openid email
   v
-Google Authorization Server
-  |
-  | 4. GET /auth/google/callback?code=<opaque>&state=<random>
+Google
+  | 4. redirects to the companion's callback with code and state
+  v
+Companion backend
+  | 5. GET /auth/google/callback?code&state (server-to-server)
   v
 api.auth
-  |-- consumes state before code exchange
-  |-- exchanges code once using PKCE verifier
-  |-- validates ID token using RS256/JWKS + google-auth cross-check
-  |-- applies the optional hosted-domain (hd) allow-list; empty allows every account
-  |-- discards Google token material
-  |-- resolves or creates local consumer according to policy
-  |-- checks group-derived access to provider-init-bound project
-  |-- issues local token pair and existing cookies
+  |-- consumes state, exchanges the code once with the PKCE verifier
+  |-- verifies the ID token, applies the hosted-domain allow-list, drops Google tokens
+  |-- resolves or creates the local consumer, checks access to the bound project
+  | 6. LoginResponse + local session cookies
   v
-Existing local session lifecycle
+Companion backend -> delivers its own session to the browser
 ```
 
-## Storage Boundaries
+Steps 3 to 6 are the shared pipeline; only steps 1 and 2 are specific to the alias. With
+`/auth/oauth/*` the companion calls `init` with its project API key instead of minting and
+redeeming a token.
+
+## Storage boundaries
 
 | Surface | Allowed | Forbidden |
 | --- | --- | --- |
-| Browser request/response | opaque `provider_init_token`, random OAuth `state`, local session cookies after success | raw `project_hash`, raw `user_group_hash`, Google code verifier, nonce, access token, refresh token, id token |
-| Redis | HMAC-keyed OAuth state, raw nonce, raw PKCE verifier, strict binding from provider-init, short TTL | durable identity authority, Google tokens past callback processing |
-| MySQL | `user_external_accounts` with provider-sub HMAC, masked email snapshot, link/unlink metadata | Google access token, Google refresh token, Google id token, authorization code, state, nonce, code verifier |
-| Audit/activity/logs | redacted reason, correlation ID, fingerprints, masked snapshots | provider-init token, raw Google subject/email, raw strict hashes, OAuth code/state/nonce/verifier/token material |
+| Browser request and response | Opaque `provider_init_token`, the OAuth `state` in the redirect, the `oauth_state` cookie (a state fingerprint), local session cookies after success | Raw `project_hash`, raw `user_group_hash`, PKCE verifier, nonce, Google access, refresh and ID tokens |
+| Redis | HMAC-keyed state records holding the nonce, PKCE verifier and the redeemed project binding, with short TTLs | Durable identity, Google tokens beyond the callback |
+| Process memory | Google's JWKS, cached up to the configured cap | Secrets beyond one code exchange |
+| MySQL | `user_external_accounts` with the `sub` HMAC, fingerprint, masked e-mail snapshot and link metadata | Google access, refresh or ID tokens, the authorization code, state, nonce, verifier |
+| Audit, activity, logs | Reason codes, correlation ids, fingerprints, masked snapshots | Provider-init tokens, raw `sub` or e-mail, raw strict hashes, code, state, nonce, verifier, token material |
 
-## Identity Decision Tree
+## Cookie boundary
 
-```text
-valid state + valid ID token?
-  no  -> neutral EXT_8xxx failure; no identity mutation
-  yes -> hosted-domain allow-list configured AND the token's hd is not on it?
-           yes -> neutral denial (OAUTH_WORKSPACE_DENIED)
-           no  -> active provider-sub link exists?
-                    yes -> returning linked consumer path
-                    no  -> email-only collision?
-                             yes -> never merge or auto-link; with a provider-verified e-mail answer
-                                    OAUTH_ACCOUNT_LINK_REQUIRED so the client can offer "sign in, then link"
-                             no  -> provisioning mode allows auto_create/both and provider-init group exists?
-                                      yes -> create consumer + pending local email + external link
-                                      no  -> neutral provisioning denial
-```
+The alias sets the short-lived `oauth_state` browser-binding cookie on path
+`/auth/google`: HttpOnly, Secure, `SameSite=Lax` so the provider redirect can return with
+it, and valued with a fingerprint of the state, never token material. It is checked at
+the callback only when the browser sends it; behind a BFF the callback arrives
+server-to-server without it. The local `session_token` and `refresh_token` cookies are the
+ordinary ones.
 
-Every successful branch still verifies access to the provider-init-bound project. A provider-init token never overrides group-derived project authorization.
+## Provider boundary
 
-## Why Local Session Issuance Is Reused
-
-Google authenticates the external identity; `api.auth` authorizes local access.
-
-After a successful callback, route code reuses:
-
-1. local project access resolution,
-2. `issue_project_token_pair(...)`,
-3. `_set_token_pair_cookies(...)`,
-4. the existing `LoginResponse`,
-5. existing `session_token` and `refresh_token` cookie names.
-
-This avoids a parallel OAuth session model. `/auth/validate`, `/auth/refresh`, `/auth/logout`, and project switching continue to operate on local JWT/session state. Google access, refresh, and id token material is not persisted and is not needed after local session issuance.
-
-## Cookie Boundary
-
-- The short-lived OAuth transaction binding uses `SameSite=Lax` so browser redirects can complete.
-- Existing local `session_token` and `refresh_token` cookies are unchanged by this change.
-- No `__Host-` cookie rename is introduced here.
-
-## Companion Provider-Init Limitation
-
-The current `magic-worlds-api` provider-init implementation is in-memory. It is process-local, cleared on restart, and not safe across multiple stateless replicas unless routing is sticky or the store is replaced by a shared backend.
-
-## Residual Verification Caveats
-
-- Full-stack local e2e has a known `/auth/validate` caveat for OAuth-issued synthetic tokens until the test DB migration/session-validation path is resolved.
-- Trigger installation may be skipped on local MySQL when the test user lacks binlog trigger privileges; source/bootstrap validation still covers trigger definitions.
-- Pre-existing admin project-auth test failures are outside the Google OAuth docs scope.
+Google may sign in and link. Patreon is entitlement and link only: its proof, webhook,
+sync and S2S flows never issue local sessions (see
+[Patreon account linking](../patreon-link/README.md)). Both store their identity key in
+`user_external_accounts`, but only OAuth providers take part in the local session
+lifecycle.

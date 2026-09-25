@@ -21,17 +21,13 @@ BILLING_S2S_ENABLED_ENV = "BILLING_S2S_ENABLED"
 BILLING_CHECKOUT_ENABLED_ENV = "BILLING_CHECKOUT_ENABLED"
 BILLING_PORTAL_ENABLED_ENV = "BILLING_PORTAL_ENABLED"
 BILLING_SYNC_ENABLED_ENV = "BILLING_SYNC_ENABLED"
-BILLING_RAW_PAYLOAD_CAPTURE_ENABLED_ENV = "BILLING_RAW_PAYLOAD_CAPTURE_ENABLED"
 BILLING_S2S_BEARER_TOKEN_ENV = "BILLING_S2S_BEARER_TOKEN"
 BILLING_ID_HMAC_SECRET_ENV = "BILLING_ID_HMAC_SECRET"
 BILLING_PROVIDER_REF_ENCRYPTION_KEY_ENV = "BILLING_PROVIDER_REF_ENCRYPTION_KEY"
 BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID_ENV = "BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID"
 BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON_ENV = "BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON"
-BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ENV = "BILLING_RAW_PAYLOAD_ENCRYPTION_KEY"
-BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID_ENV = "BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID"
 BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS_ENV = "BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS"
 BILLING_RAW_PAYLOAD_RETENTION_DAYS_ENV = "BILLING_RAW_PAYLOAD_RETENTION_DAYS"
-BILLING_SYNC_STALE_AFTER_SECONDS_ENV = "BILLING_SYNC_STALE_AFTER_SECONDS"
 BILLING_S2S_RATE_LIMIT_ENV = "BILLING_S2S_RATE_LIMIT"
 BILLING_S2S_RATE_WINDOW_SECONDS_ENV = "BILLING_S2S_RATE_WINDOW_SECONDS"
 BILLING_RETURN_URL_ALLOWLIST_ENV = "BILLING_RETURN_URL_ALLOWLIST"
@@ -41,7 +37,6 @@ DEFAULT_BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
 MAX_BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
 DEFAULT_BILLING_RAW_PAYLOAD_RETENTION_DAYS = 30
 MAX_BILLING_RAW_PAYLOAD_RETENTION_DAYS = 30
-DEFAULT_BILLING_SYNC_STALE_AFTER_SECONDS = 24 * 60 * 60
 DEFAULT_BILLING_S2S_RATE_LIMIT = 120
 DEFAULT_BILLING_S2S_RATE_WINDOW_SECONDS = 60
 
@@ -57,17 +52,13 @@ class BillingConfig:
     checkout_enabled: bool = False
     portal_enabled: bool = False
     sync_enabled: bool = False
-    raw_payload_capture_enabled: bool = False
     s2s_bearer_token: str | None = field(default=None, repr=False)
     id_hmac_secret: str | None = field(default=None, repr=False)
     provider_ref_encryption_key: str | None = field(default=None, repr=False)
     provider_ref_encryption_key_id: str | None = None
     provider_ref_decryption_keys_json: str = field(default="{}", repr=False)
-    raw_payload_encryption_key: str | None = field(default=None, repr=False)
-    raw_payload_encryption_key_id: str | None = None
     webhook_delivery_retention_days: int = DEFAULT_BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS
     raw_payload_retention_days: int = DEFAULT_BILLING_RAW_PAYLOAD_RETENTION_DAYS
-    sync_stale_after_seconds: int = DEFAULT_BILLING_SYNC_STALE_AFTER_SECONDS
     s2s_rate_limit: int = DEFAULT_BILLING_S2S_RATE_LIMIT
     s2s_rate_window_seconds: int = DEFAULT_BILLING_S2S_RATE_WINDOW_SECONDS
     return_url_allowlist: tuple[str, ...] = ()
@@ -84,7 +75,7 @@ class BillingConfig:
 
     @property
     def disabled(self) -> bool:
-        return not any(self.primary_feature_flags.values()) and not self.raw_payload_capture_enabled
+        return not any(self.primary_feature_flags.values())
 
     @property
     def decryption_keys_by_id(self) -> dict[str, str]:
@@ -108,7 +99,6 @@ class BillingConfig:
             "checkout": self.checkout_enabled,
             "portal": self.portal_enabled,
             "sync": self.sync_enabled,
-            "raw_payload_capture": self.raw_payload_capture_enabled,
         }
         if normalized not in mapping:
             raise BillingConfigError(f"unknown billing feature flag: {normalized or '<empty>'}")
@@ -226,14 +216,11 @@ def load_billing_config(*, env: Mapping[str, str] | None = None) -> BillingConfi
         checkout_enabled=_bool(_get(values, BILLING_CHECKOUT_ENABLED_ENV), default=False),
         portal_enabled=_bool(_get(values, BILLING_PORTAL_ENABLED_ENV), default=False),
         sync_enabled=_bool(_get(values, BILLING_SYNC_ENABLED_ENV), default=False),
-        raw_payload_capture_enabled=_bool(_get(values, BILLING_RAW_PAYLOAD_CAPTURE_ENABLED_ENV), default=False),
         s2s_bearer_token=_get(values, BILLING_S2S_BEARER_TOKEN_ENV) or None,
         id_hmac_secret=_get(values, BILLING_ID_HMAC_SECRET_ENV) or None,
         provider_ref_encryption_key=_get(values, BILLING_PROVIDER_REF_ENCRYPTION_KEY_ENV) or None,
         provider_ref_encryption_key_id=_get(values, BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID_ENV) or None,
         provider_ref_decryption_keys_json=_get(values, BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON_ENV, "{}") or "{}",
-        raw_payload_encryption_key=_get(values, BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ENV) or None,
-        raw_payload_encryption_key_id=_get(values, BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID_ENV) or None,
         webhook_delivery_retention_days=_bounded_int(
             values,
             BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS_ENV,
@@ -246,7 +233,6 @@ def load_billing_config(*, env: Mapping[str, str] | None = None) -> BillingConfi
             DEFAULT_BILLING_RAW_PAYLOAD_RETENTION_DAYS,
             maximum=MAX_BILLING_RAW_PAYLOAD_RETENTION_DAYS,
         ),
-        sync_stale_after_seconds=_int(values, BILLING_SYNC_STALE_AFTER_SECONDS_ENV, DEFAULT_BILLING_SYNC_STALE_AFTER_SECONDS),
         s2s_rate_limit=_int(values, BILLING_S2S_RATE_LIMIT_ENV, DEFAULT_BILLING_S2S_RATE_LIMIT),
         s2s_rate_window_seconds=_int(values, BILLING_S2S_RATE_WINDOW_SECONDS_ENV, DEFAULT_BILLING_S2S_RATE_WINDOW_SECONDS),
         return_url_allowlist=parse_return_url_allowlist(return_urls),
@@ -282,13 +268,6 @@ def validate_billing_readiness(
         missing.append(BILLING_RETURN_URL_ALLOWLIST_ENV)
     if config.portal_enabled and not config.return_url_allowlist:
         missing.append(BILLING_RETURN_URL_ALLOWLIST_ENV)
-    if config.raw_payload_capture_enabled:
-        required.extend(
-            [
-                (BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ENV, config.raw_payload_encryption_key),
-                (BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID_ENV, config.raw_payload_encryption_key_id),
-            ]
-        )
 
     for name, value in required:
         if not value and name not in missing:
@@ -357,9 +336,6 @@ __all__ = [
     "BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON_ENV",
     "BILLING_PROVIDER_REF_ENCRYPTION_KEY_ENV",
     "BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID_ENV",
-    "BILLING_RAW_PAYLOAD_CAPTURE_ENABLED_ENV",
-    "BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ENV",
-    "BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID_ENV",
     "BILLING_RAW_PAYLOAD_RETENTION_DAYS_ENV",
     "BILLING_RETURN_URL_ALLOWLIST_ENV",
     "BILLING_S2S_BEARER_TOKEN_ENV",
@@ -367,7 +343,6 @@ __all__ = [
     "BILLING_S2S_RATE_LIMIT_ENV",
     "BILLING_S2S_RATE_WINDOW_SECONDS_ENV",
     "BILLING_SYNC_ENABLED_ENV",
-    "BILLING_SYNC_STALE_AFTER_SECONDS_ENV",
     "BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS_ENV",
     "BillingConfig",
     "BillingConfigError",

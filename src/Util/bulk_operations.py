@@ -6,9 +6,10 @@ in the authentication system for efficient mass management.
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.Util.activity_logger import log_activity, ActivityType
+from src.Util.admin_scope import AdminScope, user_in_scope
 from src.Util.db import (
     get_user_by_hash, update_user, delete_user, get_project_by_hash
 )
@@ -59,6 +60,26 @@ def _record_failure(results: Dict[str, Any], item: Dict[str, Any], error: str) -
     results["results"].append({**item, "success": False, "error": error})
 
 
+def _target_denial(scope: Optional[AdminScope], actor_id: Any, user: Any, *, removal: Optional[str]) -> Optional[str]:
+    """Why the caller may not change ``user`` in a bulk request, or None when allowed.
+
+    ``removal`` names the action ("deactivate", "delete") when the change takes the
+    account away; nobody may do that to themselves. Non-root callers may only touch
+    non-root users inside their administrative scope. Without a scope nothing is checked.
+    """
+    if scope is None:
+        return None
+    if removal and str(user.id) == str(actor_id):
+        return f"Cannot {removal} your own account"
+    if scope.is_root:
+        return None
+    if user.user_type == 'root':
+        return "Root users are outside your administrative scope"
+    if not user_in_scope(scope, user.id, user.user_type):
+        return "User not in your administrative scope"
+    return None
+
+
 def _record_operation_failure(results: Dict[str, Any], operation: str, error: str) -> None:
     """Record a failure that stopped the whole batch rather than one item."""
     results["failed"] += 1
@@ -72,13 +93,17 @@ class BulkOperations:
     """
 
     @staticmethod
-    def bulk_update_users(user_updates: List[Dict[str, Any]], updated_by: int = None) -> Dict[str, Any]:
+    def bulk_update_users(user_updates: List[Dict[str, Any]], updated_by: int = None,
+                          scope: Optional[AdminScope] = None) -> Dict[str, Any]:
         """
         Update multiple users in a single operation
         
         Args:
             user_updates: List of user update dictionaries
             updated_by: ID of user performing the operation
+            scope: Caller's admin scope; when given, users the caller may not manage
+                (root users for non-root callers, users outside the scope, the caller
+                deactivating itself) fail individually and are left unchanged
             
         Returns:
             Operation results with success/failure counts
@@ -179,6 +204,14 @@ class BulkOperations:
                             })
                             continue
 
+                        denial = _target_denial(
+                            scope, updated_by, user,
+                            removal="deactivate" if status_update_requested and is_active is False else None,
+                        )
+                        if denial:
+                            _record_failure(results, {"user_hash": user_hash}, denial)
+                            continue
+
                         updated_user = user
                         if profile_update_requested:
                             updated_user = update_user(
@@ -272,19 +305,23 @@ class BulkOperations:
         return results
 
     @staticmethod
-    def bulk_delete_users(user_hashes: List[str], deleted_by: int = None) -> Dict[str, Any]:
+    def bulk_delete_users(user_hashes: List[str], deleted_by: int = None,
+                          scope: Optional[AdminScope] = None) -> Dict[str, Any]:
         """
         Delete multiple users in a single operation
         
         Args:
             user_hashes: List of user hashes to delete
             deleted_by: ID of user performing the operation
+            scope: Caller's admin scope; when given, users the caller may not manage
+                (users outside the scope, the caller itself) fail individually
             
         Returns:
             Operation results with success/failure counts; root users are skipped and
-            counted in ``protected_count``
+            counted in ``protected_count``. Deleted users have their sessions and refresh
+            families revoked; a revocation failure is reported in ``warnings``.
         """
-        results = _bulk_results(len(user_hashes), deleted_users=[], protected_count=0)
+        results = _bulk_results(len(user_hashes), deleted_users=[], protected_count=0, warnings=[])
 
         try:
             with get_connection() as con:
@@ -305,9 +342,25 @@ class BulkOperations:
                             _record_failure(results, item, "Cannot bulk delete root users")
                             continue
 
+                        denial = _target_denial(scope, deleted_by, user, removal="delete")
+                        if denial:
+                            _record_failure(results, item, denial)
+                            continue
+
                         # Delete user
                         if delete_user(user.id, deleted_by=deleted_by):
                             _record_success(results, item)
+                            try:
+                                from src.Util.auth_lifecycle import revoke_user_auth_state
+
+                                revoke_user_auth_state(str(user.id), reason="bulk_user_deleted")
+                            except Exception as revoke_error:
+                                # The account is inactive, so its tokens are refused anyway.
+                                results["warnings"].append({
+                                    "user": user_hash,
+                                    "warning": "Deleted, but session revocation failed",
+                                })
+                                logger.error(f"Bulk delete auth revocation error for user {user_hash}: {revoke_error}")
                             results["deleted_users"].append({
                                 "user_hash": user_hash,
                                 "username": user.username,
@@ -562,14 +615,16 @@ bulk_operations = BulkOperations()
 
 
 # Convenience functions
-def bulk_update_users(user_updates: List[Dict[str, Any]], updated_by: int = None) -> Dict[str, Any]:
+def bulk_update_users(user_updates: List[Dict[str, Any]], updated_by: int = None,
+                      scope: Optional[AdminScope] = None) -> Dict[str, Any]:
     """Bulk update users"""
-    return bulk_operations.bulk_update_users(user_updates, updated_by)
+    return bulk_operations.bulk_update_users(user_updates, updated_by, scope=scope)
 
 
-def bulk_delete_users(user_hashes: List[str], deleted_by: int = None) -> Dict[str, Any]:
+def bulk_delete_users(user_hashes: List[str], deleted_by: int = None,
+                      scope: Optional[AdminScope] = None) -> Dict[str, Any]:
     """Bulk delete users"""
-    return bulk_operations.bulk_delete_users(user_hashes, deleted_by)
+    return bulk_operations.bulk_delete_users(user_hashes, deleted_by, scope=scope)
 
 
 def bulk_assign_roles(project_hash: str, role_assignments: List[Dict[str, Any]], assigned_by: int = None) -> Dict[

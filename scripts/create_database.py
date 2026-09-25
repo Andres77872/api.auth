@@ -97,6 +97,7 @@ BILLING_PROVIDER_FACT_FILES = [
 # is referenced at run time by the external-account triggers and procedures above.
 OAUTH_CONNECTION_FILES = [
     'tables/13_oauth_connections.sql',  # schemas/tables/13_oauth_connections.sql
+    'tables/14_assistant.sql',  # root-only assistant and LangGraph persistence
     'stored_procedures/19_oauth_connections.sql',  # schemas/stored_procedures/19_oauth_connections.sql
     'triggers/08_oauth_connections_triggers.sql',  # schemas/triggers/08_oauth_connections_triggers.sql
 ]

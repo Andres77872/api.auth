@@ -213,9 +213,13 @@ END$$
 DROP PROCEDURE IF EXISTS sp_delete_user$$
 CREATE PROCEDURE sp_delete_user(IN p_user_id VARCHAR(64))
 BEGIN
+    DECLARE v_users_affected INT DEFAULT 0;
     UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = p_user_id AND is_active = 1;
+    -- Report the users row, not the memberships: a user without active group
+    -- memberships is still deactivated (1 = deleted, 0 = unknown or already inactive).
+    SET v_users_affected = ROW_COUNT();
     UPDATE user_group_members SET is_active = 0, removed_at = NOW() WHERE user_id = p_user_id AND is_active = 1;
-    SELECT ROW_COUNT() as rows_affected;
+    SELECT v_users_affected as rows_affected;
 END$$
 
 -- ===================================================================================

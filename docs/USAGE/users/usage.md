@@ -1,220 +1,138 @@
-# Users Usage
+# Users usage
 
-Practical usage guide for operating user-management endpoints in `api.auth`.
+How to do common user-management tasks. Examples use `http://localhost:8000` and an access token in
+`$TOKEN` (any user), `$ADMIN_TOKEN` (root or admin) or `$ROOT_TOKEN` (root). Field, response and
+error tables are in the [reference](reference.md); who may act on whom is in
+[Caller rules](reference.md#caller-rules).
 
----
+## Your own account
 
-## Table of Contents
-
-- [Route Ownership and Authentication](#route-ownership-and-authentication)
-- [Profile Operations](#profile-operations)
-- [Access Summary](#access-summary)
-- [List and Search Users](#list-and-search-users)
-- [Inspect and Update a Specific User](#inspect-and-update-a-specific-user)
-- [Status, Password Reset, and Deletion](#status-password-reset-and-deletion)
-- [Email Management](#email-management)
-- [What `/users/*` Does Not Manage](#what-users-does-not-manage)
-
----
-
-## Route Ownership and Authentication
-
-The users surface is split across three route families:
-
-| Concern | Route Family | Notes |
-|--------|--------------|-------|
-| Self-service profile and access summary | `/users/profile`, `/users/access-summary` | Any authenticated user |
-| Self-service email management | `/users/me/emails`, `/users/me/emails/{id}/resend`, `/users/me/emails/{id}`, `/users/me/emails/{id}/primary` | Any authenticated user; full lifecycle in [email-management.md](email-management.md) |
-| Admin/root user operations | `/users/list`, `/users/{hash}`, `/users/{hash}/status`, `/users/{hash}/reset-password`, `/users/{hash}`, `/users/{hash}/emails`, `/users/{hash}/emails/{id}/resend` | Root is global; admin visibility is mostly project-scoped |
-| Type lifecycle and root-only creation | `/user-types/*` | Covered in [user-types.md](user-types.md) |
-
-Request-shape reality:
-
-- `PUT /users/profile` and `PUT /users/{hash}` use form fields
-- `PUT /users/{hash}/status` uses query parameter `is_active`
-- `GET` endpoints use query parameters
-
----
-
-## Profile Operations
-
-### Get current profile
+### Read your profile
 
 ```bash
-curl -X GET "http://localhost:8000/users/profile" \
+curl "http://localhost:8000/users/profile" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-What this does in the repo:
+Returns your account fields, `user_type_info`, your user groups, and the projects you can reach,
+each with your effective `permissions` there. The access summary below also shows which groups grant
+each project.
 
-- loads the current `users` row by `user_hash`
-- loads `get_user_type_info(user.id)` for capability metadata
-- loads current user groups through `get_user_groups_for_user()`
-- loads accessible projects through `get_user_accessible_projects()`
-- adds per-project effective permissions with `get_user_effective_permissions()`
+### See what you can reach and why
 
-The response is intentionally richer than a plain account record. It is an operational snapshot of the user, their memberships, and their reachable projects.
+```bash
+curl "http://localhost:8000/users/access-summary" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-### Update current profile
+Returns `access_summary` with each user group (and how many projects it reaches) and each reachable
+project with the groups that grant it and your effective permissions there. This is the first call to
+make when someone says "I can sign in but cannot see project X". `current_session` only carries the
+session's `project_hash`.
+
+### Change your username
 
 ```bash
 curl -X PUT "http://localhost:8000/users/profile" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_username&email=new@example.com"
+  --data-urlencode "username=new_username"
 ```
 
-Operational notes:
+Send `username`, `email` or both. `email` here only overwrites the legacy `users.email` column; it is
+not verified and cannot be used to sign in. To add a real address, see
+[User email management](email-management.md). Password fields are rejected with `400`; change a
+password with `POST /auth/password/change` ([Authentication usage](../authentication-usage-cases.md)).
 
-- at least one of `username` or `email` must be present
-- the route updates the current user only; it does not let users self-change `user_type`
-- password-equivalent fields are rejected; use `POST /auth/password/change` for authenticated password rotation
-- successful updates invalidate user cache through the DB layer
+Your sessions stay valid, including the one you used. Sessions keep the username they were issued
+with, so `/auth/validate` shows a new username after your next sign-in. The same holds for the target
+user when an admin updates their username or email.
 
----
+## Find users
 
-## Access Summary
-
-`GET /users/access-summary` is the best operator-facing endpoint when you need the full "why can this user reach these projects?" view.
-
-```bash
-curl -X GET "http://localhost:8000/users/access-summary" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-What it assembles:
-
-- current user identity and `user_type`
-- user-group memberships and assignment metadata
-- accessible projects resolved through the groups-of-groups chain
-- effective permissions per project
-- current session project context summary
-
-Use this when a user says "I can log in but I don't know what I actually have access to".
-
----
-
-## List and Search Users
-
-### List users with filters
+### List users
 
 ```bash
-curl -X GET "http://localhost:8000/users/list?limit=25&offset=0&sort_by=username&sort_order=asc&user_type_filter=consumer&include_inactive=false" \
+curl "http://localhost:8000/users/list?limit=25&offset=0&sort_by=created_at&sort_order=desc&user_type_filter=consumer&project_filter=$PROJECT_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Useful filters:
+Root sees everyone. An admin sees themselves plus non-root users sharing a project with them. Each item has
+the user's groups and projects with effective permissions unless you turn those off with
+`include_group_info=false` or `include_project_access=false`.
 
-- `search`
-- `user_type_filter`
-- `group_filter`
-- `project_filter`
-- `include_inactive`
-- `include_group_info`
-- `include_project_access`
+> [!NOTE]
+> `pagination.total` ignores `search`, `group_filter`, `project_filter` and admin scoping, and admin
+> filtering happens after the page is read, so an admin's page can be short or even empty before the
+> end. To read everything, keep increasing `offset` by `limit` until it reaches `pagination.total`.
 
-Operational behavior from the route code:
-
-- **root** sees the full result set
-- **admin** can only keep users who share at least one accessible project with the admin, except the admin can always see themselves
-- user groups and projects are hydrated from aggregated JSON returned by `sp_list_users_with_access`
-- `pagination.total` comes from `count_users()` and **does not include group/project filters**, so it can overstate the effective admin-visible result set
-
-### Quick search
+### Search users
 
 ```bash
-curl -X GET "http://localhost:8000/users/search/query?q=john&user_type_filter=consumer&limit=50" \
+curl "http://localhost:8000/users/search/query?q=jane&user_type_filter=consumer&limit=20" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Important caveat:
+Matches active users by username or legacy email substring. `limit` is capped at `100`. Admins only
+get non-root users in their assigned projects (and themselves), and that filter runs after `limit`.
 
-- this endpoint checks that the caller is admin/root, but unlike `GET /users/list` it does **not** apply the same explicit project-overlap filter in route code
-- treat it as a faster lookup endpoint, not a perfect mirror of list scoping
-
----
-
-## Inspect and Update a Specific User
-
-### Get user details
+### Inspect a user
 
 ```bash
-curl -X GET "http://localhost:8000/users/$USER_HASH?include_group_hierarchy=true&include_permission_details=true" \
+curl "http://localhost:8000/users/$USER_HASH?include_group_hierarchy=true&include_permission_details=true" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Behavior:
+Anyone can read their own record. Root can read anyone; an admin can read non-root users who share a
+project with them, otherwise `403`. The account is in `user`, with per-project `effective_permissions` and
+`access_groups`.
 
-- users may inspect their own record
-- root may inspect any user
-- admin may inspect users only when there is project overlap between the admin's accessible projects and the target user's accessible projects
+## Change a user
 
-The detail response is built from:
-
-- base user record
-- `get_user_type_info()`
-- user-group memberships
-- accessible projects
-- optional per-project effective permissions and access-group breakdown
-
-### Update user details
+### Update a username or legacy email
 
 ```bash
 curl -X PUT "http://localhost:8000/users/$USER_HASH" \
-  -H "Authorization: Bearer $ROOT_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=updated_user&email=updated@example.com"
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  --data-urlencode "username=jane.doe"
 ```
 
-Operational rules:
+Root, or an admin sharing a project with a non-root user. Send at least one of `username`, `email`,
+`user_type`; only root may send `user_type` (see [User types](user-types.md#change-a-users-type)).
+A taken username returns `409` (`CONF_5004`). The user's sessions stay valid unless `user_type`
+changes, which signs them out everywhere.
 
-- root or admin may update username/email
-- admin must still satisfy project-overlap checks
-- only **root** may send `user_type`
-- if no fields are provided, the route rejects the request
-
-If you need a type change that also enforces admin-project assignment rules, use the stricter `/user-types/{hash}/type` route documented in [user-types.md](user-types.md).
-
----
-
-## Status, Password Reset, and Deletion
-
-### Activate or deactivate a user
+### Deactivate a user
 
 ```bash
 curl -X PUT "http://localhost:8000/users/$USER_HASH/status?is_active=false" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Important behavior:
+- Root, or an admin sharing a project with a non-root user (`403` otherwise). Nobody can deactivate
+  themselves (`400`).
+- Returns `user_hash` and `is_active: false`. The account is deactivated and its sessions and
+  refresh tokens are revoked; group memberships are kept (soft delete also deactivates them).
+- No route reactivates an account: an inactive user is not found by the status route (`404`) or by
+  bulk update. Plan deactivations accordingly.
+- To deactivate many users, use [bulk update](bulk-operations.md).
 
-- root can change any user's status
-- admin can change status only for users in overlapping accessible projects
-- non-root users cannot deactivate root users
-- users cannot deactivate themselves
-- **deactivation** triggers both `invalidate_user_sessions()` and `cache_manager.invalidate_user_cache()`
-
-That means this is the main emergency lockout path.
-
-### Queue an admin password-reset link
+### Send a password-reset link
 
 ```bash
 curl -X POST "http://localhost:8000/users/$USER_HASH/reset-password" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-This is a body-less POST (no form/JSON fields are read).
-
-What the code actually does:
-
-- admin/root only
-- refuses to reset `root` user passwords
-- creates hash-only `admin_password_reset` link-token metadata
-- enqueues a reset-link email through the durable outbox when the target has a primary activated email
-- returns accepted metadata and safe instructions
-- **does not return or generate a visible temporary password**; no reset token, reset URL, full email, subject/body, or provider payload is exposed
-
-Do not expect a temporary password in the JSON body. Clients that still depend on that legacy behavior must migrate to the reset-link flow.
+- Root, or an admin for users in their assigned projects (and themselves). Root targets are refused
+  with `400`.
+- No body. No password is set and none is returned. The link goes to the user's primary activated
+  address, else their earliest-activated one. The user finishes with `POST /auth/password/reset`
+  and then signs in again.
+- The link works once, and not after `EMAIL_PASSWORD_RESET_TOKEN_TTL_SECONDS` (default `3600`).
+- `reset_data.has_delivery_target` is `false` when the user has no activated address; nothing is
+  sent. The response does not include the token, the link or the address.
+- Rate limited per target user, per calling admin and per IP (`429` with `Retry-After`); see
+  [Settings](reference.md#settings).
 
 ### Soft-delete a user
 
@@ -223,140 +141,41 @@ curl -X DELETE "http://localhost:8000/users/$USER_HASH" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Delete behavior in the repo:
+- Root, or an admin sharing a project with a non-root user. Nobody can delete themselves.
+- The account and its active group memberships are deactivated; the row, email addresses and history
+  stay. Sessions and refresh tokens are revoked.
 
-- this is a soft delete (`users.is_active = 0`)
-- `sp_delete_user` also deactivates active `user_group_members` rows for that user
-- the route invalidates Redis sessions and user cache after deletion
-- users cannot delete themselves
-- non-root users cannot delete root users
-
-### Permanently delete a user (ROOT only)
+### Permanently delete a user
 
 ```bash
 curl -X DELETE "http://localhost:8000/users/$USER_HASH/hard" \
   -H "Authorization: Bearer $ROOT_TOKEN"
 ```
 
-This is a destructive deep-clean operation, not the normal offboarding path:
+> [!CAUTION]
+> Hard delete is irreversible and root-only. Use deactivation or soft delete for offboarding, and
+> reserve this for an explicit permanent-removal requirement, such as freeing an address for a new
+> account.
 
-- only a root may call it, and a root cannot delete their own account;
-- inactive/soft-deleted users may still be targeted;
-- the user row and owned identity content are permanently removed through
-  foreign-key cascade;
-- the user's email rows are released for future registration;
-- shared projects and user groups are preserved with ownership cleared;
-- lingering sessions and cache state are revoked after the database deletion.
+- Root only (`403` for anyone else). A root cannot delete their own account (`400`), but any other
+  user can be targeted, including other roots and already soft-deleted users.
+- The `users` row is deleted. Foreign-key cascades remove what the user owns: sessions, API keys,
+  email addresses and link tokens, external sign-in links, group memberships, direct permission-group
+  grants and billing or Patreon records. Audit and ownership references are set to `NULL`; projects
+  and user groups the user created are kept with no owner.
+- The user's addresses become available for another account to activate.
+- The response's `removed` block summarizes the deletion (`emails_unlinked` counts the addresses
+  that were not already removed).
 
-Use status deactivation or soft delete for recoverable operational lockout.
-Reserve hard delete for an explicit permanent-removal requirement.
+## Other tasks
 
----
-
-## Email Management
-
-A user can hold multiple emails. The `/users/me/emails*` group is self-service
-(any authenticated user, acting on their own `user_id`); the
-`/users/{user_hash}/emails*` group is root/admin only. Email is optional — these
-routes only matter when a user wants email login or recovery. Full lifecycle
-detail (status model, owner vs admin field views, response examples) lives in
-[email-management.md](email-management.md).
-
-### List your emails
-
-```bash
-curl -X GET "http://localhost:8000/users/me/emails" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Returns the caller's `user_emails` rows in the owner view (includes the
-normalized `email`, `email_masked`, `status`, `is_primary`, and lifecycle
-timestamps).
-
-### Add an email (enqueue activation)
-
-```bash
-curl -X POST "http://localhost:8000/users/me/emails" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Idempotency-Key: $(uuidgen)" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "email=new@example.com"
-```
-
-The `email` field may be form or JSON. The route adds/reuses a `pending` row,
-enqueues a hash-only activation link, and returns a generic `202`.
-
-### Resend activation
-
-```bash
-curl -X POST "http://localhost:8000/users/me/emails/$EMAIL_ID/resend" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Remove an email / change the primary email
-
-```bash
-curl -X DELETE "http://localhost:8000/users/me/emails/$EMAIL_ID" \
-  -H "Authorization: Bearer $TOKEN"
-
-curl -X POST "http://localhost:8000/users/me/emails/$EMAIL_ID/primary" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Key operational behavior from the route code:
-
-- **Generic `202`** is returned by add/resend regardless of whether a row
-  actually changed; enqueue failures are swallowed and still return `202`. You
-  cannot infer existence or delivery from the body.
-- **`429 + Retry-After`** is the only detailed public response (rate limiter and
-  resend cooldown). The resend cooldown is `EMAIL_RESEND_COOLDOWN_SECONDS`
-  (default **60s**).
-- **`Idempotency-Key`** (optional) is honored on `POST /users/me/emails` and the
-  owner resend; the admin resend does not read it.
-- **Session revocation**: removing an email (reason `email_removed`) or setting a
-  new primary (reason `email_primary_changed`) revokes the user's *other*
-  sessions while preserving the current one when possible. Other devices must
-  re-authenticate.
-
-### Admin/root email endpoints
-
-```bash
-# List a target user's emails (masked/hash-only view)
-curl -X GET "http://localhost:8000/users/$USER_HASH/emails" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Re-trigger activation for a target user's email
-curl -X POST "http://localhost:8000/users/$USER_HASH/emails/$EMAIL_ID/resend" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-The admin list view never returns the plaintext address (only `email_masked` and
-`email_hash`). The admin resend returns a generic `202` and is subject to the
-same rate limit and cooldown.
-
----
-
-## What `/users/*` Does Not Manage
-
-Do **not** use the `/users/*` routes for these tasks:
-
-- **add/remove user from user groups** → use `/admin/user-groups/.../members`
-- **grant/revoke project reach** → use user-group ↔ project-group wiring in the groups suite
-- **assign/remove global role** → use `/roles/users/{user_hash}/role`
-- **assign/remove permission groups** → use `/permissions/...`
-
-In other words: `/users/*` manages the user entity and its immediate lifecycle. Access topology lives elsewhere.
-
----
-
-## Related Documentation
-
-- **[Users Overview](README.md)**
-- **[Email Management](email-management.md)**
-- **[User Types](user-types.md)**
-- **[Bulk Operations](bulk-operations.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+| Task | Where |
+| --- | --- |
+| Add, activate, remove or re-point email addresses | [User email management](email-management.md) |
+| Create root or admin users, change types, assign admin projects | [User types](user-types.md) |
+| Deactivate or delete many users at once | [Bulk user operations](bulk-operations.md) |
+| Add or remove a user from a user group | `/admin/user-groups/{group_hash}/members` in the [groups suite](../groups/README.md) |
+| Grant a group access to projects | User group to project group links in the [groups suite](../groups/README.md) |
+| Assign a global role | `/roles/users/{user_hash}/role` in the [roles suite](../roles/README.md) |
+| Grant permission groups directly | `/permissions/users/{user_hash}/permission-groups` in the [permissions suite](../permissions/README.md) |
+| Sign in, refresh, switch project, change a password | [Authentication usage](../authentication-usage-cases.md) |

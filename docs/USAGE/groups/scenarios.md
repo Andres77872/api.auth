@@ -1,177 +1,150 @@
-# Groups Scenarios and Examples
+# Groups scenarios
 
-Concrete examples for operating the groups system in this repository.
+End-to-end workflows. Each step's fields and responses are in [reference.md](reference.md); the
+individual requests are explained in [usage.md](usage.md). `$TOKEN` belongs to a root user or to a
+session that carries `admin` (both prefixes), or `manage_users` plus `manage_roles`.
 
----
+## Onboard a team
 
-## Scenario 1: Onboard a New Team
-
-Goal: create a team, grant it project access, and give it reusable permissions.
+Goal: a new team can sign in to a set of projects.
 
 ```bash
-# 1. Create the team bucket
+# 1. Create the team
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=qa_team&description=Quality assurance team"
+  --data-urlencode "group_name=qa_team" \
+  --data-urlencode "description=Quality assurance"
+# -> user_group.group_hash = $QA_TEAM
 
 # 2. Create the project container
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=qa_projects&description=QA and test environments"
+  --data-urlencode "group_name=qa_projects"
+# -> project_group.group_hash = $QA_PROJECTS
 
-# 3. Add projects to the container
-curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
+# 3. Put the projects in it (repeat per project)
+curl -X POST "http://localhost:8000/admin/project-groups/$QA_PROJECTS/projects" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$TEST_PROJECT_HASH"
+  -d "project_hash=$TEST_PROJECT"
 
-# 4. Grant team access to that project container
-curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
+# 4. Grant the team the container
+curl -X POST "http://localhost:8000/admin/user-groups/$QA_TEAM/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$PROJECT_GROUP_HASH"
+  -d "project_group_hash=$QA_PROJECTS"
 
-# 5. Assign reusable permissions to the team
-curl -X POST "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_group_hash=$PERMISSION_GROUP_HASH"
-
-# 6. Add people
-curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/bulk" \
+# 5. Add the people
+curl -X POST "http://localhost:8000/admin/user-groups/$QA_TEAM/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"user_hashes": ["usr-qa1", "usr-qa2", "usr-qa3"]}'
+  -d '{"user_hashes": ["'"$QA_1"'", "'"$QA_2"'", "'"$QA_3"'"]}'
+
+# 6. Verify
+curl "http://localhost:8000/admin/user-groups/$QA_TEAM" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Outcome:
-- users inherit access to all projects in the QA project group
-- users inherit team-level permissions through the permission group
+Outcome: `accessible_projects` in step 6 lists every active, non-archived project in
+`qa_projects`, and each consumer member can log in with any of those `project_hash` values. Steps
+3 to 5 can run in any order; access exists once all three links are in place. Admin users log in
+only to projects they are assigned to administer, so group membership alone does not let them in.
 
----
+What users may do inside a project comes from their global role, not from this wiring. See the
+[permissions suite](../permissions/README.md).
 
-## Scenario 2: Give Temporary Contractor Access
+## Give temporary contractor access
 
-Goal: isolate temporary access so cleanup is easy.
+Goal: time-boxed access that is removed in one call.
 
 ```bash
-# 1. Create a clearly time-bounded user group
+# 1. A dedicated, clearly named group
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=contractors_q2_2026&description=Contractors through June 2026"
+  --data-urlencode "group_name=contractors_2026_q4" \
+  --data-urlencode "description=Contractors through December 2026"
 
-# 2. Grant only the limited project group they need
-curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/project-groups" \
+# 2. Grant only the limited project group
+curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTORS/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$LIMITED_PROJECT_GROUP_HASH"
+  -d "project_group_hash=$LIMITED_PROJECTS"
 
 # 3. Add the contractors
-curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/members/bulk" \
+curl -X POST "http://localhost:8000/admin/user-groups/$CONTRACTORS/members/bulk" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"user_hashes": ["usr-contractor1", "usr-contractor2"]}'
+  -d '{"user_hashes": ["'"$CONTRACTOR_1"'", "'"$CONTRACTOR_2"'"]}'
 
-# 4. Revoke access at the end of the engagement
-curl -X DELETE "http://localhost:8000/admin/user-groups/$CONTRACTOR_GROUP_HASH/project-groups/$LIMITED_PROJECT_GROUP_HASH" \
+# 4. At the end of the engagement, revoke the grant
+curl -X DELETE "http://localhost:8000/admin/user-groups/$CONTRACTORS/project-groups/$LIMITED_PROJECTS" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Why this pattern works:
-- cleanup happens in one place
-- naming communicates expiration intent
-- contractors never need to share a permanent internal group
-- the revoke in step 4 also terminates the contractors' live sessions for those projects (`reason="user_group_project_group_access_revoked"`), so they are logged out immediately rather than retaining access until their tokens expire
+Step 4 revokes the contractors' sessions and refresh-token families for the lost projects at once
+(reason `user_group_project_group_access_revoked`); they do not keep access until token expiry.
+A contractor who also belongs to another group that reaches the same project keeps that session.
 
----
+API keys the contractors own may keep validating for up to `60` seconds, the API-key validation
+cache lifetime. To cut them off immediately, revoke the keys as well
+([API keys usage](../api-keys/usage.md)).
 
-## Scenario 3: Platform Team With Access to Multiple Domains
+## One team across several project domains
 
-Goal: one team, multiple project containers.
+Goal: one user group reaches the projects of several project groups.
 
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=platform_team&description=Platform engineering"
+for PG in "$AUTH_SERVICES" "$DATA_SERVICES" "$ADMIN_PORTALS"; do
+  curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_TEAM/project-groups" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d "project_group_hash=$PG"
+done
 
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$AUTH_SERVICES_GROUP"
-
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$DATA_SERVICES_GROUP"
-
-curl -X POST "http://localhost:8000/admin/user-groups/$PLATFORM_GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$ADMIN_PORTALS_GROUP"
+curl "http://localhost:8000/admin/user-groups/$PLATFORM_TEAM/project-groups" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Outcome: all members of one user group inherit access to all projects across all three containers.
+Outcome: members reach the union of the three groups' projects. Removing one domain later is a
+single revoke; the other grants are unaffected.
 
----
+## Use a project's default groups
 
-## Scenario 4: Understand Project Creation Defaults
+Goal: add users to a project without building new groups.
 
-Goal: avoid recreating access scaffolding manually when the system already does part of it.
-
-When a new project is created, `create_default_groups()` automatically creates:
-
-- one default project group for that project
-- three default user groups tied to the project id:
-  - `admin_{project_id}`
-  - `user_{project_id}`
-  - `readonly_{project_id}`
-- links between those user groups and the default project group
-
-Use this when:
-- you want a quick project bootstrap
-- your operational model maps well to the default admin/user/readonly split
-
-Do **not** immediately duplicate those groups unless you have a reason. First verify whether the generated defaults already match the use case.
-
----
-
-## Scenario 5: Deprovision a Team Safely
-
-Goal: remove access without accidentally leaving stale memberships behind.
-
-Recommended order:
-
-1. List members and project-group links
-2. Confirm the team is no longer needed
-3. Revoke project-group links if you want a staged rollback
-4. Soft-delete the user group only when the team should be fully retired
-
-Useful commands:
+Every project is created with `user_<project_id>`, `readonly_<project_id>` and
+`admin_<project_id>` user groups already granted its `default_<project_id>` project group
+([Projects](../projects/README.md#key-concepts)). They start empty.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
+# 1. Find the default group hashes (root, or an admin assigned to the project)
+curl "http://localhost:8000/projects/$PROJECT_HASH/groups" \
   -H "Authorization: Bearer $TOKEN"
 
-curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
+# 2. Add a consumer to user_<project_id>
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_OF_PROJECT/members" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "user_hash=$USER_HASH"
+```
+
+The `admin_<project_id>` group is root-only through these routes. Assign admin users with
+`PUT /user-types/admin/{user_hash}/projects` instead ([user types](../users/user-types.md)).
+`user_` and `readonly_` grant the same project reach; the names carry no permission difference.
+
+## Deprovision a team
+
+Goal: retire a team without leaving access behind.
+
+```bash
+# 1. Review what the team reaches and who is in it
+curl "http://localhost:8000/admin/user-groups/$TEAM" \
   -H "Authorization: Bearer $TOKEN"
 
-curl -X DELETE "http://localhost:8000/admin/user-groups/$GROUP_HASH" \
+# 2. Optional staged rollback: revoke grants one at a time
+curl -X DELETE "http://localhost:8000/admin/user-groups/$TEAM/project-groups/$PROJECT_GROUP" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Retire the group
+curl -X DELETE "http://localhost:8000/admin/user-groups/$TEAM" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Remember: delete is a soft-delete, but it still deactivates memberships and user-group-to-project-group links — and it actively revokes affected members' live project sessions (`reason="user_group_deleted"`), so they will be logged out and must re-authenticate.
-
----
-
-## Related Documentation
-
-- **[Groups Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+Step 3 deactivates every membership and grant of the group and revokes the members' sessions for
+projects they no longer reach (reason `user_group_deleted`). A deleted group cannot be restored
+through the API and its name stays reserved, so a later team needs a new name.

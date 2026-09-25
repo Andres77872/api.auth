@@ -322,9 +322,8 @@ async def get_project_details(
 
     **Responses:** 401 missing, invalid or expired access token; 403 no access to this project;
     404 unknown or deleted project.
-    \f
-    Developer note: ``statistics`` comes from ``get_project_stats()``, whose result-set parsing does not
-    match the column layout of ``sp_get_project_statistics``; the values are unreliable until that is fixed.
+    `statistics` reports group-based access counts; `active_sessions` is null because
+    the statistics procedure does not measure sessions.
     """
     session_token = credentials.credentials
     session_data = validate_session(session_token)
@@ -817,9 +816,8 @@ async def get_detailed_project_stats(
 
     **Responses:** 401 missing, invalid or expired access token; 403 no access to this project;
     404 unknown or deleted project.
-    \f
-    Developer note: ``get_project_stats()`` reads ``sp_get_project_statistics`` result sets in an order that
-    does not match the procedure's columns, so the ``statistics`` values are unreliable until that is fixed.
+    `statistics` reports group-based access counts; `active_sessions` is null because
+    the statistics procedure does not measure sessions.
     """
     session_token = credentials.credentials
     session_data = validate_session(session_token)

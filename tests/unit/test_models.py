@@ -352,3 +352,29 @@ class TestProjectEntity:
             project_created=now,
         )
         assert project.project_description == "A test project"
+
+
+class TestBillingOpaqueRefs:
+    """Customer refs are issued as `bcust-...` (older webhook rows: `bcustref-...`).
+
+    The S2S status model used to reject both, and the route then answered paying users
+    with the free default.
+    """
+
+    @pytest.mark.parametrize(
+        "customer_ref",
+        ["bcust-0123456789abcdef0123456789abcdef", "bcustref-0123456789abcdef01234567", "bcu-legacy"],
+    )
+    def test_issued_customer_ref_formats_are_accepted(self, customer_ref):
+        from src.Util.Models import BillingSafeStatus
+
+        status = BillingSafeStatus(status="active", plan_code="plus", customer_ref=customer_ref, subscription_ref="bsub-1")
+
+        assert status.customer_ref == customer_ref
+
+    @pytest.mark.parametrize("customer_ref", ["cus_test_fixture_project_001", "customer-1", "bcustomer-1"])
+    def test_raw_or_unknown_refs_are_still_rejected(self, customer_ref):
+        from src.Util.Models import BillingSafeStatus
+
+        with pytest.raises(ValidationError):
+            BillingSafeStatus(customer_ref=customer_ref)

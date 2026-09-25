@@ -1,422 +1,217 @@
-# Audit Logs Usage
+# Audit logs usage
 
-Practical usage guide for operating the audit and activity logging systems in `api.auth`.
+One task per section. Parameter ranges, response fields and error codes are in
+[reference.md](reference.md). All examples need a root or admin access token in `$ADMIN_TOKEN`.
 
----
+## Pick the right endpoint
 
-## Table of Contents
+| Question | Endpoint |
+| --- | --- |
+| What happened, in business terms? | `GET /admin/activity` |
+| Which HTTP requests were made, by whom, with what result? | `GET /admin/audit/logs` |
+| What security-relevant events occurred? | `GET /admin/audit/security-events` |
+| How is the API performing overall? | `GET /admin/audit/statistics` |
+| What did one user do? | `GET /admin/users/{user_id}/activity` |
+| Was an email sent and delivered? | `GET /admin/email/logs` |
+| I need a file for a report | `POST /admin/audit/export` |
 
-- [System Distinction](#system-distinction)
-- [Activity Feed (Dashboard)](#activity-feed-dashboard)
-- [API Audit Logs](#api-audit-logs)
-- [Security Events](#security-events)
-- [Audit Statistics](#audit-statistics)
-- [User Activity](#user-activity)
-- [Email Delivery Logs](#email-delivery-logs)
-- [Export](#export)
+## Activity feed (dashboard)
 
----
+### Browse the activity feed
 
-## System Distinction
-
-There are **two logging systems** in this API, plus a separate read-only **email delivery log**. They serve different purposes and have different endpoints. The two logging systems are summarized below; the third source (`email_messages`, exposed by [`GET /admin/email/logs`](#email-delivery-logs)) is the canonical delivery ledger written by the email outbox worker — not by middleware or the activity decorator.
-
-| Aspect | `/admin/activity` (Dashboard) | `/admin/audit/*` (Dedicated Audit) |
-|--------|-------------------------------|-----------------------------------|
-| **Data source** | `activity_logs` table only | `api_audit_log` table, or BOTH combined |
-| **Logged by** | `@log_and_handle_errors` decorator on route handlers | `APIAuditMiddleware` on every HTTP request |
-| **Granularity** | Semantic operations (e.g., `user_login`, `project_creation`) | Raw HTTP request/response pairs |
-| **Pagination** | `limit` (1-500), `offset` | `limit` (1-1000 for logs, 1-500 for security events), `offset` |
-| **Search** | Free-text `search` param across activity_type, details, username | No free-text; structured filters only |
-| **Export** | None | CSV/JSON via `POST /admin/audit/export` |
-| **Statistics** | None | Full analytics via `GET /admin/audit/statistics` |
-
-**Do not confuse them.** The activity feed shows "what happened" in business terms. The audit logs show "what HTTP requests were made" in technical terms.
-
----
-
-## Activity Feed (Dashboard)
-
-### Get Activity Feed
+`GET /admin/activity` — query `limit` (1–500), `offset`, `activity_type_filter`, `user_id`,
+`project_id`, `days` (default `30`), `search`.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/activity?limit=50&offset=0&days=30" \
+curl "http://localhost:8000/admin/activity?limit=50&days=7" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Query parameters:**
-
-| Param | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `limit` | int | 50 | 1-500 | Records per page |
-| `offset` | int | 0 | >=0 | Skip count |
-| `activity_type_filter` | string | null | — | Filter by activity type (e.g., `user_login`) |
-| `user_id` | string | null | — | Filter by user ID |
-| `project_id` | string | null | — | Filter by project ID |
-| `days` | int | 30 | 1-365 | Lookback window |
-| `search` | string | null | — | Free-text search across activity_type, details, username |
-
-**Response shape:**
-
-```jsonc
-{
-  "activities": [...],
-  "pagination": {
-    "limit": 50,
-    "offset": 0,
-    "total": 123,
-    "has_more": true
-  },
-  "filters": {
-    "activity_type_filter": null,
-    "user_id": null,
-    "project_id": null,
-    "days": 30,
-    "search": null
-  },
-  "generated_at": "2026-04-01T12:00:00Z"
-}
-```
-
-The list key is `activities`, not `logs`.
-
-**Example: filter by activity type**
+Returns `activities` (newest first), `pagination` with `total`, `has_more` and `next_offset`, and
+the echoed `filters`. Narrow it with an exact type or a free-text search:
 
 ```bash
-curl -X GET "http://localhost:8000/admin/activity?activity_type_filter=user_login&days=7" \
+curl "http://localhost:8000/admin/activity?activity_type_filter=user_type_changed&days=30" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+curl "http://localhost:8000/admin/activity?search=alice&days=7" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Example: free-text search**
+`search` matches part of the activity type, the details text or the acting username.
+
+### List activity types
+
+`GET /admin/activity/types` returns the 112 values of the runtime `ActivityType` enum in
+`activity_types`.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/activity?search=john_doe&days=7" \
+curl "http://localhost:8000/admin/activity/types" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### Get Activity Types
+Trigger-written types such as `role_assigned` and `api_key_revoked` are not in this list but can
+still be used in `activity_type_filter` ([activity types](reference.md#activity-types)).
 
-Returns the current runtime list of 112 `ActivityType` values available for
-filtering:
+### Open one activity entry
+
+`GET /admin/activity/{activity_id}` returns `activity` with severity, user agent, metadata and the
+catalog name, category and description.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/activity/types" \
+curl "http://localhost:8000/admin/activity/act-0123456789abcdef0123456789abcdef" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-The response spans core auth/admin, email, Google OAuth, Patreon, and billing
-events. Treat the endpoint as the authoritative filter list instead of
-hard-coding an older subset in a client.
+The ID must be `act-` plus 32 hex characters. Rows written by database triggers have
+`act-log-{uuid}` IDs and cannot be opened here; read them from the feed or an export.
 
----
+## API audit logs
 
-## API Audit Logs
+### List API requests
 
-### List Audit Logs
-
-Paginated, filtered access to the raw HTTP audit trail:
+`GET /admin/audit/logs` — query `limit` (1–1000), `offset`, `user_id`, `project_id`,
+`endpoint_path` (substring), `http_method`, `status_code`, `is_success`, `security_event`, `days`.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/logs?limit=50&offset=0&days=30" \
+curl "http://localhost:8000/admin/audit/logs?endpoint_path=/auth/login&is_success=false&days=7" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Query parameters:**
-
-| Param | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `limit` | int | 50 | 1-1000 | Records per page |
-| `offset` | int | 0 | >=0 | Skip count |
-| `user_id` | string | null | — | Filter by user ID |
-| `project_id` | string | null | — | Filter by project ID |
-| `endpoint_path` | string | null | — | **Partial match** on endpoint path |
-| `http_method` | string | null | — | Exact match (GET, POST, PUT, DELETE, PATCH) |
-| `status_code` | int | null | — | Exact HTTP status code |
-| `is_success` | bool | null | — | True=2xx, False=non-2xx |
-| `security_event` | bool | null | — | Security-flagged requests only |
-| `days` | int | 30 | 1-365 | Lookback window |
-
-**Example: find failed login attempts**
+Returns `logs` (newest first), `pagination` (`total`, `has_more`, `next_offset`) and `filters`.
+More filters:
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/logs?endpoint_path=/auth/login&is_success=false&days=7" \
+# All DELETE requests this week
+curl "http://localhost:8000/admin/audit/logs?http_method=DELETE&days=7" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Server errors this month
+curl "http://localhost:8000/admin/audit/logs?status_code=500&days=30" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Example: find all DELETE requests**
+## Security events
+
+### Review security events
+
+`GET /admin/audit/security-events` — query `limit` (1–500, default `100`), `days`, `severity`
+(`critical`, `warning`, `info`), `source` (`api_audit`, `activity_log`).
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/logs?http_method=DELETE&days=7" \
+curl "http://localhost:8000/admin/audit/security-events?severity=critical&days=1" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Example: find 500 errors**
+Returns `events` from both logs in one shape, newest first, and a `summary` with counts by source
+and severity. There is no `offset`. To see more of one log, query it on its own:
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/logs?status_code=500&days=7" \
+curl "http://localhost:8000/admin/audit/security-events?source=activity_log&limit=500&days=7" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Response shape:**
+API-audit severity comes from the status code (`403` is `critical`; `401` and 5xx are `warning`).
+Activity-log events keep the severity of their catalog entry.
 
-```jsonc
-{
-  "logs": [...],
-  "pagination": { "total": N, "limit": 50, "offset": 0, "has_more": true, "next_offset": 50 },
-  "filters": { ...applied filters... },
-  "generated_at": "2024-..."
-}
-```
+## Audit statistics
 
----
+### Summarize API traffic
 
-## Security Events
-
-Combined security events from **both** data sources (`api_audit_log` + `activity_logs`), normalized to a common shape:
+`GET /admin/audit/statistics` — query `days` (default `7`).
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/security-events?limit=100&days=30" \
+curl "http://localhost:8000/admin/audit/statistics?days=30" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Query parameters:**
+Returns `overview` (totals, success rate, durations, sizes), `by_method`, `top_endpoints` (up to
+20, with success and failure counts) and `status_distribution`.
 
-| Param | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `limit` | int | 100 | 1-500 | Max events (applied to **merged** result) |
-| `days` | int | 30 | 1-365 | Lookback window |
-| `severity` | string | null | — | Filter: `critical` or `warning` |
-| `source` | string | null | — | Filter: `api_audit` or `activity_log` |
+## User activity
 
-**Severity derivation:**
+### Summarize one user
 
-| Status | Severity |
-|--------|----------|
-| 401 | `warning` |
-| 403 | `critical` |
-| 5xx | `warning` |
-| Everything else | `info` |
-
-**Caveat:** this endpoint has **no pagination**. The limit applies to the final merged result, not per-source. For large datasets, use the `source` filter to split by data source.
-
-**Example: critical events only**
+`GET /admin/users/{user_id}/activity` — path `user_id` is the internal ID (`usr-...`); query
+`days`.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/audit/security-events?severity=critical&days=1" \
+curl "http://localhost:8000/admin/users/$USER_ID/activity?days=30" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Example: split by source**
+Returns `summary` (activity counts by category and name, API request totals) and `timeline`, up to
+50 entries from each log merged newest first. There is no paging; use `GET /admin/activity` and
+`GET /admin/audit/logs` with `user_id` for the full history. Unknown IDs return `404`.
+
+## Email delivery logs
+
+### List sent and failed emails
+
+`GET /admin/email/logs` — query `limit` (1–500), `offset`, and exact `status`, `purpose`,
+`provider`.
 
 ```bash
-# API audit security events
-curl -X GET "http://localhost:8000/admin/audit/security-events?source=api_audit&days=7" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Activity log security events
-curl -X GET "http://localhost:8000/admin/audit/security-events?source=activity_log&days=7" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
----
-
-## Audit Statistics
-
-Four-section analytics overview from the `api_audit_log` table:
-
-```bash
-curl -X GET "http://localhost:8000/admin/audit/statistics?days=7" \
+curl "http://localhost:8000/admin/email/logs?status=dead&purpose=password_reset&limit=100" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Query parameters:**
-
-| Param | Type | Default | Range |
-|-------|------|---------|-------|
-| `days` | int | 7 | 1-365 |
-
-**Returns 4 sections:**
-
-- `overview` — total requests, success/failure counts, average duration
-- `by_method` — breakdown by HTTP method (GET, POST, PUT, DELETE, PATCH)
-- `top_endpoints` — most accessed endpoints with success/failure rates
-- `status_distribution` — count of each HTTP status code
-
----
-
-## User Activity
-
-Combined activity summary and timeline for a specific user, merging **both** data sources:
-
-```bash
-curl -X GET "http://localhost:8000/admin/users/{user_id}/activity?days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Query parameters:**
-
-| Param | Type | Default | Range |
-|-------|------|---------|-------|
-| `days` | int | 30 | 1-365 |
-
-**Response contains:**
-
-- `user_id` — the queried user
-- `summary` — combined counts and per-category breakdown
-  - `total_activities` — combined total count
-  - `activity_log_count` — number of semantic activity-log entries
-  - `api_audit_count` — number of API-audit entries
-  - `activity_summary` — activity log entries grouped by category/name
-  - `api_audit_summary` — API audit summary (total requests, success/failure, unique endpoints)
-- `timeline` — merged timeline (up to 50 entries from each source, sorted by timestamp descending)
-- `generated_at` — response generation timestamp
-
-**Caveat:** the timeline has **no pagination**. It returns a fixed-size merge.
-
----
-
-## Email Delivery Logs
-
-Read-only access to the transactional email **delivery ledger** (`email_messages` table, populated by the email outbox worker). This is a third data source, distinct from `activity_logs` and `api_audit_log`.
-
-```bash
-curl -X GET "http://localhost:8000/admin/email/logs?limit=50&offset=0" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Query parameters:**
-
-| Param | Type | Default | Range | Description |
-|-------|------|---------|-------|-------------|
-| `limit` | int | 50 | 1-500 | Records per page |
-| `offset` | int | 0 | >=0 | Skip count |
-| `status` | string | null | — | Exact match on outbox status |
-| `purpose` | string | null | — | Exact match on transactional purpose |
-| `provider` | string | null | — | Exact match on provider (e.g. `resend`) |
-
-**`status` values:** `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`
-
-**`purpose` values:** `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`
-
-**Example: find bounced messages**
-
-```bash
-curl -X GET "http://localhost:8000/admin/email/logs?status=bounced&days=7&limit=100" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Example: dead-lettered password-reset emails for a provider**
-
-```bash
-curl -X GET "http://localhost:8000/admin/email/logs?status=dead&purpose=password_reset&provider=resend" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Response shape:**
+Returns `logs` from the `email_messages` ledger, newest first. Each row shows `recipient_hash` and
+`recipient_masked`, never the plaintext address, subject or body.
 
 ```json
 {
   "success": true,
   "logs": [
     {
-      "id": "...",
-      "user_id": "...",
-      "user_email_id": "...",
+      "id": "em-...",
+      "user_id": "usr-...",
+      "user_email_id": "uem-...",
       "purpose": "password_reset",
-      "template_code": "...",
-      "recipient_hash": "A1B2...",
-      "recipient_masked": "j***@e***.com",
+      "template_code": "password_reset",
+      "recipient_hash": "A1B2C3...",
+      "recipient_masked": "a***e@example.com",
       "provider": "resend",
-      "provider_message_id": "...",
+      "provider_message_id": "re_...",
       "status": "delivered",
       "priority": 5,
       "attempt_count": 1,
       "max_attempts": 8,
-      "next_attempt_at": "2026-06-01T12:00:00Z",
-      "sent_at": "2026-06-01T12:00:01Z",
-      "terminal_at": "2026-06-01T12:00:05Z",
+      "next_attempt_at": "2026-09-24T12:00:00",
+      "sent_at": "2026-09-24T12:00:01",
+      "terminal_at": "2026-09-24T12:00:05",
       "last_error_code": null,
-      "created_at": "2026-06-01T12:00:00Z",
-      "updated_at": "2026-06-01T12:00:05Z"
+      "created_at": "2026-09-24T12:00:00",
+      "updated_at": "2026-09-24T12:00:05"
     }
   ],
-  "pagination": {
-    "limit": 50,
-    "offset": 0,
-    "returned": 1,
-    "has_more": false,
-    "next_offset": null
-  },
+  "pagination": { "limit": 50, "offset": 0, "returned": 1, "has_more": false, "next_offset": null },
   "filters": { "status": "delivered", "purpose": null, "provider": null },
-  "generated_at": "2026-06-01T12:05:00Z"
+  "generated_at": "2026-09-24T12:05:00Z"
 }
 ```
 
-**Redaction note:** these rows expose only `recipient_hash` (HEX) and `recipient_masked`. They never include the plaintext recipient address, subject/body, template variables, error messages, token references, or provider credentials/payloads.
-
-**Pagination note:** unlike `/admin/audit/logs`, this endpoint does **not** run a count query. `has_more` is a page-fill heuristic — it is `true` only when the page is exactly full (`returned == limit`). On an exactly-full final page it can report `has_more: true` even though the next page is empty.
-
-> Email *lifecycle* activity (enqueue, sent, delivered, bounced, complained, dead-lettered) is also recorded as semantic `activity_logs` entries (`act-cat-056` … `act-cat-062`). Those appear in the activity feed and security events; `GET /admin/email/logs` shows the per-message ledger state instead. See the [activity catalog](reference.md#activity-catalog) for the catalog IDs.
-
----
+There is no total count and no `days` filter. `has_more` is `true` whenever the page is full, so
+keep paging until a page returns fewer than `limit` rows. Provider webhook events also write
+activity rows (`email_message_sent`, `email_message_delivered`, `email_message_bounced`,
+`email_message_complained`, `email_suppression_updated`); the worker writes none.
 
 ## Export
 
-Exports activity logs or API audit logs in CSV or JSON format.
+### Download records as CSV or JSON
 
-**This endpoint requires a JSON body** — unlike most of the API, which uses `multipart/form-data`. (Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the Google sign-in endpoints in `auth_google.py`.)
+`POST /admin/audit/export` — JSON body `source` (`activity` or `api_audit`), `format` (`csv` or
+`json`), optional `limit` (default `1000`, max `10000`) and `filters`.
 
 ```bash
 curl -X POST "http://localhost:8000/admin/audit/export" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "source": "api_audit",
-    "format": "csv",
-    "limit": 1000,
-    "filters": {
-      "days": 30
-    }
-  }'
+  -d '{"source": "api_audit", "format": "csv", "limit": 5000, "filters": {"days": 7, "is_success": false}}' \
+  --output audit_failures_7d.csv
 ```
 
-**Request body fields:**
-
-| Field | Type | Required | Values | Description |
-|-------|------|----------|--------|-------------|
-| `source` | string | Yes | `activity`, `audit`, `api_audit` | Data source. `audit` and `api_audit` are aliases (both query `api_audit_log`) |
-| `format` | string | Yes | `csv`, `json` | Output format |
-| `limit` | int | No | 1-10,000 | Row limit (default 1,000) |
-| `filters` | object | No | — | Same filters as the corresponding list endpoint |
-
-**Filters for `api_audit` source:** `user_id`, `project_id`, `endpoint_path`, `http_method`, `status_code`, `is_success`, `security_event`, `days`
-
-**Filters for `activity` source:** `user_id`, `project_id`, `activity_type`, `days`
-
-**Important constraints:**
-
-- Hard limit: **10,000 records**. If filters match more than 10,000, the export returns 400 `INVALID_RANGE`.
-- A pre-export count check runs before streaming. If the count exceeds the hard limit, the request is rejected.
-- Response is a `StreamingResponse` with `Content-Disposition: attachment; filename=audit_export_{source}_{timestamp}.{fmt}`
-
-**CSV columns for `api_audit`:** 23 columns — `id`, `request_id`, `http_method`, `endpoint_path`, `route_pattern`, `user_id`, `user_type`, `username`, `user_hash`, `project_id`, `project_name`, `project_hash`, `request_timestamp`, `response_timestamp`, `duration_ms`, `response_status`, `is_success`, `error_code`, `error_message`, `client_ip`, `user_agent`, `security_event`, `tags`
-
-**CSV columns for `activity`:** 19 columns — `id`, `user_id`, `activity_type`, `details`, `project_id`, `target_user_id`, `ip_address`, `user_agent`, `severity_level`, `created_at`, `username`, `user_hash`, `project_name`, `project_hash`, `target_username`, `target_user_hash`, `activity_name`, `activity_category`, `activity_description`
-
-**Caveat:** when no data matches export filters, CSV returns a single empty row (not a proper header row).
-
----
-
-## Related Documentation
-
-- **[Audit Logs Overview](README.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
-- **[Admin Usage Cases](../admin-usage-cases.md)** — Dashboard, activity feed quick reference
-- **[Error Reference](../errors.md)** — Error codes and response shapes
+The file downloads as `audit_export_{source}_{timestamp}.{format}`. If more than `10,000` records
+match `filters`, the call fails with `400` `VAL_3009` even when `limit` is smaller; add filters
+until the match count is at most `10,000`. Filter keys and output columns are in
+[reference.md](reference.md#export).

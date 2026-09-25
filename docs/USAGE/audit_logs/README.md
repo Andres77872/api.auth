@@ -1,81 +1,71 @@
-# Audit Logs Documentation
+# Audit logs
 
-Detailed, repo-specific documentation for the audit and activity logging systems in `api.auth`.
+Root and admin users read what happened in the service from three stores: a per-request HTTP
+audit trail, a semantic activity log, and the transactional email ledger. The endpoints list,
+filter, summarize and export these records for security reviews, investigations and compliance.
 
----
+## Data sources
 
-## Overview
+| Store | Written by | One row per | Read through |
+| --- | --- | --- | --- |
+| `api_audit_log` | `APIAuditMiddleware` (`src/middleware/api_audit.py`) on every request except excluded paths | HTTP request | `/admin/audit/*`, `/admin/users/{user_id}/activity`, export source `api_audit` |
+| `activity_logs` | The `@log_and_handle_errors` decorator, explicit `ActivityLogger` calls in services, and database triggers on users, projects, groups, roles, permissions, sessions and API keys | Business event, such as `user_update` or `api_key_revoked` | `/admin/activity*`, security events, `/admin/users/{user_id}/activity`, export source `activity` |
+| `email_messages` | The email enqueue path; updated by the outbox worker and provider webhooks | Transactional email | `GET /admin/email/logs` |
 
-This documentation set covers the **two logging systems** that operate in this API, plus a redacted **email delivery log** surface:
+The runtime `ActivityType` enum has 112 members; triggers also write types outside it (for
+example `api_key_created`, `role_assigned`). See [reference.md](reference.md#activity-types).
 
-```
-HTTP REQUEST
-  ├─► APIAuditMiddleware (every request) ──► api_audit_log table (raw HTTP audit trail)
-  │
-  └─► Route handler
-        └─► @log_and_handle_errors decorator ──► activity_logs table (semantic operations)
+## Route families
 
-EMAIL OUTBOX WORKER ──► email_messages table (delivery ledger; queried read-only by GET /admin/email/logs)
-```
+| Family | Source file | Routes |
+| --- | --- | --- |
+| Audit | `src/routes/audit_logs.py` | `GET /admin/audit/logs`, `GET /admin/audit/security-events`, `GET /admin/audit/statistics`, `POST /admin/audit/export`, `GET /admin/users/{user_id}/activity`, `GET /admin/email/logs` |
+| Activity feed | `src/routes/admin_dashboard.py` | `GET /admin/activity`, `GET /admin/activity/types`, `GET /admin/activity/{activity_id}` |
 
-What matters operationally:
+## Rules and caveats
 
-- **Two primary data sources**: `activity_logs` (semantic, decorator-based) and `api_audit_log` (raw HTTP, middleware-based)
-- **A third, read-only source**: `email_messages` (delivery ledger populated by the email outbox worker) is exposed by `GET /admin/email/logs`, returning recipient hash + masked email only (no plaintext recipient/body/template vars)
-- **Two distinct endpoint sets**: `/admin/activity` (dashboard) and `/admin/audit/*` (dedicated audit routes), plus `GET /admin/email/logs`
-- **Security events merge both audit sources** into a unified view
-- **Admin access is GLOBAL** — any admin/root can see ALL logs across ALL projects; there is NO project scoping
-- **Export uses a JSON body** — one of the few endpoints in the API that accepts `application/json` (most use `multipart/form-data`)
-- **Export hard limit is 10,000 records** — exceeding it returns a 400 error
-- **No data retention policy** — logs accumulate indefinitely; `days` parameter limits queries but does not delete data
+Platform-wide rules are in [Platform-wide contracts](../README.md#platform-wide-contracts). These
+apply to this suite:
 
----
+- **Root and admin user types only.** Every route checks the caller's user type. An `admin`
+  permission from a global role does not grant access; other callers get `403` `AUTHZ_2001`.
+- **No project scoping.** An admin sees every project's records, not only the projects they
+  administer.
+- **Filters take internal IDs.** `user_id` and `project_id` are internal IDs (`usr-...`), not user
+  or project hashes.
+- **A lookback window always applies.** `days` defaults to `30` (`7` for statistics) and accepts
+  `1`–`365`. There is no start/end range.
+- **Export takes a JSON body** and refuses any request whose filters match more than `10,000`
+  records.
+- **Nothing is deleted automatically.** `sp_cleanup_old_activity_logs` exists but nothing calls it,
+  and `api_audit_log` has no cleanup procedure.
+- **Audit reads are audit events.** Any `/admin/` request by a root or admin user is stored with
+  `security_event = true`, so reviewing logs adds security events.
+- **`error_code` and `error_message` are usually empty.** The middleware cannot read the body of a
+  handled error response; these columns are filled only when an unhandled exception escapes.
 
-## Documents in This Suite
+> [!NOTE]
+> `api_audit_log.session_id` holds the access token's `session_id` claim or the API key ID, never
+> token bytes. Rows written before this change stored the first 256 characters of the access token.
+> Reads and exports mask those values, but the database still holds them until the optional cleanup
+> in [reference.md](reference.md#existing-rows-with-token-prefixes) is run. Audit output still
+> contains personal data such as IPs and user agents, so treat it as sensitive.
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day admin/compliance workflows: activity feed, audit logs, security events, user activity, email delivery logs, exports |
-| [architecture.md](architecture.md) | Data sources, route organization, middleware vs decorator logging, table/procedure relationships, auth model |
-| [request-flow.md](request-flow.md) | End-to-end flows: request capture, semantic logging, security aggregation, export, user activity merge |
-| [scenarios.md](scenarios.md) | Concrete workflows with curl examples: security review, investigation, compliance, performance analysis |
-| [reference.md](reference.md) | Endpoint/filter tables, export format/body reference, operational notes |
-| [stored-procedures.md](stored-procedures.md) | SQL stored procedures for direct database queries of `api_audit_log` and `activity_logs` |
-| [troubleshooting.md](troubleshooting.md) | Common failures: empty data, filter mistakes, export-limit issues, access scope caveats |
+## In this suite
 
----
+| Document | Purpose |
+| --- | --- |
+| [usage.md](usage.md) | One task per section: feed, audit logs, security events, statistics, user activity, email logs, export |
+| [scenarios.md](scenarios.md) | Workflows: daily review, sign-in failures, user and change investigations, email failures, compliance export |
+| [reference.md](reference.md) | Endpoint and parameter tables, response fields, export contract, activity catalog, error codes |
+| [request-flow.md](request-flow.md) | How a request is captured and how each read endpoint builds its answer |
+| [architecture.md](architecture.md) | Tables, writers, security-event rules, redaction and design limits |
+| [stored-procedures.md](stored-procedures.md) | The SQL procedures behind the audit and activity stores |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause and fix |
 
-## Recommended Reading Order
+## Related
 
-1. Start with [usage.md](usage.md)
-2. Then read [architecture.md](architecture.md) for the dual-system distinction
-3. Use [request-flow.md](request-flow.md) for runtime behavior
-4. Keep [reference.md](reference.md) open while operating the API
-5. Use [scenarios.md](scenarios.md) and [troubleshooting.md](troubleshooting.md) when applying it to real workflows
-
----
-
-## Scope and Caveats
-
-- This suite documents the **active public route layer** under `src/routes/audit_logs.py` (6 endpoints) and `src/routes/admin_dashboard.py` (activity endpoints)
-- `src/routes/audit_logs.py` exposes 6 endpoints: `GET /admin/email/logs`, `GET /admin/audit/logs`, `GET /admin/audit/security-events`, `GET /admin/audit/statistics`, `POST /admin/audit/export`, and `GET /admin/users/{user_id}/activity`
-- The **middleware** that populates `api_audit_log` lives in `src/middleware/api_audit.py`
-- The **decorator** that populates `activity_logs` lives in `src/Util/activity_logger.py`
-- **Admin access is GLOBAL** — any admin can view audit logs for ALL projects, not just assigned ones. This is a data isolation gap.
-- **Security events endpoint has no pagination** — returns a flat merged list with a limit but no offset/has_more
-- **User activity timeline has no pagination** — fixed-size merge (50 entries per source max)
-- **`audit` and `api_audit` are aliases in export** — both query the same `api_audit_log` data
-- **`GET /admin/email/logs` has its own pagination contract** — `has_more` is a page-fill heuristic (`len(logs) == limit`), not a real total count like `/admin/audit/logs`
-- SQL stored procedure documentation lives in [stored-procedures.md](stored-procedures.md).
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** - Complete usage index
-- **[Admin Usage Cases](../admin-usage-cases.md)** - Dashboard, system monitoring, activity feed quick reference
-- **[Error Reference](../errors.md)** - Error codes, response shapes, and troubleshooting
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, session management, project switching
-- **[Projects Documentation Suite](../projects/README.md)** - Project access model
-- **[Users Documentation Suite](../users/README.md)** - User profile, access summary, and lifecycle operations
-- **Database schema** (`schemas/`) - SQL tables, views, and stored procedures
+- [Admin usage cases](../admin-usage-cases.md) — dashboard and system health
+- [Email](../email/README.md) — the outbox and webhook behind `email_messages`
+- [API keys](../api-keys/README.md) — the `api_key_*` activity rows
+- [Errors](../errors.md) — error envelope and codes

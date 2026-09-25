@@ -1,243 +1,252 @@
-# Groups Usage
+# Groups usage
 
-Practical usage guide for operating the groups system in `api.auth`.
+One section per task. Examples use `$TOKEN` for an access token whose session carries `admin` or
+`manage_users` (user-group routes) or `admin` or `manage_roles` (project-group routes). Field
+rules and full response shapes are in [reference.md](reference.md).
 
----
+## Create a user group
 
-## Table of Contents
-
-- [Authentication and Route Ownership](#authentication-and-route-ownership)
-- [Creating User Groups](#creating-user-groups)
-- [Managing Membership](#managing-membership)
-- [Granting Project Access Through Project Groups](#granting-project-access-through-project-groups)
-- [Managing Project Groups](#managing-project-groups)
-- [Assigning Permission Groups](#assigning-permission-groups)
-- [Updating and Removing Access](#updating-and-removing-access)
-
----
-
-## Authentication and Route Ownership
-
-The groups feature is split across multiple route families:
-
-| Concern | Route Family | Notes |
-|--------|--------------|-------|
-| User group CRUD and membership | `/admin/user-groups` | Requires `admin` or `manage_users` |
-| Project group CRUD and project assignment | `/admin/project-groups` | Requires `admin` or `manage_roles` |
-| Permission group CRUD | `/roles/permission-groups` | Separate permission-group management |
-| Attach permission groups to user groups | `/permissions/admin/user-groups/.../permission-groups` | Controls capabilities, not project reach |
-
-**Important:** most endpoints use `application/x-www-form-urlencoded`. The bulk member assignment endpoint uses JSON.
-
----
-
-## Creating User Groups
-
-User groups represent teams, departments, contractors, or any reusable user bucket.
+`POST /admin/user-groups` — form fields `group_name` (required) and `description`:
 
 ```bash
 curl -X POST "http://localhost:8000/admin/user-groups" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=platform_team&description=Platform engineering team"
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "group_name=platform_team" \
+  --data-urlencode "description=Platform engineering team"
 ```
-
-**What this does in the repo:**
-- Creates a global record in `user_groups`
-- Does **not** give project access by itself
-- Does **not** give permissions by itself
-
-Typical response shape:
 
 ```json
 {
   "success": true,
   "message": "User group \"platform_team\" created successfully",
   "user_group": {
-    "group_hash": "UG-...",
+    "group_hash": "9F2C4A7E1B3D5F60",
     "group_name": "platform_team",
     "description": "Platform engineering team",
-    "created_at": "2026-04-16T10:30:00Z"
+    "member_count": null,
+    "created_at": "2026-09-24T10:30:00",
+    "updated_at": null
   }
 }
 ```
 
----
+The group starts with no members and no grants. A name already used by any user group, including
+a deleted one, returns `409`. Names starting with `admin_` need a root caller.
 
-## Managing Membership
+## List and search user groups
+
+`GET /admin/user-groups` — query `limit` (default `50`, max `1000`), `offset`, `sort_by`,
+`sort_order`, `search`:
+
+```bash
+curl "http://localhost:8000/admin/user-groups?search=platform&sort_by=created_at&sort_order=desc" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Each item has `member_count` (active users). `pagination.total` ignores `search`.
+
+## Inspect a user group
+
+`GET /admin/user-groups/{group_hash}` returns the members, the granted project groups and the
+projects they reach:
+
+```bash
+curl "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Read `accessible_project_groups` for the grants and `accessible_projects` for the active,
+non-archived projects behind them. For a paginated member list use the members route below.
+
+## Rename or describe a user group
+
+`PUT /admin/user-groups/{group_hash}` — form fields `group_name` and/or `description`; omitted
+fields keep their value:
+
+```bash
+curl -X PUT "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "description=Platform engineering and shared services"
+```
+
+A description cannot be cleared. Renaming does not change access.
+
+## Add members
 
 ### Add one user
 
+`POST /admin/user-groups/{group_hash}/members` — form field `user_hash`:
+
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups/UG-PLATFORM123/members" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hash=usr-abc123"
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "user_hash=$USER_HASH"
 ```
 
-### Bulk add users
+The user immediately reaches every project behind the group's grants. Adding a current or former
+member reactivates the membership and returns `200`.
+
+### Add up to 100 users
+
+`POST /admin/user-groups/{group_hash}/members/bulk` takes a JSON body, unlike the other group
+routes:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups/UG-PLATFORM123/members/bulk" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/bulk" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "user_hashes": ["usr-abc123", "usr-def456", "usr-ghi789"]
-  }'
+  -d '{"user_hashes": ["'"$USER_A"'", "'"$USER_B"'"]}'
 ```
 
-Operational notes:
+The status is `200` whenever the group exists, even if every user failed. Check
+`summary.error_count` and `errors[]`.
 
-- Bulk assignment reports per-user success and failure
-- Membership timestamps are exposed as `joined_at`
-- Existing inactive memberships may be reactivated instead of creating a brand-new logical assignment
+## List members and memberships
 
-### Inspect membership
+Members of one group, sorted by username (`limit` 1-100, default `50`):
 
 ```bash
-curl -X GET "http://localhost:8000/admin/user-groups/UG-PLATFORM123/members?limit=50&offset=0" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members?limit=100&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-This members endpoint caps `limit` at 100 and returns each member with `user_hash`, `username`, `email`, `user_type`, `is_active`, and `joined_at`, plus a `statistics` block and a `generated_at` timestamp. Use it when you need the operational list. Use `GET /admin/user-groups/{hash}` when you need the broader group view, including linked project groups.
-
-### Reverse lookup: which groups does a user belong to?
+Groups one user belongs to:
 
 ```bash
-curl -X GET "http://localhost:8000/admin/user-groups/users/usr-abc123/groups" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Returns the user-groups a given user is a member of, each with `joined_at`, plus `statistics.total_groups`. Handy when debugging "why can this user reach this project?" from the user side instead of the group side.
+Both return `joined_at`, the time the membership was last activated.
 
----
-
-## Granting Project Access Through Project Groups
-
-This is the critical part that many people get wrong.
-
-User groups do **not** point directly to projects in the active architecture. They point to **project groups**, and project groups contain projects.
+## Remove a member
 
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups/UG-PLATFORM123/project-groups" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=PG-BACKEND456"
+curl -X DELETE "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/$USER_HASH" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-That creates the access link through `user_group_project_groups`.
+Returns `200` even if the user was not a member. The user's sessions are not revoked by this call;
+an access token for a project the user no longer reaches fails with `401` on its next use.
 
-After this link exists:
-- every member of the user group can inherit access to every active project in that project group
-- login and project-switch flows can resolve those projects as accessible
-- project access still remains separate from permission-group assignment
+## Create a project group and add projects
 
----
-
-## Managing Project Groups
-
-Project groups are reusable access containers.
-
-### Create a project group
+`POST /admin/project-groups` — form fields `group_name` (required) and `description`:
 
 ```bash
 curl -X POST "http://localhost:8000/admin/project-groups" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "group_name=backend_services&description=Backend APIs and internal services"
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "group_name=backend_services" \
+  --data-urlencode "description=Backend APIs"
 ```
 
-### Add a project to a project group
+`POST /admin/project-groups/{group_hash}/projects` — form field `project_hash`:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/project-groups/PG-BACKEND456/projects" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=proj-auth-api-123"
+curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "project_hash=$PROJECT_HASH"
 ```
 
-### Inspect a project group
+Members of every user group already granted this project group gain the project at once.
+
+## Inspect a project group
 
 ```bash
-curl -X GET "http://localhost:8000/admin/project-groups/PG-BACKEND456" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Use project groups when multiple teams need the same set of projects, or when a single team needs all projects in a functional area.
+`assigned_projects` lists the active, non-archived projects in the group. There is no separate
+list route for a project group's projects.
 
----
+## Rename or describe a project group
 
-## Assigning Permission Groups
-
-Permission groups are managed separately because they solve a different problem.
-
-- **Project groups** answer: which projects can this team reach?
-- **Permission groups** answer: what can this team do once it gets there?
-
-### Assign an existing permission group to a user group
+`PUT /admin/project-groups/{group_hash}` — form fields `group_name` and/or `description`; omitted
+fields keep their value:
 
 ```bash
-curl -X POST "http://localhost:8000/permissions/admin/user-groups/UG-PLATFORM123/permission-groups" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "permission_group_hash=PG-CONTENT789"
+curl -X PUT "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "group_name=backend_platform"
 ```
 
-This is the clean way to give a team reusable capabilities without attaching permissions user by user.
+Sending neither field returns `500` rather than `400`. Renaming does not change access.
 
----
-
-## Updating and Removing Access
-
-### Update group metadata
+## Remove a project from a project group
 
 ```bash
-curl -X PUT "http://localhost:8000/admin/user-groups/UG-PLATFORM123" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "description=Platform engineering and shared services"
+curl -X DELETE "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects/$PROJECT_HASH" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Remove a member
+Users who reached the project only through this group lose it, and their sessions scoped to that
+project are revoked.
+
+## Grant a user group access to a project group
+
+`POST /admin/user-groups/{group_hash}/project-groups` — form field `project_group_hash`:
 
 ```bash
-curl -X DELETE "http://localhost:8000/admin/user-groups/UG-PLATFORM123/members/usr-abc123" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "project_group_hash=$PROJECT_GROUP_HASH"
 ```
 
-### Revoke user-group access to a project group
+This is the only way to give a user group project access. Re-granting reactivates the existing
+grant. List a group's grants with:
 
 ```bash
-curl -X DELETE "http://localhost:8000/admin/user-groups/UG-PLATFORM123/project-groups/PG-BACKEND456" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-> **Revoke also kills live sessions.** This is not just a row deactivation. The route calls `revoke_project_sessions_losing_access(...)`, so every affected member's active session for the impacted projects is terminated immediately. Those users must re-authenticate.
-
-### Delete a user group
+## Revoke a grant
 
 ```bash
-curl -X DELETE "http://localhost:8000/admin/user-groups/UG-PLATFORM123" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X DELETE "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups/$PROJECT_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Deletion is a **soft delete**. In current stored-procedure behavior, it also deactivates:
+Members lose the project group's projects unless another grant still covers them, and their
+sessions for the lost projects (with the refresh-token families) are revoked. Revoking a grant
+that is not active returns `500`.
 
-- the `user_groups` row
-- linked `user_group_members` rows
-- linked `user_group_project_groups` rows
+## Attach a permission group to a user group
 
-The route also calls `revoke_project_sessions_losing_access(..., reason="user_group_deleted")`, so the **live project sessions** of all affected members are revoked. Deleting a group removes live memberships, access links, and active sessions in one operation; affected users must re-authenticate.
+Permission groups are managed by the permissions suite and do not affect project reach:
 
-The same active session-revocation applies to deleting a project group (`reason="project_group_deleted"`) and removing a project from a project group (`reason="project_removed_from_group"`).
+```bash
+curl -X POST "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "permission_group_hash=$PERMISSION_GROUP_HASH"
+```
 
----
+> [!IMPORTANT]
+> This assignment appears in the permission inspection endpoints but is not part of the
+> permission set used for authorization, which comes from global roles. See
+> [Permission resolution](../permissions/resolution.md).
 
-## Related Documentation
+## Delete a group
 
-- **[Groups Overview](README.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+User group:
+
+```bash
+curl -X DELETE "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Project group:
+
+```bash
+curl -X DELETE "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Both are soft deletes. A user-group delete deactivates its memberships and grants; a project-group
+delete deactivates its project assignments and every grant to it. Projects and users are
+untouched. Affected users' project sessions are revoked, and the group name stays reserved.
+
+> [!CAUTION]
+> To take one project away from a team, revoke the grant or remove the project from the project
+> group. Deleting the whole user group also removes every membership and every other grant.

@@ -106,7 +106,7 @@ def build_checkout_session_params(
     if not intent.success_url or not intent.cancel_url:
         raise StripeCheckoutError("Billing request could not be completed.", status_code=422)
     metadata = build_checkout_metadata(intent)
-    return {
+    params: dict[str, Any] = {
         "mode": mode,
         "customer": stripe_customer_id,
         "line_items": [_line_item_for_price_ref(intent, resolved_price_id=resolved_price_id)],
@@ -115,6 +115,14 @@ def build_checkout_session_params(
         "client_reference_id": intent.checkout_ref or metadata.get("api_auth_checkout_ref"),
         "metadata": metadata,
     }
+    # Session metadata only reaches checkout.session.completed. Copy it onto the object the
+    # session creates so subscription/invoice events (Subscription metadata) and refund events
+    # (Charges inherit PaymentIntent metadata) carry the same user/project/ref evidence.
+    if mode == "subscription":
+        params["subscription_data"] = {"metadata": dict(metadata)}
+    else:
+        params["payment_intent_data"] = {"metadata": dict(metadata)}
+    return params
 
 
 def create_checkout_session(

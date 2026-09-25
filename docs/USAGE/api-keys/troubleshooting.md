@@ -1,139 +1,143 @@
-# API Keys Troubleshooting, Caveats, and Best Practices
+# API keys troubleshooting
 
-Common failure modes and confusions when working with the API key system in `api.auth`. Codes and
-behaviors below are grounded in `src/routes/user_api_keys.py`, `src/routes/api_keys.py`,
-`src/Util/api_key_security.py`, and the validation adapter in `src/routes/auth.py`.
+Symptom, cause and fix. Error codes are listed in [reference.md](reference.md#error-codes).
 
----
+## Management routes
 
-## Failure Modes
+### `401` `AUTH_1008` on create, update or revoke
 
-### `401 Unauthorized` on a self-service call
+**Cause:** the session has no recent authentication. The window is `OAUTH_RECENT_REAUTH_SECONDS`
+(default `300` seconds) from the last sign-in or OAuth reauth; a token refresh does not count.
 
-The session is missing or invalid. `/users/api-keys/*` requires a valid session
-(`verify_session`) — send a current `Authorization: Bearer <jwt>` (or the session cookie). Also
-confirm a `User-Agent` header is present (missing → `422`, not `401`).
+**Fix:** sign in again (or complete an OAuth reauth for the session) and retry. Reads do not need
+recent authentication.
 
-### Step-up / recent re-authentication required
+### `401` when a management route gets only `X-API-Key`
 
-`POST`, `PUT`, and `DELETE` on **both** families call `require_recent_reauthentication`. If your
-last authentication is too old, the mutation is rejected until you re-authenticate. **Read (GET)
-endpoints never require step-up.** Re-authenticate, then retry the write.
+**Cause:** `/users/api-keys` and `/api-keys` accept only an access token (`Authorization: Bearer`
+or the `session_token` cookie). An API key cannot manage keys.
 
-### `404 API_KEY_NOT_FOUND`
+**Fix:** call these routes with a user session.
 
-The key does not exist **or** (on `/users/api-keys/*`) it exists but you do not own it. The user
-routes deliberately return the same `404` for non-owned keys so existence is not leaked. On admin
-routes, `404` means the key was not found at all. Check that `{key_id}` is the **`public_id`**
-(the ~12-char base64url segment), not the numeric DB `id` and not the full token.
+### `404` `NF_4010` for a key you can see elsewhere
 
-### `403 PROJECT_ACCESS_DENIED` on self-service create
+**Cause:** one of:
 
-You tried to create a key for a `project_hash` your account cannot access. Confirm your project
-reach (groups → project groups → projects) first.
+- `{key_id}` is not the `public_id` (for example, the full `sk_...` token was used).
+- On `/users/api-keys/{key_id}`, the key belongs to another user. Self-service routes answer `404`
+  for keys you do not own.
 
-### `403 ACCESS_DENIED` / `403 INSUFFICIENT_PERMISSIONS` on admin routes
+**Fix:** use `public_id` from a list response. Admins can reach other users' keys through
+`/api-keys/{key_id}`.
 
-- `ACCESS_DENIED` — the project (or the target user) is outside your administrative scope
-  (`check_admin_project_access` / no shared project). Root bypasses these checks.
-- `INSUFFICIENT_PERMISSIONS` — you tried to create or manage **another** user's key without the
-  `manage_users` effective permission for that project. Self-service (a key for **yourself**) never
-  needs `manage_users`.
+### `403` `AUTHZ_2003` when creating your own key
 
-### `400 INVALID_INPUT`
+**Cause:** your account does not reach the project through its user groups.
 
-Three distinct causes:
-1. **Bad or past `expires_at`** — must be valid ISO 8601 and **in the future**. A `Z` suffix is
-   accepted; a naive timestamp is assumed UTC. A past date → `"expires_at must be in the future"`.
-2. **No-field update** — `PUT` requires at least one of `name`, `description`, `expires_at`.
-3. **Root list without a filter** — `GET /api-keys` as root with neither `user_hash` nor
-   `project_hash` → `"Root users must provide at least user_hash or project_hash filter"`.
+**Fix:** ask an admin to add you to a group linked to the project, or use a project you reach.
 
-### `400 API_KEY_REVOKED` when revoking
+### `403` on admin routes
 
-You revoked a key that was already inactive (revoked, or deactivated after expiring).
-Revocation is idempotent in effect but the second call returns `400 API_KEY_REVOKED`
-(`AUTH_1012`). The key is already inactive — no action needed.
+| Code | Cause | Fix |
+| --- | --- | --- |
+| `AUTHZ_2001` | The project, or every project the target user reaches, is outside your administered projects | Use a project you administer, or ask root |
+| `AUTHZ_2002` on create | You are creating a key for another user without `manage_users` in that project | Get `manage_users`, or have the user create the key |
+| `AUTHZ_2002` on `GET /api-keys` or `GET /api-keys/users/{user_hash}` | You are not a root or admin user; an `admin` permission from a global role is not enough | Use a root or admin account |
+
+### `409` `CONF_5005` on admin create
+
+**Cause:** `sp_create_api_key` refused the key. The message says which check failed: the owner is
+not active, the project is not active or is archived, or (non-root creator) the owner does not
+have access to the project.
+
+**Fix:** reactivate the owner, restore the project, or grant the owner project access first.
+
+### `400` `VAL_3001`
+
+| Message | Fix |
+| --- | --- |
+| `Invalid expires_at format: ...` | Send ISO 8601, for example `2027-01-01T00:00:00Z` |
+| `expires_at must be in the future` | Send a future time; a value without a timezone is read as UTC |
+| `At least one field must be provided to update` | Send `name`, `description` or `expires_at` with a non-empty value |
+| `Root users must provide at least user_hash or project_hash filter` | Add a filter to `GET /api-keys` |
+
+### `400` `AUTH_1012` on update or revoke
+
+**Cause:** on update, the key has been revoked; revoked keys cannot change. On revoke, the key is
+already inactive (revoked, or deactivated by the expiry sweep).
+
+**Fix:** nothing to undo. Create a new key if one is needed.
 
 ### `404` when updating a key that never expires
 
-Keys created without `expires_at` update like any other key. A database whose
-`sp_update_api_key` predates that fix refuses the update with "API key not found"; install the
-current procedure with `python scripts/schema_sync.py --env-file .env --apply`.
+**Cause:** the database still has an old `sp_update_api_key` that refuses keys with a `NULL`
+`expires_at`.
 
-### `400 ambiguous_credentials` when validating
+**Fix:** install the current procedures with
+`python scripts/schema_sync.py --env-file .env --apply`.
 
-`POST /auth/validate-api-key` rejects requests that carry **both** `Authorization` and `X-API-Key`.
-Send the raw token **only** in `X-API-Key` (never `Authorization: Bearer`). This endpoint is owned
-by the **[auth suite](../authentication-usage-cases.md)**.
+## Listing
 
-### Lost token — cannot recover
+### A filtered page has fewer keys than `limit`, and `total` is small
 
-The secret is hashed with HMAC-SHA-256 and never stored in plaintext; the full token is shown
-**only** in the create response under `data.api_key`. There is no endpoint that re-reveals it.
-If lost, create a new key and revoke the old one (see rotation in [scenarios.md](scenarios.md)).
-`fingerprint` and `secret_last4` only help you **identify** a key, not reconstruct it.
+**Cause:** on `GET /users/api-keys`, `project_hash` and `active_only` filter the page after
+`limit`/`offset` are applied, and `total` counts only that filtered page.
 
----
+**Fix:** page through the unfiltered list and filter on the client. Admins can use
+`GET /api-keys/projects/{project_hash}`, which filters in the database.
 
-## Caveats
+### `active_only=true` still returns revoked or expired keys
 
-### Paginate-then-filter: `total` can be a post-filter count
+**Cause:** `active_only` is ignored by `GET /api-keys/users/{user_hash}` and by `GET /api-keys`
+with `user_hash`. On other routes, a key that expired less than 5 minutes ago keeps
+`is_active: true` until the next expiry sweep. If expired keys stay active longer, the API
+process is not running the sweep (look for `API key expiry sweep failed` in its logs).
 
-On `GET /users/api-keys`, the underlying fetch is paged **first**, then `project_hash` /
-`active_only` are applied in Python and `total` is recomputed as the length of the filtered slice.
-The admin user-list path behaves similarly (per-key filtering after the fetch). Consequences:
+**Fix:** check `revoked_at` and compare `expires_at` with the current time on the client.
 
-- `total` reflects the **filtered** rows, while `limit`/`offset` paged the **unfiltered** set.
-- A page may contain fewer rows than `limit` after filtering even when more matches exist on later
-  pages.
+### An admin list without filters looks incomplete
 
-When you need exact counts for a single project or active-only set, prefer the scoped admin views
-(`GET /api-keys/projects/{project_hash}`, `GET /api-keys/users/{user_hash}`) or narrow with
-`project_hash` and iterate `offset`.
+**Cause:** with no filter, each administered project is read with the same `limit` and `offset`,
+then the results are joined and cut to `limit`. `offset` therefore applies per project.
 
-### `{key_id}` is the `public_id`
+**Fix:** list per project with `GET /api-keys/projects/{project_hash}`.
 
-Every `{key_id}` path segment is the `public_id` resolved via `get_api_key_by_public_id`. Using the
-numeric `id` or the full token will return `404`.
+## Validation
 
-### Expired-key reactivation
+### `400` `ambiguous_credentials`
 
-Extending `expires_at` past `NOW()` via `PUT` on an expired key **reactivates** it. If you intend a
-key to stay dead, revoke it (`DELETE`) rather than letting it expire — revocation cannot be undone
-by an `expires_at` change.
+**Cause:** the request to `POST /auth/validate-api-key` carries both `Authorization` and
+`X-API-Key`.
 
-### Revocation invalidates the Redis cache immediately
+**Fix:** send only `X-API-Key`.
 
-Both delete routes call `revoke_api_key_with_cache_invalidation`, so a revoked key stops
-authenticating at once rather than waiting for a cache TTL.
+### `401` with `API key has expired: AUTH_1011`
 
-### `revoke_reason` is admin-only
+**Cause:** `expires_at` is in the past.
 
-`DELETE /api-keys/{key_id}` accepts an optional `revoke_reason` form field;
-`DELETE /users/api-keys/{key_id}` does not.
+**Fix:** extend it with `PUT` (the key becomes usable again) or issue a new key.
 
----
+### `401` with `API key owner is inactive: AUTH_1010` or `403` with `AUTHZ_2008`
 
-## Best Practices
+**Cause:** the owner was deactivated, or no longer reaches the key's project through the group
+chain. An admin owner must also still administer the project.
 
-- **Least-privilege scoping** — issue one key per project/service; never share a key across
-  projects or consumers.
-- **Short expiries** — set a future `expires_at` and rotate before it lapses rather than minting
-  non-expiring keys.
-- **Prompt revocation** — revoke on offboarding or suspected leak; the cache is invalidated
-  immediately. Use the admin `revoke_reason` for an audit trail.
-- **Never log raw tokens** — log only `public_id`, `fingerprint`, or `secret_last4`. The full token
-  exists in clear exactly once, in the create response.
-- **Validate before cutover** — when rotating, validate the new key via `X-API-Key` before revoking
-  the old one.
+**Fix:** restore the owner's access, or issue a key to an owner who has it.
 
----
+### A revoked key or removed owner is still accepted for a short time
 
-## Related
+**Cause:** revocation and expiry changes through the API drop the cache entry at once. Other
+changes do not: a key made inactive directly in the database, or an owner who is deactivated or
+loses project access, keeps the cached `valid` result for up to `60` seconds. The cache never
+skips the secret check: a token with the right `public_id` and a wrong secret gets
+`Invalid API key: AUTH_1010` even while the entry is cached.
 
-- **[Usage](usage.md)** — lifecycle flows for both families
-- **[Reference](reference.md)** — endpoint tables, response shape, and error codes
-- **[Scenarios](scenarios.md)** — end-to-end curl workflows including rotation
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** — `POST /auth/validate-api-key`
-- **[Errors Reference](../errors.md)** — global error envelope and status mapping
+**Fix:** revoke through `DELETE /users/api-keys/{key_id}` or `DELETE /api-keys/{key_id}`, or
+delete the `apikey:{public_id}` Redis key.
+
+### A lost token
+
+**Cause:** only the HMAC of the secret is stored, so no endpoint can show the token again.
+`fingerprint` and `secret_last4` identify a key but cannot rebuild it.
+
+**Fix:** create a new key and revoke the old one.

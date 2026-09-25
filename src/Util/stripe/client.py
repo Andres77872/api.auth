@@ -343,6 +343,11 @@ class StripeBillingClient:
     def retrieve_subscription(self, subscription_id: str) -> dict[str, Any]:
         return self._call("subscription_retrieve", self.sdk_client.v1.subscriptions.retrieve, _required_text(subscription_id, name="Stripe subscription id"), options=self._options())
 
+    def list_customer_subscriptions(self, customer_id: str, *, limit: int = 20, max_items: int = 100) -> list[dict[str, Any]]:
+        """List every subscription of one customer, canceled ones included (user-level resync)."""
+        params = {"customer": _required_text(customer_id, name="Stripe customer id"), "status": "all", "limit": int(limit)}
+        return self._iter_all("subscription_list", self.sdk_client.v1.subscriptions.list, params=params, max_items=max_items)
+
     def retrieve_payment_intent(self, payment_intent_id: str) -> dict[str, Any]:
         return self._call("payment_intent_retrieve", self.sdk_client.v1.payment_intents.retrieve, _required_text(payment_intent_id, name="Stripe payment intent id"), options=self._options())
 

@@ -41,7 +41,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from src.Util.Models import (
     UserProfileResponse, UpdateProfileResponse, AccessSummaryResponse,
     ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
-    ChangeUserTypeResponse, UserInfo, ProjectInfo, PaginationInfo, UpdateUserResponse
+    ChangeUserTypeResponse, UserInfo, ProfileProjectInfo, PaginationInfo, UpdateUserResponse
 )
 from src.Util.Seccurity import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors, log_operation_details
@@ -55,7 +55,7 @@ from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.admin_scope import AdminScope, require_user_in_scope, resolve_admin_scope, user_in_scope
 from src.Util.db import (
     db_email,
-    get_user_by_hash, update_user,
+    get_user_by_hash, update_user, set_user_active_status,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users_with_access, count_users,
     is_root_user, get_user_groups_in_project_by_hash, get_user_effective_permissions,
@@ -261,6 +261,30 @@ def _require_admin_or_root(current_user) -> AdminScope:
     return scope
 
 
+def _require_target_in_admin_projects(current_user, target_user) -> None:
+    """Refuse an admin caller a target outside its projects.
+
+    Admins manage non-root users who share at least one accessible project with them.
+    Root users are refused outright: they reach every project, so a shared-project
+    check alone would put them in every admin's scope.
+    """
+    if target_user.user_type == 'root':
+        raise AuthorizationError(
+            message="Access denied: root users are outside your administrative scope",
+            error_code=ErrorCode.ACCESS_DENIED,
+            details={"target_user": mask_uuid(target_user.user_hash)}
+        )
+
+    admin_project_hashes = {p.project_hash for p in get_user_accessible_projects(current_user.id) or []}
+    target_projects = get_user_accessible_projects(target_user.id) or []
+    if not any(p.project_hash in admin_project_hashes for p in target_projects):
+        raise AuthorizationError(
+            message="Access denied: User not in your projects",
+            error_code=ErrorCode.ACCESS_DENIED,
+            details={"target_user": mask_uuid(target_user.user_hash)}
+        )
+
+
 def _owner_email_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
@@ -359,11 +383,10 @@ async def get_user_profile(
         effective_permissions = get_user_effective_permissions(user_data.id, project.id)
         permission_names = effective_permissions if effective_permissions else []
         
-        projects.append(ProjectInfo(
+        projects.append(ProfileProjectInfo(
             project_hash=project.project_hash,
             project_name=project.project_name,
             project_description=project.project_description,
-            project_group=getattr(project, 'project_group_name', None),
             permissions=permission_names
         ))
 
@@ -413,7 +436,7 @@ async def update_user_profile(
     `multipart/form-data`); send at least one of `username`, `email`. `email`
     overwrites the account's compatibility `email` field directly: it is not
     verified, is not used for sign-in, and does not touch the addresses managed
-    under `/users/me/emails`.
+    under `/users/me/emails`. Your current and other sessions stay valid.
 
     **Responses:**
     - `200` — the updated user.
@@ -691,8 +714,10 @@ async def list_all_users(
     for user in all_users:
         user_id = user["id"]
 
-        # Skip users not in admin's projects if current user is admin
+        # Skip root users and users not in admin's projects if current user is admin
         if not is_root and user_id != current_user.id:
+            if user.get("user_type") == 'root':
+                continue
             user_projects_check = get_user_accessible_projects(user_id)
             user_project_ids = [proj.id for proj in user_projects_check] if user_projects_check else []
             if not any(pid in admin_project_ids for pid in user_project_ids):
@@ -1232,8 +1257,8 @@ async def get_user_details(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
     `session_token` cookie). Any user may read their own record. Root may read
-    any user; admins may read users who share at least one accessible project
-    with them; everyone else gets `403`.
+    any user; admins may read non-root users who share at least one accessible
+    project with them; everyone else gets `403`.
 
     **Responses:** `200` with `user`; `403` outside the caller's scope; `404`
     for an unknown or inactive `user_hash`.
@@ -1264,20 +1289,9 @@ async def get_user_details(
                 message="Access denied",
                 error_code=ErrorCode.ACCESS_DENIED
             )
-        
-        # Check if target user is in one of the admin's projects
-        admin_projects = get_user_accessible_projects(current_user.id)
-        target_user_projects = get_user_accessible_projects(target_user.id)
-        
-        admin_project_hashes = [p.project_hash for p in admin_projects]
-        target_project_hashes = [p.project_hash for p in target_user_projects]
-        
-        if not any(ph in admin_project_hashes for ph in target_project_hashes):
-            raise AuthorizationError(
-                message="Access denied: User not in your projects",
-                error_code=ErrorCode.ACCESS_DENIED,
-                details={"target_user": mask_uuid(user_hash)}
-            )
+
+        # Check if target user is a non-root user in one of the admin's projects
+        _require_target_in_admin_projects(current_user, target_user)
 
     # Get user type information with role assignments
     user_type_info = get_user_type_info(target_user.id)
@@ -1380,19 +1394,20 @@ async def update_user_status(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
     `session_token` cookie) of a root or admin user; consumers get `403`.
-    Admins may only change users who share at least one accessible project with
-    them, and may not deactivate root users.
+    Admins may only change non-root users who share at least one accessible
+    project with them.
 
     **Request:** `is_active` is a required query parameter; there is no body.
 
-    **Effects:** deactivation revokes the user's sessions, refresh tokens, and
+    **Effects:** sets the account's active flag; group memberships are left as
+    they are. Deactivation revokes the user's sessions, refresh tokens, and
     cached auth state.
 
     **Responses:**
     - `200` — new status.
     - `400` — deactivating your own account.
-    - `403` — not root/admin, target outside the admin's projects, or an admin
-      deactivating a root user.
+    - `403` — not root/admin, or an admin targeting a root user or a user
+      outside the admin's projects.
     - `404` — unknown or inactive `user_hash`. Inactive users are not found, so
       this endpoint cannot currently reactivate an account.
     """
@@ -1422,27 +1437,9 @@ async def update_user_status(
                 error_code=ErrorCode.ACCESS_DENIED
             )
             
-        # Admin users can only manage users in their assigned projects
-        admin_projects = get_user_accessible_projects(current_user.id)
-        target_user_projects = get_user_accessible_projects(target_user.id)
-        
-        admin_project_hashes = [p.project_hash for p in admin_projects]
-        target_project_hashes = [p.project_hash for p in target_user_projects]
-        
-        if not any(ph in admin_project_hashes for ph in target_project_hashes):
-            raise AuthorizationError(
-                message="Access denied: User not in your projects",
-                error_code=ErrorCode.ACCESS_DENIED,
-                details={"target_user": mask_uuid(user_hash)}
-            )
+        # Admin users can only manage non-root users in their assigned projects
+        _require_target_in_admin_projects(current_user, target_user)
 
-    # Prevent root users from being deactivated by non-root users
-    if target_user.user_type == 'root' and not is_active and not is_root:
-        raise AuthorizationError(
-            message="Cannot deactivate root users",
-            error_code=ErrorCode.ACCESS_DENIED
-        )
-        
     # Prevent self-deactivation
     if current_user.user_hash == target_user.user_hash and not is_active:
         raise ValidationError(
@@ -1452,10 +1449,7 @@ async def update_user_status(
 
     # Update user status
     update_result = handle_db_operation(
-        lambda: update_user(
-            user_id=target_user.id,
-            is_active=is_active
-        ),
+        lambda: set_user_active_status(target_user.id, is_active),
         error_context="user status update"
     )
 
@@ -1680,8 +1674,6 @@ async def delete_user_endpoint(
     - `403` — not root/admin, admin targeting a root user, or target outside
       the admin's projects.
     - `404` — unknown or already inactive `user_hash`.
-    - For a user with no active group memberships the request currently
-      returns `500` even though the account is deactivated.
     """
     from src.Util.db import delete_user
     
@@ -1725,18 +1717,7 @@ async def delete_user_endpoint(
 
     # Admin users can only delete users in their assigned projects
     if not is_root:
-        admin_projects = get_user_accessible_projects(current_user.id)
-        target_user_projects = get_user_accessible_projects(target_user.id)
-        
-        admin_project_hashes = [p.project_hash for p in admin_projects]
-        target_project_hashes = [p.project_hash for p in target_user_projects]
-        
-        if not any(ph in admin_project_hashes for ph in target_project_hashes):
-            raise AuthorizationError(
-                message="Access denied: User not in your projects",
-                error_code=ErrorCode.ACCESS_DENIED,
-                details={"target_user": mask_uuid(user_hash)}
-            )
+        _require_target_in_admin_projects(current_user, target_user)
 
     # Perform soft delete
     success = handle_db_operation(
@@ -1975,7 +1956,7 @@ async def search_users_endpoint(
     # Build response data; admin users only see users in their assigned projects
     users_list = []
     for user in users:
-        if not scope.is_root and not user_in_scope(scope, user.id):
+        if not scope.is_root and not user_in_scope(scope, user.id, user.user_type):
             continue
         user_info = {
             "user_hash": user.user_hash,
@@ -2021,6 +2002,9 @@ async def change_user_type_endpoint(
     **Request:** form field `user_type` (`application/x-www-form-urlencoded` or
     `multipart/form-data`). No project is assigned when promoting to `admin`;
     use `PUT /user-types/{user_hash}/type` to set one.
+
+    **Effects:** when the type actually changes, the user's access sessions and
+    refresh families are revoked; they must sign in again.
 
     **Responses:** `200` with `previous_type` and `new_type`; `400` for an
     invalid `user_type` (`VAL_3012`); `404` for an unknown or inactive
@@ -2129,19 +2113,24 @@ async def update_user_details_endpoint(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
     `session_token` cookie) of a root or admin user; consumers get `403`.
-    Root may update any user, including `user_type`. Admins may update users
-    who share at least one accessible project with them, but not `user_type`.
+    Root may update any user, including `user_type`. Admins may update non-root
+    users who share at least one accessible project with them, but not
+    `user_type`.
 
     **Request:** form fields (`application/x-www-form-urlencoded` or
     `multipart/form-data`); send at least one field. `email` only overwrites
     the compatibility `email` field; verified addresses live under the
     `/users/me/emails` lifecycle.
 
+    **Effects:** the user's sessions stay valid after a `username`/`email`
+    change. When `user_type` changes, the user's access sessions and refresh
+    families are revoked and they must sign in again.
+
     **Responses:**
     - `200` — the updated user.
     - `400` — no field provided, or invalid `user_type` (`VAL_3012`).
     - `403` — not root/admin, admin sending `user_type` (`AUTHZ_2002`), or
-      target outside the admin's projects.
+      an admin targeting a root user or a user outside the admin's projects.
     - `404` — unknown or inactive `user_hash`.
     - `409` — username already taken (`CONF_5004`).
     """
@@ -2185,20 +2174,9 @@ async def update_user_details_endpoint(
             details={"field": "user_type", "allowed_values": ['root', 'admin', 'consumer']}
         )
     
-    # Admin users can only update users in their projects
+    # Admin users can only update non-root users in their projects
     if not is_root:
-        admin_projects = get_user_accessible_projects(current_user.id)
-        target_user_projects = get_user_accessible_projects(target_user.id)
-        
-        admin_project_hashes = [p.project_hash for p in admin_projects]
-        target_project_hashes = [p.project_hash for p in target_user_projects]
-        
-        if not any(ph in admin_project_hashes for ph in target_project_hashes):
-            raise AuthorizationError(
-                message="Access denied: User not in your projects",
-                error_code=ErrorCode.ACCESS_DENIED,
-                details={"target_user": mask_uuid(user_hash)}
-            )
+        _require_target_in_admin_projects(current_user, target_user)
     
     # Check if at least one field is provided
     if not any([username, email, user_type]):

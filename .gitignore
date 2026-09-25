@@ -10,3 +10,6 @@
 .coverage-unit.json
 test-results/
 .env.prod2
+
+# Private assistant conversations, checkpoints and encrypted profiles
+.assistant-data/

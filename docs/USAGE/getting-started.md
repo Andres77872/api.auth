@@ -1,112 +1,102 @@
-# Getting Started
+# Getting started
 
-Practical onboarding guide for new users, integrators, and platform administrators. Covers everything from first-time setup to your first authenticated API call.
+From an empty database to a first authenticated request: configure the service, create the first
+root user, set up a project and its groups, then register and log in a user.
 
----
+## Who this guide is for
 
-## Table of Contents
-
-- [Who This Guide Is For](#who-this-guide-is-for)
-- [Prerequisites](#prerequisites)
-- [Environment & Configuration](#environment--configuration)
-- [First-Root Bootstrap and Current Seed Caveat](#first-root-bootstrap-and-current-seed-caveat)
-- [First Admin, User Group & Project Setup](#first-admin-user-group--project-setup)
-- [Registration & Login Quickstart](#registration--login-quickstart)
-- [Authentication Modes](#authentication-modes)
-- [Common Gotchas](#common-gotchas)
-- [What to Read Next](#what-to-read-next)
-
----
-
-## Who This Guide Is For
-
-| Role | What you'll get from this guide |
-|------|--------------------------------|
-| **Platform administrator** | How to bootstrap the system, create the first root, set up projects and user groups |
-| **Integrator / developer** | How to authenticate, which content types to use, what headers are required |
-| **End user** | How registration works, what you need from your admin to get started |
-
----
+- **Operators and platform administrators** who run the service and bootstrap the first root user,
+  projects and groups.
+- **Integrators** who need a working account and project before building a client. After this
+  guide, continue with [Authentication](authentication-usage-cases.md) and the
+  [client integration guide](client-authentication-guide.md).
 
 ## Prerequisites
 
-- A running **MySQL** instance with the API schema applied (stored procedures, tables, views)
-- A running **Redis** instance (sessions are stored here)
-- Python 3.12 (the version used by the project Docker images) with dependencies installed (`pip install -r requirements.txt`)
-- `curl` or any HTTP client for testing
+- MySQL and Redis reachable from the API host. Redis holds sessions, refresh families and rate-limit
+  counters, so the API cannot authenticate anyone without it.
+- Python 3.12 (the version in the project `Dockerfile`) with `pip install -r requirements.txt`.
+- `curl` and `jq` for the examples. Examples use `API=http://localhost:8000`.
 
----
+## Configuration essentials
 
-## Environment & Configuration
+Copy [.env.example](../../.env.example) to `.env` at the repository root; it documents every
+variable, including email, OAuth and billing settings. Importing the `src` package loads `.env`
+automatically, and variables already exported in the environment take precedence.
 
-The API reads configuration from environment variables. See [.env.example](../../.env.example) for the full documented template, including test-only and deprecated variables. These are the core runtime variables you **must** or **should** set:
+These are read at import time; a missing required value stops the server before it serves a
+request:
 
 | Variable | Required | Default | Notes |
-|----------|----------|---------|-------|
-| `DB_HOST` | Yes | -- | MySQL host |
-| `DB_PORT` | No | `3306` | MySQL port |
-| `DB_USER` | Yes | -- | MySQL user |
-| `DB_MYSQL_PASSWORD` | Yes | -- | MySQL password |
-| `DB_NAME` | Yes | -- | Database name |
-| `REDIS_HOST` | Yes | -- | Redis host |
-| `REDIS_PORT` | No | `6379` | Redis port |
-| `REDIS_DB` | No | `0` | Redis DB number |
-| `DB_REDIS_PASSWORD` | No | -- | Redis password |
-| `JWT_SECRET_KEY` | **Yes outside explicit tests** | None — startup fails | See critical note below |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` | Access-token TTL in minutes. Refresh continuity is 72h sliding (`remember_me=false`) or a 30-day absolute, non-sliding window (`remember_me=true`). |
-| `API_KEY_PEPPER` | Yes | -- | HMAC pepper for API key hashing; required before API key utilities import |
-| `ALLOWED_ORIGINS` | No | `DEFAULT_ALLOWED_ORIGINS` | Explicit CORS allow-list (comma-separated). When unset, the app falls back to the single built-in list `DEFAULT_ALLOWED_ORIGINS` in [src/Util/auth_constants.py](../../src/Util/auth_constants.py), shared by the CORS middleware, early-reject responses, and email-link origin validation. That list holds localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai`, so it is not a deployment configuration — **set it in every deployment.** Use [.env.example](../../.env.example) as the maintained template. |
-| `DEBUG_MODE` | No | `false` | Enables tracebacks in error responses |
+| --- | --- | --- | --- |
+| `DB_HOST`, `DB_USER`, `DB_MYSQL_PASSWORD`, `DB_NAME` | yes | — | `DB_PASSWORD` is accepted as a fallback for `DB_MYSQL_PASSWORD`. The canonical schema is created as `magic_auth`, so use `DB_NAME=magic_auth`. |
+| `DB_PORT` | no | `3306` | |
+| `REDIS_HOST` | yes | — | |
+| `REDIS_PORT`, `REDIS_DB`, `DB_REDIS_PASSWORD` | no | `6379`, `0`, none | |
+| `JWT_SECRET_KEY` | yes | — | HS256 signing key for access and refresh tokens, for example `openssl rand -hex 32`. See the caution below. |
+| `API_KEY_PEPPER` | yes | — | HMAC pepper for API-key hashing. Changing it invalidates every issued API key. |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `15` | Access-token lifetime. Refresh lifetimes are fixed; see [Authentication](authentication-usage-cases.md#lifetimes). |
+| `ALLOWED_ORIGINS` | no | built-in list | Comma-separated browser origins for CORS, also used to accept email-link origins. See below. |
+| `DEBUG_MODE` | no | `false` | `true`, `1` or `yes` adds error details and stack traces to responses. Never enable it in production. |
+| `APP_ENV` | no | none | `test`, `testing` or `pytest` marks a test runtime (see the caution below). Use `production`, `staging`, `development` or `local` otherwise. |
 
-### Critical: `JWT_SECRET_KEY`
+> [!CAUTION]
+> Outside a test runtime, a missing `JWT_SECRET_KEY` stops the server at import with
+> `JWT_SECRET_KEY is required outside explicit test runtime`; there is no random fallback. In a test
+> runtime (`APP_ENV=test`, or running under pytest) the server silently uses a fixed, public test
+> secret, so never set a test `APP_ENV` in a deployment. Changing the secret invalidates every
+> issued token.
 
-If `JWT_SECRET_KEY` is **not** set, startup fails outside explicit test runtimes. Silent random JWT secrets are not allowed anymore.
+`ALLOWED_ORIGINS` must list the exact browser origins of your frontends. When it is unset, CORS,
+early-reject responses and email-link origin checks fall back to the single built-in
+`DEFAULT_ALLOWED_ORIGINS` list in [src/Util/auth_constants.py](../../src/Util/auth_constants.py):
+localhost and LAN development origins plus the hosted UI origin `https://auth-ui.arz.ai`. That list
+is not a deployment configuration; set the variable in every deployment.
 
-- **Production/staging/dev services must set a fixed, secure value**
-- **Only explicit test runtimes use the deterministic test secret**
-- **Configuration failures surface as `JWT_CONFIGURATION_FAILURE` (`AUTH_1021`)**
-
-See [Error Reference → JWT Configuration Failure](errors.md#jwt-configuration-failure) for the error envelope and operator guidance.
-
-### Starting the Server
+## Create the schema and run the server
 
 ```bash
+python scripts/create_database.py    # creates the magic_auth schema, procedures and seed data
 uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-The API has **no configurable base URL prefix**. All routes are mounted at `/`. Health check: `GET /ping` returns `204 No Content`.
+From another shell, `curl -s http://localhost:8000/system/ping` answers `200` with a JSON body.
 
----
+`GET /ping` is also public and returns `204 No Content`. All routes are mounted at the root path;
+there is no configurable base-path prefix. Email delivery needs `EMAIL_DELIVERY_ENABLED` and the
+worker (`python -m src.workers.email_worker`); see the [email suite](email/README.md).
 
-## First-Root Bootstrap and Current Seed Caveat
+## First-root bootstrap and current seed caveat
 
-**There is no API-based bootstrap flow for the very first root user.**
-
-The endpoint `POST /user-types/root` requires an existing root token to
-authenticate (`Depends(require_root_user)`). The repository does contain a SQL
-seed, but its current credential path is not compatible with current login:
+There is no API-based bootstrap for the very first root user: `POST /user-types/root` itself
+requires a root access token. The repository ships a SQL seed, but its credential cannot be used
+with the current login:
 
 - `scripts/create_database.py` and `scripts/recreate_database.py` execute
   `schemas/tables/05_initialize_data.sql`;
-- that SQL inserts `root` with a legacy SHA-256 hash for plaintext
-  `1248163264`;
-- the active password verifier accepts Argon2id hashes only, so that seeded
-  credential cannot log in;
-- both Python scripts print `admin123`, which does not match the SQL seed and
-  also cannot log in.
+- that SQL inserts user `root` (email `root@system.local`) with a legacy SHA-256 hash of the
+  plaintext `1248163264`;
+- the active password verifier accepts Argon2id hashes only, so that seeded credential cannot log
+  in;
+- both Python scripts print `admin123` on completion, which matches neither the seed nor any hash
+  and also cannot log in.
 
-Treat both exposed defaults as invalid development artifacts, not deployment
-credentials.
+Treat both values as invalid development artifacts, never as deployment credentials. Pick one of
+the two paths below.
 
-### After the canonical database script
+> [!WARNING]
+> Until the seed is corrected, the rotation below is required before the first root login on a
+> database created by the canonical scripts.
 
-Rotate the seeded row to a policy-compliant Argon2id password before first
-login:
+### Rotate the seeded root password
+
+Run from the repository root after `scripts/create_database.py`. The password must satisfy the
+[password policy](authentication-usage-cases.md#password-policy).
 
 ```bash
 .venv/bin/python - <<'PY'
 from getpass import getpass
-from src.Util.db.db_config import get_connection
+from src.Util.db_config import get_connection
 from src.Util.password_security import assert_password_policy, hash_password
 
 password = getpass("Root password: ")
@@ -123,17 +113,18 @@ with get_connection() as connection:
         row = cursor.fetchone()
         if not row:
             raise SystemExit("Seeded root row was not found")
-        cursor.callproc("sp_update_password_hash", [row["id"], hash_password(password)])
+        cursor.callproc("sp_update_password_hash", [row[0], hash_password(password)])
     connection.commit()
 
 print("Seeded root password rotated to Argon2id")
 PY
 ```
 
-### If the SQL seed is deliberately omitted
+### Create the first root without the seed
 
-Create the first root through the application's DB helper. It generates IDs,
-hashes the password with Argon2id, and calls the six-argument stored procedure:
+If the seed row was deliberately omitted, create the first root through the application helper. It
+generates the IDs, hashes the password with Argon2id and calls the six-argument
+`sp_create_root_user` procedure:
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -145,299 +136,176 @@ username = input("Root username: ").strip()
 email = input("Root email (optional): ").strip() or None
 password = getpass("Root password: ")
 assert_password_policy(password, username=username, email=email)
-user = create_root_user(
-    username=username,
-    password=password,
-    email=email,
-    created_by=None,
-)
+user = create_root_user(username=username, password=password, email=email, created_by=None)
 print(f"Created {user.user_hash}")
 PY
 ```
 
-Do not pass plaintext directly to `sp_create_root_user`; its database contract
-expects generated IDs and a password hash. `created_by=None` is acceptable only
-for this first user. After bootstrap, use `POST /user-types/root` to create
-additional root users through the API.
+Do not call `sp_create_root_user` with a plaintext password: it expects generated IDs and a
+password hash. `created_by=None` is acceptable only for this first user; create further root users
+with `POST /user-types/root`.
 
-> **Current operational gap:** the SQL seed, active verifier, and bootstrap
-> completion messages disagree. The documented rotation is required until the
-> source bootstrap is corrected.
+### Log in as root
 
-Once the root user exists, log in:
+No project exists yet, so use the project-less platform login:
 
 ```bash
-curl -X POST "{BASE_URL}/auth/platform/login" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=your_root_username&password=your_root_password"
+API=http://localhost:8000
+ROOT_TOKEN=$(curl -s -X POST "$API/auth/platform/login" \
+  --data-urlencode "username=root" \
+  --data-urlencode "password=$ROOT_PASSWORD" | jq -r '.access_token')
 ```
 
-Save the `access_token` (the deprecated `session_token` alias has the same value)
-from the response. Use it as `$ROOT_TOKEN` for subsequent admin operations.
+The access token lasts `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (15 minutes by default); run the command
+again when later calls return `401`.
 
----
+## Set up the first project and groups
 
-## First Admin, User Group & Project Setup
+Users reach projects through groups: user → user group → project group → project. Creating a
+project builds a default chain for it, so the minimal setup is to create the project and register
+users into its default `user_…` group.
 
-After bootstrapping the root user, the typical setup path is:
+### Create a project
 
-### 1. Create an Admin User (root only)
+`POST /projects` is root-only and takes form fields `project_name` (required) and
+`project_description`:
 
 ```bash
-curl -X POST "{BASE_URL}/user-types/admin" \
+PROJECT_HASH=$(curl -s -X POST "$API/projects" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=project_admin&password=AdminPass123!&email=admin@example.com&assigned_project_id=1"
+  --data-urlencode "project_name=My Project" \
+  --data-urlencode "project_description=First project" | jq -r '.project.project_hash')
 ```
 
-### 2. Create a Project (admin)
+The server also creates a project group containing the project and three user groups granted that
+project group: `admin_<project_id>`, `user_<project_id>` and `readonly_<project_id>`, where
+`<project_id>` is the internal project ID (`proj-…`).
+
+### Find the registration group
+
+Registration needs a `user_group_hash`. Take the default `user_…` group of the project:
 
 ```bash
-curl -X POST "{BASE_URL}/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "name=My+Project&description=First+project"
+PROJECT_GROUPS=$(curl -s "$API/projects/$PROJECT_HASH/groups" -H "Authorization: Bearer $ROOT_TOKEN")
+GROUP_HASH=$(jq -r '.user_groups[] | select(.group_name | startswith("user_")) | .group_hash' <<<"$PROJECT_GROUPS")
 ```
 
-### 3. Create a User Group (admin)
+Anyone who knows a group hash can register into it, so share it only with the audience that should
+get the group's projects.
+
+### Create a project admin
+
+Optional. `POST /user-types/admin` (root only) takes internal project IDs, not project hashes. The
+project API returns only hashes; the internal ID is the suffix of the default group names:
 
 ```bash
-curl -X POST "{BASE_URL}/admin/user-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "name=developers&description=Development+team"
+PROJECT_ID=$(jq -r '.user_groups[] | select(.group_name | startswith("user_")) | .group_name | ltrimstr("user_")' <<<"$PROJECT_GROUPS")
+curl -s -X POST "$API/user-types/admin" \
+  -H "Authorization: Bearer $ROOT_TOKEN" \
+  --data-urlencode "username=project_admin" \
+  --data-urlencode "password=$ADMIN_PASSWORD" \
+  --data-urlencode "email=admin@example.com" \
+  --data-urlencode "assigned_project_id=$PROJECT_ID"
 ```
 
-The response includes a `group_hash` (e.g., `grp-abc123...`). **This is the value end users need for registration.**
+The admin can then log in with `/auth/login` and this `project_hash`, or with
+`/auth/platform/login`. See [user types](users/user-types.md) for multi-project admins.
 
-### 4. Link the User Group to a Project Group
+### Use your own groups
 
-User groups gain project access through **project groups**. Create a project group, assign the project to it, then grant the user group access:
+Optional. To grant a custom user group access instead of the defaults, create both groups, put the
+project in the project group, and grant the project group to the user group:
 
 ```bash
-# Create project group
-curl -X POST "{BASE_URL}/admin/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "name=my-project-group&description=Group+for+my+project"
+UG_HASH=$(curl -s -X POST "$API/admin/user-groups" -H "Authorization: Bearer $ROOT_TOKEN" \
+  --data-urlencode "group_name=developers" | jq -r '.user_group.group_hash')
+PG_HASH=$(curl -s -X POST "$API/admin/project-groups" -H "Authorization: Bearer $ROOT_TOKEN" \
+  --data-urlencode "group_name=developer-projects" | jq -r '.project_group.group_hash')
 
-# Assign project to project group (use the project_group_hash from the response above)
-curl -X POST "{BASE_URL}/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH"
-
-# Grant user group access to the project group
-curl -X POST "{BASE_URL}/admin/user-groups/$GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$PROJECT_GROUP_HASH"
+curl -s -X POST "$API/admin/project-groups/$PG_HASH/projects" \
+  -H "Authorization: Bearer $ROOT_TOKEN" --data-urlencode "project_hash=$PROJECT_HASH"
+curl -s -X POST "$API/admin/user-groups/$UG_HASH/project-groups" \
+  -H "Authorization: Bearer $ROOT_TOKEN" --data-urlencode "project_group_hash=$PG_HASH"
 ```
 
-Now any user who registers with `$GROUP_HASH` will have access to the project.
+Users registered with `user_group_hash=$UG_HASH` then reach the project. The
+[groups suite](groups/README.md) covers membership and revocation.
 
----
+## Register and log in the first user
 
-## Registration & Login Quickstart
-
-### Registration (End User)
-
-Registration requires a valid, active `user_group_hash` provided by an admin. Self-registration is **not** open.
+Register a consumer into the group. Registration is public for anyone holding the group hash; the
+response already contains a token pair scoped to the group's first project.
 
 ```bash
-curl -X POST "{BASE_URL}/auth/register" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_user&password=MySecurePass123!&email=user@example.com&user_group_hash=$GROUP_HASH"
+curl -s -X POST "$API/auth/register" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=$ALICE_PASSWORD" \
+  --data-urlencode "user_group_hash=$GROUP_HASH"
 ```
 
-**Password note:** Password-setting routes enforce the shared server-side policy:
-minimum length (default 8), common-password denial, username/email derivation
-checks, and repeated/sequential-value rejection. The policy intentionally does
-not require arbitrary character classes. A rejection uses `VAL_3007` with safe
-reason codes; clients should mirror the guidance, but the server remains
-authoritative.
-
-### Login
+Log in later with the project to work in. `project_hash` is required for every user type on
+`/auth/login`:
 
 ```bash
-curl -X POST "{BASE_URL}/auth/login" \
-  -H "User-Agent: my-client/1.0" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=new_user&password=MySecurePass123!&project_hash=$PROJECT_HASH"
+ACCESS_TOKEN=$(curl -s -X POST "$API/auth/login" \
+  --data-urlencode "username=alice" \
+  --data-urlencode "password=$ALICE_PASSWORD" \
+  --data-urlencode "project_hash=$PROJECT_HASH" | jq -r '.access_token')
+
+curl -s "$API/users/profile" -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-> **Note**: `project_hash` is REQUIRED for all users. Root users bypass group-based access validation and may access any project by role.
+Passwords must pass the server-side policy (minimum 8 characters by default, no common passwords,
+no username or email inside, no repeated or sequential runs); a rejection is `400 VAL_3007`. Details
+are in [Authentication](authentication-usage-cases.md#password-policy).
 
-### Other Available Auth Flows
+## How clients authenticate
 
-Beyond username/password login, the `/auth` suite exposes several additional flows. These are documented in full elsewhere — see the linked suites rather than duplicating them here:
+- Sign-in returns an **access token** (15 minutes by default) and a **refresh token** (72-hour
+  sliding family, or 30 days absolute with `remember_me=true`) in the JSON body, and also sets them
+  as the `session_token` and `refresh_token` cookies.
+- Protected routes accept the access token as `Authorization: Bearer <token>` (APIs, mobile,
+  scripts) or through the `session_token` cookie (same-site browser apps).
+- `POST /auth/refresh` exchanges the refresh token for a new pair. Each refresh token works once,
+  and the previous access token stops working at the same moment.
+- A user API key in `X-API-Key` is not a general credential; `POST /auth/validate-api-key` resolves
+  its owner and project for services.
 
-| Flow | Entry endpoint(s) | Where to read |
-|------|-------------------|---------------|
-| **Email verification** (activation) | `POST /auth/email/verify` (+ per-user `/users/*/emails*` management) | [Authentication Usage Cases](authentication-usage-cases.md), [Email Suite](email/README.md), [Users → Email Management](users/email-management.md) |
-| **Password recovery** | `POST /auth/password/forgot`, `POST /auth/password/reset` | [Authentication Usage Cases](authentication-usage-cases.md), [Email Suite](email/README.md) |
-| **Authenticated password change** | `POST /auth/password/change` | [Authentication Usage Cases](authentication-usage-cases.md) |
-| **OAuth sign-in** | `POST /auth/oauth/init`, `POST /auth/oauth/start`, `GET /auth/oauth/callback`, link/unlink/reauth | [OAuth Suite](oauth/README.md) |
-| **Google sign-in (deprecated aliases)** | `POST /auth/google/start`, `GET /auth/google/callback`, link/unlink/reauth | [Google OAuth Suite](google-oauth/README.md) |
-| **Platform login** (project-agnostic) | `POST /auth/platform/login` | [Authentication Usage Cases](authentication-usage-cases.md) |
-| **API-key validation** | `POST /auth/validate-api-key` | [API Keys Suite](api-keys/README.md) |
+The endpoint contract is in [Authentication](authentication-usage-cases.md); cookie attributes,
+storage and refresh handling for real clients are in the
+[client integration guide](client-authentication-guide.md).
 
-Public email flows (`verify`/`forgot`/`reset` and the authenticated add/resend routes) return a generic `202 Accepted` regardless of account state to prevent enumeration; honor `429 Retry-After` if rate-limited.
+## Common gotchas
 
----
+Platform-wide rules (`User-Agent` on every request, 8 MiB POST limit, content types) are listed in
+[platform-wide contracts](README.md#platform-wide-contracts).
 
-## Authentication Modes
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Server stops at import with `Missing required environment variable: DB_HOST` or `KeyError: 'API_KEY_PEPPER'` | A required variable is unset | Set it in `.env` or the environment |
+| Stored-procedure or unknown-database errors on first requests | `DB_NAME` differs from the schema the scripts created | Use `DB_NAME=magic_auth` |
+| `422` with body `{"status": "Error", "action": "User-Agent header not found"}` | No `User-Agent` header (curl sends one; some HTTP libraries and proxies do not) | Send a `User-Agent` on every request |
+| The seeded or printed root password is rejected | Legacy seed; see the bootstrap caveat | [Rotate the seeded root password](#rotate-the-seeded-root-password) |
+| `400 VAL_3002` "Project identifier is required for login" | `/auth/login` without `project_hash` | Send it, or use `/auth/platform/login` for root and admin |
+| `403` on a consumer login | No user group of the user reaches that project | Link the groups as shown above |
+| `401 AUTH_1001` when logging in with the registration email | That email is stored but not activated | Log in with the username, or add and activate the address with `/users/me/emails` |
+| `401` on calls that worked a few minutes earlier | The access token expired or was rotated away by a refresh | Refresh, and always use the newest access token |
+| `401 AUTH_1008` on `/auth/switch-project` | The sign-in is older than 300 seconds | Log in again with the target `project_hash` |
+| `429 INT_7005` on login | 10 failures per IP and identifier, or 30 per identifier, within 15 minutes | Wait for `Retry-After` |
+| Browser does not keep the auth cookies | Cookies are `Secure` and `SameSite=Strict`: plain HTTP (other than localhost) or a cross-site frontend drops them | Serve over HTTPS from the same site, or use bearer tokens |
+| Browser reports a CORS error | Frontend origin missing from `ALLOWED_ORIGINS` | Add the exact origin (scheme, host and port) |
 
-Protected endpoints currently accept access JWTs in **two ways**. Both are equivalent for protected-route authorization:
-
-### Mode 1: Bearer Header (API clients, scripts, server-to-server)
-
-```bash
-curl -X GET "{BASE_URL}/users/profile" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-### Mode 2: Cookie (Browsers, SPAs)
-
-On login, the API sets an HTTP-only cookie named `session_token`:
-
-| Property | Value |
-|----------|-------|
-| Access cookie | `session_token` (deprecated alias for `access_token`) |
-| Refresh cookie | `refresh_token` |
-| Access Max-Age | Short-lived access-token TTL |
-| Refresh Max-Age | 259200s (72h), sliding on refresh — or 2592000s (30d) absolute when `remember_me=true` |
-| HttpOnly | true |
-| Secure | true |
-| SameSite | strict |
-
-Browsers automatically send these cookies on subsequent requests. No `Authorization` header is needed for browser flows when cookies are used.
-
-### API Keys: lifecycle + dedicated validation, not general route auth
-
-API keys can be created, listed, updated, and revoked through the API-key lifecycle endpoints (self-service `/users/api-keys`, admin `/api-keys`), and a dedicated endpoint validates them:
-
-- **`POST /auth/validate-api-key`** authenticates a user-created API key supplied in the **`X-API-Key`** header and returns the resolved user/project/groups/permissions context. Sending **both** `Authorization` and `X-API-Key` is rejected with `400 ambiguous_credentials`. The raw key/secret is never echoed back. This is the supported way to verify a key.
-- API keys are **still not a general protected-route auth mode**: the other protected endpoints (e.g. `/users/profile`) require a Bearer access JWT or the `session_token` cookie. `X-API-Key` populates request/audit context but does not by itself authorize arbitrary protected routes.
-
-See the [API Keys Documentation Suite](api-keys/README.md) for the full lifecycle, key format, scope model, and validation contract.
-
-### Which to use?
-
-| Scenario | Recommended mode |
-|----------|-----------------|
-| Browser-based SPA / frontend | Cookie (automatic) |
-| curl / scripts / server-to-server | Bearer header |
-| Mobile apps | Bearer header (store token securely) |
-
-### Session Lifecycle
-
-Four different TTLs operate independently — don't confuse them:
-
-| TTL | Value | What it controls |
-|-----|-------|-----------------|
-| **Access JWT/cookie TTL** | Short-lived | How long the access token itself is valid for protected requests. |
-| **Refresh JWT/family TTL** | 72h (259200s) sliding, or 30 days absolute with `remember_me=true` | How long refresh continuity lives. With `remember_me=false` the 72h window slides on each successful `POST /auth/refresh`; with `remember_me=true` it is a fixed 30-day (2592000s) non-sliding window. |
-| **Refresh anchor TTL** | Matches the refresh family window | How long `refresh_anchor:{family_id}` keeps non-secret refresh continuity context. This outlives `session:{access_jti}` but never stores raw tokens or permissions. |
-| **Redis access session TTL** | Access-token TTL | How long `session:{access_jti}` lives in Redis. |
-| **Cache layer TTL** | 1 hour (session) / 30 min (permission checks) | How long cached permission/access-check results live in Redis. **Separate from auth sessions.** A user's session can be valid while their cached permissions are stale. |
-
-- **Refresh**: `POST /auth/refresh` requires a valid `refresh_token` cookie/body value, issues a new access+refresh pair, marks the old refresh token used, and deletes the old access session. Access/session tokens are rejected as refresh credentials.
-- **Access expiry is recoverable**: an expired access JWT or evicted `session:{access_jti}` is expected after the short access TTL. Refresh still succeeds while the refresh token, refresh family, and `refresh_anchor:{family_id}` or safe legacy fallback remain valid/current.
-- **Logout/revocation is different from access expiry**: deleting only `session:{access_jti}` invalidates that access token, but it is not a full logout contract. Logout, reuse detection, deactivation, and admin revocation revoke/tombstone the refresh family and delete the refresh anchor.
-- After admin permission changes, the user may need to wait for cache expiry (30 min) or manually invalidate their cache (`POST /system/cache/invalidate/user/{hash}`) to see updated permissions.
-
----
-
-## Common Gotchas
-
-### 1. `User-Agent` header is mandatory
-
-**Every** request must include a `User-Agent` header. Missing it returns `422`.
-
-```bash
--H "User-Agent: my-client/1.0"
-```
-
-### 2. Write endpoints use more than one content type
-
-Login, registration, refresh, switching, and many older CRUD/admin mutations are
-form-encoded. Email-template, provider, internal S2S, audit-export, and selected
-bulk routes use JSON. Webhooks require their provider's signed raw body. Follow
-the request-body schema in OpenAPI or the relevant domain reference; do not
-assume one content type for every write.
-
-### 3. POST body limit is 8MB
-
-Requests exceeding 8MB return `413 Payload Too Large`.
-
-### 4. Two endpoints return 501 (Not Implemented)
-
-- `PATCH /projects/{hash}/owner` — reserved for future use
-- `PATCH /projects/{hash}/archive` — reserved for future use
-
-### 5. Rate limiting is route-specific
-
-Login-identifier, password/email, Google OAuth, Patreon, and billing flows have
-dedicated limits and may return `429` with `Retry-After`. The service does not
-provide one universal limit for every route, so keep infrastructure-level
-protection as an additional control.
-
-### 6. Use only the documented auth transports
-
-Protected routes use `Authorization: Bearer <access_token>` or the
-`session_token` cookie. Legacy `X-token-user` / `X-token-collection` constants
-remain in compatibility code but are not wired into the active protected-route
-dependency.
-
-### 7. CORS uses an explicit allow-list
-
-Set `ALLOWED_ORIGINS` to the exact browser clients that should call the API.
-[`.env.example`](../../.env.example) is the maintained deployment template. When
-the variable is unset, CORS, early-reject responses, and email-link origin
-validation all fall back to the same built-in `DEFAULT_ALLOWED_ORIGINS` list in
-[`src/Util/auth_constants.py`](../../src/Util/auth_constants.py); it contains
-localhost/LAN development origins plus the hosted auth UI origin
-`https://auth-ui.arz.ai`, and is not a deployment configuration.
-
-### 8. Password policy is server-enforced
-
-Password-setting flows enforce the shared policy described in the registration
-section. Treat `VAL_3007` reason codes as the public contract and never log or
-echo the submitted password.
-
-### 9. UUIDs are masked in error responses
-
-Error messages mask UUIDs (e.g., `usr-[550e]...[0000]`). Clients cannot parse full IDs from error messages.
-
-### 10. DEBUG_MODE changes error shape
-
-- `DEBUG_MODE=false` (default): `{"status":"error","error":{"code":"...","category":"...","message":"..."}}`
-- `DEBUG_MODE=true`: Adds `details` and `trace` fields to the error object. **Never enable in production.**
-
----
-
-## What to Read Next
+## What to read next
 
 | Topic | Document |
-|-------|----------|
-| Full authentication flows (login, refresh, password, email verify) | [Authentication Usage Cases](authentication-usage-cases.md) |
-| Client integration (JS, Python, React) | [Client Authentication Guide](client-authentication-guide.md) |
-| Google sign-in (OAuth) | [Google OAuth Documentation Suite](google-oauth/README.md) |
-| API keys (lifecycle + validation) | [API Keys Documentation Suite](api-keys/README.md) |
-| Transactional email (templates, webhooks, delivery) | [Email Documentation Suite](email/README.md) |
-| Error codes and troubleshooting | [Error Reference](errors.md) |
-| How permissions actually work | [Permission Resolution](permissions/resolution.md) |
-| User management (incl. per-user email management) | [Users Documentation Suite](users/README.md) |
-| Groups architecture | [Groups Documentation Suite](groups/README.md) |
-| Projects | [Projects Documentation Suite](projects/README.md) |
-
+| --- | --- |
+| Endpoint contract: login, registration, email flows, refresh, switch, logout, API-key validation | [Authentication](authentication-usage-cases.md) |
+| Building browser, mobile and server clients | [Client integration guide](client-authentication-guide.md) |
+| Error envelope and codes | [Error reference](errors.md) |
+| OAuth sign-in | [OAuth suite](oauth/README.md) |
+| API keys | [API keys suite](api-keys/README.md) |
+| Users, user types and email addresses | [Users suite](users/README.md) |
+| Groups and project access | [Groups suite](groups/README.md) |
+| Projects | [Projects suite](projects/README.md) |
+| How permissions resolve | [Permission resolution](permissions/resolution.md) |
+| Transactional email | [Email suite](email/README.md) |

@@ -344,3 +344,62 @@ class TestIdGenerators:
     def test_request_ids_are_unique(self):
         ids = {generate_request_id() for _ in range(100)}
         assert len(ids) == 100
+
+
+# ─── log_request session_id ─────────────────────────────────────────────────
+
+class TestLogRequestSessionId:
+    """sp_log_api_request must never receive access-token bytes as session_id."""
+
+    SESSION_ID_ARG = 7  # position of p_session_id in sp_log_api_request
+
+    def _logged_session_id(self, session_id):
+        from unittest.mock import MagicMock, patch
+
+        cursor = MagicMock()
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.cursor.return_value = cursor
+
+        with patch("src.Util.api_audit_logger.get_connection", return_value=conn):
+            assert APIAuditLogger.log_request(
+                audit_id="audit-1", request_id="req-1", http_method="GET",
+                endpoint_path="/users/profile", route_pattern=None,
+                user_id="usr-1", user_type="consumer", session_id=session_id,
+                request_headers=None, request_body=None, request_query=None,
+                request_size_bytes=0, client_ip="127.0.0.1", user_agent=None,
+                referer=None, project_id=None, metadata=None,
+            ) is True
+
+        name, args = cursor.callproc.call_args[0]
+        assert name == "sp_log_api_request"
+        return args[self.SESSION_ID_ARG]
+
+    def test_access_token_is_stored_as_session_id_claim(self):
+        from uuid import uuid4
+        from src.Util.JWT_Security import JWTTokenHandler
+
+        session_id = str(uuid4())
+        token = JWTTokenHandler.create_access_token(session_id, "usr-abc", "proj-xyz")
+
+        stored = self._logged_session_id(token)
+
+        assert stored == session_id
+        assert token[:40] not in stored
+
+    def test_token_prefix_is_stored_as_keyed_hash(self):
+        from src.Util.JWT_Security import JWTTokenHandler
+
+        token = JWTTokenHandler.create_access_token("sess-1", "usr-abc", "proj-xyz")
+
+        stored = self._logged_session_id(token[:256])
+
+        assert stored.startswith("tokhash:")
+        assert token[:40] not in stored
+
+    def test_api_key_id_is_stored_unchanged(self):
+        assert self._logged_session_id("key-123") == "key-123"
+
+    def test_missing_session_id_is_stored_as_null(self):
+        assert self._logged_session_id(None) is None

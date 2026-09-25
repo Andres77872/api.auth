@@ -82,6 +82,7 @@ async def test_live_stripe_checkout_and_portal_are_explicit_opt_in_only(client, 
     monkeypatch.setenv("STRIPE_BILLING_ENABLED", "true")
     monkeypatch.setenv("STRIPE_CHECKOUT_ENABLED", "true")
     monkeypatch.setenv("STRIPE_PORTAL_ENABLED", "true")
+    monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", "https://example.test")
 
     user_hash = live_stripe_config["STRIPE_LIVE_TEST_USER_HASH"]
     project_hash = live_stripe_config["STRIPE_LIVE_TEST_PROJECT_HASH"]

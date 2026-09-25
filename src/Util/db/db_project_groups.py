@@ -22,6 +22,7 @@ from src.Util.Models import (
 )
 from src.Util.db_config import get_connection
 from src.Util.db_error_wrapper import handle_db_operation
+from src.Util.error_handler import ValidationError, ErrorCode
 from src.Util.uuid_generator import generate_project_group_id, generate_project_group_member_id
 
 # Configure logging
@@ -277,7 +278,7 @@ def update_project_group(group_id: str, group_name: str = None, group_descriptio
         group_id: Project group ID
         group_name: New group name (optional)
         group_description: New description (optional)
-        permissions: New permissions list (optional)
+        permissions: Deprecated; project groups are containers. Only None/[] is accepted.
         
     Returns:
         Updated ProjectGroup object, None if no fields to update
@@ -286,16 +287,20 @@ def update_project_group(group_id: str, group_name: str = None, group_descriptio
         NotFoundError: If group not found
         DatabaseError: On database operation errors
     """
+    if permissions:
+        raise ValidationError(
+            message="Project groups are containers; assign permissions through permission groups instead",
+            error_code=ErrorCode.INVALID_INPUT,
+        )
+
     def _update():
-        if not group_name and group_description is None and permissions is None:
+        if not group_name and group_description is None:
             return None
 
         with get_connection() as con:
             cur = con.cursor()
             
-            permissions_json = json.dumps(permissions) if permissions is not None else None
-            
-            cur.callproc('sp_update_project_group', [group_id, group_name, group_description, permissions_json])
+            cur.callproc('sp_update_project_group', [group_id, group_name, group_description])
             
             # Clean up result sets
             while cur.nextset():

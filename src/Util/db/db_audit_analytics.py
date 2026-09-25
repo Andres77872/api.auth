@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
+from src.Util.audit_session_id import audit_session_id
 from src.Util.db_config import get_connection
 from src.Util.db_error_wrapper import handle_db_operation
 
@@ -84,6 +85,9 @@ def get_audit_logs(
                 log = {}
                 for i, col in enumerate(columns):
                     log[col] = row[i] if i < len(row) else None
+                # Rows written before the fix hold a 256-char access-token prefix;
+                # mask it so the list endpoint and exports never return token bytes.
+                log['session_id'] = audit_session_id(log['session_id'])
                 logs.append(log)
 
             return logs

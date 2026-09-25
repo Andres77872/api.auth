@@ -136,6 +136,17 @@ def _mark_event_seen(provider: str, provider_event_id: str | None) -> bool:
         return True
 
 
+def _forget_event(provider: str, provider_event_id: str | None) -> None:
+    """Drop the dedupe marker of an event that was not applied, so the provider's retry is processed."""
+
+    if not provider_event_id:
+        return
+    try:
+        db_config.redis_client.delete(CacheManager.email_webhook_event_key(provider, provider_event_id))
+    except Exception:
+        logger.warning("Webhook Redis dedupe marker could not be released", exc_info=True)
+
+
 def _suppression_id_for(event_type: str) -> str | None:
     if event_type in BOUNCE_EVENTS or event_type in COMPLAINT_EVENTS:
         return f"esup-{uuid.uuid4()}"
@@ -202,27 +213,33 @@ def _apply_event(event: Mapping[str, Any], request: Request) -> None:
     if not _mark_event_seen(PROVIDER_RESEND, provider_event_id):
         return
 
-    provider_message_id = _provider_message_id(event)
-    recipient_hash = _recipient_hash(event)
-    metadata = _metadata_for_event(
-        event_type=event_type,
-        provider_event_id=provider_event_id,
-        provider_message_id=provider_message_id,
-        recipient_hash=recipient_hash,
-        event=event,
-    )
+    try:
+        provider_message_id = _provider_message_id(event)
+        recipient_hash = _recipient_hash(event)
+        metadata = _metadata_for_event(
+            event_type=event_type,
+            provider_event_id=provider_event_id,
+            provider_message_id=provider_message_id,
+            recipient_hash=recipient_hash,
+            event=event,
+        )
 
-    apply_email_provider_event(
-        delivery_attempt_id=f"eda-{uuid.uuid4()}",
-        email_message_id=_local_email_message_id(event),
-        provider=PROVIDER_RESEND,
-        provider_message_id=provider_message_id,
-        provider_event_id=provider_event_id,
-        event_type=event_type,
-        recipient_hash=recipient_hash,
-        suppression_id=_suppression_id_for(event_type),
-        response_metadata=metadata,
-    )
+        apply_email_provider_event(
+            delivery_attempt_id=f"eda-{uuid.uuid4()}",
+            email_message_id=_local_email_message_id(event),
+            provider=PROVIDER_RESEND,
+            provider_message_id=provider_message_id,
+            provider_event_id=provider_event_id,
+            event_type=event_type,
+            recipient_hash=recipient_hash,
+            suppression_id=_suppression_id_for(event_type),
+            response_metadata=metadata,
+        )
+    except Exception:
+        # The request answers 500 so the provider retries; a kept marker would make
+        # that retry look like a duplicate and drop the event for the marker's TTL.
+        _forget_event(PROVIDER_RESEND, provider_event_id)
+        raise
 
     activity_type = _activity_type_for(event_type)
     if activity_type is not None:

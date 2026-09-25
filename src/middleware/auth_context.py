@@ -15,6 +15,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from src.Util.audit_session_id import audit_session_id
 from src.Util.auth_constants import BILLING_INTERNAL_ROUTE_PREFIX, PATREON_INTERNAL_ENTITLEMENTS_ROUTE_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,8 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
 
     Both auth paths populate request.state with identical shape:
     - request.state.user (UserContext)
-    - request.state.session_id (JWT token or API key ID)
+    - request.state.session_id (access token's session_id claim or API key ID;
+      never token material)
     - request.state.project_id
     - request.state.project_hash
     - request.state.auth_method ("api_key" or "session")
@@ -148,7 +150,9 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
 
                     request.state.user = UserContext(session_data)
                     request.state.user_id = session_data.user_id
-                    request.state.session_id = session_token
+                    # Audit and error logs persist this value, so it holds the
+                    # token's session_id claim, never the token itself.
+                    request.state.session_id = audit_session_id(session_token)
                     request.state.project_id = session_data.project_id
                     request.state.project_hash = session_data.project_hash
                     request.state.auth_method = "session"
@@ -191,10 +195,16 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         except (ValueError, IndexError):
             return None
 
-        # Check Redis cache first
+        # Check Redis cache first — a hit is trusted only if the presented secret
+        # verifies against the cached stored hash; otherwise treat it as a miss.
+        from src.Util.api_key_security import (
+            encode_secret_hash_for_cache,
+            verify_api_key_token,
+            verify_api_key_token_against_cache,
+        )
         from src.Util.cache_manager import cache_manager
         cached = cache_manager.get_api_key(public_id)
-        if cached and cached.get("validation_status") == "valid":
+        if verify_api_key_token_against_cache(api_key, public_id, cached):
             return self._build_api_key_context_from_cache(cached)
 
         # Cache miss — validate via stored procedure
@@ -204,7 +214,6 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
             return None
 
         # Perform constant-time hash comparison
-        from src.Util.api_key_security import verify_api_key_token
         stored_hash = key_data.get("secret_hash")
         if not stored_hash:
             return None
@@ -258,6 +267,8 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
             "permissions": permissions,
             "groups": groups,
             "key_id": key_data["id"],
+            "public_id": public_id,
+            "secret_hash": encode_secret_hash_for_cache(stored_hash),
             "cached_at": datetime.now(timezone.utc).isoformat(),
         })
 

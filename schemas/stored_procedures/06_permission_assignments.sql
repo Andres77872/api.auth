@@ -115,25 +115,31 @@ END$$
 -- ===================================================================================
 -- ENHANCED PERMISSION RESOLUTION
 -- ===================================================================================
+-- Both procedures resolve the same permission groups as sp_get_user_permission_sources:
+-- every hop's is_active is checked (the role, the user group and the permission group
+-- themselves included), so the permission list, the check (and the /permissions admin
+-- guard built on it) and the source list agree after any soft delete.
 
 DROP PROCEDURE IF EXISTS sp_get_user_all_permissions$$
 CREATE PROCEDURE sp_get_user_all_permissions(IN p_user_id VARCHAR(64))
 BEGIN
     SELECT DISTINCT p.permission_name FROM global_permissions p
-    INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id
-    INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id
-    WHERE pg.id IN (
-        SELECT rpg.permission_group_id FROM role_permission_groups rpg
-        INNER JOIN users u ON u.role_id = rpg.role_id
-        WHERE u.id = p_user_id AND rpg.is_active = TRUE AND u.is_active = TRUE
+    INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id AND pgp.is_active = TRUE
+    INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id AND pg.is_active = TRUE
+    WHERE p.is_active = TRUE AND pg.id IN (
+        SELECT rpg.permission_group_id FROM users u
+        INNER JOIN roles r ON r.id = u.role_id AND r.is_active = TRUE
+        INNER JOIN role_permission_groups rpg ON rpg.role_id = r.id AND rpg.is_active = TRUE
+        WHERE u.id = p_user_id AND u.is_active = TRUE
         UNION
-        SELECT ugpg.permission_group_id FROM user_group_permission_groups ugpg
-        INNER JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-        WHERE ugm.user_id = p_user_id AND ugpg.is_active = TRUE AND ugm.is_active = TRUE
+        SELECT ugpg.permission_group_id FROM user_group_members ugm
+        INNER JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = TRUE
+        INNER JOIN user_group_permission_groups ugpg ON ugpg.user_group_id = ug.id AND ugpg.is_active = TRUE
+        WHERE ugm.user_id = p_user_id AND ugm.is_active = TRUE
         UNION
         SELECT upg.permission_group_id FROM user_permission_groups upg
         WHERE upg.user_id = p_user_id AND upg.is_active = TRUE
-    ) AND pgp.is_active = TRUE AND p.is_active = TRUE
+    )
     ORDER BY p.permission_name;
 END$$
 
@@ -141,20 +147,22 @@ DROP PROCEDURE IF EXISTS sp_check_user_has_permission_extended$$
 CREATE PROCEDURE sp_check_user_has_permission_extended(IN p_user_id VARCHAR(64), IN p_permission_name VARCHAR(100))
 BEGIN
     SELECT COUNT(*) > 0 AS has_permission FROM global_permissions p
-    INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id
-    INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id
-    WHERE p.permission_name = p_permission_name AND pg.id IN (
-        SELECT rpg.permission_group_id FROM role_permission_groups rpg
-        INNER JOIN users u ON u.role_id = rpg.role_id
-        WHERE u.id = p_user_id AND rpg.is_active = TRUE AND u.is_active = TRUE
+    INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id AND pgp.is_active = TRUE
+    INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id AND pg.is_active = TRUE
+    WHERE p.permission_name = p_permission_name AND p.is_active = TRUE AND pg.id IN (
+        SELECT rpg.permission_group_id FROM users u
+        INNER JOIN roles r ON r.id = u.role_id AND r.is_active = TRUE
+        INNER JOIN role_permission_groups rpg ON rpg.role_id = r.id AND rpg.is_active = TRUE
+        WHERE u.id = p_user_id AND u.is_active = TRUE
         UNION
-        SELECT ugpg.permission_group_id FROM user_group_permission_groups ugpg
-        INNER JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id
-        WHERE ugm.user_id = p_user_id AND ugpg.is_active = TRUE AND ugm.is_active = TRUE
+        SELECT ugpg.permission_group_id FROM user_group_members ugm
+        INNER JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = TRUE
+        INNER JOIN user_group_permission_groups ugpg ON ugpg.user_group_id = ug.id AND ugpg.is_active = TRUE
+        WHERE ugm.user_id = p_user_id AND ugm.is_active = TRUE
         UNION
         SELECT upg.permission_group_id FROM user_permission_groups upg
         WHERE upg.user_id = p_user_id AND upg.is_active = TRUE
-    ) AND pgp.is_active = TRUE AND p.is_active = TRUE;
+    );
 END$$
 
 -- ===================================================================================

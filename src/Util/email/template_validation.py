@@ -38,7 +38,8 @@ from src.Util.email.templates import (
 )
 
 MAX_SUBJECT_LENGTH = 255
-MAX_HTML_LENGTH = 100_000  # keep well under Gmail's ~102KB clipping threshold
+# html_template and text_template are MySQL TEXT columns: 65,535 bytes, not characters.
+MAX_BODY_BYTES = 65_535
 MAX_TEXT_LENGTH = 40_000
 
 # Structural/formatting tags an email body may use. Anything else is rejected.
@@ -74,6 +75,10 @@ class TemplateValidationError(EmailTemplateError):
 
 def _violation(message: str) -> TemplateValidationError:
     return TemplateValidationError(message)
+
+
+def _utf8_size(value: str) -> int:
+    return len(value.encode("utf-8", "surrogatepass"))
 
 
 def _check_url_value(tag: str, attr: str, value: str) -> None:
@@ -181,10 +186,12 @@ def validate_template_draft(
         raise _violation(f"subject exceeds {MAX_SUBJECT_LENGTH} characters")
     if "\n" in subject or "\r" in subject:
         raise _violation("subject must be a single line")
-    if len(html) > MAX_HTML_LENGTH:
-        raise _violation(f"HTML body exceeds {MAX_HTML_LENGTH} characters")
+    if _utf8_size(html) > MAX_BODY_BYTES:
+        raise _violation(f"HTML body exceeds {MAX_BODY_BYTES} bytes (UTF-8)")
     if len(text) > MAX_TEXT_LENGTH:
         raise _violation(f"plain-text body exceeds {MAX_TEXT_LENGTH} characters")
+    if _utf8_size(text) > MAX_BODY_BYTES:
+        raise _violation(f"plain-text body exceeds {MAX_BODY_BYTES} bytes (UTF-8)")
 
     allowed = tuple(
         allowed_variable_names

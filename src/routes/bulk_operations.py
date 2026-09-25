@@ -22,7 +22,9 @@ from src.Util.bulk_operations import (
 )
 from src.Util.db import validate_session, get_user_by_hash, get_user_group_by_name, is_root_user
 from src.Util.db import db_global_roles
-from src.Util.admin_scope import RESERVED_PERMISSION_NAMES, role_grants_reserved_permission
+from src.Util.admin_scope import (
+    RESERVED_PERMISSION_NAMES, require_admin_scope, resolve_admin_scope, role_grants_reserved_permission,
+)
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, InternalError, ErrorCode, mask_uuid,
@@ -68,16 +70,18 @@ async def bulk_update_users_endpoint(
     Apply the same `is_active` and/or `user_type` change to up to 100 users.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
-    cookie) whose session permissions include `admin` or `manage_users`; otherwise
-    403. Root and admin sessions carry these permissions by default. Changing
-    `user_type` additionally requires a root user.
+    cookie) of a root or admin user whose session permissions include `admin` or
+    `manage_users`; otherwise 403. Root and admin sessions carry these permissions by
+    default. Changing `user_type` additionally requires a root user.
 
     **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
     list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
     At least one of `is_active` or `user_type` is required.
 
-    **Effect:** users are processed one by one. Deactivated users have their sessions
-    and refresh families revoked.
+    **Effect:** users are processed one by one. Nobody may deactivate their own account,
+    and admins may only change non-root users who reach one of their assigned projects;
+    other users fail individually and are left unchanged. Deactivated users have their
+    sessions and refresh families revoked, and a changed `user_type` signs the user out.
 
     **Responses:** 200 even when some users fail: see `summary`, per-user `results` and
     `errors`. 400 for an empty or oversized list, no update field, an invalid
@@ -109,11 +113,14 @@ async def bulk_update_users_endpoint(
             error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
             details={"required_permission": "admin or manage_users"}
         )
+    # Session permissions alone are not enough: like the single-user routes, only root
+    # and admin users manage users, and admins only inside their scope.
+    scope = require_admin_scope(resolve_admin_scope(current_user.id))
 
     # Only root users may change user_type via bulk update — mirrors the
     # root-only guard on PATCH /users/{user_hash}/type and prevents privilege
     # escalation (e.g. setting user_type='root') by non-root admins.
-    if user_type is not None and not is_root_user(current_user.id):
+    if user_type is not None and not scope.is_root:
         raise AuthorizationError(
             message="Root user access required to change user types",
             error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
@@ -167,7 +174,7 @@ async def bulk_update_users_endpoint(
 
     # Perform bulk update
     result = handle_db_operation(
-        lambda: bulk_update_users(user_updates, updated_by=str(current_user.id)),
+        lambda: bulk_update_users(user_updates, updated_by=str(current_user.id), scope=scope),
         error_context="bulk user update operation"
     )
 
@@ -214,20 +221,23 @@ async def bulk_delete_users_endpoint(
     Delete up to 50 users in one request.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
-    cookie) whose session permissions include `admin` or `manage_users`; otherwise
-    403. Root and admin sessions carry these permissions by default.
+    cookie) of a root or admin user whose session permissions include `admin` or
+    `manage_users`; otherwise 403. Root and admin sessions carry these permissions by
+    default.
 
     **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
     list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
     `confirm_deletion=true` is required.
 
-    **Effect:** users are deleted one by one; root users are never deleted and are
-    reported as errors instead.
+    **Effect:** users are soft-deleted one by one and have their sessions and refresh
+    families revoked. Root users are never deleted and are reported as errors instead;
+    nobody may delete their own account, and admins may only delete users who reach one
+    of their assigned projects.
 
     **Responses:** 200 with `summary` (`success_count`, `error_count`, and
     `protected_count` for root users skipped), per-user `results`, `errors` and
-    `warnings`, even when some deletions fail. 400 without confirmation or for an empty or
-    oversized list.
+    `warnings` (a user was deleted but their session revocation failed), even when some
+    deletions fail. 400 without confirmation or for an empty or oversized list.
     """
     session_token = credentials.credentials
     session_data = handle_db_operation(
@@ -255,6 +265,7 @@ async def bulk_delete_users_endpoint(
             error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
             details={"required_permission": "admin or manage_users"}
         )
+    scope = require_admin_scope(resolve_admin_scope(current_user.id))
 
     # Safety checks
     if not confirm_deletion:
@@ -280,7 +291,7 @@ async def bulk_delete_users_endpoint(
 
     # Perform bulk deletion
     result = handle_db_operation(
-        lambda: bulk_delete_users(user_hashes, current_user.id),
+        lambda: bulk_delete_users(user_hashes, current_user.id, scope=scope),
         error_context="bulk user deletion operation"
     )
 
@@ -335,8 +346,9 @@ async def bulk_assign_roles_to_project_users(
     global role, so when several roles are listed each user ends up with the last one.
 
     Only root may assign a role whose permission groups contain a reserved permission name
-    (`admin`, `manage_users`, ...; see `POST /roles/permissions`), and non-root callers may not
-    list themselves; either returns 403 and nothing is assigned.
+    (`admin`, `manage_users`, ...; see `POST /roles/permissions`) or replace such a role that a
+    listed user currently holds (`details.user_hashes`), and non-root callers may not list
+    themselves; any of these returns 403 and nothing is assigned.
 
     **Responses:** 200 with `summary`, per-assignment `results` and `errors`. 400 for
     missing lists or more than 100 users; 403 as above; 404 if the project does not exist or
@@ -420,6 +432,25 @@ async def bulk_assign_roles_to_project_users(
                 message="You cannot change your own role",
                 error_code=ErrorCode.OPERATION_NOT_ALLOWED,
                 details={"reason": "own_role"}
+            )
+        # Replacing a role that grants a reserved name is root-only too (a demotion path).
+        reserved_by_role_id: Dict[Any, bool] = {}
+
+        def current_role_grants_reserved(user_hash: str) -> bool:
+            target = get_user_by_hash(user_hash)
+            current_role = db_global_roles.get_user_role(target.id) if target else None
+            if not current_role:
+                return False
+            if current_role["id"] not in reserved_by_role_id:
+                reserved_by_role_id[current_role["id"]] = role_grants_reserved_permission(db_global_roles, current_role)
+            return reserved_by_role_id[current_role["id"]]
+
+        protected_users = [user_hash for user_hash in dict.fromkeys(user_hashes) if current_role_grants_reserved(user_hash)]
+        if protected_users:
+            raise AuthorizationError(
+                message="Only root users may replace a role granting reserved permissions",
+                error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+                details={"user_hashes": protected_users, "reserved_permissions": sorted(RESERVED_PERMISSION_NAMES)}
             )
 
     # Perform bulk role assignment

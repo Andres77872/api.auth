@@ -1,200 +1,106 @@
-# Permissions Troubleshooting, Caveats, and Best Practices
+# Permissions troubleshooting
 
-Things that commonly confuse operators working with the permissions system in `api.auth`.
+Symptom, cause, fix. The rules behind most of these are in [Permission resolution](resolution.md).
 
----
+## Access denied
 
-## Troubleshooting
+### A permission shows in `/permissions/users/me/permissions` but the route still returns 403
 
-### User does not have the permission you expected
+**Cause.** That list is the inspection view: role, user groups, and direct assignments together.
+Route guards use the auth-time set, which for a consumer comes only from the global role. A
+permission reached through a user group or a direct assignment is honored by one guard only, the
+`/permissions` admin fallback for `manage_roles`.
 
-Check the full chain, not just one table in your head.
+**Fix.** Check `GET /permissions/users/me/permission-sources`. If the group is not under
+`from_role`, link it to the user's role or give the user a role that has it
+([Roles usage](../roles/usage.md)). If it is under `from_role`, see
+[Changes take up to 30 seconds to apply](#changes-take-up-to-30-seconds-to-apply). If it still fails,
+the route has another condition (project access, admin scope, root only); check that route's suite.
 
-1. Check the user's effective permissions:
-   ```bash
-   curl -X GET "http://localhost:8000/permissions/users/me/permissions" \
-     -H "Authorization: Bearer $USER_TOKEN"
-   ```
-2. Check where those permissions come from:
-   ```bash
-   curl -X GET "http://localhost:8000/permissions/users/me/permission-sources" \
-     -H "Authorization: Bearer $USER_TOKEN"
-   ```
-3. If you expect a direct assignment, inspect it explicitly:
-   ```bash
-   curl -X GET "http://localhost:8000/permissions/users/$USER_HASH/permission-groups" \
-     -H "Authorization: Bearer $ADMIN_TOKEN"
-   ```
-4. If you expect a team assignment, inspect the user group:
-   ```bash
-   curl -X GET "http://localhost:8000/permissions/admin/user-groups/$GROUP_HASH/permission-groups" \
-     -H "Authorization: Bearer $ADMIN_TOKEN"
-   ```
-5. If you expect a role baseline, inspect the assigned role:
-   ```bash
-   curl -X GET "http://localhost:8000/roles/users/$USER_HASH/role" \
-     -H "Authorization: Bearer $ADMIN_TOKEN"
-   ```
+### A consumer can use the `/permissions` admin routes but not `/roles`
 
-If the permission is absent from all three sources, correct the assignment
-graph before investigating route guards.
+**Cause.** The two admin guards differ. `/permissions` accepts `manage_roles` from any source;
+`/roles` accepts it only from the caller's role, and session-based guards such as
+`/admin/project-groups` read the role-derived set too.
 
----
+**Fix.** For `/roles` access, the permission must come from the role. `manage_roles` is a reserved
+name, so only root can put it into a role's groups or assign such a role, and only root can assign or
+remove a group containing it through `/permissions`. Review who holds the delegating group with
+`GET /permissions/permissions/groups/{pg_hash}/users` and `.../user-groups`.
 
-### User has the permission in `/permissions/users/me/...` but still gets 403
+### A `root` or `admin` user gets `has_permission: false`
 
-This usually means you hit a **guard mismatch**, not a missing permission.
+**Cause.** The inspection endpoints have no user-type bypass and never include the built-in session
+permissions of `root` and `admin`.
 
-Common causes:
+**Fix.** None needed. Guards admit `root` and `admin` by user type; the check endpoint answers only
+from assignments.
 
-1. the target route is guarded by **role-only** `manage_roles`
-2. the target route reads **session permissions** instead of the extended union
-3. the target route also needs **project access**
-4. the user changed role/group state and is still operating with older session context
+## Stale or unexpected results
 
-Check the guard matrix in [architecture.md](architecture.md#admin-guard-matrix).
+### Changes take up to 30 seconds to apply
 
----
+**Cause.** Access-token validation returns a cached context (`session_full:{access_jti}`) for
+`VALIDATE_CACHE_TTL` seconds (default `30`). API-key validation is cached for `60` seconds.
 
-### Changes do not show up immediately
+**Fix.** Wait, or refresh the token (`POST /auth/refresh`), which mints a new cache key. A new login
+is not required. The `/permissions/users/me/...` endpoints are never cached.
 
-Common causes:
+### `/me/permissions` lists a permission that `/me/permission-sources` does not explain
 
-- `/auth/validate` returns login-time session context like cached `user_group_names`
-- session cache has not been reconciled yet
-- the user changed project context but is still using an older token
+**Cause.** The three procedures resolve the same permission groups with the same `is_active` checks,
+so on current procedures they agree. A mismatch means the database still runs resolver procedures from
+older schema files, which ignored soft-deleted roles, permission groups, and user groups.
 
-Practical fix order:
+**Fix.** Re-apply the procedures (see the next entry). See
+[Soft-delete effects](resolution.md#soft-delete-effects).
 
-1. verify the assignment write actually succeeded
-2. use `/permissions/users/me/permissions` to verify effective DB resolution
-3. run `/auth/refresh`
-4. if project-sensitive, run `/auth/switch-project`
-5. if needed, re-login completely
+### A deleted permission group still grants its permissions
 
----
+**Cause.** The database still runs resolver procedures from older schema files. Current procedures
+check the permission group's own flag in every resolver, so a deleted group grants nothing, at auth
+time or in the inspection endpoints, even while role links and assignments to it remain.
 
-### Extended permission check returns false unexpectedly
+**Fix.** Re-create the procedures with `python scripts/schema_sync.py --apply` (it re-runs
+`schemas/stored_procedures/05_global_roles.sql` and `06_permission_assignments.sql`, which only drop
+and re-create procedures). Existing sessions pick the change up within `VALIDATE_CACHE_TTL` seconds.
 
-`check_user_has_permission_extended()` calls
-`sp_check_user_has_permission_extended`, which answers from the caller's role,
-the user groups the caller directly belongs to, and direct assignments.
+## Request errors
 
-Common causes of `false`:
+### `404` `NF_4011` for a permission group that exists
 
-- none of the three sources links the permission
-- the permission, the permission-in-group link, the group membership, or the
-  assignment row is inactive
-- the caller is `root` / `admin` and expected a bypass; this check has none
+**Cause.** The group is soft-deleted. Every lookup by hash filters on `is_active`, and a deleted
+group's name stays taken.
 
-Use `/permissions/users/me/permissions` and `/permission-sources` to inspect the
-union. The same helper backs the `/permissions` admin guard, so a consumer who
-gets `true` for `manage_roles` here can use the `/permissions` admin routes.
+**Fix.** Create a new group with a different `group_name` (`POST /roles/permission-groups`).
 
----
+### `404` `NF_4001` or `NF_4003` for the target
 
-### User-group or project-group admin routes deny access unexpectedly
+**Cause.** The target user or user group does not exist or is inactive. These routes look up active
+rows only.
 
-Those routes are guarded differently again:
+**Fix.** Use the hash of an active user or user group; see the [users](../users/README.md) and
+[groups](../groups/README.md) suites.
 
-- `/admin/user-groups` wants `admin` or `manage_users` in session permissions
-- `/admin/project-groups` wants `admin` or `manage_roles` in session permissions
+### `400` `VAL_3001` "Request validation failed" on a write
 
-For consumer sessions, those session permissions are rebuilt from the **role-derived** resolver path. So team/direct permission-group assignments are not the safe way to unlock those admin suites.
+**Cause.** A required form field is missing. A JSON body is not parsed at all, so every field reads
+as missing.
 
-If you need predictable access there, use an appropriate role baseline or an actual admin user type.
+**Fix.** Send `application/x-www-form-urlencoded` or `multipart/form-data`. For bulk assignment,
+repeat `permission_group_hashes` once per hash.
 
----
+### Bulk assignment returns 200 but some groups were not assigned
 
-### Catalog entry exists but access did not change
+**Cause.** Items are processed one by one; failures are reported per item, not as an HTTP error.
 
-Catalog routes are metadata only. They organize recommendations; they do not touch the live authorization graph.
+**Fix.** Compare `success_count` with `total_count` and read `results[].error`. An unknown or
+deleted hash reports `"Permission group not found"`.
 
-If access must change, use:
+### A removal returns 200 but the user still has the group
 
-- role assignment routes
-- permission-group-to-role routes
-- permission-group-to-user-group routes
-- direct permission-group-to-user routes
+**Cause.** Removals are idempotent and only touch their own path. Removing a direct assignment does
+not affect the same group arriving through the role or a user group.
 
----
-
-## Current Caveats
-
-### The public route layer is global, but the repo still has scoped permission artifacts
-
-Models, views, and tables still contain project-scoped permission concepts. The active `/roles` and `/permissions` APIs documented here operate on the global permission system.
-
-Treat scoped artifacts as implementation background, not as public operational contracts unless a route actually exposes them.
-
-### `require_permission()` exists but is not the active route pattern here
-
-The middleware helper exists, but current repo search does not show routes using it. Do not write operator expectations around that decorator unless the route you care about actually imports it.
-
-### Duplicate-looking `/permissions/permissions/...` paths are real
-
-Yes, they look ugly. Yes, they are still real route paths.
-
----
-
-## AUTHZ Error Context
-
-| Code | When you usually see it here |
-|------|------------------------------|
-| `AUTHZ_2001` | Generic access denied |
-| `AUTHZ_2002` | Insufficient permissions on the target endpoint |
-| `AUTHZ_2003` | Access denied to the requested project |
-| `AUTHZ_2004` | Group-scoped access failure |
-| `AUTHZ_2005` | Route/resource-specific access failure |
-| `AUTHZ_2006` | Role assignment operation denied |
-| `AUTHZ_2007` | Permission-specific denial |
-| `AUTHZ_2008` | API key has no access to the requested project |
-
-Also watch auth-layer codes when debugging session problems:
-
-- `AUTH_1002` — session expired
-- `AUTH_1003` — invalid session
-- `AUTH_1005` — inactive account
-
----
-
-## Best Practices
-
-### 1. Use roles for baselines
-
-A role is the cleanest way to express a stable job-function baseline.
-
-### 2. Use user-group assignments for scale
-
-If a whole team needs the same capability, assign the permission group to the user group.
-
-### 3. Use direct assignments for exceptions only
-
-Temporary access, VIP users, migration work, one-off overrides. Nothing more.
-
-### 4. Verify with self-query endpoints
-
-The most trustworthy operator checks are:
-
-- `/permissions/users/me/permissions`
-- `/permissions/users/me/permission-sources`
-- `/permissions/users/me/permissions/check/{name}`
-
-### 5. Treat catalogs as metadata
-
-If you use catalogs as if they were authorization, you are lying to yourself and to your operators.
-
-### 6. Plan for session refresh after material changes
-
-After role changes, team reassignment, or project-context changes, refresh or re-login before concluding the system is wrong.
-
----
-
-## Related Documentation
-
-- **[Permissions Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
+**Fix.** Check `GET /permissions/users/me/permission-sources` as the user, then remove the link on
+the path it actually comes from.

@@ -225,10 +225,35 @@ from tests.support import make_db_connection_mock
 # that at the source; these two rails make sure the *next* such bug fails a test
 # instead of taking the machine down with it.
 #
-#   PYTEST_MEM_LIMIT_MB=0     leaves any inherited address-space cap unchanged
-#   PYTEST_TIMEOUT_SECONDS=0  disables the per-test wall-clock limit
-_MEM_LIMIT_MB = int(os.environ.get("PYTEST_MEM_LIMIT_MB", "1536"))
-_TIMEOUT_SECONDS = int(os.environ.get("PYTEST_TIMEOUT_SECONDS", "60"))
+#   PYTEST_MEM_LIMIT_MB     (1..1536)  address-space cap
+#   PYTEST_TIMEOUT_SECONDS  (1..60)    per-test wall-clock limit
+#
+# Both can only be LOWERED.  Zero, negative, unparsable, or above-ceiling values
+# fall back to the ceiling: a direct `pytest` call must not be able to switch the
+# rails off.  PYTEST_MEM_LIMIT_MB=0 once let a runaway test take ~100 GiB and the
+# whole desktop with it.  A test that hits MemoryError under the cap has a bug —
+# fix the test, do not raise the cap.
+_MEM_LIMIT_CEILING_MB = 1536
+_TIMEOUT_CEILING_SECONDS = 60
+
+
+def _bounded_env_int(name: str, ceiling: int) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(raw) if raw.strip() else ceiling
+    except ValueError:
+        value = 0
+    if 0 < value <= ceiling:
+        return value
+    sys.stderr.write(
+        f"conftest: ignoring {name}={raw!r}; safety rails can only be lowered "
+        f"(1..{ceiling}), using {ceiling}\n"
+    )
+    return ceiling
+
+
+_MEM_LIMIT_MB = _bounded_env_int("PYTEST_MEM_LIMIT_MB", _MEM_LIMIT_CEILING_MB)
+_TIMEOUT_SECONDS = _bounded_env_int("PYTEST_TIMEOUT_SECONDS", _TIMEOUT_CEILING_SECONDS)
 
 
 def _install_address_space_cap(limit_mb: int) -> int | None:
@@ -273,6 +298,46 @@ def _install_address_space_cap(limit_mb: int) -> int | None:
 
 
 _install_address_space_cap(_MEM_LIMIT_MB)
+
+
+# One pytest process per checkout at a time.  Several agents once ran full suites in
+# parallel in this repo (one of them with the cap disabled) and exhausted 123 GiB.
+# The lock is an flock on a file in the temp dir (the E2E container mounts the repo
+# read-only), so the kernel releases it when the holder exits or is killed: there is
+# no stale lock to clean up and no override.  The batch runners call pytest serially
+# and are unaffected.
+def _acquire_single_run_lock():
+    try:
+        import fcntl
+    except ImportError:  # non-POSIX
+        return None
+    import hashlib
+    import tempfile
+
+    repo = str(Path(__file__).resolve().parent.parent)
+    digest = hashlib.sha256(repo.encode()).hexdigest()[:12]
+    lock_path = Path(tempfile.gettempdir()) / f"api-auth-pytest-{digest}.lock"
+    handle = open(lock_path, "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        holder = handle.read().strip() or "unknown"
+        handle.close()
+        sys.stderr.write(
+            "\nconftest: another pytest run is already active in this checkout "
+            f"({holder}).\nRun tests one at a time: wait for it to finish instead of "
+            "starting a parallel run.\n\n"
+        )
+        raise SystemExit(4)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} argv={' '.join(sys.argv)[:300]}")
+    handle.flush()
+    return handle
+
+
+_SINGLE_RUN_LOCK = _acquire_single_run_lock()
 
 
 def pytest_collection_modifyitems(items):

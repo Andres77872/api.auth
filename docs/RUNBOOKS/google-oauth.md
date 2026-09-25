@@ -89,11 +89,10 @@ During rollback or incident cleanup, allow short TTL keys to expire naturally wh
 
 - `google_oauth_state:*`
 - `google_oauth_state_consumed:*`
-- `google_oauth_link:*`
 - `google_oauth_reauth:*`
-- `google_oauth_jwks:*`
 - `google_oauth_rate:*`
-- `provider_init_redeem:*`
+
+Provider JWKS are cached in process memory, not Redis; restarting the API process drops that cache.
 
 Do not clear unrelated `session:*`, `refresh_family:*`, or user-session namespaces unless incident response explicitly requires local auth revocation.
 

@@ -1,162 +1,118 @@
-# Projects Troubleshooting, Caveats, and Best Practices
+# Projects troubleshooting
 
-Things that commonly confuse operators working with projects in `api.auth`.
+Symptom, cause and fix. Error codes are explained in [errors.md](../errors.md); route contracts
+and the authorization matrix are in [reference.md](reference.md).
 
----
+## Authorization errors
 
-## Troubleshooting
+### 403 creating a project
 
-### User cannot access a project
+Cause: `POST /projects` is root-only. Admin users and consumers get `403` `AUTHZ_2002` whatever
+permissions their session carries.
 
-Check the full chain.
+Fix: create the project with a root session, then assign an admin user to it
+([set up a new project](scenarios.md#set-up-a-new-project)).
 
-1. Is the user in the expected user group?
-   ```bash
-   curl -X GET "http://localhost:8000/admin/user-groups/users/$USER_HASH/groups" \
-     -H "Authorization: Bearer $TOKEN"
-   ```
-2. Does that user group have the right project-group link?
-   ```bash
-   curl -X GET "http://localhost:8000/admin/user-groups/$GROUP_HASH/project-groups" \
-     -H "Authorization: Bearer $TOKEN"
-   ```
-3. Does the project group actually contain the project?
-   ```bash
-   curl -X GET "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH" \
-     -H "Authorization: Bearer $TOKEN"
-   ```
-4. Can the user see the project through login or access summary?
+### 403 on update, delete, members or groups with an admin-looking session
 
-If any link in `user -> user_group -> project_group -> project` is missing, access fails.
+Cause: these routes need admin scope. A consumer whose global role grants `admin` or
+`manage_users` still has none (`403` `AUTHZ_2002`). An admin user acting on a project they are not
+assigned to gets `403` `AUTHZ_2003`.
 
----
+Fix: use root, or assign the admin user to the project through
+`/user-types/admin/{user_hash}/projects` ([user types](../users/user-types.md)). An admin user's
+assignments can be checked with `GET /user-types/admin/{user_hash}/projects`.
 
-### Too many users have access to a project
+### 403 `AUTHZ_2003` reading a project
 
-Audit from the project side first.
+Cause: without admin scope, `GET /projects/{project_hash}`, `/activity` and `/stats` need group
+reach, and archived projects are never reachable through groups.
 
-```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/members?limit=100" \
-  -H "Authorization: Bearer $TOKEN"
+Fix: check the access chain as described in
+[groups troubleshooting](../groups/troubleshooting.md#a-user-cannot-reach-a-project).
 
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/groups" \
-  -H "Authorization: Bearer $TOKEN"
-```
+## Visibility problems
 
-Typical fix order:
+### A project is missing from `GET /projects`
 
-1. identify the user group creating the blast radius
-2. revoke its project-group link if the whole team should lose access
-3. otherwise remove only the wrong members from that user group
+Cause, by caller:
 
----
+- consumer: no active chain reaches it, or it is archived;
+- admin user: not assigned to it, or it is archived;
+- root: it is archived, or it is on a later page. Root pagination reports `total` as the page size
+  and `has_more: false`.
 
-### Group changes are not reflecting immediately
+Fix: for root, keep paging until a page has fewer than `limit` rows, or use `search`. For the
+others, check the chain or the assignment. An archived project is still readable by root with
+`GET /projects/{project_hash}`.
 
-Common causes:
+### 404 for a project that used to work
 
-- the user's session still carries old project context
-- login selected an older project snapshot
-- the user needs to re-login or use `/auth/switch-project`
+Cause: the project was deleted (`is_active = 0`). Deleted projects return `404` on every route and
+cannot be restored through the API.
 
-Practical fix order:
+Fix: none through the API. Sessions and API keys scoped to it no longer validate.
 
-1. verify the access links through admin endpoints
-2. have the user switch project or log in again
-3. if the project was deleted, remember its active sessions were invalidated
+### A project is denied everywhere, but root can still open it
 
----
+Cause: the project is archived in the database. Login and switch-project return `403`, sessions
+scoped to it get `401`, it disappears from listings and group reach, and its member list is empty.
+No route shows or changes the flag.
 
-### Project does not appear after creation
+Fix: inspect `projects.archived` in the database. `PATCH /projects/{project_hash}/archive` cannot
+help; it returns `501`.
 
-Check two things:
+### Nobody can log in to a new project
 
-1. the project record exists
-2. the expected user or team is linked into the generated default or broader project groups
+Cause: the default user groups start empty and no admin user is assigned. Only root reaches it.
 
-New projects only auto-create the default scaffolding. They do **not** automatically add your existing team members into `admin_{project_id}` or `user_{project_id}`.
+Fix: assign an admin user and add users to `user_<project_id>`
+([set up a new project](scenarios.md#set-up-a-new-project)).
 
-That misunderstanding burns people constantly.
+### A user cannot reach a project
 
----
+The access chain is the groups suite's concern:
+[groups troubleshooting](../groups/troubleshooting.md#a-user-cannot-reach-a-project).
 
-### Project switch fails even though the user “should” have access
+## Unexpected responses
 
-Verify access through `get_user_accessible_projects()`-equivalent behavior.
+### 501 from owner or archive
 
-If the user can’t see the project in their accessible list at login time, `/auth/switch-project` will reject it with `PROJECT_ACCESS_DENIED`.
+Cause: `PATCH /projects/{project_hash}/owner` and `PATCH /projects/{project_hash}/archive` are
+stubs. They return `501` `INT_7006` after the request passes validation, authorization and project
+lookup. Nothing is changed.
 
----
+Fix: none through the API. An earlier `400`, `403` or `404` from these routes means the request
+failed before reaching the stub.
 
-## Current Caveats
+### Statistics differ from the member list
 
-### Ownership transfer and archive routes are not implemented
+Cause: `statistics.total_users` counts only users reached through groups, so root users are
+missing unless they are group members, while the member list includes every active root user.
+`active_sessions` is always `null` because the statistics procedure does not measure sessions
+([project statistics](reference.md#project-statistics)).
 
-Both public endpoints exist, validate some state, then return `501`:
+Fix: use `GET /projects/{project_hash}/members` (`pagination.total`) for the complete count.
 
-- `PATCH /projects/{hash}/owner` (form field `new_owner_hash`)
-- `PATCH /projects/{hash}/archive` (form field `archived`)
+### Member list counts do not add up
 
-Do not confuse the archive **endpoint** with archive **enforcement**. The `PATCH /archive` route is a `501` stub and there is no live API route that sets the `archived` flag. However, if a project's `archived` flag is already set in the database, that project is excluded from authorization workflows (logins, project tokens, API-key validation, and session validation). If a project is unexpectedly denied at auth time, inspect its database archive state because no endpoint currently surfaces or toggles that state.
+Cause: `statistics.total_members` covers all members, but `root_users`, `admin_users`,
+`consumer_users` and `active_members` count only the current page. Every active root user is
+listed as a member of every non-archived project.
 
-### `access_level` labels reflect access path, not granular permissions
+Fix: page through the whole list, or filter with `user_type`.
 
-`GET /projects`, `GET /projects/{hash}`, and `GET /projects/{hash}/members` now report honest access labels:
+### `user_access.user_groups` lists groups unrelated to the project
 
-- `"admin_access"` — user has global admin permission
-- `"group_access"` — user reaches the project through the groups-of-groups chain
-- `"root_access"` — root user (only in member lists)
+Cause: `GET /projects/{project_hash}` returns all of the caller's user groups, not only those that
+reach the project. The same is true of `groups` in the member list.
 
-The old behavior derived `access_level` from `get_user_project_permissions()`, which returned **global** permissions and ignored `project_id`. That meant a consumer with global `read` appeared as "read-only" on every project, and an admin appeared as "admin" everywhere — neither reflecting actual project-scoped reality.
+Fix: to see which groups lead to the project, use `GET /projects/{project_hash}/groups` and
+compare.
 
-The function `get_user_project_permissions()` still exists in the DB layer as a backward-compat shim, but project routes no longer use it for access-level computation.
+### 400 on `PUT` with nothing changed
 
-### Non-admin project listing still slices in Python
+Cause: both fields were omitted or empty. Empty form values count as omitted, so a description
+cannot be cleared.
 
-`GET /projects` for non-admin users fetches all accessible projects first, then slices in Python.
-
-The `pagination.total` field now correctly reports the full accessible count (not the page size), and `has_more` uses proper offset arithmetic. But the fetch-all-then-slice pattern remains — a memory concern at large scale.
-
-### Root access excludes archived projects in the access view
-
-`v_user_project_access` only includes active, non-archived projects for the root-access branch.
-
----
-
-## Best Practices
-
-### 1. Reuse project groups for shared reach
-
-If multiple teams or multiple projects repeat the same pattern, use project groups intentionally instead of treating them like a random middle table.
-
-### 2. Check generated defaults before creating custom groups
-
-Every project already gets a starter kit from `create_default_groups()`.
-
-### 3. Separate project reach from capability
-
-- project groups decide where a user can go
-- permission groups and roles decide what a user can do there
-
-### 4. Use project-side verification after access changes
-
-After changing access, verify with:
-
-- `GET /projects/{hash}/members`
-- `GET /projects/{hash}/groups`
-- user re-login or `/auth/switch-project`
-
-### 5. Treat deletes as operationally destructive
-
-Soft delete is still destructive enough to remove active visibility and invalidate project sessions.
-
----
-
-## Related Documentation
-
-- **[Projects Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
+Fix: send at least one non-empty field.

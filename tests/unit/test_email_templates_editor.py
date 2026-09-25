@@ -335,6 +335,36 @@ def test_validator_rejects(label, overrides):
         validate_template_draft(**_activation_draft(**overrides))
 
 
+def _padded_html(filler: str, target_bytes: int) -> str:
+    base = "<p>$activation_link</p><p></p>"
+    pad = (target_bytes - len(base.encode("utf-8"))) // len(filler.encode("utf-8"))
+    return base[:-4] + filler * pad + "</p>"
+
+
+# html_template/text_template are MySQL TEXT columns (65,535 bytes); a body that passes
+# validation must fit, or the save fails with a server error.
+def test_html_body_over_the_text_column_is_rejected():
+    html = _padded_html("a", 70_000)
+    assert len(html) < 100_000
+    with pytest.raises(TemplateValidationError, match="bytes"):
+        validate_template_draft(**_activation_draft(html_template=html))
+
+
+def test_multibyte_bodies_are_measured_in_bytes():
+    html = _padded_html("é", 66_000)
+    assert len(html) < 40_000
+    with pytest.raises(TemplateValidationError, match="bytes"):
+        validate_template_draft(**_activation_draft(html_template=html))
+    with pytest.raises(TemplateValidationError, match="bytes"):
+        validate_template_draft(**_activation_draft(text_template="$activation_link " + "€" * 22_000))
+
+
+def test_html_body_at_the_column_limit_is_accepted():
+    html = _padded_html("a", 65_535)
+    assert len(html.encode("utf-8")) <= 65_535
+    validate_template_draft(**_activation_draft(html_template=html))
+
+
 def test_validator_accepts_reasonable_edit():
     html = TEMPLATES["email_activation"].html_template.replace("Activate email", "Confirm your email")
     summary = validate_template_draft(**_activation_draft(html_template=html))

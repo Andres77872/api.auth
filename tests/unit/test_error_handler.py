@@ -4,8 +4,12 @@ Pure logic with env-dependent DEBUG_MODE.
 Tests cover UUID masking, sanitization, exception classes, and helper functions.
 """
 
-import pytest
+import json
 
+import pytest
+from starlette.requests import Request
+
+import src.middleware.error_handler as middleware_error_handler
 from src.Util.error_handler import (
     ErrorCategory,
     ErrorCode,
@@ -25,6 +29,8 @@ from src.Util.error_handler import (
     create_validation_error,
     create_not_found_error,
     create_access_denied_error,
+    create_weak_password_error,
+    mask_debug_param,
 )
 
 # Import the module so we can patch DEBUG_MODE
@@ -243,6 +249,16 @@ class TestAppException:
 
 
 class TestAppExceptionDebugMode:
+    def test_to_dict_redacts_password_like_detail_keys(self, debug_mode_on):
+        exc = AppException(
+            message="Error",
+            error_code=ErrorCode.WEAK_PASSWORD,
+            category=ErrorCategory.VALIDATION,
+            details={"new_password": "aaaa", "reason_codes": ["too_short"]},
+        )
+        context = exc.to_dict()["error"]["details"]["context"]
+        assert context == {"new_password": "[REDACTED]", "reason_codes": ["too_short"]}
+
     def test_to_dict_includes_trace_in_debug_mode(self, debug_mode_on):
         exc = AppException(
             message="Debug test",
@@ -436,6 +452,149 @@ class TestExtractFunctionContext:
         )
         ctx = exc._extract_function_context()
         assert ctx is None
+
+    def test_redacts_secret_named_params_in_caller_context(self):
+        exc = AppException(
+            message="Error",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            category=ErrorCategory.INTERNAL,
+            error_context="change_password(username='john', new_password='hunter2', api_key='ak_live_x')",
+        )
+        ctx = exc._extract_function_context()
+        assert ctx["params"] == {
+            "username": "john",
+            "new_password": "[REDACTED]",
+            "api_key": "[REDACTED]",
+        }
+
+
+# ─── mask_debug_param ───────────────────────────────────────────────────────
+
+class TestMaskDebugParam:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "password",
+            "new_password",
+            "currentPassword",
+            "passwd",
+            "client_secret",
+            "reset_token",
+            "api_key",
+            "apiKey",
+            "code",
+            "reset_code",
+            "credentials",
+        ],
+    )
+    def test_secret_names_are_fully_redacted(self, name):
+        assert mask_debug_param(name, "aaaa-long-candidate-value") == "[REDACTED]"
+        assert mask_debug_param(name, 123456) == "[REDACTED]"
+        assert mask_debug_param(name, "550e8400-e29b-41d4-a716-446655440000") == "[REDACTED]"
+
+    @pytest.mark.parametrize("value", ["aaaa", "hunter2-candidate", "user@example.com", "x"])
+    def test_non_uuid_strings_reveal_no_prefix(self, value):
+        assert mask_debug_param("payload_value", value) == "[REDACTED]"
+
+    def test_uuid_identifiers_stay_masked(self):
+        assert mask_debug_param("user_hash", "usr-550e8400-e29b-41d4-a716-446655440000") == "usr-[550e]...[0000]"
+
+    def test_non_secret_scalars_pass_through(self):
+        assert mask_debug_param("limit", 50) == 50
+        assert mask_debug_param("include_inactive", False) is False
+        assert mask_debug_param("search", None) is None
+
+    def test_objects_show_masked_hash_or_type(self):
+        class _Session:
+            user_hash = "usr-550e8400-e29b-41d4-a716-446655440000"
+
+        class _Leaky:
+            user_hash = "not-a-uuid-secret"
+
+        assert mask_debug_param("session", _Session()) == "usr-[550e]...[0000]"
+        assert mask_debug_param("session", _Leaky()) == "[REDACTED]"
+        assert mask_debug_param("payload", {"new_password": "x"}) == "<dict>"
+
+
+# ─── app_exception_handler: route locals in DEBUG_MODE ──────────────────────
+
+# Compiled under a /src/routes/ filename so the traceback walk treats it as a route frame.
+_FAKE_ROUTE_SOURCE = """
+def reset_password_with_link(new_password, reset_token, user_hash, attempts):
+    raise create_weak_password_error(reason_codes=["too_short"], min_length=8)
+"""
+
+
+def _fake_password_route():
+    namespace = {"create_weak_password_error": create_weak_password_error}
+    exec(compile(_FAKE_ROUTE_SOURCE, "/app/src/routes/fake_password_reset.py", "exec"), namespace)
+    return namespace["reset_password_with_link"]
+
+
+def _password_reset_request():
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/auth/password/reset",
+        "raw_path": b"/auth/password/reset",
+        "root_path": "",
+        "scheme": "http",
+        "query_string": b"",
+        "headers": [(b"user-agent", b"x")],
+        "client": ("203.0.113.10", 1234),
+        "server": ("testserver", 80),
+    })
+
+
+async def _handle_weak_password(monkeypatch, submitted_password):
+    monkeypatch.setattr(middleware_error_handler, "log_app_exception_to_db", lambda **kwargs: None)
+    route = _fake_password_route()
+    try:
+        route(
+            new_password=submitted_password,
+            reset_token="550e8400-e29b-41d4-a716-446655440000",
+            user_hash="usr-550e8400-e29b-41d4-a716-446655440000",
+            attempts=2,
+        )
+    except AppException as exc:
+        response = await middleware_error_handler.app_exception_handler(_password_reset_request(), exc)
+        return exc, json.loads(response.body)
+    raise AssertionError("fake route did not raise")
+
+
+class TestAppExceptionHandlerRouteLocals:
+    async def test_debug_mode_never_returns_password_material(self, monkeypatch, debug_mode_on):
+        submitted_password = "aaaa-hunter2"
+
+        exc, body = await _handle_weak_password(monkeypatch, submitted_password)
+
+        function = body["error"]["details"]["function"]
+        assert function["name"] == "reset_password_with_link"
+        # Params round-trip through the error_context string, so values come back as text.
+        assert function["params"] == {
+            "new_password": "[REDACTED]",
+            "reset_token": "[REDACTED]",
+            "user_hash": "usr-[550e]...[0000]",
+            "attempts": "2",
+        }
+        assert body["error"]["details"]["context"] == {"reason_codes": ["too_short"], "min_length": 8}
+        serialized = json.dumps(body)
+        assert "aaaa" not in serialized
+        assert "hunter2" not in serialized
+        # error_context is also logged and stored in the error log table.
+        assert "aaaa" not in exc.error_context
+
+    async def test_production_response_is_unchanged(self, monkeypatch, debug_mode_off):
+        _, body = await _handle_weak_password(monkeypatch, "aaaa-hunter2")
+
+        assert body == {
+            "status": "error",
+            "error": {
+                "code": "VAL_3007",
+                "category": "validation",
+                "message": "Weak password (VAL_3007)",
+            },
+        }
 
 
 # ─── _identify_constraint_type ──────────────────────────────────────────────

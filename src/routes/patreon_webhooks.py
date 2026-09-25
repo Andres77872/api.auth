@@ -1017,6 +1017,15 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
         return _webhook_json_response(status_code=500, message=_GENERIC_RETRY_MESSAGE)
 
     if _delivery_is_duplicate(delivery_row):
+        await record_patreon_webhook_activity(
+            ActivityType.PATREON_WEBHOOK_REPLAY_IGNORED,
+            event="webhook_replay_ignored",
+            outcome="duplicate",
+            request=request,
+            status_code=200,
+            reason="duplicate_delivery",
+            details={"event_type": event_type, "duplicate": True},
+        )
         return _webhook_json_response(status_code=200)
 
     if payload is None or member is None:

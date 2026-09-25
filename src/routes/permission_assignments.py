@@ -11,14 +11,15 @@ Permission Assignment API Endpoints (router prefix ``/permissions``)
   ``/users/me/permission-sources``, ...) and in this router's own admin guard:
   ``require_admin`` admits a consumer holding ``manage_roles`` from any source
   (``sp_check_user_has_permission_extended``).
+- Every resolver here checks each hop's ``is_active`` (role, user group, permission
+  group, links, permission), so a soft-deleted source grants nothing, the admin
+  guard included.
+- Reserved permission names (``admin_scope.RESERVED_PERMISSION_NAMES``) are root-only
+  here as on ``/roles``: this router's guard trusts ``manage_roles`` from a group
+  assignment, so only root may assign or remove a permission group containing one.
 - Project catalogs are METADATA ONLY (not used for authorization).
 - The ``/permissions/groups/...`` routes are declared under the ``/permissions``
   prefix, so they are served at ``/permissions/permissions/groups/...``.
-
-Known defects (described in the affected route descriptions; code unchanged):
-- ``sp_get_user_all_permissions`` does not filter inactive roles, inactive
-  permission groups, or inactive user groups, so ``/users/me/permissions`` can
-  list permissions that no active source grants.
 """
 
 import logging
@@ -35,6 +36,7 @@ from src.Util.db import (
     get_user_by_hash, 
     get_user_group_by_hash,
     get_project_by_hash,
+    is_root_user,
     # Permission assignment functions
     assign_permission_group_to_user_group,
     remove_permission_group_from_user_group,
@@ -53,6 +55,7 @@ from src.Util.db import (
     get_user_permission_sources
 )
 from src.Util.db import db_global_roles as global_roles
+from src.Util.admin_scope import RESERVED_PERMISSION_NAMES, group_grants_reserved_permission
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, ConflictError, InternalError, ErrorCode
@@ -71,6 +74,13 @@ _R403_ADMIN = {
     403: {
         "description": "Caller is not `root`/`admin` and holds `manage_roles` from no source "
                        "(role, user group, or direct assignment)."
+    }
+}
+_R403_ADMIN_RESERVED = {
+    403: {
+        "description": "Caller is not `root`/`admin` and holds `manage_roles` from no source "
+                       "(role, user group, or direct assignment), or a non-root caller's change "
+                       "involves a permission group containing a reserved permission name."
     }
 }
 _R404_USER_GROUP = {404: {"description": "User group not found or inactive."}}
@@ -124,12 +134,34 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
     return session_data
 
 
+def _require_root_for_reserved(session_data, touches_reserved, action: str) -> None:
+    """Only root may assign or remove a permission group containing a reserved name.
+
+    Same rule as ``global_roles.py``: ``require_admin`` above admits a consumer holding
+    ``manage_roles`` through a user-group or direct assignment, so a non-root caller able to
+    hand out such a group could delegate this router to anyone. ``touches_reserved`` is
+    evaluated only for non-root callers.
+    """
+    if is_root_user(session_data.user_id):
+        return
+    if touches_reserved():
+        raise AuthorizationError(
+            message=f"Only root users may {action}",
+            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+            details={"reserved_permissions": sorted(RESERVED_PERMISSION_NAMES)}
+        )
+
+
+def _group_grants_reserved(permission_group) -> bool:
+    return group_grants_reserved_permission(global_roles, permission_group)
+
+
 # =============================================================================
 # USER GROUP PERMISSION GROUP ASSIGNMENTS
 # =============================================================================
 
 @router.post("/admin/user-groups/{group_hash}/permission-groups", status_code=200, responses={
-    **_R401, **_R403_ADMIN, **_R404_USER_GROUP,
+    **_R401, **_R403_ADMIN_RESERVED, **_R404_USER_GROUP,
 })
 async def assign_permission_group_to_group(
     group_hash: str = Path(..., description="User group hash"),
@@ -146,12 +178,14 @@ async def assign_permission_group_to_group(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
-    source (role, user group, or direct assignment); other callers get `403`.
+    source (role, user group, or direct assignment). Only root may assign a permission group
+    containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
 
     **Request:** form field `permission_group_hash`.
 
     **Responses:**
     - `200`: the user group and the permission group.
+    - `403`: a non-root caller assigns a group containing a reserved permission name.
     - `404`: user group not found or inactive.
     - `404` (`NF_4011`): unknown or deleted `permission_group_hash`.
     """
@@ -174,6 +208,10 @@ async def assign_permission_group_to_group(
             error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
             details={"permission_group_hash": permission_group_hash}
         )
+    _require_root_for_reserved(
+        session_data, lambda: _group_grants_reserved(permission_group),
+        "assign a permission group granting reserved permissions"
+    )
     
     # Assign permission group to user group
     success = assign_permission_group_to_user_group(
@@ -202,7 +240,7 @@ async def assign_permission_group_to_group(
     }
     
 @router.delete("/admin/user-groups/{group_hash}/permission-groups/{pg_hash}", status_code=200, responses={
-    **_R401, **_R403_ADMIN, **_R404_USER_GROUP,
+    **_R401, **_R403_ADMIN_RESERVED, **_R404_USER_GROUP,
 })
 async def remove_permission_group_from_group(
     group_hash: str = Path(..., description="User group hash"),
@@ -216,10 +254,12 @@ async def remove_permission_group_from_group(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
-    source (role, user group, or direct assignment); other callers get `403`.
+    source (role, user group, or direct assignment). Only root may remove a permission group
+    containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
 
     **Responses:**
     - `200`: removed (or was not assigned).
+    - `403`: a non-root caller removes a group containing a reserved permission name.
     - `404`: user group not found or inactive.
     - `404` (`NF_4011`): unknown or deleted `pg_hash`.
     """
@@ -242,6 +282,10 @@ async def remove_permission_group_from_group(
             error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
             details={"permission_group_hash": pg_hash}
         )
+    _require_root_for_reserved(
+        session_data, lambda: _group_grants_reserved(permission_group),
+        "remove a permission group granting reserved permissions"
+    )
     
     # Remove permission group from user group
     success = remove_permission_group_from_user_group(
@@ -309,7 +353,7 @@ async def get_group_permission_groups(
     }
     
 @router.post("/admin/user-groups/{group_hash}/permission-groups/bulk", status_code=200, responses={
-    **_R401, **_R403_ADMIN, **_R404_USER_GROUP,
+    **_R401, **_R403_ADMIN_RESERVED, **_R404_USER_GROUP,
 })
 async def bulk_assign_permission_groups_to_group(
     group_hash: str = Path(..., description="User group hash"),
@@ -324,16 +368,21 @@ async def bulk_assign_permission_groups_to_group(
     Each hash is processed independently and reported in `results` (`success`, plus `error`
     for failures such as an unknown hash). The request returns `200` even if every item fails,
     so compare `success_count` with `total_count`. As with single assignment, this does not
-    change the auth-time permission set.
+    change the auth-time permission set. Every hash is looked up before anything is written:
+    if a non-root caller lists a group containing a reserved permission name, the request
+    fails with `403` and nothing is assigned.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
-    source (role, user group, or direct assignment); other callers get `403`.
+    source (role, user group, or direct assignment). Only root may assign a permission group
+    containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
 
     **Request:** form data with the `permission_group_hashes` field repeated once per hash.
 
     **Responses:**
     - `200`: per-item `results`, `success_count`, and `total_count`.
+    - `403`: a non-root caller lists a group containing a reserved permission name
+      (`details.permission_group_hashes`); nothing is assigned.
     - `404`: user group not found or inactive.
     """
     user_data = get_user_by_hash(session_data.user_hash)
@@ -347,10 +396,31 @@ async def bulk_assign_permission_groups_to_group(
             details={"group_hash": group_hash}
         )
     
+    # Resolve every hash before writing so a reserved group fails the whole request
+    # instead of being skipped after the others were assigned.
+    permission_groups = {
+        pg_hash: global_roles.get_permission_group_by_hash(pg_hash)
+        for pg_hash in dict.fromkeys(permission_group_hashes)
+    }
+    if not is_root_user(session_data.user_id):
+        reserved_hashes = [
+            pg_hash for pg_hash, permission_group in permission_groups.items()
+            if _group_grants_reserved(permission_group)
+        ]
+        if reserved_hashes:
+            raise AuthorizationError(
+                message="Only root users may assign permission groups granting reserved permissions",
+                error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
+                details={
+                    "permission_group_hashes": reserved_hashes,
+                    "reserved_permissions": sorted(RESERVED_PERMISSION_NAMES),
+                }
+            )
+    
     results = []
     for pg_hash in permission_group_hashes:
         try:
-            permission_group = global_roles.get_permission_group_by_hash(pg_hash)
+            permission_group = permission_groups[pg_hash]
             if not permission_group:
                 results.append({
                     "permission_group_hash": pg_hash,
@@ -395,7 +465,7 @@ async def bulk_assign_permission_groups_to_group(
 # =============================================================================
 
 @router.post("/users/{user_hash}/permission-groups", status_code=200, responses={
-    **_R401, **_R403_ADMIN, **_R404_USER,
+    **_R401, **_R403_ADMIN_RESERVED, **_R404_USER,
 })
 async def assign_permission_group_to_user_direct(
     user_hash: str = Path(..., description="Target user hash"),
@@ -415,12 +485,14 @@ async def assign_permission_group_to_user_direct(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
-    source (role, user group, or direct assignment); other callers get `403`.
+    source (role, user group, or direct assignment). Only root may assign a permission group
+    containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
 
     **Request:** form fields `permission_group_hash` and optional `notes`.
 
     **Responses:**
     - `200`: the user, the permission group, and `notes`.
+    - `403`: a non-root caller assigns a group containing a reserved permission name.
     - `404`: user not found or inactive.
     - `404` (`NF_4011`): unknown or deleted `permission_group_hash`.
     """
@@ -443,6 +515,10 @@ async def assign_permission_group_to_user_direct(
             error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
             details={"permission_group_hash": permission_group_hash}
         )
+    _require_root_for_reserved(
+        session_data, lambda: _group_grants_reserved(permission_group),
+        "assign a permission group granting reserved permissions"
+    )
     
     # Assign permission group to user
     success = assign_permission_group_to_user(
@@ -473,7 +549,7 @@ async def assign_permission_group_to_user_direct(
     }
     
 @router.delete("/users/{user_hash}/permission-groups/{pg_hash}", status_code=200, responses={
-    **_R401, **_R403_ADMIN, **_R404_USER,
+    **_R401, **_R403_ADMIN_RESERVED, **_R404_USER,
 })
 async def remove_permission_group_from_user_direct(
     user_hash: str = Path(..., description="Target user hash"),
@@ -488,10 +564,12 @@ async def remove_permission_group_from_user_direct(
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
-    source (role, user group, or direct assignment); other callers get `403`.
+    source (role, user group, or direct assignment). Only root may remove a permission group
+    containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
 
     **Responses:**
     - `200`: removed (or was not assigned).
+    - `403`: a non-root caller removes a group containing a reserved permission name.
     - `404`: user not found or inactive.
     - `404` (`NF_4011`): unknown or deleted `pg_hash`.
     """
@@ -514,6 +592,10 @@ async def remove_permission_group_from_user_direct(
             error_code=ErrorCode.PERMISSION_GROUP_NOT_FOUND,
             details={"permission_group_hash": pg_hash}
         )
+    _require_root_for_reserved(
+        session_data, lambda: _group_grants_reserved(permission_group),
+        "remove a permission group granting reserved permissions"
+    )
     
     # Remove permission group from user
     success = remove_permission_group_from_user(
@@ -627,8 +709,8 @@ async def get_my_permissions(session_data=Depends(require_valid_session)):
     **inspection view, not the auth-time permission set**: session and route checks use
     role-derived permissions for consumers and fixed built-in permissions for `root`/`admin`. So
     the list can contain permissions no guard honors, and it does not show the built-in
-    permissions of `root`/`admin`. It may also still include permissions from soft-deleted roles,
-    permission groups, or user groups (known issue).
+    permissions of `root`/`admin`. Soft-deleted roles, permission groups, user groups, and
+    permissions contribute nothing.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Any authenticated user; always returns the caller's own data.
@@ -662,8 +744,8 @@ async def check_my_permission(
     Considers the caller's role, the user groups they are a direct member of, and direct
     assignments. The same check backs this router's `manage_roles` admin fallback; other route
     guards use role-derived permissions. There is no `root`/`admin` bypass, so their built-in
-    permissions are not reported. Like `GET /permissions/users/me/permissions`, it may still count
-    permissions from soft-deleted roles, permission groups, or user groups (known issue).
+    permissions are not reported. Like `GET /permissions/users/me/permissions`, soft-deleted roles,
+    permission groups, user groups, and permissions count for nothing.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
     cookie). Any authenticated user; always checks the caller.

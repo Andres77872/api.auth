@@ -126,7 +126,7 @@ neither printed/seeded default is a valid current login.
 
 ## 📡 API Surface
 
-The app currently registers **246 route-module endpoint methods across 27 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
+The app currently registers **246 route-module endpoint methods across 28 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
 
 | Surface | Prefix | Module | Count | Contract |
 |---------|--------|--------|-------|----------|
@@ -145,6 +145,7 @@ The app currently registers **246 route-module endpoint methods across 27 `src/r
 | Permission Assignments | `/permissions` | `permission_assignments.py` | 17 | Permission-group assignment and lookup |
 | Admin Billing | `/admin/billing` | `admin_billing.py` | 22 | Billing groups, credentials, capabilities, catalog, metrics |
 | Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Provider catalog, connections, write-only credentials, project bindings, URL allow-lists, readiness |
+| Root assistant | `/admin/assistant/ws` | `assistant.py` | 0 | One root-only WebSocket endpoint; excluded from HTTP operation counts |
 | Billing Internal | `/internal/.../billing` | `internal_billing.py` | 6 | S2S billing facts, catalog, Checkout, Portal, resync |
 | Stripe Webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Raw Stripe webhook intake |
 | Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 8 | ROOT-only Patreon status and operations |
@@ -162,8 +163,8 @@ Detailed request/response examples live in the domain docs under [docs/USAGE](do
 - Swagger UI: `/docs` — tags collapsed by default, with a filter box.
 - ReDoc: `/redoc` — tags grouped into Sign-in, Users and Access, Billing, Integrations, Email, and Operations.
 - OpenAPI document: `/openapi.json`
-- Rendered markdown documentation: `/documentation`
-- Raw markdown documentation: add `?format=raw` to `/documentation/...`
+- Documentation wiki: `/documentation` — the `docs/` tree rendered with navigation, full-text search (`Ctrl K` / `⌘K`), per-page outline, and light/dark themes matching the admin console. Renderer: `src/Util/docs_site/`.
+- Raw markdown documentation: add `?format=raw` to any `/documentation/...` page; `/documentation?format=raw` lists every page.
 
 The OpenAPI document is generated from the code. Its description is [src/README.md](src/README.md); tag descriptions, ReDoc tag groups, security schemes, and the shared `ErrorResponse` schema live in [src/Util/openapi_metadata.py](src/Util/openapi_metadata.py); every operation's own description is its route docstring. It declares four security schemes:
 
@@ -190,12 +191,12 @@ This release uses a **two-token model**:
 
 Access JWT signature, `exp`, `type`, `jti`, `session_id`, `family_id`, and server-side Redis session/family state are enforced before a request is trusted.
 
-Project-scoped consumer login, `GET /auth/validate`, and consumer
-`POST /auth/validate-api-key` may also return a provider-neutral subscription
-`plan`. It is resolved at response time from project → billing group and is not
-stored in JWT claims, cookies, or Redis auth state. The current refresh and
-switch-project response bodies do not include it; validate the newly issued
-access token when the client needs a refreshed plan projection.
+Project-scoped consumer login, `POST /auth/refresh`, `GET /auth/validate`, and
+consumer `POST /auth/validate-api-key` may also return a provider-neutral
+subscription `plan`. It is resolved at response time from project → billing group
+and is not stored in JWT claims, cookies, or Redis auth state. The switch-project
+response body does not include it; validate the newly issued access token when the
+client needs the plan for the new project.
 
 ### Authentication
 
@@ -494,3 +495,16 @@ This is a breaking auth-contract deployment:
 ---
 
 **Ready to start?** Check the [Usage Documentation](docs/USAGE/README.md) for complete guides and examples.
+
+### Root AI assistant
+
+The dashboard includes a root-only floating Deep Agents assistant with ten domain
+skills, specialist subagents, planning, questions and explicit approval for app
+changes. Read tools are enabled by default; write tools require a master switch
+and individual activation. Ollama, OpenAI-compatible and Anthropic profiles,
+conversations, activity and usage are persisted on the backend. WebSocket event
+replay restores background generations after browser reconnects.
+
+See [assistant setup and protocol](docs/ASSISTANT.md),
+[research](docs/ASSISTANT_RESEARCH.md), and
+[project review findings](docs/ASSISTANT_PROJECT_REVIEW.md).

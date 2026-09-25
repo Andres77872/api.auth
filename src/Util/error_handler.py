@@ -448,6 +448,13 @@ _ERROR_SENSITIVE_FIELD_FRAGMENTS = (
     "s2s_token",
     "s2s_bearer",
     "credential",
+    # Password-like and secret-bearing names (new_password, apiSecret, reset_token).
+    "password",
+    "passwd",
+    "passphrase",
+    "pwd",
+    "secret",
+    "token",
 )
 
 _OAUTH_FIELD_ASSIGNMENT_RE = re.compile(
@@ -479,6 +486,53 @@ def _is_error_sensitive_field(key: str) -> bool:
     if normalized in _ERROR_SENSITIVE_FIELD_EXACT:
         return True
     return any(fragment in normalized for fragment in _ERROR_SENSITIVE_FIELD_FRAGMENTS)
+
+
+# Route locals are dumped wholesale in DEBUG_MODE, so any key or code word
+# (api_key, apiKey, reset_code, codes) is treated as secret on top of the
+# error-field rules. Kept out of _is_error_sensitive_field so non-secret detail
+# keys such as reason_codes or mysql_error_code stay readable.
+_DEBUG_PARAM_SECRET_WORD_RE = re.compile(r"(?:key|code)s?(?:_|$)")
+_UUID_VALUE_RE = re.compile(
+    r"^(?:[a-z]+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def is_sensitive_debug_param(name: str) -> bool:
+    """Return True when a function parameter or local name may hold secret material."""
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name or "")).lower().replace("-", "_")
+    return _is_error_sensitive_field(normalized) or bool(_DEBUG_PARAM_SECRET_WORD_RE.search(normalized))
+
+
+def _mask_uuid_or_redact(value: Any) -> str:
+    """Mask UUID-shaped identifiers; redact anything else instead of showing a prefix."""
+    if isinstance(value, str) and _UUID_VALUE_RE.match(value):
+        return mask_uuid(value)
+    return "[REDACTED]"
+
+
+def mask_debug_param(name: str, value: Any) -> Any:
+    """
+    Return a DEBUG_MODE-safe representation of a route parameter or local.
+
+    Secret-named params are always redacted, whatever their type. Other strings
+    are shown only when they are UUID identifiers (masked); arbitrary strings
+    such as passwords, emails or tokens are redacted rather than truncated.
+    """
+    if is_sensitive_debug_param(name):
+        return "[REDACTED]"
+    if isinstance(value, str):
+        return _mask_uuid_or_redact(value)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if hasattr(value, 'user_hash'):
+        # Session data or user object
+        return _mask_uuid_or_redact(value.user_hash)
+    if hasattr(value, 'project_hash'):
+        return _mask_uuid_or_redact(value.project_hash)
+    # For other objects, just use their type
+    return f"<{type(value).__name__}>"
 
 
 def sanitize_oauth_sensitive_text(message: str) -> str:
@@ -714,6 +768,13 @@ class AppException(Exception):
         error_context: Optional[str] = None
     ):
         self.message = sanitize_error_message(message)
+        # Callers occasionally pass the raw code string ("NF_4003"); to_dict() and the
+        # logger read ``.value``, so normalise to the enum instead of failing with a 500.
+        if not isinstance(error_code, ErrorCode):
+            try:
+                error_code = ErrorCode(error_code)
+            except ValueError:
+                error_code = ErrorCode.INTERNAL_ERROR
         self.error_code = error_code
         self.category = category
         self.status_code = status_code
@@ -934,7 +995,11 @@ class AppException(Exception):
             for part in param_parts:
                 if '=' in part:
                     key, value = part.split('=', 1)
-                    params[key.strip()] = value.strip().strip("'\"")
+                    key = key.strip()
+                    if is_sensitive_debug_param(key):
+                        params[key] = "[REDACTED]"
+                    else:
+                        params[key] = value.strip().strip("'\"")
         
         return {
             "name": function_name,

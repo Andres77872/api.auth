@@ -1,183 +1,103 @@
-# Projects Request and Data Flow
+# Projects request flow
 
-How project-related requests move through the API, DB layer, stored procedures, and session lifecycle.
+What happens to a request on `/projects`, and how a project's state affects sessions that are
+scoped to it.
 
----
-
-## 1. List Accessible Projects
-
-Flow for `GET /projects`:
-
-1. `src/routes/projects.py:list_projects()` validates the session
-2. session permissions are checked for `admin`
-3. admins use `list_all_projects()` or `search_projects()`
-4. non-admins call `get_user_accessible_projects(user_id)`
-5. non-admin results are sliced in Python with `offset:offset+limit`
-6. each returned project is decorated with an `access_level`
-
-Important runtime detail:
-
-- non-admin listing is not DB-paginated
-- `access_level` labels reflect the access path (which route family resolved the project), not granular per-project permissions; the route layer no longer calls `get_user_project_permissions()` for this
-
----
-
-## 2. Create a Project
-
-Flow for `POST /projects`:
-
-1. the route validates the session
-2. `admin` permission is required
-3. the acting user is resolved for audit context
-4. `db_projects.py:create_project()` runs
-5. `sp_create_project` inserts into `projects`
-6. `create_default_groups(project_id)` auto-builds the initial access scaffolding
-7. the API returns `CreateProjectResponse`
-
-Result: the project exists **and** already belongs to a default project group with three default user groups wired to it.
-
----
-
-## 3. Get Project Details
-
-Flow for `GET /projects/{project_hash}`:
-
-1. validate session
-2. resolve project by hash
-3. resolve current user
-4. allow session-level `admin`, otherwise verify the user reaches the project through `get_user_accessible_projects()`
-5. load project statistics
-6. load user groups for the current user
-7. load project group information for the project
-8. return detailed project response
-
-This is the main “do I have access and what does this project look like?” flow.
-
----
-
-## 4. List Project Members
-
-Flow for `GET /projects/{project_hash}/members`:
-
-1. validate session
-2. require `admin` or `manage_users`
-3. resolve project
-4. call `get_project_members_page(project_id, limit, offset, user_type)`
-5. the DB layer uses project-access resolution data to build the member page
-6. each member is enriched with permissions, groups, and access level
-
-Operational detail:
-
-- the endpoint is paginated
-- statistics in the response are computed from the current page payload plus total count
-
----
-
-## 5. Delete a Project
-
-Flow for `DELETE /projects/{project_hash}`:
-
-1. validate session
-2. require `admin`
-3. resolve project
-4. resolve acting user
-5. `delete_project(project.id, deleted_by=user_id)` runs
-6. `sp_delete_project` soft-deactivates the project, linked project-group memberships, and active sessions
-7. API returns success with a warning
-
-So deletion is not a cosmetic hide. It actively tears down project visibility and live sessions.
-
----
-
-## 6. Resolve Access Internally
-
-The core runtime access path is:
+## Common steps
 
 ```text
-user_group_members
-  → user_groups
-  → user_group_project_groups
-  → project_groups
-  → project_group_members
-  → projects
+request
+  -> platform middleware (CORS, request validation, API audit, auth context)
+  -> HTTPBearerOrCookie: bearer header or session_token cookie        (401 if absent)
+  -> FastAPI query/form validation                                     (400 VAL_3001)
+  -> handler: validate_session()                                       (401)
+  -> admin routes: caller must be a root or admin user                 (403 AUTHZ_2002)
+  -> project lookup: sp_get_project_by_hash, active rows only          (404 NF_4002)
+  -> admin scope over the project, or group reach on read routes      (403 AUTHZ_2003)
+  -> DB helper -> stored procedure
+  -> response model
 ```
 
-This is used by:
+1. `validate_session()` runs the canonical access-token validation, which re-checks the caller's
+   own session project on every request
+   ([groups request flow](../groups/request-flow.md#access-re-check-on-every-request)).
+2. `resolve_admin_scope()` in `src/Util/admin_scope.py` reads the caller's `user_type` from the
+   database and, for admin users, their assigned project IDs from
+   `sp_get_admin_assigned_projects`. Session permission names are not consulted.
+3. `sp_get_project_by_hash` returns projects with `is_active = 1`, archived ones included. Archive
+   filtering happens in the reach and scope checks, not in the lookup.
 
-- project listing for non-admin users
-- login project selection
-- switch-project validation
-- member views through `v_user_project_access`
+The target project in the path is independent of the project the caller's session is scoped to.
 
-Without every link in that chain, the user does not reach the project. Simple as that.
+## Route-specific flows
 
----
+### List projects
 
-## 7. Login with Project Context
+`GET /projects` branches on the caller:
 
-Flow for `POST /auth/login`:
+| Caller | Source | Paging |
+| --- | --- | --- |
+| Root without `search` | `sp_list_all_projects` (active, non-archived, newest first) | In SQL; `total` is the page size |
+| Root with `search` | `sp_search_projects` (name or description, by name, `LIMIT limit`) | `offset` ignored |
+| Admin user | `sp_get_admin_project_assignments_with_details`, filtered by `search` in Python | Sliced in Python; `total` is the full count |
+| Anyone else | `sp_get_user_accessible_projects` | Sliced in Python; `total` is the full count |
 
-1. credentials are verified
-2. ALL users MUST provide `project_hash`; root bypasses group validation and may access any project
-3. root users lookup the requested project directly
-4. non-root users call `get_user_accessible_projects(user_id)`
-5. `project_hash` is validated against the accessible list (non-root) or directly (root)
-6. `_create_session()` issues a project-bound session
-7. cookie is set and accessible projects are returned to the client
+Each row is labelled `admin_access` (root and admin users) or `group_access`.
 
-This is where project context becomes part of the session contract.
+### Create a project
 
----
+1. Validate the session; refuse any caller whose `user_type` is not `root` (`403` `AUTHZ_2002`).
+2. `create_project()` generates `proj-<uuid>` and a 64-character hex `project_hash`, then calls
+   `sp_create_project` with the caller as creator and owner.
+3. `create_default_groups()` inserts the default project group, the project assignment, the three
+   user groups and their grants with raw SQL
+   ([default groups](architecture.md#default-group-bootstrap)).
+4. Return `CreateProjectResponse`.
 
-## 8. Switch Project Context
+### Read one project
 
-Flow for `POST /auth/switch-project`:
+`GET /projects/{project_hash}`, `/activity` and `/stats`:
 
-1. current session is loaded from the token
-2. user is resolved from the session payload
-3. target project is resolved by hash
-4. `get_user_accessible_projects(user_id)` verifies access
-5. `_create_session(user, new_project)` issues a new project-bound session
-6. old session is deleted
-7. new cookie and project info are returned
+1. Validate the session and look up the project (`404` if unknown or deleted).
+2. If the caller has admin scope over the project (`AdminScope.allows_project()`), continue.
+3. Otherwise load `sp_get_user_accessible_projects` for the caller and require the project in it
+   (`403` `AUTHZ_2003`). This list never contains archived projects.
+4. Details: load `statistics` (`sp_get_project_statistics`), the caller's user groups and the
+   project's project groups. Activity: query the activity log with the filters and count the
+   total. Stats: load `statistics` only.
 
-The response also includes `user_groups` that intersect the user and the new project.
+### Administer one project
 
----
+`PUT`, `DELETE`, `/members`, `/groups`, `/owner`, `/archive`:
 
-## 9. Archive and Ownership Transfer Stubs
+1. Validate the session.
+2. `_require_admin_caller()`: `user_type` must be `root` or `admin` (`403` `AUTHZ_2002`).
+3. Look up the project (`404`).
+4. `require_project_in_scope()`: root passes; an admin user needs the project among their
+   assignments (`403` `AUTHZ_2003`). Assignments never include archived projects.
+5. Run the operation:
+   - `PUT`: `sp_update_project` (`COALESCE` keeps omitted fields).
+   - `DELETE`: `sp_delete_project` deactivates the project, its `project_group_members` rows and
+     its `user_sessions` rows.
+   - `/members`: `sp_get_project_members_paginated` over `v_user_project_access`, then each
+     consumer's user groups.
+   - `/groups`: `sp_get_user_groups_for_project`, sliced in Python.
+   - `/owner`: look up `new_owner_hash` (`404` `NF_4001`), then raise `501`.
+   - `/archive`: raise `501`.
 
-Both of these flows stop at the route layer today:
+## Sessions and project state
 
-- `PATCH /projects/{hash}/owner` — required form field `new_owner_hash`
-- `PATCH /projects/{hash}/archive` — required form field `archived` (bool)
+Login and `POST /auth/switch-project` bind a session to one project
+([authentication](../authentication-usage-cases.md)). On every later request the session's project
+is looked up again:
 
-Flow for `PATCH /projects/{hash}/owner`:
+| Project state | Effect on sessions scoped to it |
+| --- | --- |
+| Deleted (`is_active = 0`) | Lookup fails; the refresh family is revoked (reason `missing_project`) and the request gets `401` |
+| Archived | Same, with reason `project_inactive_or_archived`; applies to root sessions too |
+| Removed from the user's reach | Consumer: no group leads to it. Admin user: no longer assigned. Family revoked (`project_access_denied`), `401` |
 
-1. validate session
-2. require `admin`
-3. resolve project by hash
-4. resolve `new_owner_hash` (raises `USER_NOT_FOUND` if it does not exist)
-5. raise `FeatureNotImplementedError` (`501`)
-
-Flow for `PATCH /projects/{hash}/archive`:
-
-1. validate session
-2. require `admin`
-3. resolve project by hash
-4. raise `FeatureNotImplementedError` (`501`)
-
-So if you were expecting a deeper runtime flow here, ni en pedo — it doesn't exist yet.
-
-Note the distinction: even though the `PATCH /archive` **route** is a stub, archive **enforcement** is live elsewhere. Commit `4e6e5de` made the login, project-token, API-key, and session-validation flows exclude archived projects, so a project whose `archived` flag is already set in the database is denied at auth time. There is simply no API route that flips that flag yet.
-
----
-
-## Related Documentation
-
-- **[Projects Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+Login and switch-project refuse an archived target project with `403` `AUTHZ_2003`; a deleted one
+is not found. API-key validation (`sp_validate_api_key` in
+`schemas/stored_procedures/13_api_keys.sql`) applies the same project checks, behind a
+`60`-second result cache.

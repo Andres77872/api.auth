@@ -373,6 +373,7 @@ async def get_admin_patreon_entitlement_history(
     log_success=False,
 )
 async def list_admin_patreon_tier_map(
+    refresh_catalog: bool = Query(True, description="Refresh configured tier mappings before reading; false performs a read-only lookup."),
     limit: int = Query(100, ge=1, le=500, description=_LIMIT_DESCRIPTION),
     offset: int = Query(0, ge=0, description=_OFFSET_DESCRIPTION),
     active: Optional[bool] = Query(None, description="Only active (`true`) or inactive (`false`) entries; omit for both."),
@@ -390,7 +391,8 @@ async def list_admin_patreon_tier_map(
     only as fingerprints, never raw. `403` for non-root callers.
 
     The table mirrors the server-only tier-map configuration, which is what classifies users;
-    it is refreshed from configuration before it is listed.
+    it is refreshed from configuration before it is listed by default. Pass
+    `refresh_catalog=false` for a read-only lookup of the currently stored map.
     """
 
     _require_root(log_context)
@@ -398,7 +400,7 @@ async def list_admin_patreon_tier_map(
         config = load_patreon_config()
     except PatreonConfigError:
         config = None
-    if config is not None and not getattr(config, "disabled", True):
+    if refresh_catalog and config is not None and not getattr(config, "disabled", True):
         ensure_patreon_catalog_safely(config)
     rows, total = db_patreon.list_patreon_tier_map_admin(active=active, limit=limit, offset=offset)
     items = [

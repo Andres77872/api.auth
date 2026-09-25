@@ -1,354 +1,196 @@
-# Patreon Link Architecture
+# Patreon link architecture
 
-Patreon account linking keeps `api.auth` as the identity/session authority while adding Patreon as a server-owned entitlement source. The feature is intentionally narrow: link, prove, classify, sync, and expose normalized entitlement over S2S. It does not authenticate users through Patreon.
+`api.auth` stays the only identity and session authority and adds Patreon as a
+server-owned entitlement source: link, prove, classify, sync, and expose a normalized
+entitlement over S2S. Patreon never authenticates anyone.
 
-## Architectural Decisions
+## Design decisions
 
 | Decision | Why |
 | --- | --- |
-| `api.auth` owns Patreon link authority, proof state, webhook verification, sync, snapshots/history, and classification | The auth repo already owns external-account identity authority, audit, redaction, email outbox, and local session boundaries. Splitting provider secrets or link authority into Magic Worlds would create two sources of truth. |
-| Patreon is entitlement/link only, never local login | Local credentials, sessions, refresh tokens, cookies, and `/auth/validate` remain free of Patreon-derived fields. Patreon proof or webhook data cannot create a session. |
-| Provider identity is stored through HMAC/fingerprint authority | Patreon email is mutable/hidden and must not be durable link authority. Raw Patreon IDs are server-only. |
-| v1 secondary proof is an email-loop token | User-resolved v1 proof requires sending a single-use token only to the Patreon member email returned by the creator API. Hidden/null email blocks automated v1 activation. |
-| Multi-campaign tier mapping is first-class from day one | Entitlement classification must evaluate configured campaigns and campaign-scoped tiers with deterministic priority instead of hard-coding one campaign. |
-| Webhooks are a fast path; scheduled/manual resync is source of truth | Patreon webhooks can be partial, retried, duplicated, or out of order. Source-of-truth API reads reconcile final entitlement state. |
-| Magic Worlds reads a dedicated S2S contract | Entitlement is mutable and must not be embedded in JWTs, sessions, refresh-token state, or `/auth/validate`. |
-| Safe DTOs are allow-listed | Server-only provider data must never reach browser-visible responses or Magic Worlds S2S payloads. |
+| `api.auth` owns link authority, proofs, webhook verification, sync, snapshots and classification | It already owns external-account identity, audit, redaction, the e-mail outbox and the session boundary. Splitting provider secrets or link authority into the companion would create two sources of truth. |
+| Entitlement and link only, never login | Sessions, refresh tokens, cookies and `/auth/validate` stay free of Patreon-derived fields; no Patreon proof, webhook or read can create a session. |
+| Link authority is an HMAC of the Patreon user id, not the e-mail | Patreon e-mail is mutable and can be hidden. Raw ids stay server-side. |
+| Ownership is proven by an e-mail-loop token | The creator API returns the member's e-mail to the creator; a one-time token sent only there proves the user controls it. A hidden or empty e-mail blocks linking rather than falling back to anything weaker. |
+| Campaign-scoped tier map with priorities | Classification must handle several campaigns and several tiers deterministically instead of hard-coding one campaign. |
+| Webhooks are a fast path; the worker is the source of truth | Patreon webhooks can be partial, retried, duplicated or out of order and carry no delivery id or event time. Full reads correct them. |
+| The companion reads a dedicated S2S contract | Entitlements change after sign-in, so they must not be frozen into JWTs, sessions or `/auth/validate`. |
+| Allow-listed DTOs | A response model can only serialize fields on its allow-list; a forbidden field name fails at start-up. |
 
-## Ownership Split
+## Components
+
+```text
+                        ┌───────────────────────────────┐
+                        │            Patreon            │
+                        │ creator API + signed webhooks │
+                        └───────┬───────────────▲───────┘
+              signed member     │               │ creator API reads
+              events            │               │ (creator token)
+┌─────────────┐  link/status/   ▼               │
+│ Browser/SPA │  unlink  ┌──────────────────────┴──────────────────────┐
+│ signed-in   │─────────▶│ api.auth                                    │
+│ consumer    │          │  auth_patreon routes   (link lifecycle)     │
+└─────────────┘          │  patreon_webhooks      (fast path)          │
+                         │  internal_patreon      (S2S read, resync)   │
+┌─────────────┐  proof   │  admin_patreon         (root dashboard)     │
+│ Member      │◀─────────│  e-mail outbox + worker (proof delivery)    │
+│ mailbox     │          │  patreon_sync_worker   (sweeps, queue,      │
+└─────────────┘          │                         retention, token)   │
+                         └──────────────────────┬──────────────────────┘
+                                                │ normalized S2S only
+                                                ▼
+                                   ┌─────────────────────────┐
+                                   │ Companion service       │
+                                   │ (membership projection) │
+                                   └─────────────────────────┘
+```
 
 | Owner | Responsibilities |
 | --- | --- |
-| `api.auth` | Local auth boundary, Patreon link lifecycle, provider identity HMACs, email-loop proof, webhook verification, creator API sync, tier classification, entitlement snapshots/history, retention, audit/activity redaction, health, and S2S entitlement endpoint. |
-| Patreon | External membership data source and signed webhook sender. It is not trusted for local login. |
-| Magic Worlds | Companion consumer that calls `api.auth` S2S entitlement read and projects only normalized membership fields in its own domain. |
-| Browser/SPA | Initiates local authenticated link/status/unlink interactions and receives only safe normalized status. It never receives raw Patreon internals. |
+| `api.auth` | Link lifecycle, provider identity HMACs, proofs, webhook verification, creator API sync, tier classification, snapshots and history, retention, redaction, health, the S2S contract. |
+| Patreon | Membership data and signed webhooks. Never trusted for login. |
+| Companion service | Calls the S2S read and projects normalized fields in its own product. It holds no provider secrets and no raw Patreon data. |
+| Browser | Starts link, status and unlink calls with the user's session and receives only normalized status. |
 
-`api.auth` owns the source of truth for Patreon link and entitlement state. Magic Worlds consumes; it does not own provider secrets, webhook verification, tier-map authority, or raw Patreon data.
+## Link and proof
 
-## High-Level System Diagram
+1. A signed-in, recently authenticated consumer sends the e-mail of their Patreon account
+   as a hint.
+2. `api.auth` pages through the members of every configured campaign with the creator
+   token and selects the member whose Patreon e-mail equals the hint. The hint only
+   selects; it proves nothing.
+3. If the member's e-mail is present, a proof is created and e-mailed to that address
+   through the transactional e-mail outbox.
+4. The user follows the link; the front end posts the token to `link/confirm` from the
+   same signed-in session. The proof is consumed atomically, only for the user who
+   requested it.
+5. The link is created unless the Patreon account is linked to someone else or the user
+   already has a Patreon link. The first entitlement is classified from a fresh read of
+   the member; if that read fails, the entitlement is `pending` and a resync is queued.
 
-```text
-                         ┌──────────────────────────────┐
-                         │           Patreon            │
-                         │ creator API + signed webhooks │
-                         └──────────────┬───────────────┘
-                                        │
-               creator API reads        │ signed member events
-                                        │
-┌──────────────┐ local session  ┌───────▼────────────────────────────────────┐
-│ Browser/SPA  │───────────────▶│               api.auth                     │
-│ local user   │ link/status/   │ - local auth boundary                      │
-│              │ unlink only    │ - link/proof owner                         │
-└──────────────┘                │ - webhook verifier                         │
-                                │ - sync worker                              │
-                                │ - tier classifier                          │
-                                │ - snapshots/history/retention              │
-                                │ - safe S2S entitlement endpoint            │
-                                └──────────────┬─────────────────────────────┘
-                                               │ normalized S2S only
-                                               ▼
-                                ┌──────────────────────────────┐
-                                │        Magic Worlds          │
-                                │ membership projection/cache  │
-                                └──────────────────────────────┘
-```
+Proof tokens are `<lookup_id>.<secret>` (a 12-character lookup id and a 256-bit random
+secret), stored only as an HMAC under
+`PATREON_PROOF_TOKEN_PEPPER`, purpose-scoped, bound to the requesting user, valid for
+`PATREON_PROOF_TOKEN_TTL_SECONDS`, blocked after 8 wrong secrets, and never echoed in
+responses, logs or activity. The proof e-mail uses the `patreon_link_proof` template.
 
-## Link and Email-Loop Proof
+## Classification
 
-The link lifecycle starts from an already-authenticated local user. Patreon never starts a local session.
+For each linked member the classifier considers every campaign membership:
 
-```text
-Authenticated local user
-  │
-  │ POST /auth/patreon/link/request
-  │ - local session required
-  │ - recent local reauth required
-  │ - explicit user intent required
-  ▼
-api.auth link route
-  │
-  │ creator API member discovery across configured campaigns
-  │ email hint may narrow lookup, but is not authority
-  ▼
-Patreon member data
-  │
-  ├─ non-null member email matches local email + explicit confirmation
-  │      → provider identity proof conditions satisfied
-  │
-  ├─ non-null member email differs
-  │      → send email-loop token only to Patreon-returned email
-  │
-  └─ null/hidden member email
-         → blocked-safe v1 status; no entitlement grant
-```
-
-Email-loop token properties:
-
-- cryptographically random,
-- split-token or equivalent hash-only at rest,
-- purpose-scoped to Patreon linking,
-- single-use,
-- short-lived,
-- bound to the initiating local user and pending link request,
-- delivered only to the Patreon member email returned by the creator API,
-- never echoed in responses, audit rows, logs, or activity details.
-
-After proof succeeds, `api.auth` creates or updates provider identity authority using HMAC/fingerprint material and creates an initial normalized entitlement snapshot. The proof response must not include access tokens, refresh tokens, session cookies, API keys, or authenticated user payloads.
-
-## Multi-Campaign Tier Mapping
-
-Patreon classification supports multiple campaigns from day one.
+1. Only `active_patron` (or `active`) memberships can grant.
+2. Only campaigns in the configuration count; a mapped tier in an unconfigured campaign
+   grants nothing.
+3. Each entitled tier is looked up by `(campaign, tier)` in the tier map. Of all active
+   matches, the one with the highest `priority` wins; ties break on `plan_code`,
+   `tier_code` and `tier_name`.
+4. An active member whose tiers are all unmapped gets `pending` with a resync request, and
+   a paid plan already on record is kept meanwhile; nothing is granted from an unmapped
+   tier.
+5. A complete read with no active mapped tier (declined, former, no tier) gives `former`
+   with plan `free`.
+6. A partial read never downgrades: the current entitlement is kept and a resync is
+   requested.
 
 ```text
-Patreon memberships for one linked provider identity
-  │
-  ├─ campaign A / tier 1 ─┐
-  ├─ campaign A / tier 2 ─┼─ campaign-scoped tier map
-  └─ campaign B / tier 7 ─┘
-                           │
-                           ▼
-                deterministic priority resolution
-                           │
-                           ▼
-              normalized plan/tier entitlement
+Linked member ── campaign A / tier 1 ─┐
+               ├ campaign A / tier 2 ─┼─ tier map ─▶ highest priority ─▶ plan_code, tier_code
+               └ campaign B / tier 7 ─┘
 ```
 
-Tier-map rules:
+## Webhook fast path and source of truth
 
-1. Each mapping is scoped by campaign and tier.
-2. Raw campaign/tier IDs are used only server-side and stored by HMAC/fingerprint where persisted.
-3. Classification evaluates all configured campaigns for the linked Patreon identity.
-4. The highest-priority active mapping wins.
-5. Unknown tiers fail safe: no paid entitlement is granted from an unmapped tier.
-6. Ambiguous mappings block readiness/enablement with a non-secret operator error.
-7. Observed evidence for all memberships remains server-side for audit/resync reasoning.
+A webhook delivery is verified on its exact raw bytes (HMAC-MD5 with the webhook secret)
+before it is parsed. A local delivery hash over the event, member, campaign and body
+digest makes redeliveries idempotent. For a Patreon user linked to a local account:
 
-Fixture terminology currently used by tests and docs includes plan code `magic_worlds_plus`, tier codes `artisan` and `pro`, campaign fixture `campaign-mw-alpha`, and tier fixture `tier-mw-alpha-artisan`. These are examples, not browser-visible raw Patreon IDs.
+- a complete signed member document from a create or update event is applied directly,
+  downgrades included, because it is Patreon's own statement of the member's state;
+- a partial document, a `*:delete` event or an unmapped tier queues a resync of that
+  member instead.
 
-## Webhook Fast Path and Resync Source of Truth
+Deliveries for Patreon users linked to nobody are acknowledged and ignored. When
+processing fails after the delivery was recorded, a resync is queued and the delivery is
+still acknowledged, so repeated errors do not make Patreon pause the webhook.
 
-Patreon webhook delivery is useful for latency but is not the final source of truth.
+The worker corrects everything else: scheduled full sweeps of every configured campaign,
+queued member and user resyncs, and reconciliation. After a complete sweep, linked
+memberships that Patreon no longer returns become `former`/free; the link stays, so the
+user can pledge again without relinking. Provider errors write nothing, so an outage never
+downgrades anyone; entitlements simply age into `stale`.
+
+## S2S boundary
 
 ```text
-Patreon webhook
-  │ POST /webhooks/patreon
-  │ X-Patreon-Event
-  │ X-Patreon-Signature = HMAC-MD5(raw body, webhook secret)
-  ▼
-api.auth webhook route
-  │ read exact raw bytes
-  │ verify signature before parsing JSON
-  │ allow only configured member/pledge events
-  │ derive local delivery hash because Patreon has no native delivery ID
-  ▼
-delivery ledger
-  │ duplicate → safe 200, no repeated side effects
-  ▼
-classification decision
-  ├─ complete trusted payload + known tier map → update snapshot/current entitlement
-  └─ partial/ambiguous/unknown/out-of-order → enqueue scheduled/manual resync
+Companion ── GET /internal/users/{user_hash}/entitlements
+             Authorization: Bearer <PATREON_S2S_BEARER_TOKEN>
+                  │ constant-time bearer check; cookies and user tokens ignored
+                  ▼
+             current entitlement row ──▶ allow-listed DTO ──▶ companion projection
 ```
 
-Scheduled and manual resync are source-of-truth correction paths:
+The companion learns `user_hash` from its own session validation and asks for that user's
+entitlement. A wrong bearer learns nothing: unauthorized reads answer `401` without
+revealing whether the user, the link or the entitlement exists, and authorized reads for
+users without data answer the free projection.
 
-- full configured campaign sweeps,
-- per-member/user resync jobs,
-- Patreon API pagination,
-- provider 429 backoff and jitter,
-- creator-token failure degraded posture,
-- stale snapshot preservation instead of destructive downgrade,
-- tier-map miss health/activity signals.
+## Data classification
 
-Partial webhooks must not downgrade paid entitlement by themselves. Provider outages and rate limits preserve last-known snapshots as stale/degraded and fail closed for new grants.
+| Class | Contents | May reach |
+| --- | --- | --- |
+| Server-only | Raw Patreon ids, raw or masked Patreon e-mail, creator and refresh tokens, client and webhook secrets, the S2S bearer, peppers and keys, signatures, payloads, proof secrets and hashes, id hashes and fingerprints, delivery and body hashes, sync-job internals, audit rows | Nothing outside `api.auth` |
+| S2S-safe | `external_source`, `status`, `plan_code`, `tier_code`, `tier_name`, `link_status`, `next_renewal_at`, `grace_period_until`, `last_synced_at`, `stale_after`, `classification_version`, `contract_version` | The companion service |
+| Browser-safe | `link_status` and the same entitlement fields, for the user's own account | The signed-in user |
 
-## S2S Contract Boundary
+The full forbidden-field list is in the
+[reference](reference.md#forbidden-browser-visible-fields).
 
-Magic Worlds reads normalized entitlement from `api.auth` through a dedicated internal bearer credential.
+## Persistence
 
 ```text
-Magic Worlds
-  │ existing local auth validation flow obtains/knows user_hash
-  │
-  │ GET /internal/users/{user_hash}/entitlements
-  │ Authorization: Bearer <PATREON_S2S_BEARER_TOKEN>
-  ▼
-api.auth internal route
-  │ constant-time bearer verification
-  │ cookies and browser sessions ignored
-  │ current normalized snapshot read
-  ▼
-safe S2S DTO
-  │ external_source, plan_code, tier_code, status,
-  │ link_status, renewal/grace/staleness timestamps,
-  │ contract_version
-  ▼
-Magic Worlds projection
+user_external_accounts (provider='patreon')   link authority, HMAC of the Patreon user id
+patreon_link_proofs                           hash-only proofs, expiry, attempts
+patreon_campaigns + patreon_tier_map          HMAC mirror of the configured tier map
+patreon_memberships                           member per campaign, HMAC ids
+patreon_member_snapshots (+ _history)         append-only observations
+patreon_entitlements_current                  one normalized projection per user
+patreon_entitlement_history                   every transition, including unlink
+patreon_webhook_deliveries                    idempotency ledger
+patreon_sync_jobs                             resync queue
+patreon_provider_token_state                  global, encrypted creator token
+patreon_raw_payload_quarantine                optional encrypted API pages
 ```
 
-The S2S endpoint must not accept browser cookies as authority and must not issue sessions. Unauthorized requests must not reveal whether the user hash, Patreon link, campaign, tier, or entitlement exists.
+Rollback disables behavior through the switches, ingress and the worker; it never deletes
+link, snapshot, entitlement, webhook or audit history.
 
-### Safe S2S entitlement envelope
+## Module map
 
-Allowed normalized fields:
-
-- `user_hash`,
-- `contract_version`,
-- `external_source`,
-- `status`,
-- `plan_code`,
-- `tier_code`,
-- `tier_name`,
-- `link_status`,
-- `next_renewal_at`,
-- `grace_period_until`,
-- `last_synced_at`,
-- `stale_after`,
-- `classification_version`.
-
-No raw Patreon identifiers, raw campaign/tier IDs, emails, payloads, signatures, hashes, fingerprints, audit rows, or secrets are part of the S2S payload.
-
-## No-Login and Auth-State Boundary
-
-Patreon routes and workers do not own local authentication. Forbidden and absent Patreon auth routes are:
-
-- `/auth/patreon/login` — forbidden and absent.
-- `/auth/patreon/authorize` — forbidden and absent.
-- `/auth/patreon/callback` — forbidden and absent.
-- `/auth/patreon/token` — forbidden and absent.
-
-The integration must not write Patreon fields into:
-
-- JWT claims,
-- session Redis values,
-- refresh-token family state,
-- local auth cookies,
-- `/auth/validate` response models,
-- local login/register/switch-project response models.
-
-Unlinking Patreon also must not revoke local sessions. Google may login/link in the separate Google OAuth flow; Patreon remains entitlement/link only.
-
-## Data Classification
-
-Patreon data is classified by release surface. The safe posture is allow-list first, not deny-list after the fact.
-
-### Server-only
-
-Server-only fields include:
-
-- raw Patreon IDs,
-- raw campaign IDs,
-- raw tier IDs,
-- raw or masked Patreon emails by default,
-- creator access/refresh tokens,
-- client secrets,
-- webhook secrets,
-- S2S bearer token or token hash,
-- HMAC peppers and encryption keys,
-- signatures,
-- raw webhook/provider payloads must not be exposed,
-- proof token raw values and token hashes,
-- HMAC hashes,
-- delivery hashes,
-- body hashes,
-- support fingerprints,
-- hash prefixes,
-- sync-job internals,
-- audit rows,
-- provider API responses.
-
-Server-only values may be processed inside `api.auth`; they must not cross into browser-visible responses or Magic Worlds S2S DTOs.
-
-### Internal S2S safe
-
-S2S may include only normalized fields needed for server-side membership projection:
-
-- `external_source`,
-- normalized entitlement `status`,
-- `plan_code`,
-- `tier_code`,
-- `tier_name`,
-- normalized `link_status`,
-- `next_renewal_at`,
-- `grace_period_until`,
-- `last_synced_at`,
-- `stale_after`,
-- `classification_version`,
-- `contract_version`.
-
-### Client-visible after companion projection
-
-Client-visible fields, if Magic Worlds chooses to expose them, must remain product-safe and classified:
-
-- plan/tier display or code,
-- normalized entitlement status,
-- normalized link status where product-approved,
-- renewal/grace/staleness timestamps only when product-approved,
-- `external_source="patreon"` or equivalent classified source marker.
-
-Client-visible data must not contain raw Patreon IDs, campaign/tier IDs, emails, signatures, provider payloads, tokens, hash prefixes, fingerprints, audit rows, or secrets.
-
-## Persistence Model
-
-```text
-user_external_accounts(provider='patreon')
-  │ provider_sub_hash / provider_sub_fingerprint
-  │ no per-user provider tokens
-  ▼
-patreon_link_proofs
-  │ hash-only proof lifecycle, expiry, attempts
-  ▼
-patreon_campaigns + patreon_tier_map
-  │ campaign-scoped mappings and priorities
-  ▼
-patreon_memberships
-  │ member/campaign identity by HMAC/fingerprint
-  ▼
-patreon_member_snapshots + patreon_entitlement_history
-  │ append-only normalized evidence
-  ▼
-patreon_entitlements_current
-  │ current safe entitlement projection
-  ▼
-patreon_webhook_deliveries + patreon_sync_jobs
-  │ idempotency and source-of-truth reconciliation
-```
-
-Provider-token state, if automatic creator-token refresh is enabled, is global provider state and never per-user external-account state.
-
-## Retention Architecture
-
-| Data bucket | Retention behavior |
+| Area | Code |
 | --- | --- |
-| Link history, snapshot history, unlink history | Indefinite, privacy-minimized, non-destructive. |
-| Proof requests | Purged or irreversibly stripped 24 hours after expiry. |
-| Webhook delivery hashes | Purged/anonymized after 90 days. |
-| Raw payload quarantine | Disabled by default; encrypted/server-only and purged within 30 days maximum if explicitly enabled. |
-
-Rollback must disable new behavior through flags, ingress controls, worker stop, S2S disablement, and Redis namespace cleanup. It must not destructively delete live link, snapshot, webhook, proof, unlink, or audit history.
-
-## Route and Module Map
-
-| Area | Artifact |
-| --- | --- |
-| Link request/confirm/status/unlink | `src/routes/auth_patreon.py` |
+| Link request, confirm, status, unlink | `src/routes/auth_patreon.py` |
 | Webhook receiver | `src/routes/patreon_webhooks.py` |
-| Internal S2S entitlement/resync | `src/routes/internal_patreon.py` |
-| Provider config/readiness | `src/Util/patreon/config.py` |
-| HMAC/proof/signature/S2S security | `src/Util/patreon/security.py` |
+| S2S read and resync | `src/routes/internal_patreon.py` |
+| Root dashboard | `src/routes/admin_patreon.py` |
+| Configuration and readiness | `src/Util/patreon/config.py` |
+| HMACs, proofs, signatures, S2S bearer | `src/Util/patreon/security.py` |
 | Creator API client | `src/Util/patreon/client.py` |
-| Entitlement classification | `src/Util/patreon/classifier.py` |
+| Classification | `src/Util/patreon/classifier.py` |
+| Tier-map mirror | `src/Util/patreon/catalog.py` |
+| Sync helpers and job queue | `src/Util/patreon/sync.py` |
 | Rate limits | `src/Util/patreon/rate_limit.py` |
-| Sync helpers | `src/Util/patreon/sync.py` |
-| DB wrappers | `src/Util/db/db_patreon.py` |
-| Sync worker | `src/workers/patreon_sync_worker.py` |
-| DTO allow-lists | `src/Util/Models.py` |
-| Activity catalog | `act-cat-075` through `act-cat-090` |
+| Database wrappers | `src/Util/db/db_patreon.py` |
+| Sync worker | `src/workers/patreon_sync_worker.py`, started by `scripts/run_patreon_worker.sh` |
+| Response allow-lists | `src/Util/Models.py` |
 
-## Related Documentation
+## Current limitations
 
-- [Patreon Overview](README.md)
-- [Request Flow](request-flow.md)
-- [Scenarios](scenarios.md)
-- [Reference](reference.md)
-- [Troubleshooting](troubleshooting.md)
+These are gaps in the code, documented so operators do not rely on them:
+
+- A provider failure does not mark entitlements stale: readers compute `stale` from
+  `stale_after`, and the retry is recorded in the sync-job ledger and as
+  `patreon_sync_failed`. The worker heartbeat lives in Redis only (read by
+  `worker.status`); there is no database heartbeat or provider-health table.
+- Sync jobs are always created with `max_attempts` `8`; `PATREON_SYNC_MAX_ATTEMPTS` has
+  no effect.
+- No `EXT_81xx` error code is ever returned.

@@ -82,6 +82,27 @@ def _normalize_optional_email(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _user_type_info_model(target_user, default_user_type: str = "consumer") -> UserTypeInfo:
+    """A user's type info; admin targets also get their project assignments (first = primary)."""
+    info = get_user_type_info(target_user.id) or {}
+    user_type = info.get("user_type") or default_user_type
+
+    assigned_projects = None
+    if user_type == "admin":
+        assigned_projects = get_admin_project_assignments_with_details(target_user.id) or []
+
+    return UserTypeInfo(
+        user_id=info.get("user_id", target_user.id),
+        user_hash=info.get("user_hash", target_user.user_hash),
+        username=info.get("username", target_user.username),
+        user_type=user_type,
+        capabilities=info.get("capabilities", []),
+        assigned_project_id=str(assigned_projects[0]["project_id"]) if assigned_projects else None,
+        assigned_projects=assigned_projects,
+        total_assigned_projects=len(assigned_projects) if assigned_projects is not None else None,
+    )
+
+
 # Pydantic models for requests that aren't in Models.py
 # Note: All endpoints use Form data instead of JSON/Pydantic models for consistency
 
@@ -237,11 +258,12 @@ async def create_admin_user_endpoint(
     `multipart/form-data`). At least one of `assigned_project_id` /
     `assigned_project_ids` is required; values are internal project IDs, not
     project hashes. The admin joins each project's admin group; a project
-    without an admin group is skipped silently.
+    without an admin group is skipped and reported in `skipped_projects`.
 
     **Responses:**
-    - `200` — the created admin with `assigned_projects` and
-      `primary_project_id`.
+    - `200` — the created admin with the projects actually assigned
+      (`assigned_project_ids`, `assigned_projects`, `primary_project_id`, which
+      is `null` when every project was skipped) and `skipped_projects`.
     - `400` — missing field or project, malformed `email`, or weak password
       (`VAL_3007`).
     - `404` — a project ID does not exist (`NF_4002`).
@@ -293,30 +315,52 @@ async def create_admin_user_endpoint(
         created_by=current_user.id
     )
 
-    project_names = [p.project_name for p in projects]
-    logger.info(f"Admin user created: {new_admin_user.username} for projects: {', '.join(project_names)}")
+    # Report what was actually assigned: a project without an admin group is skipped.
+    assigned_ids = {
+        str(assignment["project_id"])
+        for assignment in get_admin_project_assignments_with_details(new_admin_user.id) or []
+    }
+    assigned = [p for p in projects if str(p.id) in assigned_ids]
+    skipped = [p for p in projects if str(p.id) not in assigned_ids]
+
+    logger.info(
+        f"Admin user created: {new_admin_user.username} for projects: "
+        f"{', '.join(p.project_name for p in assigned) or '(none)'}"
+    )
+    if skipped:
+        logger.warning(
+            f"Admin user {new_admin_user.username}: skipped {len(skipped)} project(s) without an admin group"
+        )
 
     user_data_dict = {
         "user_hash": new_admin_user.user_hash,
         "username": new_admin_user.username,
         "email": new_admin_user.email,
         "user_type": "admin",
-        "assigned_project_ids": project_ids,
+        "assigned_project_ids": [str(p.id) for p in assigned],
         "assigned_projects": [
             {
-                "project_id": p.id,
+                "project_id": str(p.id),
                 "project_hash": p.project_hash,
                 "project_name": p.project_name
-            } for p in projects
+            } for p in assigned
         ],
-        "primary_project_id": project_ids[0],  # For backwards compatibility
+        "skipped_projects": [
+            {
+                "project_id": str(p.id),
+                "project_hash": p.project_hash,
+                "project_name": p.project_name,
+                "reason": "no_admin_group"
+            } for p in skipped
+        ],
+        "primary_project_id": str(assigned[0].id) if assigned else None,  # For backwards compatibility
         "created_at": new_admin_user.created_at,
         "created_by": current_user.username
     }
 
     return CreateAdminUserResponse(
         success=True,
-        message=f"Admin user '{username}' created and assigned to {len(projects)} project(s)",
+        message=f"Admin user '{username}' created and assigned to {len(assigned)} project(s)",
         user=user_data_dict
     )
 
@@ -332,13 +376,13 @@ async def get_user_type_information(
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
     `session_token` cookie) of a root or admin user; consumers get `403`
     (`AUTHZ_2002`). Root may read any user. Admins may read themselves and
-    users of any type who reach at least one of the projects the admin is
-    assigned to administer.
+    admin or consumer users who reach at least one of the projects the admin is
+    assigned to administer; root users are outside every admin's scope.
 
     **Responses:** `200` with `user_type_info` (`user_type`, `capabilities`,
-    and for admin targets `assigned_projects` plus the primary
-    `assigned_project_id`); `403` outside the admin's scope (`AUTHZ_2001`);
-    `404` for an unknown or inactive `user_hash`.
+    and for admin targets `assigned_projects`, `total_assigned_projects` and
+    the primary `assigned_project_id`); `403` outside the admin's scope
+    (`AUTHZ_2001`); `404` for an unknown or inactive `user_hash`.
     """
     target_user = get_user_by_hash(user_hash)
     if not target_user:
@@ -348,46 +392,18 @@ async def get_user_type_information(
             details={"user_hash": user_hash}
         )
 
-    # Access control: root reads anyone; admin users read themselves and users who
-    # reach one of their assigned projects (whatever the target's user type).
-    if not user_in_scope(resolve_admin_scope(current_user.id), target_user.id):
+    # Access control: root reads anyone; admin users read themselves and non-root users
+    # who reach one of their assigned projects.
+    if not user_in_scope(resolve_admin_scope(current_user.id), target_user.id, target_user.user_type):
         raise AuthorizationError(
             message="Access denied to user outside your project",
             error_code=ErrorCode.ACCESS_DENIED,
             details={"user_hash": user_hash}
         )
 
-    # Get comprehensive user type info
-    user_type_info_dict = get_user_type_info(target_user.id)
-
-    # Add project information for admin users
-    if user_type_info_dict.get("user_type") == "admin":
-        # Get all assigned projects for multi-project admin support
-        assigned_projects = get_admin_project_assignments_with_details(target_user.id)
-        user_type_info_dict["assigned_projects"] = assigned_projects
-        user_type_info_dict["total_assigned_projects"] = len(assigned_projects)
-
-        # Legacy compatibility - primary project
-        if assigned_projects:
-            primary_project = assigned_projects[0]
-            user_type_info_dict["assigned_project_id"] = primary_project["project_id"]
-            user_type_info_dict["assigned_project_name"] = primary_project["project_name"]
-            user_type_info_dict["assigned_project_hash"] = primary_project["project_hash"]
-
-    # Build UserTypeInfo model
-    user_type_info = UserTypeInfo(
-        user_id=user_type_info_dict.get("user_id", target_user.id),
-        user_hash=user_type_info_dict.get("user_hash", target_user.user_hash),
-        username=user_type_info_dict.get("username", target_user.username),
-        user_type=user_type_info_dict.get("user_type", "consumer"),
-        capabilities=user_type_info_dict.get("capabilities", []),
-        assigned_project_id=user_type_info_dict.get("assigned_project_id"),
-        assigned_projects=user_type_info_dict.get("assigned_projects")
-    )
-
     return UserTypeInfoResponse(
         success=True,
-        user_type_info=user_type_info
+        user_type_info=_user_type_info_model(target_user)
     )
 
 
@@ -412,10 +428,14 @@ async def update_user_type_endpoint(
     `multipart/form-data`). `PATCH /users/{user_hash}/type` does the same
     without the admin project assignment.
 
+    **Effects:** when the type actually changes, the user's access sessions and
+    refresh families are revoked; they must sign in again.
+
     **Responses:**
     - `200` — the updated `user_type_info`.
     - `400` — invalid `user_type`, or `admin` without `assigned_project_id`.
-    - `404` — unknown or inactive `user_hash`, or unknown project ID.
+    - `404` — unknown or inactive `user_hash`, unknown project ID (`NF_4002`),
+      or a project without an admin group (`NF_4003`); nothing is changed.
     """
     target_user = get_user_by_hash(user_hash)
     if not target_user:
@@ -475,19 +495,7 @@ async def update_user_type_endpoint(
             details={"operation": "update_user_type"}
         )
 
-    # Get updated user info
-    updated_info_dict = get_user_type_info(target_user.id)
-
-    # Build UserTypeInfo model
-    updated_info = UserTypeInfo(
-        user_id=updated_info_dict.get("user_id", target_user.id),
-        user_hash=updated_info_dict.get("user_hash", target_user.user_hash),
-        username=updated_info_dict.get("username", target_user.username),
-        user_type=updated_info_dict.get("user_type", new_user_type),
-        capabilities=updated_info_dict.get("capabilities", []),
-        assigned_project_id=updated_info_dict.get("assigned_project_id"),
-        assigned_projects=updated_info_dict.get("assigned_projects")
-    )
+    updated_info = _user_type_info_model(target_user, default_user_type=new_user_type)
 
     logger.info(f"User type updated: {target_user.username} -> {new_user_type} by {current_user.username}")
 
@@ -535,8 +543,9 @@ async def list_users_by_type(
     `filter.project_filter` lists the hashes of the projects the result is
     restricted to (`null` for root), and `pagination.total` / `has_more` use the
     restricted count; for root they use the global count for the type. Admin
-    results are sorted by username. `400` for an unknown `user_type`
-    (`VAL_3012`).
+    results are sorted by username. Admin users with at least one project
+    assignment carry `assigned_project` (their first assignment). `400` for an
+    unknown `user_type` (`VAL_3012`).
     """
     # Validate user type
     if user_type not in ['root', 'admin', 'consumer']:
@@ -586,14 +595,16 @@ async def list_users_by_type(
             "is_active": user.is_active
         }
 
-        # Add project info for admin users
-        if user.user_type == 'admin' and user.assigned_project_id:
-            project = get_project_by_id(user.assigned_project_id)
-            if project:
+        # Add the primary (first) assigned project for admin users. Assignments are
+        # admin-group memberships; list rows never carry them.
+        if user.user_type == 'admin':
+            assignments = get_admin_project_assignments_with_details(user.id) or []
+            if assignments:
+                primary = assignments[0]
                 user_info["assigned_project"] = {
-                    "project_id": project.id,
-                    "project_hash": project.project_hash,
-                    "project_name": project.project_name
+                    "project_id": str(primary["project_id"]),
+                    "project_hash": primary["project_hash"],
+                    "project_name": primary["project_name"]
                 }
 
         user_list.append(user_info)

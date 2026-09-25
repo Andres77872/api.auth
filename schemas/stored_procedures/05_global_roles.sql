@@ -303,6 +303,11 @@ END$$
 -- ===================================================================================
 -- PERMISSION RESOLUTION
 -- ===================================================================================
+-- Every hop's is_active is checked, including the permission group's own flag. The
+-- reserved-name check in src/Util/admin_scope.py walks the same chain through
+-- sp_global_get_user_role, sp_global_get_role_permission_groups and
+-- sp_global_get_permission_group_permissions, which filter the same flags; a hop filtered
+-- there but not here would let a role grant names that check cannot see.
 
 DROP PROCEDURE IF EXISTS sp_global_get_user_permissions$$
 CREATE PROCEDURE sp_global_get_user_permissions(IN p_user_id VARCHAR(64))
@@ -311,7 +316,8 @@ BEGIN
     FROM users u
     JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
     JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
-    JOIN global_permission_group_permissions pgp ON rpg.permission_group_id = pgp.permission_group_id AND pgp.is_active = TRUE
+    JOIN global_permission_groups gpg ON rpg.permission_group_id = gpg.id AND gpg.is_active = TRUE
+    JOIN global_permission_group_permissions pgp ON gpg.id = pgp.permission_group_id AND pgp.is_active = TRUE
     JOIN global_permissions gp ON pgp.permission_id = gp.id AND gp.is_active = TRUE
     WHERE u.id = p_user_id AND u.is_active = TRUE
     ORDER BY gp.permission_category, gp.permission_name;
@@ -324,7 +330,8 @@ BEGIN
         SELECT 1 FROM users u
         JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
         JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
-        JOIN global_permission_group_permissions pgp ON rpg.permission_group_id = pgp.permission_group_id AND pgp.is_active = TRUE
+        JOIN global_permission_groups gpg ON rpg.permission_group_id = gpg.id AND gpg.is_active = TRUE
+        JOIN global_permission_group_permissions pgp ON gpg.id = pgp.permission_group_id AND pgp.is_active = TRUE
         JOIN global_permissions gp ON pgp.permission_id = gp.id AND gp.is_active = TRUE
         WHERE u.id = p_user_id AND gp.permission_name = p_permission_name AND u.is_active = TRUE
     ) as has_permission;

@@ -260,6 +260,11 @@ class ProjectInfo(BaseModelConfig):
     updated_at: Optional[datetime] = None
 
 
+class ProfileProjectInfo(ProjectInfo):
+    """A project on the caller's profile, with the caller's effective permissions in it"""
+    permissions: List[str] = Field(default_factory=list)
+
+
 class UserGroupInfo(BaseModelConfig):
     """User group information for responses"""
     group_hash: str
@@ -1389,7 +1394,8 @@ BILLING_AUTH_FORBIDDEN_FIELD_FRAGMENTS: FrozenSet[str] = frozenset(
 )
 
 _RAW_STRIPE_ID_VALUE_RE = re.compile(r"\b(?:cus|sub|price|prod|in|pi|ch|cs|bps|evt)_[A-Za-z0-9_./-]+", re.IGNORECASE)
-_OPAQUE_BILLING_REF_RE = re.compile(r"^b(?:cu|sub|co|po|pur|sync)-[A-Za-z0-9_.:-]{1,120}$")
+# Customer refs are issued as `bcust-...`; rows written by older webhook code carry `bcustref-...`.
+_OPAQUE_BILLING_REF_RE = re.compile(r"^b(?:cu|cust|custref|sub|co|po|pur|sync)-[A-Za-z0-9_.:-]{1,120}$")
 
 
 def _assert_billing_model_allow_list(model_cls: type[BaseModel], allow_list: FrozenSet[str]) -> FrozenSet[str]:
@@ -1828,7 +1834,7 @@ class UserProfileResponse(BaseResponse):
     last_login: Optional[datetime] = None
     is_active: Optional[bool] = None
     groups: List[Dict[str, Any]] = Field(default_factory=list)
-    projects: List[ProjectInfo] = Field(default_factory=list)
+    projects: List[ProfileProjectInfo] = Field(default_factory=list)
 
 
 class UpdateProfileResponse(BaseResponse):
@@ -1943,6 +1949,7 @@ class UserTypeInfo(BaseModelConfig):
     capabilities: List[str] = Field(default_factory=list)
     assigned_project_id: Optional[str] = None
     assigned_projects: Optional[List[Dict[str, Any]]] = None
+    total_assigned_projects: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

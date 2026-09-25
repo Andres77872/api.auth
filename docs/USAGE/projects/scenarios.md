@@ -1,150 +1,134 @@
-# Projects Scenarios and Examples
+# Projects scenarios
 
-Concrete examples for operating projects in this repository.
+End-to-end workflows around a project. Endpoint details are in [reference.md](reference.md);
+group operations are explained in the [groups suite](../groups/usage.md).
 
----
+## Set up a new project
 
-## Scenario 1: Setting Up a New Project
-
-Goal: create a project and make it reachable by the right team.
+Goal: a new project with an administrator and its first users.
 
 ```bash
-# 1. Create the project
+# 1. Create the project (root)
 curl -X POST "http://localhost:8000/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_name=Customer API v2&project_description=Customer platform backend"
+  -H "Authorization: Bearer $ROOT_TOKEN" \
+  --data-urlencode "project_name=Customer API v2"
+# -> project.project_hash = $PROJECT_HASH
 
-# 2. Inspect the generated groups before inventing new ones
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+# 2. Read the default groups. Their names carry the internal project ID:
+#    admin_proj-<uuid>, user_proj-<uuid>, readonly_proj-<uuid>
+curl "http://localhost:8000/projects/$PROJECT_HASH/groups" \
+  -H "Authorization: Bearer $ROOT_TOKEN"
+# -> $PROJECT_ID = proj-<uuid>; $USER_GROUP = group_hash of user_<project_id>
 
-# 3. If needed, add the project to a broader project group
-curl -X POST "http://localhost:8000/admin/project-groups/$PLATFORM_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH"
+# 3. Make an existing admin user administrator of the project (root)
+curl -X POST "http://localhost:8000/user-types/admin/$ADMIN_USER_HASH/projects/add" \
+  -H "Authorization: Bearer $ROOT_TOKEN" \
+  -d "project_id=$PROJECT_ID"
 
-# 4. Grant a team access through that project group
-curl -X POST "http://localhost:8000/admin/user-groups/$BACKEND_TEAM_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$PLATFORM_GROUP_HASH"
+# 4. Add consumers to the project's user group
+curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP/members" \
+  -H "Authorization: Bearer $ROOT_TOKEN" \
+  -d "user_hash=$CONSUMER_HASH"
 ```
 
-Why this works:
+Outcome: the admin user can log in to the project and administer it (update, members, groups,
+delete); the consumer can log in with `project_hash=$PROJECT_HASH`. Step 3 adds the admin to
+`admin_<project_id>`, which only root may change. Admin-user creation and the other assignment
+routes are in [user types](../users/user-types.md).
 
-- project creation already bootstraps default groups
-- broader team access is layered through project groups, not direct project assignment
+## Let consumers register themselves into a project
 
----
+Goal: consumers sign up without an administrator adding them one by one.
 
-## Scenario 2: Adding a Team to an Existing Project
-
-Goal: grant one existing team access to one existing project without touching every user individually.
-
-```bash
-# 1. Put the project in the right project group
-curl -X POST "http://localhost:8000/admin/project-groups/$QA_PROJECTS_HASH/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH"
-
-# 2. Grant the team's user group access to that project group
-curl -X POST "http://localhost:8000/admin/user-groups/$QA_TEAM_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$QA_PROJECTS_HASH"
-
-# 3. Verify the result from the project side
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-This is the right abstraction when the same team should reach multiple projects over time.
-
----
-
-## Scenario 3: Multi-Project Platform Team
-
-This scenario is about group wiring (one user group linked to multiple project groups). The canonical documentation lives in the groups suite:
-
-- **[Groups → Scenario 3: Platform Team With Access to Multiple Domains](../groups/scenarios.md#scenario-3-platform-team-with-access-to-multiple-domains)**
-
-From the project side, the outcome is: every project contained in those project groups becomes accessible to all members of the linked user group.
-
----
-
-## Scenario 4: Onboarding New Employees
-
-Goal: add a new user to an existing project access model with minimal churn.
+`POST /auth/register` is public and places the new consumer in the user group whose hash it
+receives. Hand out the hash of a group that reaches the project, such as `user_<project_id>`:
 
 ```bash
-# 1. Register the user into the team group that already has project-group access
 curl -X POST "http://localhost:8000/auth/register" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=emma.johnson&email=emma.johnson@company.com&password=TempPass123!&user_group_hash=$BACKEND_TEAM_HASH"
-
-# 2. Have the user log in and verify accessible projects
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=emma.johnson&password=TempPass123!"
+  --data-urlencode "username=emma.johnson" \
+  --data-urlencode "email=emma.johnson@example.com" \
+  --data-urlencode "password=$NEW_PASSWORD" \
+  -d "user_group_hash=$USER_GROUP"
 ```
 
-Why this pattern matters:
-
-- onboarding stays team-centric
-- project access is inherited from existing group wiring
-- `/auth/register` requires `user_group_hash`; there is no `POST /admin/users` creation route or `user_type=consumer` create field
-- no per-user project exceptions are needed
-
----
-
-## Scenario 5: Managing Contractor Access
-
-This scenario is about group wiring (isolated temporary user group with limited project-group access). The canonical documentation lives in the groups suite:
-
-- **[Groups → Scenario 2: Give Temporary Contractor Access](../groups/scenarios.md#scenario-2-give-temporary-contractor-access)**
-
-From the project side, the outcome is: contractors gain access only to projects within the linked project group, and revocation is a single group-link deletion.
-
----
-
-## Scenario 6: Project Reorganization
-
-Goal: move access from old team structure to new team structure without breaking project reach.
-
-Recommended order:
-
-1. create the new combined user group
-2. add the new group's project-group links first
-3. migrate members
-4. verify `GET /projects/{hash}/members`
-5. only then retire old user groups
-
-Useful commands:
+When the group reaches an active project, the response signs the user in to the first such project
+by name and sets the session cookies. Later logins name the project explicitly:
 
 ```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/members?limit=100" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-curl -X DELETE "http://localhost:8000/admin/user-groups/$OLD_TEAM_HASH" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -X POST "http://localhost:8000/auth/login" \
+  --data-urlencode "username=emma.johnson" \
+  --data-urlencode "password=$NEW_PASSWORD" \
+  -d "project_hash=$PROJECT_HASH"
 ```
 
-Verify access before deleting the old groups; reversing that order can cause an
-avoidable authorization outage.
+> [!CAUTION]
+> Anyone holding the group hash can register into that group. Never share the hash of an
+> `admin_` group or of a group that reaches projects the public should not see.
 
----
+## Add a project to an existing team's reach
 
-## Related Documentation
+Goal: a team that already has a project group gets one more project.
 
-- **[Projects Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+```bash
+curl -X POST "http://localhost:8000/admin/project-groups/$TEAM_PROJECT_GROUP/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "project_hash=$PROJECT_HASH"
+
+curl "http://localhost:8000/projects/$PROJECT_HASH/groups" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Every user group granted `$TEAM_PROJECT_GROUP` now reaches the project, which the second call
+confirms. Building a team from scratch, contractor access and multi-domain teams are covered in
+[groups scenarios](../groups/scenarios.md).
+
+## Audit who can reach a project
+
+Goal: explain every user who can access a project.
+
+```bash
+# 1. Every user with access (root users included)
+curl "http://localhost:8000/projects/$PROJECT_HASH/members?limit=100" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 2. The user groups that provide it
+curl "http://localhost:8000/projects/$PROJECT_HASH/groups" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. For a suspicious group, its members and all its grants
+curl "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+To narrow access, revoke the group's grant if the whole team should lose the project, or remove
+individual members otherwise ([groups usage](../groups/usage.md#revoke-a-grant)). Step 3 needs a
+session with `admin` or `manage_users`; steps 1 and 2 need admin scope over the project.
+
+## Reorganize teams without an outage
+
+Goal: move a project's users from old groups to a new group.
+
+1. Create the new user group and grant it the project groups the old groups had.
+2. Add the members to the new group (bulk add).
+3. Check `GET /projects/{project_hash}/members`: `pagination.total` should not have dropped.
+4. Delete the old user groups.
+
+Order matters: session revocation in step 4 keeps the sessions of users who still reach the project
+through the new group, so nobody is logged out. Deleting first would revoke them.
+
+## Retire a project
+
+Goal: stop all use of a project.
+
+```bash
+curl -X DELETE "http://localhost:8000/projects/$PROJECT_HASH" \
+  -H "Authorization: Bearer $ROOT_TOKEN"
+```
+
+After the delete the project returns `404`, no group reaches it, and access tokens scoped to it
+fail on their next use. API keys for it stop validating once their cached validation result
+expires (at most `60` seconds). Archiving would keep the record visible to root, but no API route
+sets the archive flag (`PATCH /projects/{project_hash}/archive` returns `501`).
+
+The default groups stay behind. Remove them if they have no further use: the project group and the
+`user_` / `readonly_` groups through the groups routes, and `admin_<project_id>` as root.

@@ -557,17 +557,22 @@ def _response_from_portal_session(session: Mapping[str, Any] | BillingHostedSess
     )
 
 
+def _return_url_error(*urls: str, config: BillingConfig) -> JSONResponse | None:
+    """Fail closed: without a configured allowlist no return URL is accepted (server not ready)."""
+
+    if not config.return_url_allowlist:
+        return _generic_error_response(status_code=503)
+    if not all(is_return_url_allowed(url, config.return_url_allowlist) for url in urls):
+        return _generic_error_response(status_code=422)
+    return None
+
+
 def _validate_checkout_intent(body: BillingCheckoutIntentRequest, config: BillingConfig) -> JSONResponse | None:
     if body.intent_type == "subscription" and not (body.plan_code and body.tier_code):
         return _generic_error_response(status_code=422)
     if body.intent_type == "credit_purchase" and not body.credit_product_code:
         return _generic_error_response(status_code=422)
-    if config.return_url_allowlist:
-        if not is_return_url_allowed(body.success_url, config.return_url_allowlist):
-            return _generic_error_response(status_code=422)
-        if not is_return_url_allowed(body.cancel_url, config.return_url_allowlist):
-            return _generic_error_response(status_code=422)
-    return None
+    return _return_url_error(body.success_url, body.cancel_url, config=config)
 
 
 def _stripe_flow_status_code(error: Any, default: int = 503) -> int:
@@ -952,9 +957,10 @@ async def get_internal_project_catalog(
                 "active, no secret key, group checkout off)."
             ),
             503: (
-                "`{\"success\": false, ...}`: `BILLING_CHECKOUT_ENABLED`, `STRIPE_BILLING_ENABLED`, or "
-                "`STRIPE_CHECKOUT_ENABLED` is off, or the group's Stripe account, customer, or session could not "
-                "be used or created. Stripe errors that carry their own HTTP status are returned with that status."
+                "`{\"success\": false, ...}`: `BILLING_RETURN_URL_ALLOWLIST` is empty; `BILLING_CHECKOUT_ENABLED`, "
+                "`STRIPE_BILLING_ENABLED`, or `STRIPE_CHECKOUT_ENABLED` is off; or the group's Stripe account, customer, "
+                "or session could not be used or created. Stripe errors that carry their own HTTP status are returned "
+                "with that status."
             ),
         }
     ),
@@ -984,8 +990,8 @@ async def create_internal_billing_checkout(
     **Request:** JSON. `intent_type` `subscription` requires `plan_code` and `tier_code`;
     `credit_purchase` requires `credit_product_code`. A `lookup_key` price ref is resolved on the
     billing group's own Stripe account. The price and codes are not checked against the
-    catalog. When a return-URL allowlist is configured, `success_url` and `cancel_url` must use
-    an allowed origin. For safe retries send `Idempotency-Key` (or `client_intent_ref`, used
+    catalog. `success_url` and `cancel_url` must use an origin in `BILLING_RETURN_URL_ALLOWLIST`;
+    with the allowlist empty every checkout is refused with `503`. For safe retries send `Idempotency-Key` (or `client_intent_ref`, used
     when the header is absent); either must match the key format, 1-128 characters from
     `A-Z a-z 0-9 . _ : -`, or the request is rejected with `422`.
 
@@ -1168,9 +1174,9 @@ async def create_internal_billing_checkout(
                 "group portal off, no portal configuration); or the user has no Stripe customer in the group yet."
             ),
             503: (
-                "`{\"success\": false, ...}`: `BILLING_PORTAL_ENABLED`, `STRIPE_BILLING_ENABLED`, or "
-                "`STRIPE_PORTAL_ENABLED` is off, or the Stripe call failed. Stripe errors that carry their own HTTP "
-                "status are returned with that status."
+                "`{\"success\": false, ...}`: `BILLING_RETURN_URL_ALLOWLIST` is empty; `BILLING_PORTAL_ENABLED`, "
+                "`STRIPE_BILLING_ENABLED`, or `STRIPE_PORTAL_ENABLED` is off; or the Stripe call failed. Stripe "
+                "errors that carry their own HTTP status are returned with that status."
             ),
         }
     ),
@@ -1194,8 +1200,8 @@ async def create_internal_billing_portal(
     is also required. When `BILLING_ENABLED` or `BILLING_S2S_ENABLED` is off, or the bearer or
     `BILLING_ID_HMAC_SECRET` is not configured, every call gets `401`.
 
-    **Request:** JSON. When a return-URL allowlist is configured, `return_url` must use an
-    allowed origin. Without an `Idempotency-Key` header every call creates a new session.
+    **Request:** JSON. `return_url` must use an origin in `BILLING_RETURN_URL_ALLOWLIST`; with
+    the allowlist empty every portal request is refused with `503`. Without an `Idempotency-Key` header every call creates a new session.
 
     **Responses:** `202` with `portal_ref` and the hosted `url` to redirect the user to.
     """
@@ -1205,8 +1211,9 @@ async def create_internal_billing_portal(
         return config_or_response
     config = config_or_response
 
-    if config.return_url_allowlist and not is_return_url_allowed(portal_request.return_url, config.return_url_allowlist):
-        return _generic_error_response(status_code=422)
+    return_url_error = _return_url_error(portal_request.return_url, config=config)
+    if return_url_error is not None:
+        return return_url_error
 
     rate_limited = await _check_rate_limit("portal", request=request, user_hash=user_hash, project_hash=portal_request.project_hash)
     if rate_limited is not None:

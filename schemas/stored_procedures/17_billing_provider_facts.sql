@@ -547,8 +547,8 @@ BEGIN
         tier_code = VALUES(tier_code),
         tier_name = VALUES(tier_name),
         cancel_at_period_end = VALUES(cancel_at_period_end),
-        current_period_end = VALUES(current_period_end),
-        trial_end = VALUES(trial_end),
+        current_period_end = COALESCE(VALUES(current_period_end), current_period_end),
+        trial_end = COALESCE(VALUES(trial_end), trial_end),
         last_synced_at = VALUES(last_synced_at),
         stale_after = VALUES(stale_after),
         safe_metadata = COALESCE(VALUES(safe_metadata), safe_metadata),
@@ -558,6 +558,25 @@ BEGIN
     FROM billing_subscriptions
     WHERE subscription_ref = p_subscription_ref
     LIMIT 1;
+
+    -- The upsert may have matched an existing row by provider id or by the active
+    -- (user, group, provider) scope; that row keeps its own subscription_ref.
+    IF v_subscription_id IS NULL AND p_provider_subscription_id_hmac IS NOT NULL THEN
+        SELECT id INTO v_subscription_id
+        FROM billing_subscriptions
+        WHERE provider = p_provider
+          AND provider_subscription_id_hmac = p_provider_subscription_id_hmac
+        LIMIT 1;
+    END IF;
+    IF v_subscription_id IS NULL THEN
+        SELECT id INTO v_subscription_id
+        FROM billing_subscriptions
+        WHERE user_id = p_user_id
+          AND billing_group_id = p_billing_group_id
+          AND provider = p_provider
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT 1;
+    END IF;
 
     INSERT INTO billing_subscription_snapshots (
         id, subscription_id, customer_id, user_id, billing_group_id, provider,
@@ -594,8 +613,8 @@ BEGIN
         tier_code = VALUES(tier_code),
         tier_name = VALUES(tier_name),
         cancel_at_period_end = VALUES(cancel_at_period_end),
-        current_period_end = VALUES(current_period_end),
-        trial_end = VALUES(trial_end),
+        current_period_end = COALESCE(VALUES(current_period_end), current_period_end),
+        trial_end = COALESCE(VALUES(trial_end), trial_end),
         last_synced_at = VALUES(last_synced_at),
         stale_after = VALUES(stale_after),
         sync_source = VALUES(sync_source),
@@ -619,6 +638,7 @@ BEGIN
     COMMIT;
 
     SELECT v_subscription_id AS subscription_id,
+           (SELECT subscription_ref FROM billing_subscriptions WHERE id = v_subscription_id) AS subscription_ref,
            v_status AS status,
            v_plan_code AS plan_code;
 END$$
@@ -737,6 +757,279 @@ BEGIN
     SELECT v_purchase_id AS purchase_id,
            p_purchase_ref AS purchase_ref,
            v_status AS purchase_status;
+END$$
+
+-- ===================================================================================
+-- sp_billing_resolve_event_scope
+-- Server-only webhook fallback for events whose object carries no usable user/project
+-- metadata: disputes (Stripe never copies metadata onto them), and subscriptions,
+-- invoices and charges created before Checkout copied its metadata onto them. Matches,
+-- in order, the api.auth checkout ref, then the HMACs of the provider subscription,
+-- payment intent, charge, and customer ids against rows api.auth already stored.
+-- The price HMAC only adds the catalog labels of that price. Returns at most one row of
+-- internal ids, opaque refs, and labels; never provider ciphertext.
+-- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_billing_resolve_event_scope$$
+CREATE PROCEDURE sp_billing_resolve_event_scope(
+    IN p_provider VARCHAR(32),
+    IN p_billing_group_id VARCHAR(64),
+    IN p_checkout_ref VARCHAR(64),
+    IN p_subscription_id_hmac BINARY(32),
+    IN p_payment_intent_id_hmac BINARY(32),
+    IN p_charge_id_hmac BINARY(32),
+    IN p_customer_id_hmac BINARY(32),
+    IN p_price_id_hmac BINARY(32)
+)
+proc: BEGIN
+    DECLARE v_provider VARCHAR(32) DEFAULT 'stripe';
+    DECLARE v_group VARCHAR(64) DEFAULT NULL;
+    DECLARE v_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_catalog_plan_code VARCHAR(64) DEFAULT NULL;
+    DECLARE v_catalog_tier_code VARCHAR(64) DEFAULT NULL;
+    DECLARE v_catalog_tier_name VARCHAR(120) DEFAULT NULL;
+
+    SET v_provider = COALESCE(NULLIF(TRIM(p_provider), ''), 'stripe');
+    SET v_group = NULLIF(TRIM(p_billing_group_id), '');
+
+    IF p_price_id_hmac IS NOT NULL THEN
+        SELECT plan_code, tier_code, tier_name
+          INTO v_catalog_plan_code, v_catalog_tier_code, v_catalog_tier_name
+        FROM billing_catalog_items
+        WHERE provider = v_provider
+          AND provider_price_id_fingerprint = LOWER(LEFT(HEX(p_price_id_hmac), 12))
+          AND provider_price_id_hmac = p_price_id_hmac
+          AND item_type = 'subscription_plan'
+          AND (v_group IS NULL OR billing_group_id = v_group)
+        ORDER BY active DESC, COALESCE(updated_at, created_at) DESC
+        LIMIT 1;
+    END IF;
+
+    IF NULLIF(TRIM(p_checkout_ref), '') IS NOT NULL THEN
+        SELECT id INTO v_id
+        FROM billing_checkout_intents
+        WHERE checkout_ref = p_checkout_ref
+          AND provider = v_provider
+          AND (v_group IS NULL OR billing_group_id = v_group)
+        LIMIT 1;
+        IF v_id IS NOT NULL THEN
+            SELECT 'checkout_ref' AS matched_by,
+                   bci.user_id, bci.project_id, bci.billing_group_id,
+                   bc.id AS customer_id, bc.customer_ref,
+                   bs.id AS subscription_id,
+                   COALESCE(bs.subscription_ref, bci.subscription_ref) AS subscription_ref,
+                   bs.status AS subscription_status,
+                   bpe.id AS purchase_id,
+                   COALESCE(bpe.purchase_ref, bci.purchase_ref) AS purchase_ref,
+                   bpe.status AS purchase_status,
+                   bci.checkout_ref, bci.intent_type,
+                   bci.plan_code, bci.tier_code, bci.tier_name,
+                   bci.credit_product_code, bci.quantity,
+                   v_catalog_plan_code AS catalog_plan_code,
+                   v_catalog_tier_code AS catalog_tier_code,
+                   v_catalog_tier_name AS catalog_tier_name
+            FROM billing_checkout_intents bci
+            LEFT JOIN billing_customers bc
+              ON bc.user_id = bci.user_id
+             AND bc.billing_group_id = bci.billing_group_id
+             AND bc.provider = bci.provider
+             AND bc.status IN ('creating','active','stale')
+            LEFT JOIN billing_subscriptions bs ON bs.subscription_ref = bci.subscription_ref
+            LEFT JOIN billing_purchase_events bpe ON bpe.purchase_ref = bci.purchase_ref
+            WHERE bci.id = v_id
+            LIMIT 1;
+            LEAVE proc;
+        END IF;
+    END IF;
+
+    IF p_subscription_id_hmac IS NOT NULL THEN
+        SELECT id INTO v_id
+        FROM billing_subscriptions
+        WHERE provider = v_provider
+          AND provider_subscription_id_hmac = p_subscription_id_hmac
+          AND (v_group IS NULL OR billing_group_id = v_group)
+        LIMIT 1;
+        IF v_id IS NOT NULL THEN
+            SELECT 'subscription' AS matched_by,
+                   bs.user_id, NULL AS project_id, bs.billing_group_id,
+                   bs.customer_id, bc.customer_ref,
+                   bs.id AS subscription_id, bs.subscription_ref, bs.status AS subscription_status,
+                   NULL AS purchase_id, NULL AS purchase_ref, NULL AS purchase_status,
+                   NULL AS checkout_ref, 'subscription' AS intent_type,
+                   bs.plan_code, bs.tier_code, bs.tier_name,
+                   NULL AS credit_product_code, NULL AS quantity,
+                   v_catalog_plan_code AS catalog_plan_code,
+                   v_catalog_tier_code AS catalog_tier_code,
+                   v_catalog_tier_name AS catalog_tier_name
+            FROM billing_subscriptions bs
+            LEFT JOIN billing_customers bc ON bc.id = bs.customer_id
+            WHERE bs.id = v_id
+            LIMIT 1;
+            LEAVE proc;
+        END IF;
+    END IF;
+
+    IF p_payment_intent_id_hmac IS NOT NULL OR p_charge_id_hmac IS NOT NULL THEN
+        SELECT id INTO v_id
+        FROM billing_purchase_events
+        WHERE provider = v_provider
+          AND (
+                (p_payment_intent_id_hmac IS NOT NULL
+                 AND provider_payment_intent_id_fingerprint = LOWER(LEFT(HEX(p_payment_intent_id_hmac), 12))
+                 AND provider_payment_intent_id_hmac = p_payment_intent_id_hmac)
+             OR (p_charge_id_hmac IS NOT NULL
+                 AND provider_charge_id_fingerprint = LOWER(LEFT(HEX(p_charge_id_hmac), 12))
+                 AND provider_charge_id_hmac = p_charge_id_hmac)
+          )
+          AND (v_group IS NULL OR billing_group_id = v_group)
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT 1;
+        IF v_id IS NOT NULL THEN
+            SELECT 'purchase' AS matched_by,
+                   bpe.user_id, bpe.project_id, bpe.billing_group_id,
+                   bpe.customer_id, bc.customer_ref,
+                   NULL AS subscription_id, NULL AS subscription_ref, NULL AS subscription_status,
+                   bpe.id AS purchase_id, bpe.purchase_ref, bpe.status AS purchase_status,
+                   bpe.checkout_ref, 'credit_purchase' AS intent_type,
+                   NULL AS plan_code, NULL AS tier_code, NULL AS tier_name,
+                   bpe.credit_product_code, bpe.quantity,
+                   v_catalog_plan_code AS catalog_plan_code,
+                   v_catalog_tier_code AS catalog_tier_code,
+                   v_catalog_tier_name AS catalog_tier_name
+            FROM billing_purchase_events bpe
+            LEFT JOIN billing_customers bc ON bc.id = bpe.customer_id
+            WHERE bpe.id = v_id
+            LIMIT 1;
+            LEAVE proc;
+        END IF;
+    END IF;
+
+    IF p_customer_id_hmac IS NOT NULL THEN
+        SELECT id INTO v_id
+        FROM billing_customers
+        WHERE provider = v_provider
+          AND provider_customer_id_hmac = p_customer_id_hmac
+          AND (v_group IS NULL OR billing_group_id = v_group)
+        LIMIT 1;
+        IF v_id IS NOT NULL THEN
+            SELECT 'customer' AS matched_by,
+                   bc.user_id, NULL AS project_id, bc.billing_group_id,
+                   bc.id AS customer_id, bc.customer_ref,
+                   NULL AS subscription_id, NULL AS subscription_ref, NULL AS subscription_status,
+                   NULL AS purchase_id, NULL AS purchase_ref, NULL AS purchase_status,
+                   NULL AS checkout_ref, NULL AS intent_type,
+                   NULL AS plan_code, NULL AS tier_code, NULL AS tier_name,
+                   NULL AS credit_product_code, NULL AS quantity,
+                   v_catalog_plan_code AS catalog_plan_code,
+                   v_catalog_tier_code AS catalog_tier_code,
+                   v_catalog_tier_name AS catalog_tier_name
+            FROM billing_customers bc
+            WHERE bc.id = v_id
+            LIMIT 1;
+            LEAVE proc;
+        END IF;
+    END IF;
+END$$
+
+-- ===================================================================================
+-- sp_billing_get_sync_context
+-- Server-only read for the billing sync worker. Given a job's purchase or subscription
+-- id, or only its user and billing group (a resync requested through the S2S route),
+-- returns the encrypted provider refs to fetch from Stripe and the local identity to
+-- write the fetched facts back under. A user-level request resolves the subscription
+-- the current entitlement points at (else the latest one) and the user's customer.
+-- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_billing_get_sync_context$$
+CREATE PROCEDURE sp_billing_get_sync_context(
+    IN p_provider VARCHAR(32),
+    IN p_user_id VARCHAR(64),
+    IN p_billing_group_id VARCHAR(64),
+    IN p_subscription_id VARCHAR(64),
+    IN p_purchase_id VARCHAR(64)
+)
+BEGIN
+    DECLARE v_provider VARCHAR(32) DEFAULT 'stripe';
+    DECLARE v_user_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_group VARCHAR(64) DEFAULT NULL;
+    DECLARE v_subscription_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_purchase_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_customer_id VARCHAR(64) DEFAULT NULL;
+
+    SET v_provider = COALESCE(NULLIF(TRIM(p_provider), ''), 'stripe');
+    SET v_user_id = NULLIF(TRIM(p_user_id), '');
+    SET v_group = NULLIF(TRIM(p_billing_group_id), '');
+
+    IF NULLIF(TRIM(p_purchase_id), '') IS NOT NULL THEN
+        SELECT id, user_id, billing_group_id, customer_id
+          INTO v_purchase_id, v_user_id, v_group, v_customer_id
+        FROM billing_purchase_events
+        WHERE id = p_purchase_id
+          AND provider = v_provider
+        LIMIT 1;
+    END IF;
+
+    IF NULLIF(TRIM(p_subscription_id), '') IS NOT NULL THEN
+        SELECT id, user_id, billing_group_id, customer_id
+          INTO v_subscription_id, v_user_id, v_group, v_customer_id
+        FROM billing_subscriptions
+        WHERE id = p_subscription_id
+          AND provider = v_provider
+        LIMIT 1;
+    ELSEIF v_purchase_id IS NULL AND v_user_id IS NOT NULL AND v_group IS NOT NULL THEN
+        SELECT subscription_id INTO v_subscription_id
+        FROM billing_entitlements_current
+        WHERE user_id = v_user_id
+          AND billing_group_id = v_group
+          AND provider = v_provider
+        LIMIT 1;
+        IF v_subscription_id IS NULL THEN
+            SELECT id INTO v_subscription_id
+            FROM billing_subscriptions
+            WHERE user_id = v_user_id
+              AND billing_group_id = v_group
+              AND provider = v_provider
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            LIMIT 1;
+        END IF;
+    END IF;
+
+    IF v_customer_id IS NULL AND v_user_id IS NOT NULL AND v_group IS NOT NULL THEN
+        SELECT id INTO v_customer_id
+        FROM billing_customers
+        WHERE user_id = v_user_id
+          AND billing_group_id = v_group
+          AND provider = v_provider
+          AND status IN ('creating','active','stale')
+        LIMIT 1;
+    END IF;
+
+    SELECT v_user_id AS user_id,
+           v_group AS billing_group_id,
+           bpe.project_id,
+           bc.id AS customer_id,
+           bc.customer_ref,
+           bc.provider_customer_id_ciphertext,
+           bc.provider_ref_key_id AS customer_provider_ref_key_id,
+           bs.id AS subscription_id,
+           bs.subscription_ref,
+           bs.status AS subscription_status,
+           bs.plan_code AS subscription_plan_code,
+           bs.tier_code AS subscription_tier_code,
+           bs.tier_name AS subscription_tier_name,
+           bs.provider_subscription_id_ciphertext,
+           bs.provider_ref_key_id AS subscription_provider_ref_key_id,
+           bpe.id AS purchase_id,
+           bpe.purchase_ref,
+           bpe.checkout_ref,
+           bpe.status AS purchase_status,
+           bpe.credit_product_code,
+           bpe.quantity,
+           bpe.provider_payment_intent_id_ciphertext,
+           bpe.provider_charge_id_ciphertext,
+           bpe.provider_ref_key_id AS purchase_provider_ref_key_id
+    FROM (SELECT 1 AS anchor) s
+    LEFT JOIN billing_customers bc ON bc.id = v_customer_id
+    LEFT JOIN billing_subscriptions bs ON bs.id = v_subscription_id
+    LEFT JOIN billing_purchase_events bpe ON bpe.id = v_purchase_id;
 END$$
 
 -- ===================================================================================
@@ -882,4 +1175,4 @@ DELIMITER ;
 -- BILLING PROVIDER FACT PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Billing provider fact stored procedures created!' AS status,
-       '14 procedures for scope resolution, free-default reads, session plan projection, checkout idempotency, customers, webhooks, normalized facts, sync jobs, and retention' AS details;
+       '17 procedures for scope resolution, free-default reads, session plan projection, checkout idempotency, customers, webhooks, webhook/sync ref resolution, normalized facts, sync jobs, and retention' AS details;

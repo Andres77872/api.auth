@@ -22,7 +22,6 @@ Primary generic billing switches:
 - `BILLING_CHECKOUT_ENABLED=false`
 - `BILLING_PORTAL_ENABLED=false`
 - `BILLING_SYNC_ENABLED=false`
-- `BILLING_RAW_PAYLOAD_CAPTURE_ENABLED=false`
 
 Stripe provider switches:
 
@@ -71,7 +70,9 @@ more projects. Provision a group in this order (all behind disabled-by-default f
 4. **Author the catalog** — `POST /admin/billing/{hash}/catalog` (subscription_plan /
    credit_package). When the group is enabled + has active credentials, this provisions a
    Stripe `Product`+`Price` on the group's account and stores encrypted refs; otherwise the
-   row stays `pending` and provisions on a later enable. `features` JSON is opaque (api.auth
+   row stays `pending`; enabling the group later does not provision it. Send the item's current
+   `amount_cents` again with `PUT /admin/billing/{group_hash}/catalog/{item_hash}` once the group is
+   ready; that call provisions it. `features` JSON is opaque (api.auth
    never interprets it). Price changes create a new Stripe `Price` on the item's Product and
    deactivate the old one once the new one is stored; a failed reprice leaves the old one live.
 5. **Point Stripe at the per-account webhook endpoint** — each account's webhook destination
@@ -94,7 +95,7 @@ than trusting the cached `plan`.
 - Additive `billing_*` schema, stored procedures, triggers, DB wrapper, routes, worker, health, metrics, audit, activity, and redaction code are deployed.
 - Stripe SDK package is pinned to `15.2.1` and runtime readiness can verify it.
 - Stripe API version is pinned to `2026-05-27.dahlia`.
-- Secret management exists for Stripe secret key, Stripe webhook secret, billing S2S bearer token, HMAC secret, provider-ref encryption key, provider-ref key id, decrypt key map, and optional raw payload quarantine key.
+- Secret management exists for Stripe secret key, Stripe webhook secret, billing S2S bearer token, HMAC secret, provider-ref encryption key, provider-ref key id, and decrypt key map.
 - Redis is available for rate limits, replay/idempotency helpers, sync locks, and billing worker heartbeat.
 - Authenticated operators can inspect `/system/health` without exposing secrets.
 - No production secrets or real provider refs are stored in docs, tests, examples, or smoke logs.
@@ -111,7 +112,6 @@ BILLING_S2S_ENABLED=false
 BILLING_CHECKOUT_ENABLED=false
 BILLING_PORTAL_ENABLED=false
 BILLING_SYNC_ENABLED=false
-BILLING_RAW_PAYLOAD_CAPTURE_ENABLED=false
 STRIPE_BILLING_ENABLED=false
 STRIPE_WEBHOOKS_ENABLED=false
 STRIPE_CHECKOUT_ENABLED=false
@@ -127,8 +127,6 @@ BILLING_ID_HMAC_SECRET
 BILLING_PROVIDER_REF_ENCRYPTION_KEY
 BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID
 BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON
-BILLING_RAW_PAYLOAD_ENCRYPTION_KEY
-BILLING_RAW_PAYLOAD_ENCRYPTION_KEY_ID
 STRIPE_SECRET_KEY                 # OPTIONAL — single-account/migration only; not a readiness gate
 STRIPE_WEBHOOK_SECRET             # OPTIONAL — global /webhooks/stripe endpoint only
 STRIPE_PORTAL_CONFIGURATION_ID    # OPTIONAL — global portal fallback REMOVED; set per-group
@@ -156,7 +154,7 @@ provisioning, reconcile, source-of-truth reads, and the path-scoped webhook endp
   signing secret from the URL — single-attempt verification). The global `POST /webhooks/stripe`
   verifies only against the env `STRIPE_WEBHOOK_SECRET` and is single-account/migration only.
 - **Portal config has no env fallback:** a group that offers the Customer Portal must set its own
-  `portal_configuration_id`, or portal sessions return the neutral unavailable seam.
+  `portal_configuration_id`; without one, portal sessions are refused with `422` (group not ready).
 
 ### Catalog reconcile + import (pull from Stripe)
 
@@ -183,11 +181,13 @@ Safe public configuration values:
 STRIPE_API_VERSION=2026-05-27.dahlia
 BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS=90
 BILLING_RAW_PAYLOAD_RETENTION_DAYS=30
-BILLING_SYNC_STALE_AFTER_SECONDS=86400
 STRIPE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS=300
+STRIPE_ALLOWED_WEBHOOK_EVENTS=<the 9 handled types, or a subset to pause some>
 ```
 
-Return-origin allow-list values are not secrets, but keep them environment-specific and exact. Do not use wildcard production origins.
+Return-origin allow-list values (`BILLING_RETURN_URL_ALLOWLIST`) are not secrets, but keep them environment-specific and exact. Do not use wildcard production origins. The allow-list fails closed: while it is empty, every Checkout and Portal request is refused with `503`.
+
+`STRIPE_ALLOWED_WEBHOOK_EVENTS` is applied by both webhook routes: a signed event of a type it does not list is acknowledged `ignored_noop` without writes. Narrow it only deliberately, since Stripe does not redeliver acknowledged events.
 
 ## Setup Baseline
 
@@ -245,7 +245,7 @@ Reference fixture docs: `tests/fixtures/stripe/README.md`.
 Suggested targeted validation before enabling webhooks:
 
 ```bash
-./.venv/bin/python -m pytest tests/unit/test_stripe_security.py tests/integration/test_stripe_webhooks.py -q
+./.venv/bin/python -m pytest tests/unit/test_stripe_security.py tests/integration/test_stripe_webhooks.py tests/integration/test_stripe_webhook_fact_resolution.py -q
 ```
 
 Do not run live provider tests unless the explicit live smoke gate below is approved.
@@ -310,7 +310,7 @@ For Stripe test-mode/sandbox validation:
 4. Enable only the controlled project/cohort.
 5. Validate Checkout returns hosted URL plus opaque refs only.
 6. Validate Portal returns hosted URL plus opaque `portal_ref` only and plan changes are disabled.
-7. Validate webhook events update normalized facts or enqueue resync.
+7. Validate that `customer.subscription.*`, `invoice.*`, `charge.refunded`, and `charge.dispute.*` events after a Checkout update the facts: the S2S status read shows the Stripe status and the purchase read shows refunds and disputes.
 8. Validate consumer projection uses `/auth/validate.plan` only for the narrow
    subscription summary and pulls catalog/detailed purchase facts through S2S.
 
@@ -356,6 +356,8 @@ Long-running worker:
 ```
 
 In the Docker image, `scripts/docker-entrypoint.sh` runs the long-running worker with `--worker-id container-<HOSTNAME>-billing` (override with `BILLING_WORKER_ID`). Set `BILLING_SYNC_WORKER_ENABLED=0` to leave it out of a container.
+
+What a job does: the worker reads the job's local context (`sp_billing_get_sync_context`), fetches the subscription, charge, or payment intent from the group's Stripe account (for a user-level job queued by the S2S resync route, the customer's current subscription), and writes it back through `sp_billing_subscription_observe` or `sp_billing_purchase_event_record` with `sync_source` `api_pull`. Check outcomes in `billing_sync_jobs`: `completed` (with `last_error_redacted` `no_provider_refs` or `no_provider_subscription` when there was nothing to repair), `retry`, or `failed` with the reason in `last_error_redacted`.
 
 Rules:
 
@@ -426,7 +428,7 @@ Metrics must not contain raw provider refs, secrets, signatures, idempotency key
 
 ### PII, secret, or raw evidence leak suspicion
 
-1. Stop further capture: keep `BILLING_RAW_PAYLOAD_CAPTURE_ENABLED=false` and disable affected ingress/worker paths if needed.
+1. Stop further exposure: disable affected ingress/worker paths if needed. No code path captures raw Stripe payloads.
 2. Preserve audit/activity evidence; do not delete normalized history casually.
 3. Rotate exposed Stripe/billing secrets.
 4. Purge encrypted raw quarantine within policy once evidence handling is complete.
@@ -439,13 +441,13 @@ Provider-ref key rotation:
 1. Add new `BILLING_PROVIDER_REF_ENCRYPTION_KEY` and `BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID` in secret management.
 2. Keep prior keys available in `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON`.
 3. New writes use the new key id.
-4. Run a controlled rotation job that decrypts in memory, re-encrypts with the new key id, verifies HMAC stability, and updates ciphertext/key id.
+4. No re-encryption job ships with this repository. Existing rows keep their old key id until they are rewritten (for example a catalog reprice), so keep the old key in `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON` until no row references it.
 5. Confirm no rows reference the old key id.
 6. Remove old key only after rollback window expires.
 
 Secret rotation after suspected disclosure:
 
-1. Disable Checkout, Portal, webhooks, sync, and raw payload capture.
+1. Disable Checkout, Portal, webhooks, and sync.
 2. Rotate Stripe secret key and webhook secret in Stripe and secret manager.
 3. Rotate billing S2S bearer with coordinated consumer deployment.
 4. Rotate HMAC/encryption material only with migration planning; HMAC rotation can affect joins/idempotency.
@@ -458,7 +460,7 @@ Required windows:
 | Artifact | Retention |
 | --- | --- |
 | Webhook delivery ledger | 90 days |
-| Encrypted raw payload quarantine | Disabled by default; max 30 days when enabled |
+| Encrypted raw payload quarantine | Not written by any code path; cleared after at most 30 days |
 | Normalized billing history | Indefinite |
 | Normalized purchase history | Indefinite |
 
@@ -469,6 +471,18 @@ Retention-only worker pass:
 ```
 
 Never use retention purge to erase normalized billing status, purchase history, audit evidence, or activity history.
+
+## Repairing facts recorded before the webhook fixes
+
+Builds before the webhook fixes wrote almost no facts after Checkout: the Checkout metadata sent to Stripe carried `project_hash` masked as `***FILTERED***`, and subscription, invoice, refund, and dispute events carried no metadata at all. The S2S status read also answered `free` for every user with a Stripe customer. After deploying the fixed build:
+
+1. **Re-apply the billing procedures.** Apply `schemas/stored_procedures/17_billing_provider_facts.sql` (it replaces procedure definitions only; no table or row changes). It adds `sp_billing_resolve_event_scope` and `sp_billing_get_sync_context` and updates `sp_billing_subscription_observe`. Without them webhook events resolve from metadata only and resync jobs fail with `missing_local_customer`. Confirm with `scripts/migrations/billing_provider_bootstrap.py --dry-run --check-db`.
+2. **Configure the return-URL allow-list** before re-enabling Checkout or Portal; an empty list now refuses them with `503`.
+3. **Repair subscriptions.** Existing Stripe subscriptions still carry no metadata, but their events now resolve through the user's stored Stripe customer, so the next renewal fixes them. To fix them now, with `BILLING_SYNC_ENABLED` and the worker running, queue a resync per affected user: `POST /internal/users/{user_hash}/billing/resync` with the project hash. The worker writes each user's current Stripe subscription.
+4. **Repair credit purchases.** A purchase whose `checkout.session.completed` was never recorded has no row, so its refunds and disputes cannot be attributed and the purchase read answers `404`. Resend those `checkout.session.completed` events from the group's Stripe account (Dashboard event page, or the Stripe CLI); they now resolve through their Checkout ref even with the masked project hash. Then resend the purchase's `charge.refunded` or `charge.dispute.*` events, if any.
+5. **Verify.** The S2S status read returns the paid status with `project_hash` as sent, and `billing_sync_jobs` shows the resync jobs `completed`.
+
+Customer rows recorded by older webhook code with `bcustref-...` refs remain valid.
 
 ## Non-Destructive Rollback
 

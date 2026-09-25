@@ -345,6 +345,27 @@ def complete_idempotency(plan: EmailIdempotencyPlan, *, email_message_id: str | 
         return
 
 
+_EXPIRY_UNITS = (("day", 86_400), ("hour", 3_600), ("minute", 60))
+
+
+def expiry_text(ttl_seconds: int) -> str:
+    """Word a link lifetime for email copy: `24 hours`, `1 hour`, `30 minutes`, `3 days`.
+
+    Days are used from two days up, so the one-day default still reads `24 hours`. A
+    lifetime that is not a whole number of minutes is rounded down, never promising more.
+    """
+
+    seconds = max(0, int(ttl_seconds))
+    for unit, size in _EXPIRY_UNITS:
+        if seconds >= size and seconds % size == 0 and not (unit == "day" and seconds < 2 * size):
+            count = seconds // size
+            return f"{count} {unit}{'' if count == 1 else 's'}"
+    if seconds >= 60:
+        count = seconds // 60
+        return f"{count} minute{'' if count == 1 else 's'}"
+    return f"{seconds} second{'' if seconds == 1 else 's'}"
+
+
 def make_link_token_and_payload(
     *,
     purpose: str,
@@ -368,14 +389,14 @@ def make_link_token_and_payload(
         payload = {
             "activation_link": url,
             "recipient_masked": recipient_masked or (mask_email(recipient_email or "") if recipient_email else "your email address"),
-            "expires_in": "24 hours",
+            "expires_in": expiry_text(ttl),
         }
     else:
         url = link_url(request, "/auth/password/reset", generated.token)
         payload = {
             "reset_link": url,
             "recipient_masked": recipient_masked or (mask_email(recipient_email or "") if recipient_email else "your email address"),
-            "expires_in": "1 hour",
+            "expires_in": expiry_text(ttl),
         }
     if recipient_email:
         payload["recipient_email"] = normalize_email(recipient_email)

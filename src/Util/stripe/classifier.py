@@ -21,6 +21,7 @@ from src.Util.billing.status import (
     PURCHASE_STATUS_DISPUTE_WON,
     PURCHASE_STATUS_PAID,
     PURCHASE_STATUS_PARTIALLY_REFUNDED,
+    PURCHASE_STATUS_PENDING,
     PURCHASE_STATUS_REFUNDED,
     PURCHASE_STATUS_UNKNOWN,
     SUBSCRIPTION_STATUS_ACTIVE,
@@ -127,9 +128,27 @@ def _first_price_lookup_key(subscription: Mapping[str, Any]) -> str | None:
     return str(lookup_key).strip() if lookup_key else None
 
 
+def _first_item_epoch(subscription: Mapping[str, Any], name: str) -> Any:
+    items = subscription.get("items")
+    data = items.get("data") if isinstance(items, Mapping) else None
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return data[0].get(name)
+    return None
+
+
+def _subscription_epoch(subscription: Mapping[str, Any], name: str) -> Any:
+    """Period fields live on subscription items since Stripe API 2025-03-31; older shapes keep them top-level."""
+
+    value = subscription.get(name)
+    return value if value is not None else _first_item_epoch(subscription, name)
+
+
 def _evidence_mismatch(subscription: Mapping[str, Any]) -> bool:
     metadata = _metadata(subscription)
-    plan_code = metadata.get("plan_code") or metadata.get("consumer_plan_code")
+    # Only foreign `plan_code` evidence is compared. The `consumer_plan_code` label that
+    # api.auth Checkout writes is paired with an admin-chosen lookup key, which need not
+    # contain the plan code, so comparing it would fail every such subscription closed.
+    plan_code = metadata.get("plan_code")
     lookup_key = _first_price_lookup_key(subscription)
     if not plan_code or not lookup_key:
         return False
@@ -156,7 +175,7 @@ def _subscription_result(
         reason=reason,
         safe_metadata=_safe_metadata(
             obj,
-            current_period_end=_utc_from_epoch(obj.get("current_period_end")),
+            current_period_end=_utc_from_epoch(_subscription_epoch(obj, "current_period_end")),
             trial_end=_utc_from_epoch(obj.get("trial_end")),
             cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
             classification_version=CLASSIFICATION_VERSION,
@@ -309,6 +328,54 @@ def classify_stripe_event(
     )
 
 
+def classify_subscription_object(subscription: Mapping[str, Any] | Any) -> BillingClassificationResult:
+    """Classify a Subscription read from the Stripe API (resync) as an update event would be."""
+
+    return _classify_subscription_event("customer.subscription.updated", _plain_mapping(subscription))
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def purchase_status_from_charge(charge: Mapping[str, Any] | Any) -> str:
+    """Normalized purchase status of a Charge read from the Stripe API.
+
+    A disputed charge reads `disputed`: the charge alone does not say how a dispute
+    closed, so callers keep an already recorded `dispute_won`/`dispute_lost`.
+    """
+
+    obj = _plain_mapping(charge)
+    if obj.get("disputed"):
+        return PURCHASE_STATUS_DISPUTED
+    amount = _int_or_zero(obj.get("amount"))
+    refunded_amount = _int_or_zero(obj.get("amount_refunded"))
+    if obj.get("refunded") or (amount > 0 and refunded_amount >= amount):
+        return PURCHASE_STATUS_REFUNDED
+    if refunded_amount > 0:
+        return PURCHASE_STATUS_PARTIALLY_REFUNDED
+    status = str(obj.get("status") or "").strip().lower()
+    if status == "succeeded" and obj.get("paid"):
+        return PURCHASE_STATUS_PAID
+    if status == "pending":
+        return PURCHASE_STATUS_PENDING
+    return PURCHASE_STATUS_UNKNOWN
+
+
+def purchase_status_from_payment_intent(payment_intent: Mapping[str, Any] | Any) -> str:
+    """Normalized purchase status of a PaymentIntent read from the Stripe API."""
+
+    status = str(_plain_mapping(payment_intent).get("status") or "").strip().lower()
+    if status == "succeeded":
+        return PURCHASE_STATUS_PAID
+    if status == "processing" or status.startswith("requires_"):
+        return PURCHASE_STATUS_PENDING
+    return PURCHASE_STATUS_UNKNOWN
+
+
 def classify_event(**kwargs: Any) -> BillingClassificationResult:
     return classify_stripe_event(**kwargs)
 
@@ -328,5 +395,8 @@ __all__ = [
     "classification_to_safe_dict",
     "classify_event",
     "classify_stripe_event",
+    "classify_subscription_object",
     "classify_webhook_event",
+    "purchase_status_from_charge",
+    "purchase_status_from_payment_intent",
 ]

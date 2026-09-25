@@ -1,311 +1,244 @@
-# Stripe Billing Troubleshooting
-
-Troubleshooting for provider-agnostic billing S2S routes, Stripe Checkout/Portal, webhook ingestion, source-of-truth sync, retention, and pull-only consumer projection.
-
-## Safety Rules
-
-- Stripe is not a local login provider and does not issue local sessions. It
-  must not change JWT, refresh-token, cookie, or API-key authority.
-  Project-scoped identity responses intentionally carry only the neutral
-  subscription `plan` projection.
-- Billing is disabled by default. Check feature flags before treating a behavior as an outage.
-- Never paste raw provider refs, Stripe signatures, webhook payloads, secret keys, webhook secrets, S2S bearer tokens, idempotency keys, HMAC digests, fingerprints, card/payment-method details, receipt links, audit rows, or real config values into tickets, docs, chat, screenshots, or logs.
-- Use safe evidence only: correlation IDs, activity codes, aggregate counts, safe status values, non-secret health output, route names, response codes, and redacted operator notes.
-- Retention windows are fixed by the SDD: webhook delivery ledger **90d**, encrypted raw quarantine **30d max**, normalized billing/purchase history **indefinite**.
-
-## Fast Triage Table
-
-| Symptom | Likely cause | Safe first action |
-| --- | --- | --- |
-| Billing S2S returns unauthorized | Missing/rotated dedicated bearer, feature disabled, browser/session credential used instead of S2S token | Confirm `BILLING_ENABLED`, `BILLING_S2S_ENABLED`, and bearer presence by key name only. |
-| Checkout unavailable | Global/group capability disabled, group credentials inactive, SDK/API mismatch, catalog/return URL/DB/crypto not ready | Confirm `BILLING_ENABLED` **and** `STRIPE_BILLING_ENABLED` are both true (readiness does not flag a missing one), then inspect the affected group's readiness and non-secret mismatch labels. |
-| Portal unavailable | Global/group capability disabled, missing per-group Portal configuration, no group customer | Confirm both global gates as above, then keep Portal disabled for the group until readiness is verified. |
-| Webhook signature failures | Wrong per-group/global fallback secret, wrong endpoint, body changed before verification, timestamp/header failure | Reject before mutation; verify exact raw-body path and secret deployment by version label only. |
-| SDK/API version mismatch | Runtime package or configured API version does not match supported pins | Treat Stripe as not-ready; deploy the supported package/config pin before enabling behavior. |
-| Missing secrets/config | Secret manager key absent or app not reloaded | Keep flags disabled or not-ready; verify key presence by name only. |
-| Decrypt failures | Missing old key, wrong key id, corrupted ciphertext, premature key removal | Disable affected provider operations; restore decrypt key map; preserve evidence; rotate only through runbook. |
-| Idempotency conflict | Same idempotency key reused with different canonical request | Return neutral conflict; consumer must use a new idempotency key for a new intent. |
-| Webhook lag | Ingress blocked, receiver not-ready, Stripe retry backlog, DB issue, worker backlog | Check health components and delivery counts; do not process raw payloads in tickets. |
-| Stale snapshots | Worker down, provider outage, resync backlog, webhook partial/out-of-order evidence | Preserve stale status and run source-of-truth repair when ready. |
-| Sync backlog | Worker stopped, DB unavailable, provider retries/backoff, decrypt failures | Inspect `billing_sync` health and worker heartbeat; restart only after readiness is safe. |
-| Consumer projection wrong | Stale catalog/fact pull, opaque-feature interpretation bug, local ledger idempotency issue | Verify `api.auth` catalog/facts, then fix consumer-owned interpretation/projection. |
-
-## Billing S2S Unauthorized
-
-Expected behavior:
-
-- Missing or invalid dedicated billing bearer returns a neutral unauthorized response.
-- Browser cookies, local sessions, user access tokens, and regular API keys are rejected as billing authority.
-- Unauthorized responses must not reveal whether a user, project, customer, subscription, or purchase exists.
-
-Safe checks:
-
-1. Confirm `BILLING_ENABLED` and `BILLING_S2S_ENABLED` are intended to be true in this environment.
-2. Confirm the dedicated bearer exists in secret management by key/version label only.
-3. Confirm the caller sends `Authorization: Bearer <billing-s2s-token>` server-to-server.
-4. Confirm `User-Agent` is present.
-5. Check `billing_s2s_read` activity counts only, not raw headers.
-
-Do not solve this by allowing browser sessions or `/auth/validate` to carry
-detailed provider or purchase facts. The existing `plan` projection is not S2S
-authority.
-
-## Checkout Unavailable
-
-Common causes:
-
-- `BILLING_ENABLED=false` or `STRIPE_BILLING_ENABLED=false` — both global gates
-  must be true. This is the most common cause of a `503` on an otherwise fully
-  configured deployment, and readiness does **not** flag it (see below).
-- `BILLING_CHECKOUT_ENABLED=false` or `STRIPE_CHECKOUT_ENABLED=false`.
-- Missing/inactive credentials for the resolved billing group.
-- SDK/API version mismatch.
-- Missing provider-ref encryption key or key id.
-- Missing or invalid return URL allow-list (`BILLING_RETURN_URL_ALLOWLIST`).
-- DB schema/bootstrap not ready.
-- Stripe provider degraded or local rate limit exceeded.
-
-A ready-looking deployment can still return `503`:
-`validate_stripe_runtime_readiness` ORs the billing/Stripe switches, so it
-reports `ready` when only one of the two global gates is set, while
-`src/routes/internal_billing.py` requires both and rejects every Checkout and
-Portal call. Confirm both gates by name before chasing credentials or catalog
-state; `src/routes/admin_billing.py` lists `STRIPE_BILLING_ENABLED` in its
-missing-capability output when it is the blocker.
+# Stripe billing troubleshooting
+
+Symptom, cause, and fix. Share only key names, statuses, counts, and opaque refs in tickets;
+never paste Stripe keys, webhook secrets, signatures, the S2S bearer, or request bodies.
 
-Safe checks:
+## S2S calls
+
+### Every S2S call returns 401
+
+The route answers `401` `Unauthorized.` until all of these hold:
+
+- `BILLING_ENABLED` and `BILLING_S2S_ENABLED` are on;
+- `BILLING_S2S_BEARER_TOKEN` and `BILLING_ID_HMAC_SECRET` are set;
+- the caller sends `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>` exactly. A user access
+  token, a cookie, or an API key is never accepted.
+
+Fix the missing setting or the caller's token, then reload the app.
+
+### An S2S call returns 400
+
+The request failed schema validation before the bearer was checked. Common causes: missing
+`project_hash`; an unknown body field; `provider` other than `stripe`; `quantity` outside
+1-10000; a `plan_code`, `tier_code`, `tier_name`, `credit_product_code`, or `client_intent_ref`
+that contains a Stripe-id-shaped token such as `sub_basic` or `in_app`. Rename such codes in
+the catalog.
+
+### S2S calls return 500
+
+- A billing setting fails to parse: a retention value above its cap (`90` or `30`) or a
+  non-integer billing number breaks every S2S route; `STRIPE_ALLOWED_WEBHOOK_EVENTS` listing an
+  event outside the handled 9 breaks Checkout, Portal, and the webhooks. `/system/health` shows
+  the failing component `not_ready` with an `error`.
+
+### Checkout or Portal returns 503
+
+- `BILLING_RETURN_URL_ALLOWLIST` (and its alias `BILLING_ALLOWED_RETURN_ORIGINS`) is empty. An
+  empty allowlist allows no return URL, so every Checkout and Portal request is refused. Set the
+  consuming apps' origins and reload.
+- One of the four flags is off. Checkout needs `BILLING_ENABLED`, `BILLING_CHECKOUT_ENABLED`,
+  `STRIPE_BILLING_ENABLED`, and `STRIPE_CHECKOUT_ENABLED`; Portal needs `BILLING_PORTAL_ENABLED`
+  and `STRIPE_PORTAL_ENABLED` in place of the Checkout pair. `STRIPE_BILLING_ENABLED` is the one
+  most often missed, because Stripe health reports `ready` without it.
+  `GET /admin/billing/{group_hash}` lists missing flags under `readiness.missing`.
+- Checkout only: the group's credentials cannot be decrypted (the key id they were saved under is
+  neither the active key id nor in `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON`); the lookup key
+  matches no active price in the group's Stripe account; or `BILLING_PROVIDER_REF_ENCRYPTION_KEY`
+  or its id is missing when the user's first customer is created.
+- Portal only: the portal configuration in Stripe was changed and now allows subscription
+  updates, or no longer allows cancellation or payment-method updates.
+- Stripe was unreachable or rejected the call. A Stripe error with its own status (such as `401`
+  for a revoked key) is returned with that status.
+
+### Checkout or Portal returns 422
+
+Read `GET /admin/billing/{group_hash}` first; most causes show in `readiness.missing`.
+
+- The project is not attached to a billing group, or the group is `suspended` or `archived`.
+- The group's credentials are not `active`, or `checkout_enabled` (`portal_enabled`) is off.
+  Suspending a group turns every capability off, and reactivating does not turn them back on.
+- The user has no access to the project; the route cannot tell this apart from a missing group.
+- Checkout: `plan_code` and `tier_code` missing for `subscription`, or `credit_product_code`
+  missing for `credit_purchase`.
+- A return URL's origin is not in `BILLING_RETURN_URL_ALLOWLIST` (compare scheme, host, and
+  port).
+- The `Idempotency-Key` (or `client_intent_ref`) has a character outside `A-Z a-z 0-9 . _ : -`
+  or more than 128 characters.
+- Portal: the user has never started a Checkout in this group, so there is no Stripe customer;
+  the group has no portal configuration id; or its credentials cannot be decrypted.
+
+### Checkout returns 409
+
+The idempotency key was already used with a different body. Any change counts, including the
+return URLs and `client_intent_ref`. Send a new key for a new intent; resend the identical body
+to get the stored response.
+
+### Status read returns free for a paying user
+
+Compare with the `plan` from `/auth/validate` for the same user and project; both read the same
+stored fact.
+
+- Both show `free` (or `pending`): no fact for the paid subscription was written. See
+  [subscription stays pending](#subscription-stays-pending-after-checkout), then
+  [request a resync](usage.md#queue-a-resync).
+- Only the S2S read shows `free`: the server runs a build from before customer refs `bcust-...`
+  and `bcustref-...` were accepted by the response model; deploy the current code.
+- Both show `none` or `free` and the user never paid: expected.
+
+### Catalog read returns empty lists
+
+- The project is not attached to a group, or was detached.
+- No item is both `active` and `provisioning_status` `active`: items saved while provisioning
+  was not allowed stay `pending`, failed provisioning leaves `failed`, archived items are hidden.
+- `item_type` is misspelled; only `subscription_plan` and `credit_package` match.
+- The database call failed; the route returns empty lists instead of an error.
+
+### Values come back as `***FILTERED***`
+
+The S2S redaction step masks Stripe-id-shaped tokens, Stripe secrets, and 64-character hex
+tokens outside `user_hash`, `project_hash`, and `billing_group_hash` (which come back
+verbatim). Catalog labels, lookup keys, or `features` values starting with `sub_`, `in_`,
+`price_`, and the like are masked; rename them. `features` key names are never masked.
 
-1. Confirm `BILLING_ENABLED` and `STRIPE_BILLING_ENABLED` are both true in this environment, by key name only.
-2. With a valid access session, inspect `/system/health` billing components for non-secret `missing` and `critical_mismatches` key names.
-3. Confirm `stripe==15.2.1` and `STRIPE_API_VERSION=2026-05-27.dahlia` are the supported pins.
-4. Confirm the return URL origin, not the full secret-bearing request, is allow-listed.
-5. Confirm the project resolves to the intended active billing group and its
-   Checkout/provisioning capability and catalog item are ready.
-6. Confirm no raw provider refs or price selector values are logged.
-7. Check idempotency conflict counts and `Retry-After` posture.
+### Purchase read returns 404
 
-Recovery:
+- Stripe has not delivered `checkout.session.completed` yet, or the webhook failed (check the
+  endpoint's deliveries in Stripe).
+- `project_hash` is not the project the purchase was made in, or `user_hash` is another user's.
+- The purchase was paid in a group whose webhook is not configured, so nothing was recorded.
+
+### Resync never changes anything
+
+- `status` `disabled`: `BILLING_SYNC_ENABLED` is off.
+- Nothing processes jobs: `src/workers/billing_sync_worker.py` is not running, or neither
+  `BILLING_SYNC_ENABLED` nor `STRIPE_SYNC_ENABLED` is on. Check `billing_sync` in health.
+- The job completed with `last_error_redacted` `no_provider_refs`: the user has no Stripe
+  customer in the project's billing group (never started a Checkout there), so there is
+  nothing to fetch. `no_provider_subscription`: the customer has no subscription in Stripe.
+- The job failed with `missing_local_customer` or `missing_local_scope`: the worker could not
+  read the job's local context. Usually `schemas/stored_procedures/17_billing_provider_facts.sql`
+  was not re-applied after upgrading, so `sp_billing_get_sync_context` and
+  `sp_billing_resolve_event_scope` are missing ([runbook](../../RUNBOOKS/stripe-billing.md#repairing-facts-recorded-before-the-webhook-fixes)).
+- The job failed with `provider_object_owned_by_another_user`: the Stripe subscription is
+  already recorded for a different user. Investigate before changing anything.
+- The job is in `retry` with `fact_write_failed`: the database write failed; the worker retries
+  with backoff.
 
-- Keep Checkout disabled until all readiness checks pass.
-- Fix config through secret management and redeploy/reload.
-- Retry with the same idempotency key only for the same canonical request.
-- Use a new idempotency key for a changed purchase/subscription intent.
+### An S2S call returns 429
 
-## Portal Configuration Failure
+A fixed-window limit was hit ([rate limits](reference.md#rate-limits)); wait for `Retry-After`.
+Checkout counts per `client_intent_ref` as well, and resync per `reason`. If Redis is down, no
+limit is applied.
 
-Expected behavior:
+## Webhooks
 
-- Portal fails closed when configuration cannot be verified as restricted.
-- Portal plan changes, upgrades, downgrades, and subscription item changes remain disabled for MVP.
+### Stripe shows 503 from the endpoint
 
-Safe checks:
+Nothing is recorded; Stripe retries.
 
-1. Confirm `BILLING_PORTAL_ENABLED` and `STRIPE_PORTAL_ENABLED` are intentionally enabled.
-2. Confirm the affected billing group has an encrypted Portal configuration id
-   and active credentials. The global env id is not a runtime fallback.
-3. Confirm group readiness reports Portal enabled and ready.
-4. Confirm the route returns only hosted URL plus opaque `portal_ref` when successful.
+- `BILLING_ENABLED` or `STRIPE_WEBHOOKS_ENABLED` is off, or `BILLING_ID_HMAC_SECRET` is empty.
+- Path-scoped route: the group hash in the URL is wrong, the group is not `active`,
+  `webhooks_enabled` is off, its credentials are not `active`, or it has no webhook secret (or
+  the secret cannot be decrypted). These look identical from outside; check the group with
+  `GET /admin/billing/{group_hash}`.
+- Global route: `STRIPE_WEBHOOK_SECRET` is empty.
 
-Recovery:
+### Stripe shows 401 from the endpoint
 
-- Disable Portal flags while correcting provider-side configuration.
-- Re-run restricted Portal readiness validation.
-- Use Checkout S2S intent for plan changes instead of Portal.
+- The signing secret stored for the group is not the endpoint's current secret. Save the
+  endpoint's secret as `webhook_secret` ([usage](usage.md#connect-the-stripe-webhook)).
+- A proxy changed the body (re-encoding, reformatting). The signature covers the exact bytes.
+- The server clock is more than `STRIPE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS` off.
+- The Stripe endpoint uses an API version other than `2026-05-27.dahlia`; every event is
+  rejected. Change the endpoint's API version in Stripe.
+- Several Stripe accounts send to the global `/webhooks/stripe`; only one secret fits. Give each
+  account its path-scoped URL.
 
-## Webhook Signature Failures
+Repeated failures from one IP turn into `429` for the rest of the window.
 
-Stripe webhook verification requires exact raw request bytes. Any body mutation before verification invalidates trust.
+### Webhooks return 200 but facts do not change
 
-Common causes:
+Read the `status` in the response body that Stripe shows for the delivery:
 
-- Wrong webhook secret deployed.
-- Secret rotated in Stripe but not in `api.auth`, or vice versa.
-- Proxy/middleware parsed and reserialized JSON before verification.
-- Timestamp outside configured tolerance.
-- Missing or malformed signature header.
-- Non-Stripe request hitting the route.
+- `ignored_noop`: the event type is not one of the 9 handled types, or not listed in
+  `STRIPE_ALLOWED_WEBHOOK_EVENTS`.
+- `duplicate_replay_accepted`: the same event id was already received for this group.
+- `accepted`: processed; or the event could not be tied to a user (no usable `user_hash` and
+  `project_hash` metadata and no stored row matching its Checkout ref or Stripe ids), in which
+  case nothing is written or queued. For `customer.subscription.*`, a bare `plan_code` metadata
+  value (set outside api.auth) that does not appear in the price's lookup key writes `unknown`
+  instead of the Stripe status.
 
-Safe checks:
+### Subscription stays pending after checkout
 
-1. Confirm `/webhooks/stripe/{billing_group_hash}` (or the explicit global
-   migration fallback) is excluded from unsafe raw-body audit capture.
-2. Confirm the route reads the raw body before JSON parsing.
-3. Check `stripe_webhook_rejected` / `act-cat-097` aggregate counts and signature-failure health.
-4. Confirm Stripe targets the correct billing-group hash and compare that
-   group's deployed secret version by label only. Never print the secret or
-   signature.
-5. Use sanitized fixtures for local verification; do not paste live webhook payloads.
+`checkout.session.completed` writes the subscription as `pending`; the following
+`customer.subscription.created`/`updated` or `invoice.paid` moves it to its Stripe status.
+If it stays `pending`:
 
-Recovery:
+- The Stripe endpoint is not subscribed to `customer.subscription.*` and `invoice.*`, or
+  `STRIPE_ALLOWED_WEBHOOK_EVENTS` leaves them out (their deliveries answer `ignored_noop`).
+- Those deliveries failed in Stripe; resend them from the Stripe Dashboard.
+- The subscription was created before Checkout copied its metadata onto subscriptions. Its
+  events are then attributed through the user's stored Stripe customer; if that customer row is
+  missing too, [request a resync](usage.md#queue-a-resync) or resend the events.
 
-- Keep invalid deliveries rejected before mutation.
-- If failures spike, disable `STRIPE_WEBHOOKS_ENABLED`/the affected group's
-  webhook capability or block `/webhooks/stripe` at ingress.
-- Fix secret/raw-body path.
-- Re-enable only after signed sanitized fixtures pass.
-- Run source-of-truth resync for affected scopes if webhooks were missed.
+## Admin
 
-## SDK/API Version Mismatch
+### Creating a group returns 503 with `EXT_8200`
 
-Expected behavior:
+The provider registry has no `stripe` row. Run
+`scripts/migrations/billing_provider_bootstrap.py --apply` (dry-run first).
 
-- Stripe readiness becomes `not_ready`.
-- Checkout, Portal, webhook mutation, and sync remain disabled or fail closed.
-- Local auth/session health remains independent.
+### Enabling a capability returns 400
 
-Safe checks:
+`details.missing` names each unmet prerequisite ([capabilities](reference.md#capabilities)).
+Global names (`BILLING_ENABLED`, `STRIPE_BILLING_ENABLED`, ...) need a config change and reload;
+group names need a credential save (`stripe_secret_key`, `stripe_webhook_secret`,
+`stripe_portal_configuration_id`), a status change (`billing_group_active`), or a provisioned
+catalog item (`active_catalog_price`).
 
-1. Confirm the installed Stripe package reports the supported version.
-2. Confirm the configured Stripe API version matches the supported value.
-3. Inspect health `critical_mismatches` labels only.
+### Saving credentials returns 400
 
-Recovery:
+- `secret_key` does not start with `sk_` or `rk_`, `webhook_secret` with `whsec_`, or
+  `portal_configuration_id` with `bpc_`.
+- Stripe rejected the key, or could not be reached; the save fails closed.
+- The portal configuration does not exist in that account or is not restricted (`EXT_8211`).
+- `BILLING_PROVIDER_REF_ENCRYPTION_KEY`, its id, or `BILLING_ID_HMAC_SECRET` is missing.
+- A stored optional value you omitted cannot be decrypted with the configured keys; send it
+  again or send `""` to clear it.
 
-- Deploy the supported dependency and configuration together.
-- Do not override readiness to force provider mutation.
-- Re-run targeted Stripe security/config readiness tests before enabling provider behavior.
+### A catalog item is pending or failed
 
-## Missing Secrets or Config
+- `pending`: provisioning was not allowed when the item was created (`BILLING_ENABLED` off, or
+  the group lacked `provisioning_enabled` or `active` credentials). Allow provisioning, then send
+  the item's `amount_cents` again with `PUT .../catalog/{item_hash}`.
+- `failed`: read `provisioning_error`. Common causes are a missing `amount_cents` or `currency`,
+  missing encryption keys, another active item with the same `plan_code`, or a Stripe error.
 
-Symptoms:
+### An admin user gets 403 on a group
 
-- Billing or Stripe health reports `not_ready`.
-- Checkout/Portal/webhook/sync returns neutral unavailable/disabled posture for
-  the affected group or global migration path.
-- Missing key names appear in health, not values.
+Admin users manage only groups whose every attached project they administer, or empty groups
+they created. A group shared with another admin's project is out of scope; a root user must
+manage it. Consumer users get `403` whatever their permissions.
 
-Recovery:
+### Deleting a group returns 409
 
-1. Keep feature flags disabled or not-ready.
-2. Add missing global crypto/S2S keys in secret management or set/rotate the
-   affected group's Stripe credentials through the ROOT-only admin route.
-3. Reload app/workers.
-4. Confirm health reports ready/degraded appropriately without printing values.
-5. Enable one behavior at a time.
+A subscription in the group is `trialing`, `active`, `past_due`, `unpaid`, or `paused`. Suspend
+the group instead (`PUT /admin/billing/{group_hash}` with `status=suspended`).
 
-## Decrypt Failures
+### Attaching a project returns 409
 
-Common causes:
+The project is attached to another group. Detach it there first.
 
-- Old decrypt key removed before all rows rotated.
-- Wrong key id deployed.
-- Ciphertext corrupted.
-- Provider-ref key map malformed.
+## Health and plan
 
-Expected behavior:
+### Health reports Stripe ready but Checkout returns 503
 
-- Affected Checkout/Portal/sync operation fails closed.
-- Sync records redacted failure evidence and increments decrypt-failure metrics.
-- Raw provider refs are not logged.
+Stripe readiness counts any billing or Stripe flag as enabled. Check `BILLING_ENABLED` and
+`STRIPE_BILLING_ENABLED` by name.
 
-Recovery:
+### The plan is missing or none
 
-1. Disable affected provider operations if failures are active.
-2. Restore previous key id and decrypt key in `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON` through secret management.
-3. Verify reads can decrypt in a controlled maintenance path without printing decrypted values.
-4. Rotate/re-encrypt through the key-rotation runbook.
-5. Remove old key only after no rows reference it and rollback window expires.
-
-## Idempotency Conflicts
-
-Expected behavior:
-
-- Same idempotency key + same canonical request replays safely.
-- Same idempotency key + different canonical request returns neutral conflict.
-- Provider API idempotency keys are derived from internal opaque refs, not raw consumer keys.
-
-Safe checks:
-
-1. Confirm the consumer did not reuse an idempotency key across different products, quantities, return URLs, or intent types.
-2. Check conflict counters and generic error code only.
-3. Do not log idempotency key values.
-
-Recovery:
-
-- Retry identical request with the same key if the prior response was lost.
-- Use a new key for a changed intent.
-- Fix consumer retry middleware if it mutates request bodies under the same key.
-
-## Webhook Lag and Duplicate Deliveries
-
-Symptoms:
-
-- `billing_webhooks` reports high lag or duplicate counts.
-- Stripe retries deliveries.
-- Consumers see stale facts after Checkout or provider lifecycle changes.
-
-Safe checks:
-
-1. Inspect `billing_webhooks` health: signature failures, delivery lag, duplicate counts.
-2. Confirm receiver ingress is open and not returning non-2xx for valid signed payloads.
-3. Check DB delivery ledger readiness.
-4. Check worker backlog if resync is required.
-
-Recovery:
-
-- Fix receiver health first.
-- Keep duplicate deliveries idempotent; do not delete delivery rows to hide retries.
-- Run source-of-truth resync after receiver health returns.
-
-## Stale Snapshots and Sync Backlog
-
-Common causes:
-
-- `BILLING_SYNC_ENABLED=false` or `STRIPE_SYNC_ENABLED=false`.
-- `src/workers/billing_sync_worker.py` is not running.
-- Provider API outage or retry backoff.
-- Decrypt failures.
-- Partial/out-of-order webhook evidence enqueued resync.
-
-Recovery:
-
-1. Check `billing_sync` health and worker heartbeat.
-2. Confirm queue counts: pending, running, retrying, failed, oldest pending age.
-3. Restart or run the worker only after config is ready.
-4. Respect retry `not_before` metadata.
-5. Preserve stale/unknown facts until source-of-truth confirmation succeeds.
-
-## Consumer Projection Failures
-
-`api.auth` provides a centralized product-agnostic catalog, a neutral session
-`plan`, and detailed safe provider facts. If product membership or credit UI is
-wrong, verify both source data and the consuming project's interpretation.
-
-Checklist:
-
-- Does the consumer read the project catalog through S2S and use its lookup
-  keys/opaque labels?
-- Does every Checkout request use the same catalog row? The route currently
-  trusts the S2S `price_ref`/labels and does not enforce that binding itself.
-- Does it use `/auth/validate.plan` only for the narrow subscription summary
-  and pull detailed billing/purchase facts through S2S?
-- Does the consumer interpret `plan_code`, `tier_code`, `features`, and
-  `credit_product_code` locally?
-- Does the consumer own credit fulfillment/reversal idempotency?
-- Does the consumer handle `stale` and `unknown` safely?
-- Does the consumer keep raw provider evidence out of browser responses?
-
-Catalog mappings already belong to `api.auth`; do not add interpreted benefits,
-membership policy, credit balances, or ledgers as a shortcut.
-
-## Evidence Checklist
-
-Use this checklist for incidents:
-
-- [ ] Feature flags / kill switches captured by key name only.
-- [ ] `/system/health` billing components captured without secrets.
-- [ ] Activity counts captured for `act-cat-091` through `act-cat-106` as counts/statuses only.
-- [ ] Webhook signature evidence captured without signatures or payloads.
-- [ ] S2S response reviewed for allow-listed fields only.
-- [ ] Idempotency evidence captured without raw idempotency keys.
-- [ ] No raw provider refs, payloads, signatures, secrets, HMACs, fingerprints, payment-method details, receipt links, or credit amounts pasted into the incident.
-- [ ] Retention windows preserved.
-- [ ] Rollback, if used, was non-destructive.
-
-## Related Documentation
-
-- [Overview](README.md)
-- [Architecture](architecture.md)
-- [Request Flow](request-flow.md)
-- [Scenarios](scenarios.md)
-- [Reference](reference.md)
+- Missing (`plan` null or absent): the session is not a consumer project session (root, admin,
+  platform scope), or the response is `POST /auth/switch-project`, which never carries it.
+- `none`: `BILLING_ENABLED` is off, or the project is not attached to an active billing group.

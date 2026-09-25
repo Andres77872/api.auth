@@ -1,78 +1,87 @@
-# Groups Documentation
+# Groups
 
-Detailed, repo-specific documentation for the groups system used by `api.auth`.
+Groups decide which projects a user can reach. A **user group** collects users, a **project group**
+collects projects, and a grant between the two gives every member of the user group access to every
+active, non-archived project in the project group. Root users, admin users and consumers whose
+global role carries the right permission manage groups through `/admin/user-groups` and
+`/admin/project-groups`.
 
----
+## Key concepts
 
-## Overview
-
-This documentation set covers the real groups model implemented in this repository:
-
+```text
+USER -> USER_GROUP -> PROJECT_GROUP -> PROJECT
+          |
+          +-> PERMISSION_GROUP -> PERMISSIONS   (separate; see the permissions suite)
 ```
-USER → USER_GROUP → PROJECT_GROUP → PROJECT
-                 ↘
-                   PERMISSION_GROUP → PERMISSIONS
-```
 
-The groups system is not just a generic RBAC concept. In this codebase:
+- **User group** (`user_groups`): a global set of users, not tied to one project. Membership rows
+  live in `user_group_members`.
+- **Project group** (`project_groups`): a container of projects. Assignment rows live in
+  `project_group_members`. Project groups carry no permissions.
+- **Grant** (`user_group_project_groups`): the only link that gives a user group project access.
+  There is no direct user-to-project or user-group-to-project assignment.
+- **Effective access**: a consumer reaches a project when every link of the chain is active and the
+  project is active and not archived. Root users reach every active, non-archived project without
+  groups. Admin users administer a project when they belong to its `admin_<project_id>` user group
+  and that group is granted a project group containing the project.
+- **Default groups**: `POST /projects` creates a project group `default_<project_id>` containing the
+  new project and three user groups (`admin_<project_id>`, `user_<project_id>`,
+  `readonly_<project_id>`) granted to it. See [Projects](../projects/README.md#key-concepts).
+- **Permission groups** attached to a user group through `/permissions/admin/user-groups/...`
+  are a separate mechanism: they do not grant project reach and are not part of the auth-time
+  permission set. See [Permission resolution](../permissions/resolution.md).
 
-- **User Groups** are global organizational buckets for users
-- **Project Groups** are containers that group projects together
-- **Permission Groups** are reusable permission templates attached separately to user groups or users
-- **Project access** is granted through `user_group_project_groups`
-- **Project switching and login sessions** embed user-group context into the session payload
-- **Deletes are soft deletes** (`is_active = 0`), not hard removals
+## Route families
 
----
+| Concern | Prefix | Session must carry | Body |
+| --- | --- | --- | --- |
+| User groups, membership, grants | `/admin/user-groups` | `admin` or `manage_users` | Form fields; bulk member add takes JSON |
+| Project groups and their projects | `/admin/project-groups` | `admin` or `manage_roles` | Form fields |
+| Permission groups on a user group | `/permissions/admin/user-groups/{group_hash}/permission-groups` | See [permissions reference](../permissions/reference.md) | Form fields |
 
-## Documents in This Suite
+Endpoint tables, fields and response shapes are in [reference.md](reference.md).
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day group operations: create, assign, grant access, revoke, delete |
-| [architecture.md](architecture.md) | The actual model, tables, route split, and implementation boundaries |
-| [request-flow.md](request-flow.md) | End-to-end runtime flows: CRUD, login/session embedding, project switching, deletion |
-| [scenarios.md](scenarios.md) | Concrete repo-specific examples for onboarding, contractor access, and team setup |
-| [reference.md](reference.md) | Endpoint and operational reference for user groups, project groups, and related permission-group operations |
-| [troubleshooting.md](troubleshooting.md) | Common failure modes, caveats, and best practices |
+## Rules and caveats
 
----
+Platform-wide rules (User-Agent, body size, error envelope) are in
+[Platform-wide contracts](../README.md#platform-wide-contracts).
 
-## Core Model in This Repo
+- **The two prefixes use different permissions.** `manage_users` opens user-group routes,
+  `manage_roles` opens project-group routes, and `admin` opens both. Root and admin sessions carry
+  `admin`; consumers get these names only from a global role.
+- **Group routes are not scoped to the caller's projects.** Any caller that passes the permission
+  check can manage every user group and project group, with one exception below.
+- **Only root may change a user group whose name starts with `admin_`** (compared the way MySQL's
+  `utf8mb4_unicode_ci` collation does, so case and accents are ignored). This covers create,
+  rename, delete, members and grants. Membership of `admin_<project_id>` is what makes an admin
+  user a project administrator.
+- **Deletes are soft.** Rows get `is_active = 0`. Deleted group names stay reserved, and names are
+  unique regardless of case.
+- **Removing access revokes live sessions.** Deleting a user group or project group, revoking a
+  grant, or removing a project from a project group revokes the affected users' project sessions
+  and refresh-token families at once. Removing a single member does not; that user's token fails
+  on its next request instead. See [architecture.md](architecture.md#session-revocation).
+- **A user-group hash works as a registration invitation.** `POST /auth/register` is public and
+  places the new consumer in whichever user group hash it receives. Share hashes of the groups
+  meant for self-registration only.
+- **Group hierarchy is not used for access.** `parent_group_id` exists in both group tables but no
+  route sets it and the access chain never follows it.
 
-### User Groups
-- Managed under `/admin/user-groups`
-- Global scope, not tied to a single project
-- Hold memberships in `user_group_members`
-- Gain project access by linking to project groups through `user_group_project_groups`
+## In this suite
 
-### Project Groups
-- Managed under `/admin/project-groups`
-- Hold projects in `project_group_members`
-- Act as access containers, not permission containers
+| Document | Purpose |
+| --- | --- |
+| [usage.md](usage.md) | Task-by-task requests: create groups, manage members, grant and revoke access, delete |
+| [scenarios.md](scenarios.md) | End-to-end workflows: onboard a team, contractor access, multi-domain teams, deprovisioning |
+| [reference.md](reference.md) | Endpoints, fields, query parameters, response shapes, error codes |
+| [request-flow.md](request-flow.md) | What happens to a group request, and how access is re-checked on every authenticated request |
+| [architecture.md](architecture.md) | Tables, stored procedures, access resolution, session revocation, caching, known defects |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause and fix for common group problems |
 
-### Permission Groups
-- Managed under `/roles/permission-groups` and `/permissions/...`
-- Attached separately to user groups through `user_group_permission_groups`
-- Affect **what users can do**, not **which projects they can access**
+## Related
 
----
-
-## Recommended Reading Order
-
-1. Start with [usage.md](usage.md)
-2. Then read [architecture.md](architecture.md)
-3. Use [request-flow.md](request-flow.md) for runtime behavior
-4. Keep [reference.md](reference.md) open while operating the API
-5. Use [scenarios.md](scenarios.md) and [troubleshooting.md](troubleshooting.md) when applying it to real workflows
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** - Complete usage index
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, refresh, project switching
-- **[Users Documentation Suite](../users/README.md)** - User profile, access summary, user types, and lifecycle operations
-- **[Projects Documentation Suite](../projects/README.md)** - Project creation, access flows, and operational caveats
-- **[Permissions Documentation Suite](../permissions/README.md)** - Permission groups, roles, assignments, and authorization caveats
-- **Database schema** (`schemas/`) - SQL schema and stored procedures
+- [Projects](../projects/README.md): project CRUD, default groups, archive state
+- [Users](../users/README.md): user lifecycle and admin project assignment
+- [Permissions](../permissions/README.md): permission groups and resolution
+- [Authentication usage cases](../authentication-usage-cases.md): login, refresh and
+  project switching

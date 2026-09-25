@@ -1,208 +1,87 @@
-# Audit Logs Architecture
+# Audit logs architecture
 
-Technical architecture of the audit and activity logging systems as they actually exist in `api.auth`.
+The components that record and serve audit data, the tables they use, and the design limits that
+follow. Step-by-step request handling is in [request-flow.md](request-flow.md).
 
----
+## Components
 
-## Data Sources
+| Component | File | Role |
+| --- | --- | --- |
+| `AuthContextMiddleware` | `src/middleware/auth_context.py` | Resolves the caller from `X-API-Key` or the access token and stores it on `request.state`. Never rejects. |
+| `APIAuditMiddleware` | `src/middleware/api_audit.py` | Writes one `api_audit_log` row per request and completes it after the response |
+| `APIAuditLogger` | `src/Util/api_audit_logger.py` | Exclusion list, redaction, security-event rules, tags, and the calls to `sp_log_api_request` / `sp_update_api_response` |
+| `@log_and_handle_errors` | `src/Util/decorators.py` | Validates the session for handlers that take `credentials`, and writes an activity row for the configured `activity_type` |
+| `ActivityLogger`, `ActivityType` | `src/Util/activity_logger.py` | Writes and reads `activity_logs` through stored procedures; the enum has 112 members |
+| Database triggers | `schemas/triggers/01_activity_logging_triggers.sql`, `schemas/triggers/02_permission_activity_triggers.sql`, `schemas/triggers/03_api_key_activity_triggers.sql` | Write activity rows when users, projects, groups, memberships, roles, permissions, sessions or API keys change |
+| Audit analytics queries | `src/Util/db/db_audit_analytics.py` | Wrappers for the `api_audit_log` read procedures |
+| Export | `src/Util/audit_export.py` | Validation, the `10,000` record cap, CSV and JSON streaming |
+| Routes | `src/routes/audit_logs.py`, `src/routes/admin_dashboard.py` | The read and export endpoints |
 
-### Source A: `activity_logs` Table
+`src/middleware/activity_logging.py` defines `ActivityLoggingMiddleware`, which would put the client
+IP and user agent in a context variable for activity logging. It is not registered in
+`src/main.py`.
 
-| Aspect | Detail |
-|--------|--------|
-| **Populated by** | `ActivityLogger` class via `@log_and_handle_errors` decorator |
-| **Decorator location** | `src/Util/activity_logger.py` |
-| **Granularity** | Semantic operations (e.g., `user_login`, `project_creation`, `permission_grant`) |
-| **Activity types** | 30 enum values in `ActivityType` |
-| **Stored procedures** | `sp_get_activity_logs`, `sp_count_activity_logs`, `sp_get_recent_security_events` |
+## Tables
 
-**Core schema fields:** `id`, `user_id`, `activity_type`, `details`, `project_id`, `user_group_id`, `target_user_id`, `ip_address`, `user_agent`, `metadata`, `severity_level`, `created_at`
+| Table | Key columns | Notes |
+| --- | --- | --- |
+| `api_audit_log` | `id` (`audit-{uuid}`), `request_id`, `http_method`, `endpoint_path`, `user_id`, `user_type`, `session_id`, `auth_method`, request and response bodies, headers and sizes, timestamps, `duration_ms`, `client_ip`, `is_success`, `error_code`, `project_id`, `tags`, `security_event` | Defined in `schemas/tables/02_create_tables.sql`. Indexed by time, user, endpoint, status, success, project, request ID and security flag. `auth_method` (`session`, `api_key`, `anonymous`, `email_link`, `webhook`, `oauth`) and headers are stored but no read route returns them. |
+| `activity_logs` | `id`, `user_id`, `activity_type` (`VARCHAR(50)`), `activity_catalog_id`, `details` (text), `project_id`, `user_group_id`, `target_user_id`, `ip_address`, `user_agent`, `metadata`, `severity_level` (`info`, `warning`, `critical`), `created_at` | Defined in `schemas/tables/08_activity_logging_tables.sql`. Application rows use `act-{32 hex}` IDs; trigger rows use `act-log-{uuid}`. |
+| `activity_catalog` | `id` (`act-cat-NNN`), `activity_code`, `activity_name`, `activity_category`, `severity_level`, `requires_audit`, `is_active` | 111 seeded rows; the source of each type's severity |
+| `permission_audit_log` | Permission change history | Written only by `sp_log_permission_change`, which the application does not call |
+| `email_messages` | Outbox ledger | Owned by the [email suite](../email/architecture.md); read here through `GET /admin/email/logs` |
 
-**Enriched fields** (added at query time): `username`, `user_hash`, `project_name`, `project_hash`, `target_username`, `target_user_hash`, `user_group_name`, `activity_name`, `activity_category`, `activity_description`
+The procedures behind these tables are listed in [stored-procedures.md](stored-procedures.md).
 
-### Source B: `api_audit_log` Table
+## Security events
 
-| Aspect | Detail |
-|--------|--------|
-| **Populated by** | `APIAuditMiddleware` (`src/middleware/api_audit.py`) |
-| **Granularity** | Raw HTTP request/response pairs |
-| **Scope** | Every HTTP request except excluded paths |
-| **Stored procedures** | `sp_get_audit_logs`, `sp_count_audit_logs`, `sp_get_audit_statistics`, `sp_get_security_events`, `sp_get_failed_requests`, `sp_get_user_api_activity_summary` |
+Two different notions exist:
 
-**Core schema fields:** `id`, `request_id`, `http_method`, `endpoint_path`, `route_pattern`, `user_id`, `user_type`, `session_id`, `request_body`, `request_query`, `request_size_bytes`, `response_status`, `response_body`, `response_size_bytes`, `request_timestamp`, `response_timestamp`, `duration_ms`, `client_ip`, `user_agent`, `referer`, `is_success`, `error_code`, `error_message`, `project_id`, `target_resource_type`, `target_resource_id`, `metadata`, `tags`, `security_event`
+- **API audit**: `api_audit_log.security_event` is set per request by
+  `APIAuditLogger.is_security_event` (rules in
+  [reference.md](reference.md#security-event-rules)). Severity is derived later, at read time,
+  from the status code.
+- **Activity log**: there is no flag. `sp_get_recent_security_events` returns rows whose
+  `severity_level` is `warning` or `critical`, a level copied from the catalog when the row is
+  written.
 
-**Enriched fields** (added at query time): `username`, `user_hash`, `project_name`, `project_hash`
+`GET /admin/audit/security-events` reads both and merges them.
 
-**Excluded paths** (not logged): `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/auth/validate`
+## Access model
 
-### Source C: `email_messages` Table
+Every audit route calls a user-type check (`_check_admin_access` in `src/routes/audit_logs.py`,
+an inline copy in `src/routes/admin_dashboard.py`): root or admin user type, otherwise `403`
+`AUTHZ_2001`. There is no project filter on any query, so admins see all projects. The routes do
+not use `verify_admin_access`, so a consumer holding an `admin` permission through a global role
+is refused here, unlike on some other admin routes.
 
-| Aspect | Detail |
-|--------|--------|
-| **Populated by** | The email **outbox worker** (writes/updates delivery state); not by middleware or the activity decorator |
-| **Query layer** | `db_email.list_email_delivery_logs()` — an inline `SELECT ... FROM email_messages ORDER BY created_at DESC LIMIT/OFFSET` (no stored procedure) |
-| **Exposed by** | `GET /admin/email/logs` → `list_admin_email_logs()` |
-| **Granularity** | One row per transactional email message (the canonical delivery ledger) |
-| **Redaction** | Returns `recipient_hash` (HEX) + `recipient_masked` only — never the plaintext recipient, subject/body, template variables, token secrets, or provider payloads |
+## Design decisions and limits
 
-**Returned fields (19):** `id`, `user_id`, `user_email_id`, `purpose`, `template_code`, `recipient_hash` (HEX of `BINARY(32)`), `recipient_masked`, `provider`, `provider_message_id`, `status`, `priority`, `attempt_count`, `max_attempts`, `next_attempt_at`, `sent_at`, `terminal_at`, `last_error_code`, `created_at`, `updated_at`
-
-**`status` enum:** `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`
-
-**`purpose` enum:** `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`
-
-**`provider`:** free-text VARCHAR (default `resend`)
-
-The table's plaintext columns (`recipient_email`, `last_error_message`, `render_payload_ciphertext`, `provider_idempotency_key`, `token_id`, etc.) are **not** selected by the delivery-log query, so they never reach the API surface.
-
-**Excluded methods:** `OPTIONS` (CORS preflight)
-
-**Sensitive data filtering:** Passwords, tokens, API keys are masked as `***FILTERED***` in request/response bodies and headers. This is intentional and cannot be disabled.
-
-### Security Event Detection
-
-The middleware flags requests as security events when:
-
-- 401 on `/auth/` paths
-- Any 403
-- Any `/admin/` path with root/admin user
-- Any DELETE request
-- Paths containing `/user-type`, `/permissions`, `/roles`
-- Paths containing `/password` or `/reset`
-
----
-
-## Route Organization
-
-### Dedicated Audit Endpoints (`src/routes/audit_logs.py`, 6 endpoints)
-
-All routes use `APIRouter(prefix="/admin")` — they coexist with `admin_dashboard.py` under the same `/admin` prefix.
-
-| Method | Path | Handler | Purpose |
-|--------|------|---------|---------|
-| GET | `/admin/email/logs` | `list_admin_email_logs()` | Email delivery logs from `email_messages` (redacted: recipient hash + masked email) |
-| GET | `/admin/audit/logs` | `list_audit_logs()` | Paginated API audit logs from `api_audit_log` |
-| GET | `/admin/audit/security-events` | `list_security_events()` | Combined security events from BOTH audit sources |
-| GET | `/admin/audit/statistics` | `get_statistics()` | 4-section audit analytics |
-| POST | `/admin/audit/export` | `export_logs()` | CSV/JSON export, max 10,000 records |
-| GET | `/admin/users/{user_id}/activity` | `get_user_activity()` | Per-user combined activity summary + timeline |
-
-### Admin Dashboard Activity Endpoints (`src/routes/admin_dashboard.py`)
-
-| Method | Path | Handler | Purpose |
-|--------|------|---------|---------|
-| GET | `/admin/activity` | `get_activity_feed()` | Activity feed from `activity_logs` table |
-| GET | `/admin/activity/{activity_id}` | `get_activity_detail()` | Single activity log detail by ID |
-| GET | `/admin/activity/types` | `get_activity_types()` | Enum of all activity types |
-
----
-
-## Logging Mechanisms
-
-### Middleware Logging (`APIAuditMiddleware`)
-
-```
-HTTP Request
-  └─► APIAuditMiddleware.dispatch()
-        ├─► Check: should_log(path, method)?
-        ├─► Generate audit_id, request_id
-        ├─► Extract user context from request.state
-        ├─► APIAuditLogger.log_request() — immediate, synchronous
-        ├─► call_next(endpoint)
-        └─► Background task: APIAuditLogger.log_response()
-              └─► Filters sensitive data from error responses
-```
-
-The request is logged **immediately and synchronously** before the endpoint runs. The response is logged as a **background task** after the endpoint completes. This ensures the request is always captured even if the endpoint crashes.
-
-### Decorator Logging (`@log_and_handle_errors`)
-
-```
-Route handler
-  └─► @log_and_handle_errors(operation_name, activity_type, ...)
-        ├─► Execute handler
-        ├─► On success: ActivityLogger.log_activity() if activity_type is set
-        └─► On error: ActivityLogger.log_error_activity()
-```
-
-The decorator wraps individual route handlers. It logs semantic events (not raw HTTP). Read-only endpoints typically pass `activity_type=None` and `log_success=False` to skip activity logging.
-
----
-
-## Auth Model
-
-All audit endpoints require **root or admin** user type:
-
-```python
-def _check_admin_access(log_context: LogContext) -> None:
-    user_type = get_user_type(log_context.user_id)
-    is_root = is_root_user(log_context.user_id)
-    if not is_root and user_type != 'admin':
-        raise AuthorizationError(
-            message="Admin access required",
-            error_code=ErrorCode.ACCESS_DENIED,
-        )
-```
-
-**Auth mechanism:** `HTTPBearerOrCookie()` — accepts `Authorization: Bearer <token>` OR `Cookie: session_token=<token>`.
-
-**CRITICAL: No project scoping.** Any admin can see ALL audit logs across ALL projects. There is no project-level access check. This is a data isolation gap.
-
----
-
-## Data Flow Diagram
-
-```
-                         ┌─────────────────────────┐
-                         │   HTTP Request          │
-                         └───────────┬─────────────┘
-                                     │
-                    ┌────────────────┼────────────────┐
-                    │                │                │
-                    ▼                ▼                ▼
-         ┌──────────────────┐  ┌────────────┐  ┌──────────────┐
-         │ APIAuditMiddleware│  │ Auth Check │  │ Excluded?    │
-         │ (api_audit.py)   │  │            │  │ (skip log)   │
-         └────────┬─────────┘  └─────┬──────┘  └──────────────┘
-                  │                  │
-                  ▼                  ▼
-         ┌──────────────────┐  ┌────────────────────┐
-         │ api_audit_log    │  │ Route Handler      │
-         │ (raw HTTP)       │  │ @log_and_handle_   │
-         │                  │  │ errors             │
-         └────────┬─────────┘  └─────────┬──────────┘
-                  │                      │
-                  │                      ▼
-                  │             ┌────────────────────┐
-                  │             │ activity_logs      │
-                  │             │ (semantic events)  │
-                  │             └─────────┬──────────┘
-                  │                       │
-                  ▼                       ▼
-         ┌─────────────────────────────────────────────┐
-         │              Query Endpoints                │
-         │  /admin/audit/logs        /admin/activity   │
-         │  /admin/audit/security-events (MERGED)      │
-         │  /admin/audit/statistics                    │
-         │  /admin/audit/export                        │
-         │  /admin/users/{id}/activity  (MERGED)       │
-         └─────────────────────────────────────────────┘
-
-  EMAIL OUTBOX WORKER ──► email_messages (delivery ledger)
-         │
-         ▼
-  GET /admin/email/logs  (read-only, redacted: recipient_hash + recipient_masked)
-```
-
----
-
-## Related Documentation
-
-- **[Audit Logs Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
-- **[Admin Usage Cases](../admin-usage-cases.md)** — Dashboard, activity feed quick reference
-- **Database schema** (`schemas/`) — SQL tables, views, and stored procedures
+- **Request row first, response row later.** The request row is written synchronously before the
+  handler runs, so a crash still leaves a record; the response is written by a background task so
+  it does not delay the client.
+- **Best effort.** Both loggers catch and log their own failures. A database outage does not fail
+  requests, but it leaves gaps in the audit trail.
+- **Error details come from the JSON error body.** The response reaches the middleware as a
+  stream; for a `4xx`/`5xx` with a JSON body of at most 64 KiB, the middleware drains it, fills
+  `error_code`, `error_message` and the redacted `response_body`, and replays the same bytes to
+  the client. Other error bodies pass through uncaptured.
+- **`route_pattern` is matched up front.** Routing runs after the middleware, so the middleware
+  matches the app's routes itself; a path no route matches stays `null`.
+- **`session_id` is a label, not a credential.** For session requests the auth middleware stores
+  the access token's `session_id` claim; the audit and error loggers reduce anything token-shaped
+  to that claim or a `tokhash:` keyed hash (`src/Util/audit_session_id.py`). Older rows hold a
+  256-character token prefix, which `get_audit_logs` masks on read (see
+  [reference.md](reference.md#existing-rows-with-token-prefixes)).
+- **No project isolation.** Admins see every project's audit data.
+- **No retention.** `sp_cleanup_old_activity_logs(p_retention_days, p_dry_run)` deletes old `info`
+  activity rows, but nothing schedules it. `api_audit_log` has no cleanup procedure.
+- **Export is bounded, not paged.** An export reads at most `10,000` rows in one query and refuses
+  filters that match more, instead of paging through large results.
+- **Activity details are free text.** Decorator rows store JSON text in `details`; trigger rows
+  store a sentence and put structured data in `metadata`.
+- **Triggers do not know the actor.** They take `user_id` from the changed row (for example
+  `created_by`, or the updated user itself for `user_update` and `user_type_changed`). To find
+  who made a change, match the time against `GET /admin/audit/logs`. Triggers in
+  `schemas/triggers/01_activity_logging_triggers.sql` also leave `activity_catalog_id` empty, so
+  those rows have no catalog name or category.

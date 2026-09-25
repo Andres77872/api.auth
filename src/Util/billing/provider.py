@@ -161,6 +161,10 @@ class BillingSyncResult:
     retryable: bool = False
     reason: str | None = None
     safe_metadata: Mapping[str, Any] = field(default_factory=dict)
+    # The provider object a source-of-truth read fetched, for the worker to write back.
+    # Raw provider data: server-side only, never serialized, logged, or returned.
+    object_type: str | None = None
+    provider_object: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
 @runtime_checkable

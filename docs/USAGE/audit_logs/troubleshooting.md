@@ -1,343 +1,167 @@
-# Audit Logs Troubleshooting, Caveats, and Best Practices
+# Audit logs troubleshooting
 
-Things that commonly confuse operators working with the audit and activity logging systems in `api.auth`.
+Symptom, cause and fix. Error codes are listed in [reference.md](reference.md#error-codes).
 
----
+## Access
 
-## Troubleshooting
+### `403` "Admin access required"
 
-### Consumer User Gets 403 on Audit Endpoints
+**Cause:** the caller's user type is not root or admin. Audit routes check the user type only; an
+`admin` permission from a global role does not count.
 
-All audit endpoints (`/admin/email/logs`, `/admin/audit/*`, `/admin/activity*`, `/admin/users/{id}/activity`) require **root or admin** user type. Consumer users are always denied.
+**Fix:** use a root or admin account.
 
-**Error:** 403 `ACCESS_DENIED` — "Admin access required"
+### An admin sees other projects' records
 
-**Fix:** use a root or admin token. There is no permission-based bypass for audit access.
+**Cause:** audit routes have no project scoping. Any admin sees all projects.
 
----
+**Fix:** none in the API. If you need isolation, restrict who holds the admin user type, or filter
+exports by `project_id` before sharing them.
 
-### Empty Results from Audit Logs
+## Missing or unexpected data
 
-**Issue:** `GET /admin/audit/logs` returns an empty `logs` array.
+### A request is not in `GET /admin/audit/logs`
 
-**Possible causes:**
+**Cause:** one of:
 
-1. **Time range too narrow** — the `days` parameter defaults to 30. If no requests were logged in that window, results are empty. Try increasing `days`.
+- The path is excluded: `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`,
+  `/auth/validate`, `/webhooks/email` (and their sub-paths), or the method is `OPTIONS`.
+- It is older than `days` (default `30`).
+- The filter uses a user or project hash instead of the internal ID.
+- Writing the audit row failed; the failure is only in the application log.
 
-2. **Filters too restrictive** — combining multiple filters (user_id + endpoint_path + status_code) may match zero records. Remove filters one at a time to isolate the issue.
+**Fix:** widen `days` (up to `365`), drop filters one at a time, and use internal IDs.
 
-3. **Endpoint is excluded from logging** — `/ping`, `/health`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/auth/validate`, and `OPTIONS` requests are never logged.
+### `response_status` is `0` and `is_success` is `null`
 
-4. **Middleware not registered** — if `APIAuditMiddleware` is not added to the FastAPI app in `main.py`, no requests are captured. Check application startup logs.
+**Cause:** the request row is written before the route runs, and the response is written by a
+background task after the response is sent. The task has not run yet, or it failed.
 
-**Diagnostic:**
+**Fix:** retry the query after a moment. Rows that stay at `0` point to an audit write failure in
+the application log. These rows also appear as status `0` in `status_distribution`.
 
-```bash
-# Broad query — no filters
-curl -X GET "http://localhost:8000/admin/audit/logs?days=365&limit=10" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+### `error_code`, `error_message` and `response_body` are empty for an error
 
-# If still empty, check middleware registration in main.py
-```
+**Cause:** the row is a success, still has `response_status = 0` (the response row is not written
+yet), or the error body was not JSON or was larger than 64 KiB, so it was not captured. Keys that
+look sensitive (including `code`) are masked inside `response_body`; `error_code` keeps the value.
 
----
+**Fix:** filter on `status_code` and `is_success`, and read `error_code` rather than
+`response_body.error.code`.
 
-### Empty Results from Activity Feed
+### `route_pattern` is `null`
 
-**Issue:** `GET /admin/activity` returns an empty `activities` array.
+**Cause:** no route matched the path (a `404` from the router), or the row was written before the
+middleware resolved route templates.
 
-**Possible causes:**
+**Fix:** use `endpoint_path` with a substring filter for those rows.
 
-1. **No semantic events logged** — the `@log_and_handle_errors` decorator only logs when `activity_type` is set. Read-only endpoints typically skip activity logging.
+### The activity feed is empty or thin
 
-2. **Time range too narrow** — same as audit logs.
+**Cause:** one of:
 
-3. **Stored procedures missing** — the activity feed relies on `sp_get_activity_logs`. Verify: `SHOW PROCEDURE STATUS LIKE 'sp_%activity%'`.
+- Read-only routes do not write activity rows, and many decorated routes log only failures.
+- The type you filter on is never written. `GET /admin/activity/types` lists enum values, not
+  types that actually occur.
+- `activity_type_filter` is an exact match, not a prefix or substring.
 
-**Diagnostic:**
+**Fix:** remove the type filter and use `search`, then pick the exact type from the results.
 
-```bash
-# Broad query
-curl -X GET "http://localhost:8000/admin/activity?days=365&limit=10" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+### `GET /admin/activity/{activity_id}` returns `400` for an ID from the feed
 
-# Check available activity types
-curl -X GET "http://localhost:8000/admin/activity/types" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+**Cause:** rows written by database triggers have IDs of the form `act-log-{uuid}`, but the route
+accepts only `act-` plus 32 hex characters.
 
----
+**Fix:** read those rows from the feed or from a JSON export, which includes `metadata`.
 
-### Export Fails with 400 INVALID_RANGE
+### The activity `user_id` is the changed user, not the admin who changed it
 
-**Issue:** `POST /admin/audit/export` returns:
+**Cause:** triggers on `users` store the updated user in `user_id`; triggers do not know the
+actor.
 
-```json
-{
-  "error": {
-    "code": "INVALID_RANGE",
-    "message": "Export would return 15000 records, exceeding the hard limit of 10000"
-  }
-}
-```
+**Fix:** find the request at the same time in `GET /admin/audit/logs`, whose `user_id` is the
+caller. See [Trace a permission or user-type change](scenarios.md#trace-a-permission-or-user-type-change).
 
-**Cause:** The pre-export count check found more matching records than the 10,000 hard limit.
+### Security events are full of admin reads
 
-**Fix:** Narrow your filters:
+**Cause:** any `/admin/` request by a root or admin user is flagged, including reading the audit
+logs.
 
-```bash
-# Instead of 30 days, try 7 days
-{
-  "source": "api_audit",
-  "format": "csv",
-  "limit": 10000,
-  "filters": { "days": 7 }
-}
+**Fix:** filter the `api_audit` events on `response_status` or `endpoint_path` on the client, or
+use `GET /admin/audit/logs?security_event=true` with `endpoint_path` and `status_code` filters.
 
-# Or add more specific filters
-{
-  "source": "api_audit",
-  "format": "csv",
-  "limit": 10000,
-  "filters": { "days": 30, "project_id": "specific-project" }
-}
-```
+### Fewer security events than `limit`
 
-**Workaround:** export in chunks (week by week, project by project) and merge locally.
+**Cause:** each source reads `limit` rows, then `severity` is applied, then the merged list is cut
+to `limit`. A severity filter can drop most rows. Activity events are only `warning` or
+`critical`, so `severity=info` returns API audit events only.
 
----
+**Fix:** query one source at a time with a higher `limit`. There is no `offset`.
 
-### Export Returns Empty CSV with Just an Empty Row
+### The user activity timeline stops at 100 entries
 
-**Issue:** CSV export returns a single empty row instead of proper headers.
+**Cause:** the timeline takes at most 50 rows from each log and has no paging. The activity counts
+are based on the latest 500 activity rows.
 
-**Cause:** When no data matches the export filters, the CSV generator yields `writer.writerow([])` — a single empty row, not a header row.
+**Fix:** use `GET /admin/activity` and `GET /admin/audit/logs` with `user_id` for full history.
 
-**Fix:** narrow or broaden your filters to ensure matching data. Check with the corresponding list endpoint first:
+### `GET /admin/email/logs` is empty
 
-```bash
-# Verify data exists before exporting
-curl -X GET "http://localhost:8000/admin/audit/logs?days=30&limit=1" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+**Cause:** `status`, `purpose` and `provider` are exact matches, and unknown values return an
+empty list instead of an error. There is no `days` window here, so age is not the cause.
 
----
+**Fix:** run it without filters, then copy the exact values from a row.
 
-### Security Events Endpoint Returns Fewer Results Than Expected
+### `has_more` is `true` but the next page is empty
 
-**Issue:** Requesting 500 security events returns only 200.
+**Cause:** email logs have no count query; `has_more` is `true` whenever the page was full.
 
-**Cause:** The limit applies to the **merged** result from both sources, not per-source. If `api_audit` contributes 300 events and `activity_log` contributes 200, the merged list is 500, then truncated to the limit.
+**Fix:** stop when a page returns fewer rows than `limit`.
 
-Additionally, severity filtering (`severity=critical`) is applied **per-source** before merging, which can further reduce results.
+## Export
 
-**Fix:** use the `source` filter to query each source independently:
+### `400` `VAL_3009` "Export would return N records"
 
-```bash
-curl -X GET "http://localhost:8000/admin/audit/security-events?source=api_audit&limit=500&days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+**Cause:** more than `10,000` records match `filters`. The check ignores `limit`.
 
-curl -X GET "http://localhost:8000/admin/audit/security-events?source=activity_log&limit=500&days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+**Fix:** add filters until at most `10,000` match. Splitting by `days` does not work, because
+`days` is always counted back from now; split by `project_id`, `user_id`, `http_method`,
+`is_success`, `security_event` or `activity_type` instead. Check a count first with
+`GET /admin/audit/logs?limit=1` and `pagination.total`.
 
----
+### `400` `VAL_3001` "Invalid JSON body", or `VAL_3002`
 
-### User Activity Timeline Seems Incomplete
+**Cause:** the body is form data or malformed JSON (`VAL_3001`), or `source` or `format` is
+missing (`VAL_3002`).
 
-**Issue:** `GET /admin/users/{user_id}/activity` returns fewer timeline entries than expected.
-
-**Cause:** The timeline is a **fixed-size merge** — up to 50 entries from `activity_logs` and up to 50 from `api_audit_log`, sorted together. If a user has 200 activity log entries, only the 50 most recent are included.
-
-**Fix:** use the list endpoints directly for complete data:
-
-```bash
-# Full activity log for user
-curl -X GET "http://localhost:8000/admin/activity?user_id={user_id}&days=30&limit=500" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Full API audit log for user
-curl -X GET "http://localhost:8000/admin/audit/logs?user_id={user_id}&days=30&limit=1000" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
----
-
-### Empty or Confusing Results from `GET /admin/email/logs`
-
-**Issue:** The email delivery log returns no rows, or `has_more` behaves unexpectedly.
-
-**Possible causes and fixes:**
-
-1. **Filter value typo** — `status` and `purpose` are matched exactly. Valid `status` values: `pending`, `processing`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`, `retry`, `dead`, `cancelled`. Valid `purpose` values: `email_activation`, `password_reset`, `admin_password_reset`, `security_notification`, `delivery_operation`. An unknown value is accepted but matches nothing (returns an empty `logs` array, not an error).
-
-2. **`provider` mismatch** — `provider` is exact-match free text (default `resend`). Querying `?provider=Resend` (wrong case) or a provider you don't use returns nothing.
-
-3. **No email subsystem activity** — if the email outbox worker has not run (or no transactional emails were sent), `email_messages` is empty. Confirm with a broad query: `GET /admin/email/logs?limit=10` (no filters).
-
-4. **`has_more` page-fill heuristic** — this endpoint does **not** run a count query. `has_more` is `true` whenever `returned == limit`. On an exactly-full final page, `has_more` reports `true` even though the next page (`offset += limit`) is empty. Page until a request returns fewer than `limit` rows; do not rely on `has_more` as an authoritative "more data exists" signal.
-
-**Diagnostic:**
-
-```bash
-# Broad query, no filters
-curl -X GET "http://localhost:8000/admin/email/logs?limit=10" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
----
-
-### Cannot See Audit Logs for a Specific Project
-
-**Issue:** An admin assigned to only one project expects to see only that project's logs.
-
-**Cause:** Audit access is **GLOBAL**. Any admin can see ALL audit logs across ALL projects. There is no project-scoping for audit endpoints. If you see logs from other projects, this is by design.
-
-**This is a data isolation gap.** If your compliance requirements demand project-scoped audit access, this needs an architectural change.
-
----
-
-### Export Uses JSON Body While Rest of API Uses Form Data
-
-**Issue:** Sending `multipart/form-data` to `POST /admin/audit/export` fails.
-
-**Cause:** The export endpoint accepts an `application/json` body, which is unusual — most POST/PUT/PATCH endpoints in the API use `multipart/form-data`. Other JSON-body endpoints include `POST /admin/user-groups/{hash}/members/bulk` and the OAuth sign-in endpoints in `auth_oauth.py` (e.g. `POST /auth/oauth/init`, `POST /auth/oauth/start`).
-
-**Fix:** always use `Content-Type: application/json` for export requests:
+**Fix:** send `Content-Type: application/json` with both fields:
 
 ```bash
 curl -X POST "http://localhost:8000/admin/audit/export" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"source": "api_audit", "format": "csv"}'
+  -d '{"source": "api_audit", "format": "csv"}' \
+  --output export.csv
 ```
 
----
+### The CSV file is a single blank line
 
-### `audit` and `api_audit` Are the Same Source in Export
+**Cause:** no records matched; the CSV writer then emits one empty row and no header.
 
-**Issue:** Confusion about whether `audit` and `api_audit` export different data.
+**Fix:** widen the filters, or treat a one-line file as empty.
 
-**Cause:** Both source names query the same `api_audit_log` table. `audit` is kept for backward compatibility; `api_audit` is the canonical name.
+### The CSV lacks `metadata`, `session_id` or request bodies
 
-**Best practice:** always use `api_audit` for clarity.
+**Cause:** the CSV has fixed columns. The JSON format returns every field.
 
----
+**Fix:** export with `"format": "json"`, and handle the file as sensitive.
 
-## Current Caveats
+## Retention
 
-### Admin Access Is Global
+### The tables keep growing
 
-Any admin can view audit logs for ALL projects. There is no project-level access check. This is by design but may conflict with compliance requirements that demand data isolation.
+**Cause:** nothing deletes audit or activity rows. `sp_cleanup_old_activity_logs` exists but is
+not scheduled, and `api_audit_log` has no cleanup procedure.
 
-### No Data Retention Policy
-
-Logs accumulate indefinitely. The `days` parameter limits queries but does not delete old data. The `api_audit_log` and `activity_logs` tables grow unbounded.
-
-**Mitigation:** implement your own archival process (e.g., periodic exports + manual cleanup).
-
-### Security Events Have No Pagination
-
-The security events endpoint returns a flat list. For large datasets, use the `source` filter to split queries.
-
-### User Activity Timeline Has No Pagination
-
-Fixed-size merge (50 per source). Use the individual list endpoints for complete data.
-
-### Sensitive Data Is Always Filtered
-
-Passwords, tokens, and API keys appear as `***FILTERED***` in audit logs. This cannot be disabled. If you need raw request bodies for debugging, check application logs, not audit logs.
-
-### Empty CSV Export Returns Empty Row
-
-When no data matches export filters, CSV returns a single empty row, not a proper header row. This is a known limitation.
-
----
-
-## Best Practices
-
-### 1. Always filter by date
-
-Use the `days` parameter to limit queries. Without it, you scan the entire table.
-
-```bash
-# Good
-curl -X GET "http://localhost:8000/admin/audit/logs?days=7" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Bad — scans everything
-curl -X GET "http://localhost:8000/admin/audit/logs" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-### 2. Use the right endpoint for the right question
-
-| Question | Use |
-|----------|-----|
-| "What happened?" (business events) | `/admin/activity` |
-| "What HTTP requests were made?" | `/admin/audit/logs` |
-| "What security-relevant events occurred?" | `/admin/audit/security-events` |
-| "What's the overall API health?" | `/admin/audit/statistics` |
-| "What did this user do?" | `/admin/users/{id}/activity` |
-| "Did this email get delivered?" | `/admin/email/logs` |
-| "I need a compliance report" | `POST /admin/audit/export` |
-
-### 3. Export in chunks for large datasets
-
-If your filters match more than 10,000 records, export week by week or project by project:
-
-```bash
-# Week 1
-curl -X POST "http://localhost:8000/admin/audit/export" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "api_audit", "format": "csv", "filters": {"days": 7}}' \
-  --output week1.csv
-
-# Week 2
-curl -X POST "http://localhost:8000/admin/audit/export" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "api_audit", "format": "csv", "filters": {"days": 7}}' \
-  --output week2.csv
-```
-
-### 4. Use `api_audit` not `audit` in export
-
-Both work, but `api_audit` is the canonical name. `audit` is backward-compatibility only.
-
-### 5. Cross-reference both sources for investigations
-
-Security events merge both sources, but for deep investigations, query each source independently:
-
-```bash
-# Check API audit for the user
-curl -X GET "http://localhost:8000/admin/audit/logs?user_id=X&days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Check activity log for the user
-curl -X GET "http://localhost:8000/admin/activity?user_id=X&days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-### 6. Monitor export limits proactively
-
-Before running a large export, check the count:
-
-```bash
-# Get total count first
-curl -X GET "http://localhost:8000/admin/audit/logs?days=30&limit=1&offset=0" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-# Check pagination.total — if > 10000, narrow your filters before exporting
-```
-
----
-
-## Related Documentation
-
-- **[Audit Logs Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Error Reference](../errors.md)** — All error codes and response shapes
+**Fix:** export on a schedule, then prune with your own job. For activity rows,
+`CALL sp_cleanup_old_activity_logs(365, TRUE)` shows how many `info` rows a cleanup would delete.

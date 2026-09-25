@@ -31,6 +31,7 @@ ROUTE_COUNTS = {
     "admin_project_groups.py": 7,
     "admin_user_groups.py": 13,
     "api_keys.py": 7,
+    "assistant.py": 0,  # WebSocket endpoint, no HTTP operations.
     "audit_logs.py": 6,
     "auth.py": 13,
     "auth_google.py": 5,
@@ -147,7 +148,7 @@ def test_route_inventory_matches_source_and_central_indexes():
 
     for index in CENTRAL_INDEXES:
         text = index.read_text(encoding="utf-8")
-        assert re.search(r"\b246\b.*\b27\b|\b27\b.*\b246\b", text, re.DOTALL)
+        assert re.search(r"\b246\b.*\b28\b|\b28\b.*\b246\b", text, re.DOTALL)
         for module, count in ROUTE_COUNTS.items():
             assert re.search(
                 rf"`{re.escape(module)}`[^\n]*\|\s*{count}\s*\|",
@@ -350,10 +351,10 @@ def test_schema_inventory_matches_canonical_sql():
     assert expected_counts == {
         "Tables": 73,
         "Indexes": 83,
-        "Stored Procedures": 316,
+        "Stored Procedures": 318,
         "Functions": 1,
         "Views": 18,
-        "Triggers": 123,
+        "Triggers": 125,
     }
 
     for label, count in expected_counts.items():

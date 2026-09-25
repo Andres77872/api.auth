@@ -18,7 +18,11 @@ from src.Util.db.db_enhanced import validate_session
 from src.Util.db.db_api_keys import validate_api_key_lookup
 from src.Util.db.db_projects import get_project_by_id
 from src.Util.db.db_user_groups import get_user_groups_in_project_by_hash
-from src.Util.api_key_security import verify_api_key_token
+from src.Util.api_key_security import (
+    encode_secret_hash_for_cache,
+    verify_api_key_token,
+    verify_api_key_token_against_cache,
+)
 from src.Util.cache_manager import cache_manager
 from src.Util.error_handler import ErrorCode, DatabaseError, InternalError
 
@@ -117,10 +121,11 @@ async def validate_api_key_context(api_key: Optional[str]) -> Dict[str, Any]:
 
     Flow:
     1. Parse token: sk_{public_id}.{secret}
-    2. Check Redis cache: apikey:{public_id}
+    2. Check Redis cache: apikey:{public_id}; a hit is used only if the presented
+       secret verifies against the cached stored hash
     3. If miss: validate_api_key_lookup(public_id) → verify_api_key_token()
     4. Resolve live permissions via existing group-chain logic
-    5. Cache result in Redis (60s TTL)
+    5. Cache result (including the stored hash, never the secret) in Redis (60s TTL)
     6. Return dict compatible with verify_session shape
 
     Args:
@@ -136,14 +141,12 @@ async def validate_api_key_context(api_key: Optional[str]) -> Dict[str, Any]:
     """
     public_id = _parse_api_key_public_id(api_key)
 
-    # Check Redis cache first
+    # Check Redis cache first. The entry is keyed by public_id only, so a hit is
+    # trusted only after the presented secret verifies against the cached stored
+    # hash; anything else (wrong secret, legacy entry without a hash) takes the
+    # full DB path below. Revocation deletes the entry immediately.
     cached = cache_manager.get_api_key(public_id)
-    if cached:
-        # Cache hit — check if still valid (cache may hold a stale "valid" entry
-        # if the key was revoked within the 60s window; the stored procedure
-        # re-validates on cache miss, so we trust the cache for the TTL window)
-        if cached.get("validation_status") != "valid":
-            _raise_api_key_error(cached.get("validation_status", "invalid"))
+    if verify_api_key_token_against_cache(api_key, public_id, cached):
         return {
             "user_id": cached["user_id"],
             "user_hash": cached["user_hash"],
@@ -259,6 +262,7 @@ async def validate_api_key_context(api_key: Optional[str]) -> Dict[str, Any]:
         "groups": groups,
         "key_id": key_data["id"],
         "public_id": public_id,
+        "secret_hash": encode_secret_hash_for_cache(stored_hash),
         "cached_at": datetime.now(timezone.utc).isoformat(),
     }
 

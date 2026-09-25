@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from starlette.requests import Request
 
+import src.middleware.error_handler as middleware_error_handler
 from src.Util.error_handler import (
     AuthorizationError,
     NotFoundError,
@@ -308,12 +310,24 @@ async def test_resync_rate_limited(monkeypatch):
     _root(monkeypatch)
     monkeypatch.setattr(route, "load_patreon_config", lambda: _FakeConfig(sync_enabled=True))
     monkeypatch.setattr(route, "rate_limiter", _BlockLimiter())
-    with pytest.raises(RateLimitError):
+    with pytest.raises(RateLimitError) as raised:
         await route.enqueue_admin_patreon_resync.__wrapped__(
             scope="all", user_hash=None, reason=None, force=False,
             credentials=None,
             log_context=_Ctx(),
         )
+
+    # The global handler must turn it into 429 INT_7005 with the documented Retry-After.
+    monkeypatch.setattr(middleware_error_handler, "log_app_exception_to_db", lambda **kwargs: None)
+    request = Request({
+        "type": "http", "method": "POST", "path": "/admin/patreon/resync", "raw_path": b"/admin/patreon/resync",
+        "root_path": "", "scheme": "http", "query_string": b"", "headers": [],
+        "client": ("203.0.113.10", 1234), "server": ("testserver", 80),
+    })
+    response = await middleware_error_handler.app_exception_handler(request, raised.value)
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "42"
+    assert json.loads(response.body)["error"]["code"] == "INT_7005"
 
 
 @pytest.mark.asyncio

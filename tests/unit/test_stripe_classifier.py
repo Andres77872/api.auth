@@ -139,3 +139,54 @@ def test_label_or_price_evidence_mismatch_fails_closed_to_unknown_or_stale():
     result = _classify(module, event)
     status = _status(result, "subscription_status", "billing_status", "status")
     assert status in {"unknown", "stale"}
+
+
+def test_subscription_period_end_is_read_from_items_on_the_pinned_api_version():
+    """Since Stripe API 2025-03-31 `current_period_end` lives on subscription items, not the subscription."""
+
+    module = _future_classifier_module()
+    event = _event("customer_subscription_updated.json")
+    assert "current_period_end" not in event["data"]["object"]
+
+    result = _classify(module, event)
+
+    assert result.safe_metadata["current_period_end"] == "2030-02-01T00:00:00+00:00"
+
+
+def test_checkout_consumer_label_is_not_compared_with_an_unrelated_lookup_key():
+    """Checkout copies `consumer_plan_code` onto the subscription; an admin lookup key need not contain it."""
+
+    module = _future_classifier_module()
+    event = copy.deepcopy(_event("customer_subscription_updated.json"))
+    assert event["data"]["object"]["metadata"]["consumer_plan_code"] == "magic_worlds_plus"
+    event["data"]["object"]["items"]["data"][0]["price"]["lookup_key"] = "mwp_monthly_2026"
+
+    result = _classify(module, event)
+
+    assert _status(result, "subscription_status") == "active"
+    assert result.resync_required is False
+
+
+@pytest.mark.parametrize(
+    ("charge", "expected"),
+    [
+        ({"status": "succeeded", "paid": True, "amount": 500, "amount_refunded": 0}, "paid"),
+        ({"status": "succeeded", "paid": True, "amount": 500, "amount_refunded": 200}, "partially_refunded"),
+        ({"status": "succeeded", "paid": True, "amount": 500, "amount_refunded": 500, "refunded": True}, "refunded"),
+        ({"status": "succeeded", "paid": True, "amount": 500, "disputed": True}, "disputed"),
+        ({"status": "pending", "paid": False, "amount": 500}, "pending"),
+        ({"status": "failed", "paid": False, "amount": 500}, "unknown"),
+    ],
+)
+def test_charge_read_from_the_api_maps_to_purchase_vocabulary(charge: dict[str, Any], expected: str):
+    module = _future_classifier_module()
+    assert module.purchase_status_from_charge(charge) == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("succeeded", "paid"), ("processing", "pending"), ("requires_payment_method", "pending"), ("canceled", "unknown")],
+)
+def test_payment_intent_read_from_the_api_maps_to_purchase_vocabulary(status: str, expected: str):
+    module = _future_classifier_module()
+    assert module.purchase_status_from_payment_intent({"status": status}) == expected

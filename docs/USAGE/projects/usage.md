@@ -1,228 +1,162 @@
-# Projects Usage
+# Projects usage
 
-Practical usage guide for operating projects in `api.auth`.
+One section per task. `$ROOT_TOKEN` is a root access token; `$TOKEN` is any access token allowed
+for the route (see the [authorization matrix](reference.md#authorization-matrix)). Field rules and
+full response shapes are in [reference.md](reference.md).
 
----
+## Create a project
 
-## Table of Contents
-
-- [Authentication and Route Ownership](#authentication-and-route-ownership)
-- [Creating Projects](#creating-projects)
-- [Inspecting Projects](#inspecting-projects)
-- [Updating Projects](#updating-projects)
-- [Managing Access Through Groups](#managing-access-through-groups)
-- [Deleting Projects](#deleting-projects)
-- [Known Unimplemented Operations](#known-unimplemented-operations)
-
----
-
-## Authentication and Route Ownership
-
-Projects are operated across three route families:
-
-| Concern | Route Family | Notes |
-|--------|--------------|-------|
-| Project CRUD, members, stats, activity | `/projects` | Mostly requires valid session; create/delete require `admin` |
-| Project-group CRUD and project assignment | `/admin/project-groups` | Requires `admin` or `manage_roles` |
-| User-group to project-group access bridge | `/admin/user-groups/{hash}/project-groups` | Requires `admin` or `manage_users` |
-
-**Important:** current project write endpoints use form data (`multipart/form-data`); none of the `/projects` routes accept a JSON body. Every request also requires a `User-Agent` header (a missing one yields `422`).
-
----
-
-## Creating Projects
-
-Create a project with:
+`POST /projects` (root only) — form fields `project_name` (required) and `project_description`:
 
 ```bash
 curl -X POST "http://localhost:8000/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_name=Customer API v2&project_description=New customer management API"
+  -H "Authorization: Bearer $ROOT_TOKEN" \
+  --data-urlencode "project_name=Customer API v2" \
+  --data-urlencode "project_description=Customer management API"
 ```
 
-What the repo actually does:
+```json
+{
+  "success": true,
+  "message": "Project \"Customer API v2\" created successfully",
+  "project": {
+    "project_hash": "7D41C09E5A2B8F36",
+    "project_name": "Customer API v2",
+    "project_description": "Customer management API",
+    "created_at": "2026-09-24T10:30:00",
+    "updated_at": null
+  }
+}
+```
 
-1. `src/routes/projects.py:create_new_project()` validates the session
-2. only users with `admin` in session permissions can proceed
-3. `src/Util/db/db_projects.py:create_project()` calls `sp_create_project`
-4. `create_default_groups(project_id)` runs immediately after insert
+The caller becomes creator and owner. The project is created with an empty default project group
+and three empty user groups (`admin_<project_id>`, `user_<project_id>`, `readonly_<project_id>`),
+so nobody except root can reach it yet. Next steps are in
+[Set up a new project](scenarios.md#set-up-a-new-project).
 
-### The critical side effect: `create_default_groups()`
+## List projects
 
-New projects do **not** start empty. The DB layer auto-creates:
-
-- one default project group: `default_{project_id}`
-- three default user groups:
-  - `admin_{project_id}`
-  - `user_{project_id}`
-  - `readonly_{project_id}`
-- links from each default user group to the default project group
-
-So before you create extra groups manually, dejate de joder and verify whether the generated defaults already solve the use case.
-
----
-
-## Inspecting Projects
-
-### List projects
+`GET /projects` — query `limit` (default `10`, max `500`), `offset`, `search`:
 
 ```bash
-curl -X GET "http://localhost:8000/projects?limit=20&offset=0" \
+curl "http://localhost:8000/projects?limit=50&offset=0" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-- admins see all projects through `list_all_projects()` / `search_projects()`
-- non-admin users get projects from `get_user_accessible_projects()`
-- the returned `access_level` is path-based (`group_access` for group-derived users, `admin_access` for admin paths), not derived from `get_user_project_permissions()`; see [architecture.md](architecture.md)
+What comes back depends on the caller: root sees every active, non-archived project, an admin
+user sees their assigned projects, and everyone else sees the projects they reach through groups.
+`search` filters by name or description for root and admin users only.
 
-### Get project details
+For root callers `pagination.total` is the page size and `has_more` is always `false`. Page until
+a page returns fewer than `limit` rows.
+
+## Get a project
 
 ```bash
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH" \
+curl "http://localhost:8000/projects/$PROJECT_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-The details route checks project access, loads project statistics, and returns the project plus access-context information.
+Returns the project, the caller's `user_access`, `statistics` and the `project_groups` that contain
+the project. Callers without admin scope need group reach, or they get `403` `AUTHZ_2003`.
+`statistics` holds group-based access counts
+([project statistics](reference.md#project-statistics)).
 
-### Get operational views
+## Update a project
 
-```bash
-# Members with effective access
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/members?limit=50&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
-
-# User groups with access to the project
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/groups" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Activity feed
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/activity?days=30" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Statistics
-curl -X GET "http://localhost:8000/projects/$PROJECT_HASH/stats" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## Updating Projects
-
-Update metadata with:
+`PUT /projects/{project_hash}` — form fields `project_name` and/or `project_description`:
 
 ```bash
 curl -X PUT "http://localhost:8000/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_name=Customer API v2&project_description=Updated description"
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "project_description=Customer platform backend"
 ```
 
-This updates the `projects` row through `sp_update_project`.
+Root, or an admin user assigned to the project. Omitted fields keep their value, and a description
+cannot be cleared. Metadata changes do not affect access.
 
-Use updates for naming and descriptive cleanup. Do **not** expect this to change access; access is managed through group links, not project metadata.
+## See who can access a project
 
----
-
-## Managing Access Through Groups
-
-This repo does **not** support direct user-to-project assignment.
-
-The live architecture is:
-
-```text
-user → user_group → project_group → project
-```
-
-### Add a project to a project group
+Users, paginated (`limit` 1-100) and optionally filtered by `user_type`:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/project-groups/$PROJECT_GROUP_HASH/projects" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_hash=$PROJECT_HASH"
+curl "http://localhost:8000/projects/$PROJECT_HASH/members?limit=100&user_type=consumer" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Grant a user group access to that project group
+User groups that reach the project through its project groups:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "project_group_hash=$PROJECT_GROUP_HASH"
+curl "http://localhost:8000/projects/$PROJECT_HASH/groups" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Revoke access
+Both need admin scope over the project. The member list includes every active root user.
+
+## Read the activity feed
 
 ```bash
-curl -X DELETE "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/project-groups/$PROJECT_GROUP_HASH" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+curl "http://localhost:8000/projects/$PROJECT_HASH/activity?days=7&activity_type=user_login&limit=100" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Operationally:
+Entries are newest first; `days` is 1-365 (default `30`). Same access rule as reading the project.
+Activity types are listed in the [audit logs reference](../audit_logs/reference.md).
 
-- add/remove users from user groups under `/admin/user-groups/.../members`
-- add/remove projects from project groups under `/admin/project-groups/.../projects`
-- grant/revoke team reach through `/admin/user-groups/.../project-groups`
+## Read project statistics
 
-That separation is not optional. Mixing access and capability concerns is how people create a quilombo.
+```bash
+curl "http://localhost:8000/projects/$PROJECT_HASH/stats" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
----
+Returns the project summary, the same `statistics` object as the details route (`total_users`,
+`active_sessions`, `total_groups`, `total_project_groups`, `group_distribution`) and
+`generated_at`. `active_sessions` is always `null`. For a count that includes root users, use
+`pagination.total` from the members route.
 
-## Deleting Projects
+## Give users access to a project
 
-Delete a project with:
+Access is managed from the groups side; no `/projects` route adds a user. The three steps, all
+documented in [groups usage](../groups/usage.md):
+
+1. Put the project in a project group: `POST /admin/project-groups/{group_hash}/projects`.
+2. Grant a user group that project group: `POST /admin/user-groups/{group_hash}/project-groups`.
+3. Add users to the user group: `POST /admin/user-groups/{group_hash}/members`.
+
+A new project's default groups already satisfy steps 1 and 2, so adding a user to
+`user_<project_id>` is enough ([example](../groups/scenarios.md#use-a-projects-default-groups)).
+
+## Delete a project
 
 ```bash
 curl -X DELETE "http://localhost:8000/projects/$PROJECT_HASH" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Current delete behavior is a **soft delete**:
+Root, or an admin user assigned to the project. The soft delete:
 
-- `projects.is_active = 0`
-- matching `project_group_members` rows are deactivated
-- active `user_sessions` for that project are invalidated
+- sets `projects.is_active = 0`, after which the project returns `404` on every route;
+- deactivates the project's rows in `project_group_members`, so no group reaches it;
+- deactivates its `user_sessions` rows; access tokens scoped to it fail with `401` on their next
+  use.
 
-The API warns that user-group access to the project has been revoked. The
-actual cascade happens through project membership deactivation; it does not
-delete user groups.
+The default project group and user groups are kept. There is no undelete route.
 
----
+## Transfer ownership or archive (not implemented)
 
-## Known Unimplemented Operations
+Both routes validate the request and then return `501` `INT_7006`:
 
-Two project endpoints exist but currently return `501 Feature Not Implemented`:
+```bash
+curl -X PATCH "http://localhost:8000/projects/$PROJECT_HASH/owner" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "new_owner_hash=$USER_HASH"
 
-- `PATCH /projects/{project_hash}/owner` — required form field `new_owner_hash`
-- `PATCH /projects/{project_hash}/archive` — required form field `archived` (bool)
+curl -X PATCH "http://localhost:8000/projects/$PROJECT_HASH/archive" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "archived=true"
+```
 
-Both validate the session and `admin` permission, resolve the target project (and the new owner for `owner`), then raise `FeatureNotImplementedError` in `src/routes/projects.py`.
-
-Relevant caveat:
-
-- the SQL stored procedures `sp_archive_project` and `sp_unarchive_project` exist in `schemas/stored_procedures/03_projects.sql`
-- the `PATCH /archive` route does **not** call them — it still raises `FeatureNotImplementedError`
-- ownership transfer does not even have a stored procedure yet
-
-The presence of these routes in the router therefore does not make the operations production-ready.
-
-### Archive enforcement is live even though the toggle endpoint is not
-
-Do not conflate "the archive endpoint is a stub" with "archive does nothing." Archived projects are **excluded** from authorization workflows in the DB/auth layer:
-
-- logins, project tokens, API-key validation, and session validation all skip archived projects
-- `v_user_project_access` and the access stored procedures enforce `archived` / `is_active` consistently
-
-In other words, **archive enforcement exists** (a project flagged `archived` in the database is denied at auth time), but the **archive toggle endpoint** (`PATCH /projects/{hash}/archive`) is still a `501` stub. There is currently no API route that flips the `archived` flag.
-
----
-
-## Related Documentation
-
-- **[Projects Overview](README.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Troubleshooting](troubleshooting.md)**
+Before the `501` they still return `400` for a missing field, `403` for a caller without admin
+scope and `404` for an unknown project or new owner. Nothing is changed. Archive state is enforced
+everywhere else; see [archive state](architecture.md#archive-state).

@@ -44,11 +44,11 @@ place.
   the name of the access-token cookie.
 - Logout revokes the current session; deactivating a user revokes all of that
   user's sessions and refresh families.
-- Project-scoped consumer login, `GET /auth/validate`, and consumer
-  `POST /auth/validate-api-key` may include a provider-neutral subscription
-  `plan`, resolved at response time from the project's billing group. It is never
-  stored in JWT claims, cookies, or Redis session state. Platform sessions
-  without a project, refresh, and switch-project responses omit it.
+- Project-scoped consumer login, `POST /auth/refresh`, `GET /auth/validate`, and
+  consumer `POST /auth/validate-api-key` may include a provider-neutral
+  subscription `plan`, resolved at response time from the project's billing
+  group. It is never stored in JWT claims, cookies, or Redis session state.
+  Platform sessions without a project and switch-project responses omit it.
 
 ## Access Model
 
@@ -111,7 +111,7 @@ The [error reference](/documentation/USAGE/errors.md) lists every code.
 
 ## Route Modules
 
-API version `2.2.0` registers 246 method/path operations across 27 modules in
+API version `2.2.0` registers 246 method/path operations across 28 modules in
 `src/routes`, each under one tag:
 
 | Module | Tag | Operations | Surface |
@@ -133,6 +133,7 @@ API version `2.2.0` registers 246 method/path operations across 27 modules in
 | `internal_billing.py` | Billing Internal | 6 | Billing S2S facts, catalog, Checkout, Portal, resync |
 | `stripe_webhooks.py` | Stripe Webhooks | 2 | Global fallback and per-billing-group Stripe webhooks |
 | `admin_oauth.py` | Admin - OAuth | 20 | Provider catalog, connections, credentials, project bindings, readiness |
+| `assistant.py` | Admin - Assistant | 0 | Root-only WebSocket assistant (one WebSocket endpoint; no HTTP operations) |
 | `admin_patreon.py` | Admin - Patreon | 8 | Root-only Patreon operations |
 | `internal_patreon.py` | Patreon Internal | 2 | Patreon entitlement S2S read and resync |
 | `patreon_webhooks.py` | Patreon Webhooks | 1 | Patreon webhook |
@@ -144,9 +145,10 @@ API version `2.2.0` registers 246 method/path operations across 27 modules in
 | `bulk_operations.py` | Bulk Operations | 4 | Bulk user, group, and role operations |
 | `system.py` | System Information | 7 | Authenticated details, public ping, cache operations |
 
-The count excludes FastAPI's built-in documentation routes and the five routes
-declared directly in `src/main.py`: `/ping`, the two `/documentation` routes,
-the legacy `/docs/USAGE/*` alias, and the `/` redirect to `/docs`.
+The count excludes FastAPI's built-in documentation routes and the six routes
+declared directly in `src/main.py`: `/ping`, the three `/documentation` routes
+(wiki home, page renderer, and the `_search.json` index behind its search), the
+legacy `/docs/USAGE/*` redirect, and the `/` redirect to `/docs`.
 
 ## Further Reading
 

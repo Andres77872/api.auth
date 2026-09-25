@@ -1,112 +1,77 @@
-# Roles Documentation
+# Roles
 
-Detailed, repo-specific documentation for the global roles system used in `api.auth`.
+The roles suite covers the `/roles` API (`src/routes/global_roles.py`, 28 routes): defining global
+permissions, bundling them into permission groups, linking groups to roles, giving each user one
+global role, and keeping per-project role catalogs. Operators and delegated role managers use the
+write routes; any signed-in client can read the catalog of roles, groups, and permissions. Assigning
+permission groups to user groups or directly to users, and self-inspection of effective permissions,
+belong to the [permissions suite](../permissions/README.md).
 
----
+## Key concepts
 
-## Overview
-
-This documentation set covers the **global roles model** implemented in this repository:
-
+```text
+users.role_id ─► role ─► permission groups ─► permissions      (global, no project dimension)
+project ─► role catalog                                          (metadata only)
 ```
-USER → ROLE → PERMISSION_GROUP → PERMISSION
-              ↘
-                PROJECT_CATALOG (metadata only)
-```
 
-The roles system is the **baseline authorization layer** for this API. What matters operationally:
+- **Permission.** A name that guards match on, such as `manage_users`.
+- **Permission group.** A named bundle of permissions, reusable by roles, user groups, and users.
+- **Role.** A named bundle of permission groups. Each user holds at most one (`users.role_id`).
+- **Role and consumers.** For a consumer, the role is the only source of the permissions route guards
+  see. `root` and `admin` sessions carry fixed built-in lists, so a role changes nothing for them.
+  Details: [Permission resolution](../permissions/resolution.md).
+- **Project role catalog.** Suggests roles for a project. It restricts nothing.
 
-- **One role per user** — the `users` table has a single `role_id` column
-- **Roles are global**, not project-scoped
-- **Permission resolution during auth is ROLE-ONLY** — user-group and direct permission assignments are NOT included in session-time permission checks
-- **Catalog endpoints are metadata only** — they do not restrict which roles can be assigned
-- **All write endpoints use `multipart/form-data`**, not JSON
-- **Soft deletes** (`is_active = FALSE`) are used, not hard removals
+## Route families
 
----
+| Family | Paths | Routes |
+| --- | --- | --- |
+| Roles | `/roles/roles`, `/roles/roles/{role_hash}` | 5 |
+| Role to permission-group links | `/roles/roles/{role_hash}/permission-groups[/{group_hash}]` | 3 |
+| Permission groups | `/roles/permission-groups`, `/roles/permission-groups/{group_hash}` | 5 |
+| Group to permission links | `/roles/permission-groups/{group_hash}/permissions[/{permission_hash}]` | 3 |
+| Permissions | `/roles/permissions`, `/roles/permissions/{permission_hash}` | 5 |
+| User role | `/roles/users/me/role`, `/roles/users/{user_hash}/role` | 4 |
+| Project role catalog | `/roles/projects/{project_hash}/catalog/roles[/{role_hash}]` | 3 |
 
-## Documents in This Suite
+`POST /admin/projects/{project_hash}/bulk-assign-roles` (bulk operations router) assigns one role to
+many users and is documented here too. Full contract: [Roles reference](reference.md).
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day role CRUD, permission-group linking, user assignment, and catalog operations |
-| [architecture.md](architecture.md) | Data model, tables, route organization, auth guards, entity relationships |
-| [request-flow.md](request-flow.md) | End-to-end runtime flows: create role, attach groups, assign to user, inspect, remove, catalog |
-| [scenarios.md](scenarios.md) | Concrete admin/user workflows with curl examples |
-| [reference.md](reference.md) | Endpoint tables and operational notes for all `/roles` endpoints |
-| [troubleshooting.md](troubleshooting.md) | Common failures, caveats, and diagnostics |
+## Rules and caveats
 
----
+- **Who can write.** `root` and `admin` users, or a consumer whose **role** grants `manage_roles`
+  (user-group and direct grants do not count here). Reads need any access token; API keys are not
+  accepted.
+- **Reserved names are root-only.** Non-root callers cannot create, edit, move, or hand out
+  `admin`, `manage_users`, `manage_roles`, and the other
+  [reserved permission names](reference.md#reserved-permission-names), and cannot change their own role.
+  The same holds for bulk role assignment and for the `/permissions` assignment routes.
+- **Doubled path.** Role CRUD lives at `/roles/roles/...`: the router prefix `/roles` plus route paths
+  that also start with `/roles`.
+- **Form fields.** Writes take form-encoded or multipart bodies. A JSON body is not read (`400`
+  `VAL_3001` for required fields; optional-only `PUT`s silently change nothing).
+- **Soft deletes.** Deleting a role, group, or permission marks it inactive and keeps its name taken.
+  It stops granting at once, through every source; links to it are kept as history.
+- **Pagination.** `pagination.total` is the size of the returned page, not the overall count.
+- **Timing.** Changes reach consumers' existing tokens within about 30 seconds (`VALIDATE_CACHE_TTL`)
+  without a new login.
 
-## Core Model in This Repo
+## In this suite
 
-### Roles
+| Document | Purpose |
+| --- | --- |
+| [README.md](README.md) | Overview, route families, rules |
+| [usage.md](usage.md) | One task per section: permissions, groups, roles, assignment, catalog |
+| [scenarios.md](scenarios.md) | End-to-end workflows: build a role, delegate role management, change and retire roles |
+| [reference.md](reference.md) | Endpoints, fields, reserved names, response objects, error codes |
+| [request-flow.md](request-flow.md) | What happens to a request, guard by guard |
+| [architecture.md](architecture.md) | Tables, procedures, invariants, and design decisions |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause, fix |
 
-- Managed under `/roles/roles`
-- Stored in `roles` table
-- Fields: `role_name` (unique, immutable), `role_display_name`, `role_description`, `role_priority` (0-100, ordering only), `is_system_role` (protected from deletion), `is_active`
-- Linked to permission groups through `role_permission_groups`
-- Assigned directly to users via `users.role_id`
+## Related
 
-### Permission Groups (within roles context)
-
-- Managed under `/roles/permission-groups`
-- Stored in `global_permission_groups`
-- Categories: `general`, `admin`, `api`, `data` (documented, not DB-enforced)
-- Filled with permissions through `global_permission_group_permissions`
-- Attached to roles through `role_permission_groups`
-
-### Permissions
-
-- Managed under `/roles/permissions`
-- Stored in `global_permissions`
-- Individual capability tokens (e.g., `read_data`, `manage_users`)
-
-### User Role Assignment
-
-- Each user has **one** global role via `users.role_id` (nullable)
-- Assignment replaces the previous role — no stacking
-- Assignment is blocked for inactive users
-
-### Project Role Catalog
-
-- Managed under `/roles/projects/{hash}/catalog/roles`
-- Stored in `role_project_catalog`
-- **METADATA ONLY** — does not restrict role assignment or authorization
-
----
-
-## Recommended Reading Order
-
-1. Start with [usage.md](usage.md)
-2. Then read [architecture.md](architecture.md)
-3. Use [request-flow.md](request-flow.md) for runtime behavior
-4. Keep [reference.md](reference.md) open while operating the API
-5. Use [scenarios.md](scenarios.md) and [troubleshooting.md](troubleshooting.md) when applying it to real workflows
-
----
-
-## Scope and Caveats
-
-- This suite documents the **active public route layer** under `src/routes/global_roles.py`
-- The **auth/session flow uses ROLE-ONLY permission resolution** — this is the most important caveat. See [permissions/resolution.md](../permissions/resolution.md) for the full explanation of the auth-vs-inspection gap
-- **Bulk role assignment takes role names and leaves each user with one role** — with several `role_names`, the last one wins; see [troubleshooting.md](troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role)
-- **Pagination `total` is incorrect** — returns page count, not DB total
-- **Soft delete leaves orphans** — deleting a role does not clear `users.role_id`
-- **`is_system_role` is not settable via API** — system roles must be created via direct DB access
-- **`role_name` is immutable** — cannot be changed after creation
-- Guard behavior differs between `/roles` (role-only check) and `/permissions` (extended check); see [architecture.md](architecture.md)
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** - Complete usage index
-- **[Permissions Documentation Suite](../permissions/README.md)** - Permission groups, assignments, dual-path authorization model
-- **[Permission Resolution](../permissions/resolution.md)** - The critical auth-vs-inspection gap explained
-- **[Groups Documentation Suite](../groups/README.md)** - User groups, project groups, and group-based permission assignments
-- **[Projects Documentation Suite](../projects/README.md)** - Project access model separate from capability management
-- **[Users Documentation Suite](../users/README.md)** - User profile, access summary, and lifecycle operations
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** - Login, session management, project switching
-- **[Error Reference](../errors.md)** - Error codes, response shapes, and troubleshooting
-- **Database schema** (`schemas/`) - SQL tables, views, and stored procedures
+- [Permission resolution](../permissions/resolution.md) — how roles and assignments become effective permissions
+- [Permissions](../permissions/README.md) — user-group and direct assignments, self-inspection
+- [Groups](../groups/README.md) — user groups and project access (which projects a user can enter)
+- [Users](../users/README.md) — user types (`root`, `admin`, `consumer`)
+- [Platform-wide contracts](../README.md#platform-wide-contracts) and [error reference](../errors.md)

@@ -561,3 +561,29 @@ class TestStreamJsonExport:
         assert rows[0]["request_timestamp"] is requested_at
         assert rows[1]["response_timestamp"] is responded_at
         fetch_export_data.assert_called_once_with("api_audit", filters, 2)
+
+    @pytest.mark.asyncio
+    async def test_audit_export_never_contains_access_token_material(self):
+        # Runs the real get_audit_logs over a DB row written before the fix,
+        # whose session_id holds the first 256 chars of the bearer JWT.
+        from unittest.mock import MagicMock
+        from src.Util.JWT_Security import JWTTokenHandler
+
+        token = JWTTokenHandler.create_access_token("sess-export", "usr-hash-1", "prj-hash-1")
+        legacy_row = ("audit-1", "req-1", "GET", "/users/profile", None,
+                      "usr-1", "consumer", token[:256]) + (None,) * 25
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [legacy_row]
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.cursor.return_value = cursor
+
+        with patch("src.Util.db.db_audit_analytics.get_connection", return_value=conn):
+            chunks = await _collect_stream(stream_json_export("audit", {}, limit=1))
+
+        body = "".join(chunks)
+        payload = json.loads(body)
+        assert payload[0]["session_id"].startswith("tokhash:")
+        assert token.split(".")[0] not in body
+        assert token[:256] not in body

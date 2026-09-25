@@ -1,275 +1,150 @@
-# Patreon Link Scenarios
+# Patreon link scenarios
+
+End-to-end cases chaining several calls. Request fields and bodies are in
+[reference.md](reference.md); the steps inside each call are in
+[request-flow.md](request-flow.md). Examples use `$AUTH` for the base URL,
+`$ACCESS_TOKEN` for the signed-in consumer and `$S2S_TOKEN` for the companion's bearer.
+
+## First link
+
+1. The user signs in (or completes an OAuth reauth) so the session is recently
+   authenticated.
+2. The front end asks for a proof, sending the e-mail of the user's Patreon account:
+
+   ```bash
+   curl -X POST "$AUTH/auth/patreon/link/request" \
+     -H "Authorization: Bearer $ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"patreon_email_hint": "fan@example.com", "explicit_user_intent": true}'
+   ```
 
-This document describes expected behavior for common and failure scenarios in the Patreon entitlement/link integration.
+   The answer is always the neutral `202`. If the e-mail belongs to a member of a
+   configured campaign, a proof is e-mailed to that Patreon e-mail
+   (`patreon_link_proof_requested`).
+3. The user opens the e-mailed link. The front end takes its `token` parameter and, from
+   the same signed-in session and still within the recent-authentication window, posts
+   it:
+
+   ```bash
+   curl -X POST "$AUTH/auth/patreon/link/confirm" \
+     -H "Authorization: Bearer $ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"token": "'"$PROOF_TOKEN"'"}'
+   ```
+
+   `200` with `link_status: linked` and the entitlement (`patreon_linked`). If the
+   Patreon read right after linking fails, the entitlement is `pending` and a resync is
+   queued.
+4. The companion reads the entitlement server-to-server:
+
+   ```bash
+   curl "$AUTH/internal/users/$USER_HASH/entitlements" \
+     -H "Authorization: Bearer $S2S_TOKEN"
+   ```
+
+If the recent-authentication window runs out between steps 2 and 3, confirm answers
+`401` `AUTH_1008`; the user reauthenticates and posts the same token again while it is
+valid (`900` seconds by default).
+
+## Hint does not match the Patreon e-mail
+
+The user types an address that is not the one on their Patreon account. No member
+matches, nothing is sent, and the answer is the same neutral `202`
+(`patreon_link_rejected`, `member_not_available`). The UI should tell the user to use the
+e-mail of their Patreon account and check that inbox; it must not reveal whether the
+address belongs to a patron.
+
+## Hidden or empty Patreon e-mail
+
+The member is found but Patreon returns no e-mail for them. No proof can be delivered, so
+nothing is sent and the answer is the neutral `202` (`patreon_email_hidden_or_null`).
+There is no fallback: no user-supplied address, no local e-mail, no e-mail equality, no
+Patreon login. The link cannot be completed until Patreon returns an e-mail.
+
+## Patreon account linked to someone else
+
+User B completes a proof for a Patreon account already linked to user A. Confirm answers
+the neutral `202` (`provider_identity_unavailable`). B learns nothing about A: no
+identity, plan, tier or link state. Only A unlinking frees the Patreon account.
+
+## Switching to another Patreon account
+
+A user with an active link who confirms a proof (for any Patreon account) gets the
+neutral `202` (`active_patreon_link_exists`). To switch:
+
+1. `DELETE /auth/patreon/link` (recent authentication required). The entitlement becomes
+   `free`, history is kept, sessions are untouched.
+2. Request and confirm a proof for the new account as in [First link](#first-link).
+
+## Tier upgrade or downgrade
+
+Patreon sends `members:pledge:update` with the full member document. The webhook verifies
+the signature, finds the linked user, classifies the new tier and stores it at once
+(`patreon_entitlement_changed`). The next S2S read reflects it. A downgrade is applied the
+same way, because a complete signed document is Patreon's own statement of the member's
+state.
+
+## Cancellation or removal
+
+A `members:delete` or `members:pledge:delete` event never changes the entitlement
+directly: it queues a resync. The worker re-reads the member; once a complete read shows
+no active mapped tier the entitlement becomes `former` with plan `free`. If Patreon no
+longer returns the member at all, the next complete sweep downgrades them the same way.
+The link stays, so the user can pledge again without relinking.
+
+## Unknown tier
+
+An active member holds a tier that is not in the tier map. Nothing is granted from it:
+the entitlement becomes `pending` (a paid plan already on record is kept) and a resync is
+requested. Webhook deliveries record `patreon_tier_map_miss`. Fix: add the mapping to the
+tier-map source, restart the API and the worker so they read it, and queue a resync.
+
+## Patreon outage or expired creator token
 
-Patreon is **entitlement/link only**. It is not local authentication authority and must not issue local sessions, access tokens, refresh tokens, cookies, or API keys.
+Sync jobs fail and retry with backoff; a Patreon `429` is honored exactly. Nothing is
+written on failure, so every entitlement keeps its last value and reads as `stale` once
+`stale_after` passes (`PATREON_SYNC_STALE_AFTER_SECONDS` after the last sync). Users with
+no data stay free. A `401` from Patreon marks the stored creator token revoked and, with
+refresh enabled, triggers an immediate refresh; otherwise rotate
+`PATREON_CREATOR_ACCESS_TOKEN` (see the [runbook](../../RUNBOOKS/patreon-link.md)). After
+recovery, the next sweep refreshes every linked member.
 
-## Scenario Matrix
+## Webhook redelivery
 
-| Scenario | Expected posture |
-| --- | --- |
-| Matching email | Email equality is a proof hint only; link still requires local auth, recent reauth, explicit intent, and provider identity resolution. |
-| Mismatched email | Send email-loop proof only to the Patreon-returned member email; no entitlement until proof succeeds. |
-| Hidden/null Patreon email | Block v1 automated activation safely; no fallback to user-supplied/local email. |
-| Provider identity conflict | Reject generically without revealing the linked user's identity or entitlement. |
-| Relink | Require explicit unlink/relink lifecycle and preserve prior history. |
-| Unknown tier | Fail safe; do not grant paid entitlement from an unmapped tier. |
-| Stale entitlement | Label as stale/degraded using normalized fields; do not hide freshness state. |
-| Token refresh failure | Report degraded health and preserve last-known snapshots; fail closed for new grants. |
-| Webhook replay | Return safe success without duplicate side effects. |
-| Partial webhook | Enqueue source-of-truth resync or mark stale; no destructive downgrade. |
-| Rollback | Disable behavior non-destructively and preserve live history. |
+Patreon retries a delivery after a timeout. The ledger recognizes the delivery hash and
+answers `200` without reprocessing. A delivery whose earlier attempt `failed`, or that
+has been stuck in `received` for over 10 minutes, is processed again.
 
-## 1. Matching Email
+## Support asks for a fresh read
 
-### Given
+The companion (or an operator) queues a resync for one user:
 
-- The local user is authenticated.
-- Recent local reauthentication is satisfied.
-- `POST /auth/patreon/link/request` is called with explicit user intent.
-- Patreon returns a non-null member email that matches the local activated email.
+```bash
+curl -X POST "$AUTH/internal/users/$USER_HASH/entitlements/patreon/resync" \
+  -H "Authorization: Bearer $S2S_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"force": true, "reason": "support_ticket"}'
+```
 
-### Expected behavior
+`202` `status: queued` with the job id in `correlation_id`; repeating the call before the
+job runs returns the same job. The worker must be running. Root users can do the same from
+`POST /admin/patreon/resync`, which also answers `not_linked` for users without a link.
 
-- The matching email may be treated as a proof hint only after explicit user confirmation and provider identity resolution.
-- Durable authority is still the Patreon provider identity HMAC/fingerprint, not the email string.
-- The link may activate only if no active conflict exists for the provider identity.
-- The response remains safe and must not disclose raw Patreon identifiers, raw or masked Patreon email, signatures, payloads, hash prefixes, audit rows, tokens, or secrets.
-
-### Must not happen
-
-- Email equality must not create a link by itself.
-- The Patreon email must not activate, primary-mark, recover, or otherwise authorize local email state.
-- The flow must not create a local session.
-
-## 2. Mismatched Email
-
-### Given
-
-- The local user's activated email differs from the non-null Patreon member email returned by the creator API.
-- The local user explicitly requested linking.
-
-### Expected behavior
-
-- `api.auth` creates a pending proof request.
-- A single-use email-loop token is sent only to the Patreon-returned member email.
-- The pending proof is hash-only at rest, purpose-scoped to Patreon linking, short-lived, single-use, and bound to the initiating local user and pending link context.
-- No active link or paid entitlement is granted until `POST /auth/patreon/link/confirm` consumes the proof successfully.
-
-### Must not happen
-
-- Do not send the proof to the local account email unless Patreon returned that exact email.
-- Do not send to a user-supplied replacement email.
-- Do not grant entitlement from email equality or from a user-entered hint.
-
-## 3. Hidden or Null Patreon Email
-
-### Given
-
-- Patreon returns a member whose email is hidden or null.
-- The configured v1 secondary proof is email-loop proof.
-
-### Expected behavior
-
-- The link remains unactivated or blocked-safe.
-- The public response remains generic and neutral.
-- Operators may see non-secret activity/health evidence of blocked hidden-email outcomes.
-- No entitlement is granted from that membership in v1.
-
-### Must not happen
-
-- Do not ask the user to supply a replacement proof email as authority.
-- Do not fall back to local email equality.
-- Do not introduce a Patreon OAuth-login path as a workaround.
-- Do not expose whether a hidden-email member exists to the browser.
-
-## 4. Conflict: Provider Identity Already Linked
-
-### Given
-
-- Patreon provider identity `P1` is already actively linked to local user A.
-- Local user B completes or attempts to complete proof for `P1`.
-
-### Expected behavior
-
-- The activation is rejected.
-- The public response is generic.
-- Activity records use redacted reason codes only, such as `provider_identity_unavailable`.
-- User B learns nothing about user A's identity, email, plan, campaign, tier, link state, or history.
-
-### Must not happen
-
-- Do not return the existing owner.
-- Do not disclose whether the owner is active, paid, revoked, or stale.
-- Do not expose provider HMACs, fingerprints, hash prefixes, or audit rows.
-
-## 5. Relink: Same User Wants a Different Patreon Identity
-
-### Given
-
-- The local user already has an active Patreon link to provider identity `P1`.
-- The same local user attempts to link provider identity `P2`.
-
-### Expected behavior
-
-- The system requires an explicit unlink/relink lifecycle.
-- Recent local reauthentication is required for unlink and relink-sensitive operations.
-- Prior link, snapshot, entitlement, and unlink history for `P1` remains preserved indefinitely.
-- Current entitlement should be projected to free/revoked/unlinked after unlink until a new link lifecycle completes.
-
-### Must not happen
-
-- Do not silently overwrite the active provider identity.
-- Do not destructively delete prior link evidence.
-- Do not revoke local auth sessions due to Patreon unlink/relink.
-
-## 6. Unknown Tier
-
-### Given
-
-- Patreon returns an active member with an entitled tier.
-- The campaign/tier pair has no active mapping in the configured tier map.
-
-### Expected behavior
-
-- Classification fails safe.
-- No paid entitlement is granted from the unmapped tier.
-- A non-secret tier-map miss activity/health signal is recorded.
-- Source-of-truth resync may be queued if the payload is incomplete or ambiguous.
-
-### Must not happen
-
-- Do not expose raw campaign ID or raw tier ID to browser-visible responses.
-- Do not invent a plan code from Patreon tier names.
-- Do not downgrade an existing paid snapshot solely from a partial webhook with unknown tier evidence.
-
-## 7. Stale Entitlement
-
-### Given
-
-- The current entitlement snapshot exists.
-- `stale_after` has passed or sync freshness exceeds the configured threshold.
-
-### Expected behavior
-
-- `GET /auth/patreon/link/status` and S2S reads expose normalized stale/degraded state through safe fields.
-- Existing last-known paid snapshots may be preserved as stale/degraded until source-of-truth correction completes.
-- Health reports stale sync separately from unrelated local authentication health.
-- Magic Worlds can apply its own bounded cache policy using `last_synced_at` and `stale_after`.
-
-### Must not happen
-
-- Do not present stale data as freshly confirmed.
-- Do not add Patreon entitlement fields to `/auth/validate` to solve staleness.
-- Do not leak provider failure internals, raw payloads, campaign/tier IDs, hashes, or audit rows.
-
-## 8. Creator Token Refresh Failure
-
-### Given
-
-- The creator access token expires or refresh fails.
-- Scheduled sync, manual resync, or provider API access cannot complete.
-
-### Expected behavior
-
-- Provider health is degraded with a non-secret reason such as `creator_token_invalid` or `creator_token_refresh_failed`.
-- Existing snapshots are preserved as stale/degraded.
-- New paid grants fail closed when no trusted current snapshot exists.
-- Token state, if automatic refresh is enabled, remains global provider state and encrypted/server-only.
-
-### Must not happen
-
-- Do not store creator tokens in `user_external_accounts` or any per-user row.
-- Do not log raw tokens, refresh tokens, client secrets, or token fingerprints to browser-visible surfaces.
-- Do not revoke or downgrade users solely because the creator token could not be refreshed.
-
-## 9. Webhook Replay
-
-### Given
-
-- Patreon retries the same webhook delivery.
-- The delivery has the same allowed event type and raw body digest/member reference used for local idempotency.
-
-### Expected behavior
-
-- The delivery ledger recognizes the replay/duplicate.
-- The receiver returns a safe success posture.
-- No duplicate entitlement history, proof email, activity side effect, or user-visible mutation is created.
-
-### Must not happen
-
-- Do not treat replay as a second entitlement change.
-- Do not expose the delivery hash, raw body digest, signature, or payload to clients.
-- Do not rely on a native Patreon delivery ID; the local ledger owns idempotency.
-
-## 10. Partial Webhook
-
-### Given
-
-- A verified Patreon webhook is missing relationships, tier data, campaign data, or other fields needed for safe classification.
-
-### Expected behavior
-
-- The webhook is accepted only after raw-body signature verification.
-- The delivery is recorded safely.
-- A per-member/campaign resync is queued when enough non-secret reference exists, or current state is marked stale/resync-pending.
-- Current entitlement is not destructively downgraded from partial evidence.
-
-### Must not happen
-
-- Do not trust unverified payloads.
-- Do not downgrade paid entitlement solely from missing fields.
-- Do not persist raw payloads unless explicitly enabled for encrypted raw-payload quarantine with a 30-day maximum.
-
-## 11. Rollback Behavior
-
-### Given
-
-- Live Patreon links, snapshots, webhook deliveries, proof rows, unlink history, or audit evidence may exist.
-- Operators need to roll back the feature.
-
-### Expected behavior
+## Rollback
 
 Rollback is non-destructive:
 
-1. Disable `PATREON_LINKING_ENABLED`.
-2. Disable `PATREON_WEBHOOKS_ENABLED` or block `POST /webhooks/patreon` at ingress.
-3. Disable `PATREON_SYNC_ENABLED` and stop `src/workers/patreon_sync_worker.py`.
-4. Disable `PATREON_S2S_ENTITLEMENT_ENABLED` so Magic Worlds stops pulling Patreon entitlement.
-5. Disable `PATREON_CREATOR_TOKEN_REFRESH_ENABLED` and `PATREON_RAW_PAYLOAD_CAPTURE_ENABLED` if needed.
-6. Clear only Patreon Redis namespaces for proof/rate/dedupe/sync locks.
-7. Leave additive schema and history rows in place once live data exists.
+1. `PATREON_LINKING_ENABLED=false` — no new proofs or links.
+2. `PATREON_WEBHOOKS_ENABLED=false`, or block `POST /webhooks/patreon` at ingress — Patreon
+   receives `503` and retries later.
+3. `PATREON_SYNC_ENABLED=false`, and stop the worker if needed.
+4. `PATREON_S2S_ENTITLEMENT_ENABLED=false` — the companion's reads answer `401`; it must
+   fall back to its own default.
+5. Turn off `PATREON_CREATOR_TOKEN_REFRESH_ENABLED` and `PATREON_RAW_PAYLOAD_CAPTURE_ENABLED`
+   if they were on.
+6. Clear only `patreon_rate:*` Redis keys if needed.
+7. Keep every table and history row.
 
-### Must not happen
-
-- Do not destructively delete live link, snapshot, webhook, proof, unlink, or audit history as normal rollback.
-- Do not clear local auth session, refresh-token, Google OAuth, or unrelated Redis namespaces.
-- Do not remove additive schema in environments with live Patreon records unless a separate destructive preflight proves it is safe.
-
-## Scenario-to-Activity Hints
-
-| Scenario | Typical activity code |
-| --- | --- |
-| Proof requested | `act-cat-075` / `patreon_link_proof_requested` |
-| Proof consumed | `act-cat-076` / `patreon_link_proof_consumed` |
-| Link activated | `act-cat-077` / `patreon_linked` |
-| Link rejected/conflict/hidden email | `act-cat-078` / `patreon_link_rejected` |
-| Unlink | `act-cat-079` / `patreon_unlinked` |
-| Webhook accepted | `act-cat-080` / `patreon_webhook_received` |
-| Webhook rejected | `act-cat-081` / `patreon_webhook_rejected` |
-| Webhook replay | `act-cat-082` / `patreon_webhook_replay_ignored` |
-| Sync started/completed/failed | `act-cat-083`..`act-cat-085` |
-| Entitlement changed | `act-cat-086` / `patreon_entitlement_changed` |
-| Unknown tier | `act-cat-087` / `patreon_tier_map_miss` |
-| Token refresh outcome | `act-cat-088`..`act-cat-089` |
-| Retention purge | `act-cat-090` / `patreon_retention_purged` |
-
-Activity details must remain redacted and must not include raw Patreon IDs, emails, signatures, payloads, tokens, secrets, fingerprints, hash prefixes, or audit rows.
-
-## Related Documentation
-
-- [Overview](README.md)
-- [Architecture](architecture.md)
-- [Request Flow](request-flow.md)
-- [Reference](reference.md)
-- [Troubleshooting](troubleshooting.md)
+Local sessions, refresh tokens, OAuth and unrelated Redis keys are not touched. Link
+status and unlink keep working with linking disabled. The full procedure is in the
+[runbook](../../RUNBOOKS/patreon-link.md).

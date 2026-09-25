@@ -1,149 +1,154 @@
-# Google OAuth/OIDC Usage Guide (Deprecated Aliases)
+# Google OAuth (deprecated aliases)
 
-> **Deprecated.** `/auth/google/*` now delegates to the provider-agnostic OAuth
-> pipeline with the connection key `google`. The routes are still registered and
-> still served, and FastAPI marks all five `deprecated=True` in the OpenAPI
-> document. New integrations should use the **[OAuth suite](../oauth/README.md)**
-> and the `/auth/oauth/*` routes, which reach Google plus GitHub, Discord,
-> Microsoft and generic OIDC from the same contract.
->
-> This suite remains the reference for the Google-specific alias behavior: the
-> `GOOGLE_OAUTH_*` environment configuration that is still authoritative while
-> `OAUTH_CONFIG_SOURCE=env`, the provider-init redemption contract, and the
-> `act-cat-064..074` activity codes the aliases emit.
+> [!IMPORTANT]
+> `/auth/google/*` is deprecated. The five routes are still served (OpenAPI marks them
+> `deprecated`) and delegate to the provider-agnostic OAuth pipeline with the connection
+> key `google`. New integrations use the [OAuth suite](../oauth/README.md): `init` from the
+> backend with a project API key, then `/auth/oauth/start` and `/auth/oauth/callback`.
 
-Operator and integrator index for the consumer-only Google OAuth/OIDC login
-surface in `api.auth`.
+This suite covers only what is specific to the aliases and to Google: the legacy
+provider-init handshake of `POST /auth/google/start`, the `GOOGLE_OAUTH_*` environment
+configuration used while `OAUTH_CONFIG_SOURCE=env`, the `act-cat-064..074` activity codes,
+and the Google scope and token rules. Everything else — state, PKCE and nonce handling,
+login, link, reauth and unlink, error codes, rate limits — is the shared pipeline
+documented in the OAuth suite.
 
-This guide is intentionally strict. Google OAuth is an additive login path that
-reuses the existing local project-scoped session lifecycle; it is **not** a
-replacement identity system and it is **not** a place to leak project/group scope.
+## Route status
 
-> Provider boundary: Google may login/link and can issue the existing local
-> `LoginResponse` after OAuth/OIDC plus local authorization succeeds. Patreon is
-> entitlement/link only, never starts a local login/session, and is documented
-> separately in [Patreon account linking](../patreon-link/README.md).
-
-## Quick Navigation
-
-| Document | Purpose |
-| --- | --- |
-| [OAuth suite](../oauth/README.md) | **Canonical** provider-agnostic sign-in: `/auth/oauth/*`, database-backed connections and project bindings, readiness checks. |
-| [Architecture](architecture.md) | Decisions, data flow, storage boundaries, identity tree, and session reuse. |
-| [Request Flow](request-flow.md) | Start, callback, link, reauth, unlink, success/failure surfaces, and cookie notes. |
-| [Scenarios](scenarios.md) | Returning user, auto-create, collision/ATO block, Workspace denial, project denial, unlink refusal, outage. |
-| [Troubleshooting](troubleshooting.md) | State replay, nonce mismatch, JWKS `kid` miss, token exchange, provider-init, redirects, Redis fail-closed. |
-| [Reference](reference.md) | Env vars, endpoints, models, `EXT_8xxx` errors, `act-cat-064..074`, redaction, exact allowlists. |
-
-## Route Status
-
-| Route | Method | Provider-agnostic equivalent |
+| Alias | Method | Provider-agnostic equivalent |
 | --- | --- | --- |
-| `/auth/google/start` | POST | `POST /auth/oauth/start` |
+| `/auth/google/start` | POST | `POST /auth/oauth/init` (backend) + `POST /auth/oauth/start` |
 | `/auth/google/callback` | GET | `GET /auth/oauth/callback` |
-| `/auth/google/link/start` | POST | `POST /auth/oauth/{connection}/link/start` |
-| `/auth/google/reauth/start` | POST | `POST /auth/oauth/{connection}/reauth/start` |
-| `/auth/google/unlink` | DELETE | `DELETE /auth/oauth/{connection}/link` |
+| `/auth/google/link/start` | POST | `POST /auth/oauth/google/link/start` |
+| `/auth/google/reauth/start` | POST | `POST /auth/oauth/google/reauth/start` |
+| `/auth/google/unlink` | DELETE | `DELETE /auth/oauth/google/link` |
 
-The aliases keep their original request and response shapes. The difference is
-where configuration comes from: the aliases read the `GOOGLE_OAUTH_*`
-environment, while `/auth/oauth/*` resolves a connection and a project binding
-from the database. Identity storage is shared, so an account linked through an
-alias resolves identically through the agnostic routes and the reverse.
+What differs from `/auth/oauth/*`:
 
-## Scope and Token-Minimization Rules
+- `start` takes an opaque `provider_init_token` minted by a companion backend and redeems
+  it server-to-server, instead of an init token minted by `api.auth`.
+- The callback is `GET` only, has no `iss` parameter and ignores `error_description`.
+- Link, reauth and unlink always use the `google` binding of the session's project.
+- The `oauth_state` cookie is scoped to path `/auth/google`.
+- Activity uses the `google_oauth_*` types `act-cat-064..074`; reauth and cancellation
+  use the generic `oauth_reauth_succeeded` and `oauth_user_cancelled`.
+- `OAUTH_ENABLED` is not checked by the alias `start`; the Google connection's own switch
+  is (`GOOGLE_OAUTH_ENABLED` under the environment source, the catalog, connection and
+  binding under the database source).
 
-- Google authorization requests use **scope = `openid email`** only.
+Identity storage, sessions and state are shared: an account linked through an alias
+signs in through `/auth/oauth/*` and the reverse, and a round trip started on one route
+family can finish on the other's callback.
+
+## Scope and token-minimization rules
+
+- Google authorization requests use **scope = `openid email`** only. Both the
+  environment configuration and a database connection of type `google` refuse any other
+  scope.
 - The flow must not request `profile`, `offline_access`, `access_type=offline`, or Google refresh-token consent.
-- Google authorization `code`, Google `access token`, Google `refresh token`, and Google `id token` material are **not persisted** in MySQL, durable audit, activity rows, browser-visible responses, cookies, or logs.
-- The Google ID token is validated, reduced to sanitized claims, and discarded before local identity/session work continues.
-- Successful login returns the existing local `LoginResponse` shape and existing `session_token` / `refresh_token` cookies. Those are `api.auth` local session tokens, not Google tokens.
+- The Google authorization `code`, Google `access token`, Google `refresh token` and Google
+  `id token` are **not persisted**: not in MySQL, audit, activity, responses, cookies or
+  logs.
+- The ID token is verified (RS256, `kid`, issuer, audience, `azp`, expiry, nonce, hosted
+  domain, and a `google-auth` cross-check), reduced to its claims, and discarded before
+  any identity or session work.
+- A successful login returns the ordinary local `LoginResponse` and the local
+  `session_token` / `refresh_token` cookies. Those are `api.auth` tokens, never Google's.
 
-## Provider-Init Contract
+## Provider-init contract
 
-The alias flow is BFF-mediated: a companion backend holds the strict scope and
-issues an opaque `provider_init_token` for the browser. `magic-worlds-api` is the
-companion in the original deployment and is used as the example name throughout
-this suite; any backend can fill the role, and nothing in `api.auth` is bound to
+The alias handshake is BFF-mediated: a companion backend holds the project and group
+server-side and gives the browser only an opaque `provider_init_token`.
+`magic-worlds-api` is the companion in the original deployment and is used as the example
+name in this suite; any backend can fill the role, and nothing in `api.auth` depends on
 that name.
 
-The browser may send only:
+The start request may carry only:
 
 ```json
 {
   "provider_init_token": "REPLACE_ME_OPAQUE_LOCAL_TOKEN",
-  "redirect_uri": "http://localhost:8000/auth/google/callback",
-  "return_origin": "http://localhost:3000"
+  "redirect_uri": "http://localhost:5000/auth/google/callback/return",
+  "return_origin": "http://localhost:3000",
+  "remember_me": false
 }
 ```
 
-Strict `project_hash` and `user_group_hash` values stay server-side between the
-companion backend and `api.auth`. They must not appear in browser URLs, request
-bodies, response bodies, cookies, headers, logs, audit records, or activity details.
+Strict `project_hash` and `user_group_hash` values stay server-side between the companion
+backend and `api.auth`. They must not appear in browser URLs, request bodies, response
+bodies, cookies, headers, logs, audit records or activity details; a start body that
+contains either is rejected with `400` `EXT_8012`.
 
-Provider-init tokens are:
+Provider-init tokens are opaque random values, minted and made single-use by the
+companion. For each start request `api.auth` makes one server-to-server redeem call and
+accepts the answer only if it is active and names provider `google`, audience `api.auth`
+(when present), a known
+purpose, a `project_hash`, the return origin being used, and a lifetime of no more than
+`600` seconds. A provider-init token is not a privilege grant: the user's group-derived
+access to the project is still checked after Google identity succeeds. The redemption
+fields are in the [reference](reference.md#provider-init-redemption).
 
-- opaque random values,
-- single-use,
-- TTL-limited to no more than `600` seconds,
-- bound to provider `google`, purpose, target project, optional user group, return origin, issuer, and audience,
-- not privilege grants; local project/group authorization still runs after Google identity succeeds.
+Under `OAUTH_CONFIG_SOURCE=db` the redeemed project and group must equal the binding's own
+project and default group, or the start is refused. The provider-agnostic `init` route
+replaces this handshake entirely: the project comes from the backend's API key and the
+group from the binding, so no companion-side token store is needed.
 
-The provider-agnostic `/auth/oauth/init` route replaces this handshake: the
-project backend calls `api.auth` directly with its project API key and receives a
-300-second `init_token`, so no companion-side provider-init store is needed. A
-backend that still redeems provider-init tokens can be bridged per binding with
-`PUT /admin/oauth/projects/{project_hash}/bindings/{connection_key}/legacy-redeem`.
+The companion's provider-init store in the original deployment is in-memory: process-local,
+cleared on restart and not shared across replicas. Multi-instance deployments need sticky
+routing or a shared store. This limitation belongs to the companion, not to `api.auth`,
+and disappears with `/auth/oauth/init`.
 
-### Companion in-memory limitation
-
-The companion provider-init store in the original deployment is in-memory:
-process-local, cleared on restart, and not shared across replicas. Multi-instance
-deployments require sticky routing or a shared store before production traffic
-can rely on it. This limitation belongs to the companion, not to `api.auth`, and
-it disappears with `/auth/oauth/init`.
-
-## Provisioning Modes
-
-While `OAUTH_CONFIG_SOURCE=env`, `GOOGLE_OAUTH_PROVISIONING_MODE` selects the mode
-for the whole deployment:
+## Provisioning modes
 
 | Mode | Behavior |
 | --- | --- |
-| `disabled` | Google OAuth is effectively off. No local account creation or linking. Safe default. |
-| `link_only` | Existing local consumers can link Google after recent reauth/proof. No auto-create. Recommended first staging/production mode. |
-| `auto_create` | New eligible Google consumers can be created only from provider-init-bound project/group scope. No client-selected group. |
-| `both` | Linking and auto-create are both enabled. Treat as highest-risk rollout mode. |
+| `disabled` | No account is created or linked through Google. The default. |
+| `link_only` | Existing local consumers can link Google (with recent authentication) and then sign in with it. No auto-create. The recommended first mode. |
+| `auto_create` | New Google identities become local consumers in the provisioning group. No client-selected group. |
+| `both` | Linking and auto-create. The highest-risk mode. |
 
-Production defaults must remain `disabled` or `link_only`; `auto_create`/`both`
-require an explicit operational decision.
+While `OAUTH_CONFIG_SOURCE=env`, `GOOGLE_OAUTH_PROVISIONING_MODE` sets the mode for the
+whole deployment and auto-create uses the group named in the redeemed provider-init
+token. Under `OAUTH_CONFIG_SOURCE=db` the mode and the default user group are set per
+project binding, and `auto_create`/`both` are refused unless that group is active and
+reaches the project. Start new deployments at `disabled` or `link_only`; enable
+`auto_create` or `both` deliberately.
 
-Under `OAUTH_CONFIG_SOURCE=db` the same four modes are set **per project binding**
-instead, so one project can stay `link_only` while another runs `both`. The
-binding also carries the default user group that auto-create provisions into, and
-`auto_create`/`both` are refused unless that group actually reaches the project.
+## Local email activation boundary
 
-## Local Email Activation Boundary
+Google `email_verified` is stored only as a snapshot on the external account. It must not
+activate, primary-mark, recover or otherwise authorize a local email address.
 
-Google `email_verified` is stored only as an external-account snapshot. It must not activate, primary-mark, recover, or otherwise authorize a local email address.
+When auto-create stores the Google e-mail as a local email row, that row stays **pending**
+and non-primary until the local email activation flow succeeds. A pending local email
+grants no login and no password recovery. The auto-created account has no usable password
+either, so it cannot unlink Google until the user sets one.
 
-When auto-create stores a local email row, that row remains **pending** until the existing local email activation flow succeeds. Pending local email must not grant login or password recovery authority.
+## Responsibility split
 
-## Responsibility Split
+| Owner | Responsibilities |
+| --- | --- |
+| Companion backend | Issuing provider-init tokens to its own browser, reading project and group server-side, making tokens single-use, answering the redeem call, keeping strict hashes and Google tokens out of browser-visible surfaces, relaying the callback and delivering the session to its front end. |
+| `api.auth` | Redeeming provider-init tokens, OAuth state, nonce and PKCE in Redis, Google ID-token verification, external-account resolution, link, create and unlink, local session issuance, OAuth audit, activity and error taxonomy. |
 
-The companion backend owns:
+## In this suite
 
-1. public provider-init issuance,
-2. server-side reading of strict project/group scope,
-3. provider-init issuance audit,
-4. returning only `provider_init_token`, `expires_in`, and `provider` to the browser,
-5. keeping strict hashes and Google tokens out of browser-visible surfaces.
+| Document | Purpose |
+| --- | --- |
+| [README.md](README.md) | Deprecation status, differences from `/auth/oauth/*`, Google rules (this page). |
+| [architecture.md](architecture.md) | The legacy BFF topology, storage boundaries and Google-specific decisions. |
+| [request-flow.md](request-flow.md) | The legacy start with provider-init redemption, step by step. |
+| [scenarios.md](scenarios.md) | Google cases: returning user, auto-create, e-mail collision, Workspace denial, outage, replay. |
+| [troubleshooting.md](troubleshooting.md) | Provider-init redemption failures, environment allow-lists, JWKS problems. |
+| [reference.md](reference.md) | `GOOGLE_OAUTH_*` settings, alias request fields, the redemption contract, `act-cat-064..074`. |
 
-`api.auth` owns:
+## Related
 
-1. server-to-server provider-init redemption,
-2. OAuth state/nonce/PKCE storage in Redis,
-3. Google ID-token validation,
-4. external-account resolution/link/create/unlink,
-5. local project-scoped session issuance,
-6. OAuth audit/activity/error taxonomy.
+- [OAuth suite](../oauth/README.md) — the pipeline, endpoints, errors and settings shared
+  by every provider.
+- [Google OAuth runbook](../../RUNBOOKS/google-oauth.md) — rollout, kill switch, JWKS
+  outage, secret rotation, rollback.
+- [OAuth runbook](../../RUNBOOKS/oauth.md) — migrating the environment configuration to
+  the database.
+- [Patreon account linking](../patreon-link/README.md) — Patreon is entitlement and link
+  only, never a Google-style login.

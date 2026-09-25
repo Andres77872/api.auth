@@ -1,87 +1,84 @@
-# Google OAuth Scenarios
+# Google OAuth scenarios
 
-These scenarios describe expected behavior. They are not a manual for bypassing the provider-init boundary. Use only fake/local placeholders in examples.
+Expected behavior for Google sign-in cases. They apply to `/auth/google/*` and to the
+`google` connection under `/auth/oauth/*` alike, since both run the same pipeline; where
+the alias differs, it is said. Use only fake or localhost values in examples.
 
-## Provider Boundary: Google vs Patreon
+## Returning linked user
 
-The scenarios below are Google login/link scenarios. Patreon is entitlement/link only and has separate account-link, proof, webhook, sync, rollback, and S2S entitlement scenarios in [Patreon account linking](../patreon-link/README.md). A Patreon link must not be treated as a Google-style callback success or local session source.
+An active `user_external_accounts` row exists for namespace `google` and the HMAC of the
+user's Google `sub`. After the ID token verifies, `api.auth` finds that user, refreshes
+the last-seen time and masked e-mail snapshot, checks the user's group-derived access to
+the project bound at start, and returns the ordinary `LoginResponse`
+(`google_oauth_login_succeeded` on the alias, `oauth_login_succeeded` otherwise). The
+Google e-mail does not need to match any local e-mail.
 
-## Returning Linked User
+## New user with auto-create
 
-**Given** an active `user_external_accounts` row exists for provider `google` and the HMAC of Google's `sub`.
+Provisioning mode is `auto_create` or `both` and no link exists. `api.auth` creates a
+consumer with an unusable random password, adds it to the provisioning group, stores the
+Google e-mail as a **pending**, non-primary local email, links the identity and signs the
+user in. The provisioning group is:
 
-**When** the callback validates the ID token and the provider-sub HMAC matches.
+- under `OAUTH_CONFIG_SOURCE=env` (alias start), the `user_group_hash` in the redeemed
+  provider-init token;
+- under `OAUTH_CONFIG_SOURCE=db`, the binding's default user group; a redeemed group, if
+  any, must equal it.
 
-**Then** `api.auth` resolves the active local consumer, refreshes last-seen/masked snapshots, checks access to the provider-init-bound project, issues the existing local `LoginResponse`, and emits `GOOGLE_OAUTH_LOGIN_SUCCEEDED`.
+Without a usable group the sign-in is refused (`401` `EXT_8024`, `sub_reason`
+`no_bound_user_group` or `user_group_not_found`). There is no client-selected group and no
+silent default. With `/auth/oauth/init` under the environment source there is never a
+group, so new users cannot be created that way.
 
-The Google email does not need to match the current activated local email.
+## E-mail already used by a local account
 
-## Auto-create Consumer
+The Google identity is not linked, but its e-mail belongs to a local account. `api.auth`
+never links or merges by e-mail. Because Google verifies e-mail, the answer is `409`
+`EXT_8032`: the user signs in with their existing method and links Google from the
+account (`POST /auth/google/link/start` or `POST /auth/oauth/google/link/start`). The
+message reveals the match only to someone who just proved control of that verified
+address at Google.
 
-**Given** provisioning mode is `auto_create` or `both`, provider-init includes a valid server-side user-group binding, and no provider-sub link exists.
+## Workspace `hd` not allowed
 
-**When** Google returns a valid consumer identity without Workspace `hd`.
+A hosted-domain allow-list is configured (`GOOGLE_OAUTH_ALLOWED_HOSTED_DOMAINS`, or
+`restrictions.hosted_domains` on a database connection) and the ID token's `hd` is not on
+it. The callback answers `401` `EXT_8023`, records an ID-token rejection and issues no
+session. With an empty list (the default) or `*`, every Google account may sign in;
+consumer Gmail has no `hd` and is always allowed.
 
-**Then** `api.auth` may create a local consumer, assign the provider-init-bound group, create a pending local email row if an email is available, create the external-account link, verify project access, and issue the normal local session.
+## No access to the bound project
 
-Auto-create must fail closed if the provider-init binding lacks the required group. There is no client-selected group and no silent default group grant.
+Google identity succeeds and the user is resolved, but the user's groups do not reach the
+project fixed at start. The answer is `403` `EXT_8025`; no other project is picked and the
+failing link of the access chain is not disclosed. A provider-init token is not a
+privilege grant. Under the database source a binding with `existing_user_policy:
+join_default_group` adds such a user to the default group first.
 
-## Email Collision / Account-Takeover Blocked
+## Non-consumer account
 
-**Given** Google returns an email that matches an existing local activated email, but the provider-sub is not linked.
+The linked account is a root or admin user, or inactive. The sign-in is refused with the
+neutral `401` `EXT_8024`, indistinguishable from other refusals.
 
-**When** callback identity resolution runs.
+## Unlink with Google as the only credential
 
-**Then** `api.auth` must not auto-link by email alone. It returns a neutral denial/link-required posture, records only redacted details, and requires credential-first local proof before linking.
+A consumer created by auto-create has no usable password. `DELETE /auth/google/unlink`
+answers `409` `EXT_8029` until the user sets a password. No subject or e-mail is returned.
+A successful unlink revokes every session of the user.
 
-A response reveals an e-mail match only to a caller who has just proven, through the provider, that they control that verified address (`OAUTH_ACCOUNT_LINK_REQUIRED` / `EXT_8032`). For providers whose e-mail claim is administrator-controlled the answer stays the neutral provisioning denial. Accounts are never merged or linked by e-mail.
+## Google or JWKS outage
 
-## Workspace `hd` Denial
+The token exchange, a JWKS fetch or ID-token verification cannot complete. The flow fails
+closed: `502` `EXT_8018` for the exchange, `401` `EXT_8019` for an unverifiable token
+(including a `kid` still missing after one refetch). Nothing is weakened; password login,
+refresh, logout, API keys and existing sessions keep working. If the outage persists, use
+the kill switch (see the [runbook](../../RUNBOOKS/google-oauth.md)).
 
-**Given** a hosted-domain allow-list is configured and the Google ID token carries an `hd` claim that is not on it.
+## Provider-init replay
 
-**When** the hosted-domain policy evaluates the token.
-
-**Then** the callback rejects it with neutral `EXT_8xxx` posture, emits ID-token rejection activity, and issues no local session.
-
-With an empty allow-list (the default) every Google account may sign in, including Workspace accounts; consumer Gmail carries no `hd` and is always allowed. Local account *types* remain restricted: root, admin, platform and other non-consumer OAuth login is unsupported and intentionally indistinguishable from ineligible/not found outcomes.
-
-## Project Access Denial
-
-**Given** Google identity succeeds and a local consumer is resolved.
-
-**When** the consumer lacks group-derived access to the project bound inside provider-init/OAuth state.
-
-**Then** `api.auth` denies local session issuance. It must not auto-pick another project and must not disclose which project/group/access-chain element failed.
-
-Provider-init is not a privilege grant.
-
-## Google-only Unlink Refusal
-
-**Given** a consumer has Google as the only usable authentication method.
-
-**When** the consumer tries `DELETE /auth/google/unlink`.
-
-**Then** unlink is refused with `OAUTH_PASSWORD_REQUIRED_FOR_UNLINK` / `EXT_8029` posture until fallback local authentication exists. No raw provider subject or email is returned.
-
-## Provider Outage
-
-**Given** Google token exchange, JWKS fetch, or ID-token validation cannot be completed safely.
-
-**When** callback processing reaches the provider-dependent step.
-
-**Then** the OAuth path fails closed with a neutral external/provider error. Existing local password login, refresh, logout, API-key lifecycle, and local sessions remain available.
-
-## Provider-init Replay
-
-**Given** a `provider_init_token` was already redeemed or expired.
-
-**When** `/auth/google/start` receives it again.
-
-**Then** no OAuth state is created, no Google redirect is produced, and only a redacted provider-init rejection is audited/activity-logged.
-
-## Known Verification Caveats
-
-- Full-stack e2e callback success is present, but `/auth/validate` on the synthetic OAuth-issued local token remains a known test caveat until the test DB migration/session-validation path is resolved.
-- Trigger install can be privilege-limited in local MySQL with binary logging; source/bootstrap validation still covers trigger SQL.
-- Pre-existing admin project-auth failures are not caused by Google OAuth docs and remain separate follow-up work.
+The companion already redeemed or expired the token, so its redeem endpoint refuses it.
+`/auth/google/start` answers `401` `EXT_8012`, creates no state, produces no redirect, and
+records `google_oauth_provider_init_rejected` with the reason
+(`provider_init_http_rejected` or `provider_init_inactive`, depending on how the
+companion answers). Single use is the companion's job; `api.auth` redeems once per start
+request.

@@ -2,7 +2,14 @@
 
 Synthetic fixture set for SDD change `provider-agnostic-billing-stripe`, Phase 1.
 
-- All provider IDs, user/project hashes, timestamps, amounts, URLs, and signatures are fake.
+- All provider IDs, user/project hashes, timestamps, amounts, URLs, and signatures are fake, but
+  in their real formats: `user_hash` is `usr-<uuid4>`, `project_hash` is 64 uppercase hex
+  characters, and the refs are the opaque `bcust-`/`bco-`/`bsub-`/`bpur-` values api.auth issues.
+- Payloads follow what Stripe sends for API `2026-05-27.dahlia` after api.auth Checkout: the
+  Checkout Session metadata (`user_hash`, `project_hash`, `api_auth_*` refs, `consumer_*`
+  labels) is copied onto the Subscription and PaymentIntent, so subscription events and
+  charges carry it; invoices carry it under `parent.subscription_details.metadata`; disputes
+  carry none. Subscription period dates live on the subscription items.
 - Do not paste live Stripe Dashboard payloads, real Stripe CLI captures, API keys, webhook secrets, card data, payment-method data, receipt URLs, or customer PII into this tree.
 - Webhook payload files under `webhooks/*.json` are byte-exact raw request bodies for later signature tests. Read them as bytes; do not parse and re-serialize before verification.
 - Fixture signatures in `webhooks/signature_headers.json` use the synthetic endpoint secret `whsec_test_stripe_fixture_secret_do_not_use` and Stripe's `t=<timestamp>,v1=<hmac>` header shape.

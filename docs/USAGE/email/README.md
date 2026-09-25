@@ -1,92 +1,98 @@
-# Email Documentation
+# Email
 
-Repo-specific documentation for the **transactional auth email** subsystem in `api.auth`: the ROOT-only admin API for DB-managed email templates, the inbound Resend/Svix delivery webhook, and the durable MySQL outbox worker that actually sends mail.
+The service sends transactional account email only: activation links, password-reset links,
+security notices, delivery notices and a few integration messages. It is not a marketing or
+newsletter system. Request handlers never send mail directly; they write a row to a MySQL outbox
+that a separate worker delivers. Root users manage the email templates, trusted companion
+services queue internal notices, and the provider reports delivery results through a signed
+webhook.
 
----
+## Key concepts
 
-## Overview
+- **Outbox** (`email_messages`): one row per email, with an encrypted render payload, a status
+  (`pending`, `processing`, `retry`, `sent`, `delivered`, `bounced`, `complained`, `suppressed`,
+  `dead`, `cancelled`) and retry state.
+- **Worker** (`src/workers/email_worker.py`): a separate process that claims due rows, renders
+  the template, sends through the provider, and retries or dead-letters failures.
+- **Provider**: `resend` for real mail, `mailpit` for local SMTP capture, or `fake` in tests,
+  chosen by `EMAIL_PROVIDER`. Nothing is sent while `EMAIL_DELIVERY_ENABLED=false` (the default).
+- **Templates**: each code has a catalog row (purpose, allowed and required variables, enabled
+  flag, revision) and a history of stored versions. Built-in codes fall back to bodies in
+  `src/Util/email/templates.py` until a version is saved. Placeholders use `$name`.
+- **Suppression**: a bounce or complaint reported by the provider blocks later sends to that
+  address and marks a matching account email `suppressed`.
+- **Privacy**: recipients are stored as a peppered hash plus a masked form (`a***e@example.com`);
+  render variables are encrypted until sent and then cleared.
 
-This subsystem is **transactional auth email only** — activation links, password-reset links, admin-triggered reset links, security notifications, and delivery-status notices. It is **not** marketing, newsletters, broadcast notifications, or a preference center.
+### Built-in template codes
 
-Four operator/integration surfaces live here:
+| Code | Purpose | Required variables | Sent by |
+| --- | --- | --- | --- |
+| `email_activation` | `email_activation` | `activation_link` | Email add and resend flows (users suite) |
+| `password_reset` | `password_reset` | `reset_link` | `POST /auth/password/forgot` |
+| `admin_password_reset` | `admin_password_reset` | `reset_link` | Admin-triggered reset (users suite) |
+| `security_notification` | `security_notification` | `message` | `POST /internal/email/send-template` |
+| `delivery_operation` | `delivery_operation` | `status_summary` | `POST /internal/email/send-template` |
+| `email_credit_grant_notification` | `delivery_operation` | `credits`, `action_url`, `expires_at` | `POST /internal/email/send-template` |
+| `patreon_link_proof` | `patreon_link_proof` | `patreon_link_proof_url`, `proof_token` | Patreon link flow |
 
-- **Admin email templates** (`/admin/email-templates`, **ROOT only**) — list, create internal dynamic codes, inspect, edit, disable, preview, send a locked self-test, and roll back DB-managed transactional templates. Eight endpoints.
-- **Internal email primitives** (`/internal/email`, **ROOT session required**) — resolve an activated email identity, enqueue an allowed internal transactional template, and inspect redacted message status. Three JSON endpoints for trusted companion services.
-- **Inbound provider webhook** (`POST /webhooks/email/resend`) — Svix-signature-verified Resend delivery/bounce/complaint callbacks. No application auth; always returns `204`.
-- **Outbox delivery model** (`src/workers/email_worker.py`) — a separate worker process claims durable MySQL outbox rows and sends them through the configured provider. Documented at a high level in [architecture.md](architecture.md).
+Root users can add dynamic codes, limited to the `delivery_operation` and
+`security_notification` purposes.
 
-The built-in transactional template codes are:
+## Route families
 
-| Code | Purpose | Required variable |
-|------|---------|-------------------|
-| `email_activation` | Email-address activation link | `activation_link` |
-| `password_reset` | Self-service password-reset link | `reset_link` |
-| `admin_password_reset` | Admin-triggered reset link | `reset_link` |
-| `security_notification` | Account security event notice | `message` |
-| `delivery_operation` | Transactional delivery-status notice | `status_summary` |
-| `patreon_link_proof` | Patreon email-loop ownership proof | purpose-specific proof variables |
-| `email_credit_grant_notification` | Internal credit-grant notification | code-specific variables returned by the template API |
+| Family | Routes | Auth | Body |
+| --- | --- | --- | --- |
+| Template admin | 8 routes under `/admin/email-templates` | Access token of a root user | JSON |
+| Internal email | 3 routes under `/internal/email` | Access token of a root user | JSON |
+| Provider webhook | `POST /webhooks/email/resend` | Svix signature over the raw body; no access token | Raw provider JSON |
 
----
+Endpoint tables are in [reference.md](reference.md).
 
-## Documents in This Suite
+## Rules and caveats
 
-| Document | Focus |
-|----------|-------|
-| [usage.md](usage.md) | Day-to-day template flows: inspect, edit, preview, self-test, rollback, and webhook setup |
-| [reference.md](reference.md) | Endpoint tables for 8 admin-template, 3 internal-email, and 1 provider-webhook route, plus email configuration |
-| [architecture.md](architecture.md) | Outbox-worker delivery pipeline, provider abstraction, template versioning, idempotency, rate limiting, and safety guards |
-| [troubleshooting.md](troubleshooting.md) | Failure modes for template edits, self-tests, webhooks, and the worker |
+Platform-wide rules are in [Platform-wide contracts](../README.md#platform-wide-contracts). These
+apply to this suite:
 
----
+- **Root only.** Template routes check `is_root_user` (`403` `AUTHZ_2001` otherwise); internal
+  routes use `require_root_user` (`403` `AUTHZ_2002`). Admin users and global-role permissions do
+  not grant access.
+- **Internal routes use a root session, not a service credential.** Despite the prefix, there is
+  no dedicated S2S token. A companion service calling them holds a root access token and must keep
+  it server-side.
+- **JSON bodies.** A body that fails schema validation returns `400` `VAL_3001`
+  ("Request validation failed").
+- **Only send-test bypasses the outbox.** `POST /admin/email-templates/{template_code}/send-test`
+  sends immediately to the caller's own activated address. Everything else is queued.
+- **Disabling a built-in template stops that email.** Queued messages for a disabled code are
+  cancelled when the worker claims them.
+- **Link origins.** Activation and reset links use `AUTH_EMAIL_PUBLIC_BASE_URL` when set,
+  otherwise the `X-Public-Base-Url` header if its origin is in `ALLOWED_ORIGINS`, otherwise the
+  request's own origin.
 
-## Auth at a Glance
+## Out of scope here
 
-The eight `/admin/email-templates` endpoints are **ROOT only**. Auth is two-layered:
+- Adding, activating, resending and removing a user's addresses: [Users email
+  management](../users/email-management.md).
+- Public verify, forgot and reset flows under `/auth/...`: [Authentication usage
+  cases](../authentication-usage-cases.md).
+- Reading the outbox as an admin (`GET /admin/email/logs`) and the email activity catalog:
+  [Audit logs usage](../audit_logs/usage.md#email-delivery-logs).
+- Rollout, secret rotation, dead-letter redrive and retention operations:
+  [Email activation runbook](../../RUNBOOKS/email-activation.md).
 
-1. `HTTPBearerOrCookie` resolves the session (bearer token or session cookie).
-2. `_require_root` → `is_root_user(user_id)` gates **every** handler. A non-root caller gets an `AuthorizationError` with error code `ACCESS_DENIED`.
+## In this suite
 
-These are **not** generic admin endpoints — editing security-email content is high-impact, so a project-scoped admin cannot use them.
+| Document | Purpose |
+| --- | --- |
+| [usage.md](usage.md) | Tasks: manage templates, send internal email, check status, wire the webhook, run the worker |
+| [reference.md](reference.md) | Endpoints, bodies, validation rules, responses, error codes, webhook events, configuration |
+| [architecture.md](architecture.md) | Outbox and worker pipeline, providers, template resolution, idempotency, rate limits, retention |
+| [troubleshooting.md](troubleshooting.md) | Symptom, cause and fix for templates, send-test, internal sends, webhook and worker |
 
-The three `/internal/email` routes also require a valid ROOT access session
-through `require_root_user`. Despite the prefix, they do not use a dedicated
-S2S bearer today. Calling services must not expose that root credential to a
-browser.
+## Related
 
-`POST /webhooks/email/resend` has **no application auth**. It is authenticated by the Svix signature over the raw request body; missing `svix-*` headers or a bad signature return `400`.
-
-> Every request must include a `User-Agent` header (missing ⇒ `422`).
-
----
-
-## Recommended Reading Order
-
-1. Start with [usage.md](usage.md) to edit/preview/roll back a template.
-2. Read [reference.md](reference.md) for exact request/response shapes and config keys.
-3. Read [architecture.md](architecture.md) to understand how a queued message actually ships.
-4. Keep [troubleshooting.md](troubleshooting.md) open when a self-test or webhook fails.
-
----
-
-## Scope and Out-of-Scope Cross-Links
-
-This suite documents `src/routes/email_templates.py`,
-`src/routes/internal_email.py`, and `src/routes/email_webhooks.py`, plus the
-delivery internals in `src/Util/email/*` and `src/workers/email_worker.py`. The
-following email-related surfaces live **elsewhere** and are not redefined here:
-
-- **`GET /admin/email/logs`** — sanitized email activity/delivery logs live in the **audit suite** (`src/routes/audit_logs.py`). See [Audit Logs Usage](../audit_logs/usage.md#email-delivery-logs).
-- **Per-user email management** — adding, listing, activating, resending, and removing a user's email addresses (`/users/me/emails*`, `/users/{user_hash}/emails*`) lives in the **users suite**. See [Users Documentation](../users/README.md).
-- **Public verify / forgot / reset flows** — `/auth/...` endpoints are documented in the authentication material. See [Authentication Usage Cases](../authentication-usage-cases.md).
-- **Deployment, rollout, rotation, DLQ redrive, retention, and rollback** — operational procedures that live with the runbooks under `docs/RUNBOOKS/`, outside this suite. This suite does not duplicate them.
-
----
-
-## Related Documentation
-
-- **[Usage Documentation Home](../README.md)** — complete usage index
-- **[Audit Logs Suite](../audit_logs/README.md)** — where `GET /admin/email/logs` and the email activity catalog IDs are documented
-- **[Users Documentation Suite](../users/README.md)** — per-user email management endpoints
-- **[Authentication Usage Cases](../authentication-usage-cases.md)** — public verify/forgot/reset flows
-- **[Errors Reference](../errors.md)** — error envelope and codes
+- [Audit logs](../audit_logs/README.md) — delivery log and email activity entries
+- [Users](../users/README.md) — account email addresses
+- [System health](../admin-usage-cases.md) — `email_provider` and `email_worker` health components
+- [Errors](../errors.md) — error envelope and `EMAIL_9xxx` codes

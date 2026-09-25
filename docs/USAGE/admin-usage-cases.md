@@ -1,42 +1,34 @@
-# Admin & System Management Usage Guide
+# Administration and operations
 
-Complete practical guide for admin dashboard operations, system monitoring, bulk operations, and cache management.
+Day-to-day operator work for root and admin users: dashboard counts, the activity feed, service
+health, the authentication cache, and bulk user operations. Error codes are explained in the
+[Error reference](errors.md); request conventions (User-Agent, body size, form encoding) are in the
+[platform-wide contracts](README.md#platform-wide-contracts).
 
-> For activity logs and audit details, see [Audit Logs Documentation Suite](audit_logs/README.md).
-> For error codes, see [Error Reference](errors.md).
+Authenticated routes here take the access token as `Authorization: Bearer <access JWT>` or the
+`session_token` cookie. The admin gate is not the same across route families:
 
-> **Important**: Every request MUST include a `User-Agent` header. Missing it returns `422`.
+| Route family | Who may call | Otherwise |
+| --- | --- | --- |
+| `/admin/dashboard/stats`, `/admin/activity*`, `/admin/health`, `/admin/users/statistics`, `/admin/projects/statistics`, `/admin/system/overview` | Root, or a user whose `user_type` is `admin` | `403` `AUTHZ_2001` |
+| `POST /system/cache/clear`, `POST /system/cache/invalidate/*` | Root, or `user_type` `admin` | `403` `AUTHZ_2001` |
+| `GET /system/info`, `GET /system/health`, `GET /system/cache/stats` | Any valid access session | `401` `AUTH_1003` |
+| `POST /admin/users/bulk-update`, `POST /admin/users/bulk-delete` | Root, or `user_type` `admin`, and session permissions include `admin` or `manage_users`; each target is then checked (see [Bulk operations](#bulk-operations)) | `403` `AUTHZ_2002` |
+| `POST /admin/projects/{project_hash}/bulk-assign-roles`, `POST /admin/user-groups/bulk-assign` | Session permissions include `admin` | `403` `AUTHZ_2002` |
 
----
+Root and admin sessions carry the `admin` and `manage_users` permissions by default.
 
-## Table of Contents
+## Admin dashboard
 
-- [Admin Dashboard](#admin-dashboard)
-- [Activity Monitoring](#activity-monitoring)
-- [System Health & Metrics](#system-health--metrics)
-- [Admin Email Operations](#admin-email-operations)
-- [Cache Management](#cache-management)
-- [User Type Management](#user-type-management)
-- [Admin Project Management](#admin-project-management)
-- [Bulk Operations](#bulk-operations)
-- [Common Scenarios](#common-scenarios)
-- [Best Practices](#best-practices)
-- [Troubleshooting](#troubleshooting)
+### Dashboard counts
 
----
-
-## Admin Dashboard
-
-### Get Dashboard Statistics
-
-**Scenario**: View comprehensive system statistics for the admin dashboard.
+`GET /admin/dashboard/stats` returns headline counts. It takes no parameters.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/dashboard/stats" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "$BASE_URL/admin/dashboard/stats" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Response:**
 ```json
 {
   "totals": {
@@ -68,213 +60,167 @@ curl -X GET "http://localhost:8000/admin/dashboard/stats" \
     "project_growth_7d": 3
   },
   "system_health": {
-    "database": {"status": "healthy", "latency_ms": 5},
-    "redis": {"status": "healthy", "latency_ms": 2},
+    "database": {"status": "healthy", "message": "Database accessible", "timestamp": "2026-03-25T10:30:00Z"},
+    "redis": {"status": "healthy", "message": "Redis accessible", "timestamp": "2026-03-25T10:30:00Z"},
     "overall_status": "healthy"
   },
-  "generated_at": "2024-03-25T10:30:00Z"
+  "generated_at": "2026-03-25T10:30:00Z"
 }
 ```
 
-**Derived fields and notes:**
+| Field | Meaning |
+| --- | --- |
+| `totals.active_sessions` | Live access sessions (`session:*` keys in Redis). |
+| `totals.recent_activities`, `recent_activity.*`, `growth.*` | Counts for the last `7` days. `growth` repeats the new-user and new-project counts; it is not a percentage. |
+| `groups_summary.avg_*` | `total / max(groups, 1)`, rounded to 2 decimals, so zero groups never divides by zero. |
+| `totals.project_groups` | Same count as `statistics.total_project_groups` on `GET /system/info`. |
+| `system_health.overall_status` | `healthy` only when both database and Redis are `healthy`, otherwise `degraded`. |
 
-- `groups_summary.avg_users_per_group` is `round(total_users / max(total_user_groups, 1), 2)` and `avg_projects_per_group` is `round(total_projects / max(total_project_groups, 1), 2)`. The `max(..., 1)` guard means these never divide by zero — with zero groups the denominator is `1`, so the average equals the raw total.
-- `totals.project_groups` (and `groups_summary.total_project_groups`) come from `count_project_groups()` (project-group containers), which is **not** the same source as `/system/info` `total_project_groups` (`count_project_permission_groups()`). See [Project groups vs. permission groups](#project-groups-vs-permission-groups).
-- The `system_health.database` / `system_health.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` fields above are **illustrative**; the exact keys returned depend on those health-check helpers and are not guaranteed. `overall_status` is `"healthy"` only when both database and redis report `"healthy"`, otherwise `"degraded"`.
+### User statistics
 
-#### Project groups vs. permission groups
+`GET /admin/users/statistics?days=30` — `days` is `1`–`365` (default `30`).
 
-The system counts two distinct group concepts, and they surface in different endpoints:
-
-| Field | Endpoint | Source helper | Meaning |
-|-------|----------|---------------|---------|
-| `project_groups` | `/admin/dashboard/stats` | `count_project_groups()` | Project-group containers (groups-of-groups architecture) |
-| `total_project_groups` | `/system/info` | `count_project_permission_groups()` | Project **permission** groups |
-
-These count different things and can legitimately differ. Do not assume the two values match.
-
-### Get User Statistics
-
-**Scenario**: Get detailed user statistics with growth rates.
-
-```bash
-# Default (30 days)
-curl -X GET "http://localhost:8000/admin/users/statistics" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# Custom time range
-curl -X GET "http://localhost:8000/admin/users/statistics?days=90" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
 ```json
 {
   "success": true,
   "statistics": {
-    "total_users": 1250,
-    "active_users": 1180,
-    "inactive_users": 70,
-    "new_users_period": 120,
-    "growth_rate_percentage": 10.6,
-    "user_type_breakdown": {
-      "root": 2,
-      "admin": 15,
-      "consumer": 1233
-    },
-    "top_groups": [
-      {"group_name": "developers", "member_count": 450},
-      {"group_name": "qa_team", "member_count": 280}
-    ]
+    "total_users": 1180,
+    "user_types": {"root": 2, "admin": 15, "consumer": 1163},
+    "new_users": 120,
+    "active_users": 640,
+    "growth_rate": 11.32,
+    "date_range_days": 30,
+    "activity_rate": 54.24
   },
-  "generated_at": "2024-03-25T10:30:00Z"
+  "generated_at": "2026-03-25T10:30:00Z"
 }
 ```
 
-### Get Project Statistics
+`total_users` and `user_types` count active users only. `new_users` were created in the window and
+are still active; `active_users` are distinct users with activity-log entries in the window.
+`growth_rate` is `new / (total - new) × 100` and `activity_rate` is `active / total × 100`. If the
+query fails the route still answers `200`, with `statistics` holding only an `error` string.
 
-**Scenario**: Get detailed project statistics and health metrics.
+### Project statistics
 
-```bash
-curl -X GET "http://localhost:8000/admin/projects/statistics?days=30" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
+`GET /admin/projects/statistics?days=30` — same `days` range.
 
-**Response:**
 ```json
 {
   "success": true,
   "statistics": {
-    "total_projects": 45,
-    "active_projects": 42,
-    "new_projects_period": 3,
-    "average_members_per_project": 28,
-    "most_active_projects": [
-      {"project_name": "API v2", "activity_count": 580},
-      {"project_name": "Mobile App", "activity_count": 450}
-    ]
+    "total_projects": 42,
+    "new_projects": 3,
+    "active_projects": 30,
+    "avg_members_per_project": 27.5,
+    "date_range_days": 30,
+    "utilization_rate": 71.43
   },
-  "generated_at": "2024-03-25T10:30:00Z"
+  "generated_at": "2026-03-25T10:30:00Z"
 }
 ```
 
-### Get System Overview
+`total_projects` counts active projects. `active_projects` are distinct projects with activity-log
+entries in the window, and `utilization_rate` is `active / total × 100`.
+`avg_members_per_project` averages active user-project memberships. Failures answer `200` with
+`statistics.error`, as above.
 
-**Scenario**: Get comprehensive system health and performance overview.
+## Activity feed
+
+These routes read the activity log. The [audit logs suite](audit_logs/README.md) covers API audit
+logs, security events, per-user activity and export.
+
+### List activity
+
+`GET /admin/activity` returns entries newest first.
+
+| Query parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `limit` | int | `50` | `1`–`500`. |
+| `offset` | int | `0` | `>= 0`. |
+| `activity_type_filter` | string | none | Exact activity type; see `GET /admin/activity/types`. |
+| `user_id` | string | none | Acting user's **internal** ID (`usr-...`), not the public `user_hash`. |
+| `project_id` | string | none | Internal project ID (`proj-...`), not the `project_hash`. |
+| `days` | int | `30` | `1`–`365`. |
+| `search` | string | none | Substring match on `activity_type`, `details` and `username`; an empty value is ignored. |
 
 ```bash
-curl -X GET "http://localhost:8000/admin/system/overview" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl "$BASE_URL/admin/activity?days=1&activity_type_filter=user_login&search=AUTH_1001" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Response:**
+Each item in `activities` has `id`, `activity_type`, `details`, `created_at`, `ip_address`, and
+`user`, `project` and `target_user` objects (`user` and `target_user`: `id`, `username`,
+`user_hash`; `project`: `id`, `name`, `hash`), each `null` when absent. The response also has
+`pagination` (`total`, `limit`, `offset`, `has_more`, `next_offset`), the echoed `filters`, and
+`generated_at`. Out-of-range query values answer `400` `VAL_3001`.
+
+### Activity types
+
+`GET /admin/activity/types` returns `activity_types`, every value of the server's `ActivityType`
+enum (whether or not it has been logged), plus `generated_at`. Use these values for
+`activity_type_filter`.
+
+### Activity detail
+
+`GET /admin/activity/{activity_id}` returns one entry under `activity`, with `generated_at`.
+
+```bash
+curl "$BASE_URL/admin/activity/act-0123456789abcdef0123456789abcdef" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+- `activity_id` must be `act-` followed by exactly 32 hex characters; anything else answers `400`
+  `VAL_3001`. A well-formed ID with no entry answers `404` `NF_4004`.
+- `activity` has the feed fields plus `severity_level`, `user_agent`, `metadata`, and the catalog's
+  `activity_name`, `activity_category` and `activity_description`.
+
+## System health & metrics
+
+Pick the probe by what you need:
+
+| Path | Method | Auth | Checks | Result |
+| --- | --- | --- | --- | --- |
+| `/ping` | `GET` | Public | Nothing | `204`, no body |
+| `/system/ping` | `GET` | Public | Nothing | `200` JSON with `timestamp` |
+| `/system/info` | `GET` | Any access session | Aggregate counts | `200` |
+| `/system/health` | `GET` | Any access session | Database, Redis, groups, email, Patreon, billing | `200`, `status` `healthy` or `degraded` |
+| `/admin/health` | `GET` | Root or admin | Database, Redis | `200`, score and `healthy`/`degraded`/`unhealthy` |
+| `/admin/system/overview` | `GET` | Root or admin | Host CPU, memory, disk; database; Redis; app metrics; Patreon; billing | `200`, score and status |
+
+Load balancers and container health checks should use `/ping` or `/system/ping`: they touch no
+database, Redis or provider, and need no credentials. Every request still needs a `User-Agent`.
+
+### Liveness probes
+
+```bash
+curl -i "$BASE_URL/ping"
+curl "$BASE_URL/system/ping"
+```
+
+`/system/ping` answers:
+
 ```json
 {
   "success": true,
-  "system_overview": {
-    "health_score": 100,
-    "uptime": "99.9%",
-    "database_status": "healthy",
-    "cache_status": "healthy",
-    "api_metrics": {
-      "requests_today": 15420,
-      "avg_response_time_ms": 45,
-      "error_rate": 0.02
-    }
-  },
-  "generated_at": "2024-03-25T10:30:00Z"
+  "message": "Group-based authentication API is running",
+  "timestamp": "2026-03-25T10:30:00Z"
 }
 ```
 
----
+### System info
 
-## Activity Monitoring
-
-> **Note**: The activity feed (`/admin/activity`), activity detail (`/admin/activity/{activity_id}`), and activity types (`/admin/activity/types`) are documented here for quick reference. For comprehensive audit log coverage including API audit logs, security events, export functionality, audit statistics, and detailed filtering, see [Audit Logs Usage Guide](audit_logs/usage.md).
-
-For full feed documentation, response shapes, and examples, see the canonical source: **[Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard)**.
-
-All three endpoints require **Admin/Root** (`user_type == 'admin'` or root); non-admins get `403 ACCESS_DENIED`.
-
-### Activity Feed Query Parameters
-
-`GET /admin/activity` accepts the following query parameters (all optional):
-
-| Parameter | Type | Default | Range / Notes |
-|-----------|------|---------|---------------|
-| `limit` | int | `50` | `1`–`500` |
-| `offset` | int | `0` | `>= 0` |
-| `activity_type_filter` | string | none | Filter by a single activity type (see `/admin/activity/types`) |
-| `user_id` | string | none | Filter by user ID |
-| `project_id` | string | none | Filter by project ID |
-| `days` | int | `30` | `1`–`365`, look-back window |
-| `search` | string | none | Free-text search across `activity_type`, `details`, and `username`. An empty string is treated as no filter. |
-
-The response includes `activities[]`, a `pagination` block (`total`, `limit`, `offset`, `has_more`, `next_offset`), the echoed `filters`, and `generated_at`. Canonical feed shape lives in [Audit Logs Usage → Activity Feed](audit_logs/usage.md#activity-feed-dashboard).
-
-### Activity Detail
-
-**Scenario**: Inspect a single activity-log entry with full enriched metadata.
+`GET /system/info` returns service identity and aggregate counts.
 
 ```bash
-curl -X GET "http://localhost:8000/admin/activity/act-0123456789abcdef0123456789abcdef" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
+curl "$BASE_URL/system/info" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-**Input contract:**
-
-- `activity_id` (path) must match the regex `^act-[0-9a-fA-F]{32}$` — the literal prefix `act-` followed by exactly 32 hexadecimal characters.
-- An empty or malformed `activity_id` returns `400 INVALID_INPUT`.
-- A well-formed id that does not exist returns `404 RESOURCE_NOT_FOUND`.
-
-The detail response wraps the entry under `activity` and includes enriched fields beyond the feed shape: `severity_level`, `user_agent`, `metadata`, `activity_name`, `activity_category`, and `activity_description` — in addition to the standard `id`, `activity_type`, `details`, `created_at`, `user`, `project`, `target_user`, and `ip_address`. A `generated_at` timestamp is included at the top level.
-
-**Response (abridged):**
-```json
-{
-  "activity": {
-    "id": "act-0123456789abcdef0123456789abcdef",
-    "activity_type": "user_login",
-    "details": "User logged in",
-    "severity_level": "info",
-    "created_at": "2024-03-25T10:30:00Z",
-    "user": {"id": 42, "username": "alice", "user_hash": "usr-..."},
-    "project": null,
-    "target_user": null,
-    "ip_address": "203.0.113.10",
-    "user_agent": "my-client/1.0",
-    "metadata": {},
-    "activity_name": "User Login",
-    "activity_category": "authentication",
-    "activity_description": "A user authenticated successfully"
-  },
-  "generated_at": "2024-03-25T10:30:00Z"
-}
-```
-
-### Activity Types
-
-`GET /admin/activity/types` returns `activity_types[]` enumerated from the `ActivityType` enum (the full catalog of valid values for `activity_type_filter`), plus `generated_at`. Admin/Root only.
-
----
-
-## System Health & Metrics
-
-### Authenticated System Info
-
-**Scenario**: Check aggregate system information with any valid access session.
-
-```bash
-curl -X GET "http://localhost:8000/system/info" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-**Response:**
 ```json
 {
   "success": true,
+  "message": null,
   "system": {
     "name": "Group-Based Multi-Project Authentication API",
     "version": "1.0.0",
@@ -300,170 +246,136 @@ curl -X GET "http://localhost:8000/system/info" \
 }
 ```
 
-> **Note**: `system.version` is a build/code version hardcoded in `src/routes/system.py` (currently `1.0.0`) and is independent of the documentation/API version label (`2.2.0`) in this guide's footer — the two values may legitimately differ.
->
-> **Note**: `statistics.total_project_groups` here is sourced from `count_project_permission_groups()` — i.e. project **permission** groups, not the project-group containers counted by `/admin/dashboard/stats`. The two numbers can legitimately differ; see [Project groups vs. permission groups](#project-groups-vs-permission-groups).
+`system.version` is a fixed string in `src/routes/system.py`; it is not the OpenAPI version
+(`2.2.0`). Each count falls back to `0` if its query fails.
 
-### System Health Check
+### Component health
 
-**Scenario**: Check detailed system health with any valid access session.
+`GET /system/health` reports every component and an overall `status`.
 
 ```bash
-curl -X GET "http://localhost:8000/system/health" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "User-Agent: my-client/1.0"
+curl "$BASE_URL/system/health" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-**Response:**
-```json
+```jsonc
 {
   "success": true,
+  "message": null,
   "status": "healthy",
-  "timestamp": "2024-03-25T10:30:00Z",
+  "timestamp": "2026-03-25T10:30:00Z",
   "components": {
-    "database": {
-      "status": "healthy",
-      "message": "Database accessible"
-    },
-    "redis": {
-      "status": "healthy",
-      "message": "Redis accessible"
-    },
-    "group_system": {
-      "status": "healthy",
-      "message": "Group system operational: 28 user groups, 12 project groups"
-    },
-    "email_provider": {
-      "status": "disabled",
-      "provider": "fake",
-      "delivery_enabled": false
-    },
-    "email_outbox": {
-      "status": "healthy",
-      "queue_depth": 0,
-      "dlq_depth": 0,
-      "success_ratio": null
-    },
-    "email_worker": {
-      "status": "disabled",
-      "heartbeat_count": 0,
-      "latest_heartbeat": null
-    }
+    "database": { "status": "healthy", "message": "Database accessible" },
+    "redis": { "status": "healthy", "message": "Redis accessible" },
+    "group_system": { "status": "healthy", "message": "Group system operational: 28 user groups, 12 project groups" },
+    "email_provider": { "status": "disabled", "provider": "fake", "delivery_enabled": false, "ready": false },
+    "email_outbox": { "status": "healthy", "queue_depth": 0, "dlq_depth": 0, "success_ratio": null },
+    "email_worker": { "status": "disabled", "heartbeat_count": 0, "latest_heartbeat": null },
+    "patreon": { "status": "disabled" },                  // plus readiness, token, webhook, sync details
+    "billing": { "status": "disabled" },                  // plus readiness, webhooks, snapshots, sync, retention
+    "billing_provider_stripe": { "status": "disabled" },
+    "billing_webhooks": { "status": "disabled" },
+    "billing_sync": { "status": "disabled" }
   }
 }
 ```
 
-**Degradation rule**: the top-level `status` starts at `"healthy"` and degrades to `"degraded"` if the database, Redis, or group-system check fails; the failing component reports `"unhealthy"` and the response is still `200`. This endpoint never returns `"unhealthy"` — its worst top-level status is `"degraded"`. An invalid or expired bearer token returns `401` here and on `/system/info`; a Redis or database outage usually fails the request during authentication before any check runs. Email components (`email_provider`, `email_outbox`, `email_worker`) are **additive**: they only contribute to degradation when email delivery is enabled (`email_provider.delivery_enabled == true`) and the provider is `not_ready` or the outbox status is not `healthy`/`disabled`. When email delivery is disabled, these components report disabled/not-ready states safely and never make unrelated authentication health fail.
+The HTTP status is always `200` once the caller is authenticated; component problems change only
+`status`, which becomes `degraded` (never `unhealthy`) when any of these holds:
 
-### Admin Email Operations
+- `database`, `redis` or `group_system` reports `unhealthy`;
+- email delivery is enabled (`email_provider.delivery_enabled`) and the provider is not `ready`, the
+  outbox is not `healthy` or `disabled`, or `email_worker` is not `healthy` (no worker heartbeat);
+- `patreon` reports `degraded`, `stale`, `retrying`, `unhealthy`, `not_ready` or `unknown`;
+- billing is enabled and `billing`, `billing_provider_stripe`, `billing_webhooks` or `billing_sync`
+  reports one of those statuses.
 
-Admin/root email operations expose operational state without leaking PII:
+Disabled email, Patreon or billing never degrade the result. Authenticating the caller needs Redis
+and the database, so an outage of either usually fails the request during authentication, before
+any component is checked.
 
-```bash
-curl -X GET "http://localhost:8000/users/usr-target.../emails" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
+### Admin health score
 
-curl -X POST "http://localhost:8000/users/usr-target.../emails/uem-123/resend" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
+`GET /admin/health` checks only the database and Redis and scores them.
 
-curl -X GET "http://localhost:8000/admin/email/logs?limit=50" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "User-Agent: my-client/1.0"
-```
-
-Admin email logs return recipient hash + masked email only. They do not expose full recipient email, subject/body, template variables, tokens, reset/activation links, raw idempotency keys, or provider payloads.
-
-Admin password reset is reset-link based:
-
-```bash
-curl -X POST "http://localhost:8000/users/usr-target.../reset-password" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
-  -H "Idempotency-Key: admin-reset-001" \
-  -H "User-Agent: my-client/1.0"
-```
-
-The response does not contain a plaintext password, reset token, reset link, full recipient email, subject/body, or provider payload. If the target has a primary activated email, the route enqueues a reset-link email through the outbox. If not, the public/admin posture remains generic and operators must use redacted audit/email logs for troubleshooting.
-
-### Simple Ping
-
-**Scenario**: Quick health check endpoint.
-
-```bash
-curl -X GET "http://localhost:8000/system/ping"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Group-based authentication API is running",
-  "timestamp": "2024-03-25T10:30:00Z"
-}
-```
-
-### Admin Health Check
-
-**Scenario**: Detailed health check for admins with metrics.
-
-```bash
-curl -X GET "http://localhost:8000/admin/health" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-**Response:**
 ```json
 {
   "overall_status": "healthy",
   "health_score": 100,
   "components": {
-    "database": {"status": "healthy", "latency_ms": 5},
-    "redis": {"status": "healthy", "latency_ms": 2}
+    "database": {"status": "healthy", "message": "Database accessible", "timestamp": "2026-03-25T10:30:00Z"},
+    "redis": {"status": "healthy", "message": "Redis accessible", "timestamp": "2026-03-25T10:30:00Z"}
   },
   "metrics": {
     "total_users": 1250,
     "total_projects": 45,
     "active_sessions": 342
   },
-  "checked_at": "2024-03-25T10:30:00Z"
+  "checked_at": "2026-03-25T10:30:00Z"
 }
 ```
 
-**Health scoring rule** (`/admin/health`): the score starts at `100`, with `-50` when the database is not `"healthy"` and `-30` when Redis is not `"healthy"`. The resulting `overall_status` is:
+The score starts at `100`, minus `50` if the database is not `healthy` and `30` if Redis is not.
+`overall_status` is `healthy` at `100`, `degraded` at `70` or more (Redis down), otherwise
+`unhealthy` (database down). A failing component reports `status` `unhealthy` with an error
+`message`.
 
-| `health_score` | `overall_status` |
-|----------------|------------------|
-| `>= 100` | `healthy` |
-| `>= 70` | `degraded` |
-| otherwise | `unhealthy` |
+### System overview
 
-> **Note**: the `components.database` / `components.redis` blocks are produced verbatim by `check_database_health()` / `check_redis_health()`. The `latency_ms` field shown above is **illustrative** — the exact keys depend on those helpers and are not guaranteed. `/system/health` accepts any valid access session; this endpoint requires **Admin/Root** auth and can return `"unhealthy"`.
+`GET /admin/system/overview` adds host metrics. CPU usage is sampled over `1` second, so the call
+takes at least that long.
 
----
-
-## Cache Management
-
-> **Auth note**: `GET /system/cache/stats` requires only a **valid session** (any user type) — it is **not** admin-only. By contrast, `POST /system/cache/clear` and both invalidate endpoints require **Admin/Root** and return `403 ACCESS_DENIED` otherwise. The invalidate-on-failure paths return `500 INTERNAL_ERROR` if the cache operation fails.
-
-### Get Cache Statistics
-
-**Scenario**: View cache performance metrics. Requires only a valid session (any user type), so `YOUR_TOKEN` below need not be an admin token.
-
-```bash
-curl -X GET "http://localhost:8000/system/cache/stats" \
-  -H "Authorization: Bearer YOUR_TOKEN"
+```jsonc
+{
+  "success": true,
+  "system_overview": {
+    "timestamp": "2026-03-25T10:30:00Z",
+    "health_score": 100,
+    "status": "healthy",
+    "system": { "cpu_usage": 12.5, "memory_usage": 41.0, "memory_available": 9350, "disk_usage": 55.2, "disk_free": 120, "uptime": "12d 4h 7m" },
+    "database": { "status": "healthy", "response_time_ms": 3.1, "connections": "12", "size_mb": 84.5, "table_count": 61 },
+    "redis": { "status": "healthy", "response_time_ms": 0.8, "memory_used": "3.2M", "connected_clients": 9 },
+    "application": { "entities": { }, "activity": { }, "performance": { } },
+    "patreon": { "status": "disabled" },
+    "billing": { "status": "disabled" }
+  },
+  "generated_at": "2026-03-25T10:30:00Z"
+}
 ```
 
-**Response:**
+`memory_available` is in MB and `disk_free` in GB. The score starts at `100` and loses `10`/`20` for
+CPU above `60`/`80` %, `10`/`20` for memory above `75`/`90` %, `30` if the database is not healthy
+(or `10` if it answers in over `1000` ms), and `20` if Redis is not healthy (or `5` over `500` ms).
+`status` is `healthy` at `80` or more, `degraded` at `60` or more, otherwise `unhealthy`. If the
+overview itself fails, `system_overview` is `{"status": "error", "health_score": 0, ...}` with an
+`error` message.
+
+## Cache management
+
+Redis holds access sessions and short-lived authorization caches. These routes inspect and drop
+them; refresh families, rate-limit counters and API-key validation entries are never touched.
+
+### Cache statistics
+
+`GET /system/cache/stats` — any valid access session.
+
+```bash
+curl "$BASE_URL/system/cache/stats" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
 ```json
 {
   "success": true,
+  "message": null,
   "cache_statistics": {
-    "total_keys": 1540,
-    "memory_used_mb": 45.2,
-    "hit_rate": 0.92,
-    "miss_rate": 0.08
+    "sessions": 342,
+    "access_checks": 120,
+    "permission_checks": 85,
+    "user_types": 60,
+    "role_checks": 14,
+    "api_keys": 5,
+    "total_keys": 1540
   },
   "cache_configuration": {
     "session_ttl": "3600 seconds (1 hour)",
@@ -471,380 +383,322 @@ curl -X GET "http://localhost:8000/system/cache/stats" \
     "rbac_check_ttl": "1800 seconds (30 minutes)",
     "user_info_ttl": "3600 seconds (1 hour)"
   },
-  "timestamp": "2024-03-25T10:30:00Z"
+  "timestamp": "2026-03-25T10:30:00Z"
 }
 ```
 
-### Clear All Cache
+`cache_statistics` counts keys by prefix (`session:`, `access:`, `permission:`, `user_type:`,
+`role:`, `apikey:`) and `total_keys` counts every key in the Redis database. It is `{}` if Redis
+cannot be read. No hit-rate metrics are collected, and `cache_configuration` is fixed text, not
+read from runtime settings.
 
-**Scenario**: Admin clears entire authentication cache.
+### Clear the whole cache
+
+`POST /system/cache/clear` — root or admin. Deletes every `session:*`, `access:*`, `role:*`,
+`permission:*`, `user_info:*` and `user_type:*` key.
 
 ```bash
-curl -X POST "http://localhost:8000/system/cache/clear" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X POST "$BASE_URL/system/cache/clear" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Response:**
 ```json
 {
   "success": true,
   "message": "Entire authentication cache has been cleared",
-  "cleared_by": "usr-adm***...",
-  "timestamp": "2024-03-25T10:30:00Z",
+  "cleared_by": "usr-[550e]...[0000]",
+  "timestamp": "2026-03-25T10:30:00Z",
   "warning": "All users will need to re-authenticate or may experience slower response times"
 }
 ```
 
-### Invalidate User Cache
+> [!WARNING]
+> Deleting `session:*` revokes every live access session, including the caller's. Every client must
+> refresh or sign in again. Prefer per-user invalidation.
 
-**Scenario**: Clear cache for a specific user.
+A failed Redis deletion answers `500` `INT_7001`.
+
+### Invalidate one user
+
+`POST /system/cache/invalidate/user/{user_hash}` — root or admin. Drops the user's `access:*`,
+`permission:*`, `user_type:*` and `user_info:*` entries and their access sessions, so their current
+access tokens stop working until they refresh. Refresh families are kept.
 
 ```bash
-curl -X POST "http://localhost:8000/system/cache/invalidate/user/usr-target123..." \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X POST "$BASE_URL/system/cache/invalidate/user/$USER_HASH" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Response:**
 ```json
 {
   "success": true,
-  "message": "Cache invalidated for user: usr-tar***...",
-  "invalidated_by": "usr-adm***...",
-  "timestamp": "2024-03-25T10:30:00Z"
+  "message": "Cache invalidated for user: usr-[7f3c]...[9a21]",
+  "invalidated_by": "usr-[550e]...[0000]",
+  "timestamp": "2026-03-25T10:30:00Z"
 }
 ```
 
-### Invalidate Project Cache
+An unknown or inactive `user_hash` answers `404` `NF_4004`; a Redis failure answers `500` `INT_7001`.
 
-**Scenario**: Clear cache for a specific project.
+### Invalidate one project
 
-> The `{project_id}` path parameter is an **integer** project ID (e.g. `456`), **not** a project hash. The user-cache endpoint above, by contrast, takes a `{user_hash}` and returns `404` if the user is not found.
+`POST /system/cache/invalidate/project/{project_id}` — root or admin. Takes the project ID
+(`proj-...`), drops `access:*`, `permission:*` and `role:*` entries whose keys reference it, and
+answers `200` even when nothing matched (the project is not looked up).
+
+`project_id` may contain only letters, digits, `-` and `_` (at most 128 characters), so it cannot
+widen the key pattern; anything else answers `400` `VAL_3001` (`validation_errors[].field` =
+`path.project_id`).
+
+## User types and admin project assignments
+
+Creating root and admin users, reading and changing a user's type, listing users by type, type
+statistics, and assigning projects to admins are all under `/user-types/*`
+(`src/routes/user_types_auth.py`). They are documented in
+[Users: user types and admin assignment](users/user-types.md). Project and project-group management
+is in the [projects suite](projects/README.md) and the [groups suite](groups/README.md).
+
+## Bulk operations
+
+Four routes change many users in one request. All take form fields
+(`application/x-www-form-urlencoded` or `multipart/form-data`); list fields repeat the key
+(`user_hashes=a&user_hashes=b`).
+
+| Path | Method | Auth | Max `user_hashes` | Other fields |
+| --- | --- | --- | --- | --- |
+| `/admin/users/bulk-update` | `POST` | Root or admin user with `admin` or `manage_users` | `100` | `is_active` and/or `user_type` (at least one); `user_type` needs root |
+| `/admin/users/bulk-delete` | `POST` | Root or admin user with `admin` or `manage_users` | `50` | `confirm_deletion=true` required |
+| `/admin/projects/{project_hash}/bulk-assign-roles` | `POST` | `admin` | `100` | `role_names` (role names, repeatable) |
+| `/admin/user-groups/bulk-assign` | `POST` | `admin` | `100` | `group_names` (user-group names, repeatable) |
+
+### Request rejections
+
+These reject the whole request before anything is written:
+
+| Condition | Response |
+| --- | --- |
+| Required list or field missing | `400` `VAL_3001` with `validation_errors` |
+| Too many `user_hashes` | `400` `VAL_3010` |
+| Bulk update: invalid `user_type` / no update field | `400` `VAL_3012` / `400` `VAL_3002` |
+| Bulk update: `force_password_reset` sent | `400` `VAL_3001`; it is not supported (use reset-link recovery) |
+| Bulk update or delete: caller is not a root or admin user (a consumer holding `admin` or `manage_users` included) | `403` `AUTHZ_2002` |
+| Bulk update: `user_type` by a non-root caller | `403` `AUTHZ_2002` |
+| Bulk delete: `confirm_deletion` not `true` | `400` `VAL_3001` |
+| Role assignment: unknown project | `404` `NF_4004` |
+| Role assignment: any unknown or inactive role name | `404` `NF_4007` |
+| Role assignment by non-root: a role grants a reserved permission (`admin`, `manage_users`, ...) | `403` `AUTHZ_2002` |
+| Role assignment by non-root: caller lists themselves | `403` `AUTHZ_2009` |
+| Group assignment: any unknown or inactive group name | `404` `NF_4003` |
+
+### Partial failures
+
+Once a request passes those checks, items are processed one at a time and the route answers `200`
+even if some items fail. Items are not rolled back as a group: a failure does not undo earlier
+successes. Always read the counts:
+
+| Field | Content |
+| --- | --- |
+| `summary` | `total_requested` (number of `user_hashes`), `success_count`, `error_count`; plus `skipped_count` (always `0`) on update and `protected_count` (root users skipped) on delete. |
+| `results[]` | One entry per item: `user_hash`, `success`, `error` on failure; `user_id` (internal ID) on update, `role_name` on role assignment, `group_name` on group assignment. Role and group assignments have one entry per user per role or group. |
+| `errors[]` | `{"user": "<user_hash>", "error": "..."}` per failed item, or `{"operation": "...", "error": "..."}` when the whole batch stopped. |
+| `warnings[]` | Bulk delete only: `{"user": "<user_hash>", "warning": "..."}` for a user deleted whose session revocation failed. |
+| `performed_by`, `performed_at` | Caller username and UTC time. |
+
+Typical item errors: `User not found`, `Cannot bulk delete root users`,
+`Cannot deactivate your own account`, `Cannot delete your own account`,
+`Root users are outside your administrative scope`, `User not in your administrative scope`,
+`Update failed`, `Delete failed`, `Auth revocation failed`, `Role assignment failed`,
+`Group assignment failed`.
+
+Route-specific behavior:
+
+- **Bulk update and delete** check each target like the single-user routes: nobody may deactivate
+  or delete their own account, and an admin may only touch non-root users who reach one of the
+  projects the admin is assigned to. A refused user fails in `results` and is left unchanged.
+- **Bulk update** also returns `updates_applied`. Setting `is_active=false` revokes each
+  deactivated user's access sessions and refresh families, and so does a `user_type` change.
+- **Bulk delete** never deletes root users; they count in `protected_count` and appear in `errors`.
+  Each deleted user's access sessions and refresh families are revoked; `warnings` names any user
+  whose revocation failed (their tokens are still refused because the account is inactive).
+- **Bulk role assignment** uses the global role system; the project is used for validation and the
+  audit trail. A user holds one global role, so with several `role_names` each user ends up with the
+  last one. Send one role per request. The response adds `project` and `roles_assigned`.
+- **Bulk group assignment** adds every user to every group and adds `groups_assigned`.
 
 ```bash
-curl -X POST "http://localhost:8000/system/cache/invalidate/project/456" \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X POST "$BASE_URL/admin/users/bulk-update" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d "user_hashes=$USER_A&user_hashes=$USER_B&is_active=false"
 ```
 
-**Response:**
 ```json
 {
   "success": true,
-  "message": "Cache invalidated for project: 456",
-  "invalidated_by": "usr-adm***...",
-  "timestamp": "2024-03-25T10:30:00Z"
+  "message": "Bulk update completed: 1 succeeded, 1 failed",
+  "summary": {"total_requested": 2, "success_count": 1, "error_count": 1, "skipped_count": 0},
+  "updates_applied": {"is_active": false},
+  "results": [
+    {"user_hash": "usr-7f3c...", "success": true, "user_id": "usr-0b12..."},
+    {"user_hash": "usr-9d44...", "success": false, "error": "User not found"}
+  ],
+  "errors": [{"user": "usr-9d44...", "error": "User not found"}],
+  "performed_by": "ops-admin",
+  "performed_at": "2026-03-25T10:30:00Z"
 }
 ```
 
----
+User-lifecycle details for bulk update and delete are in
+[Users: bulk operations](users/bulk-operations.md); role behavior is in the
+[roles suite](roles/README.md).
 
-## User Type Management
+## Admin email operations
 
-User-type lifecycle is now documented in the dedicated users suite.
+Admin email work is documented with its owning suite:
 
-Use it for:
+| Task | Route | Guide |
+| --- | --- | --- |
+| List a user's addresses (masked) | `GET /users/{user_hash}/emails` | [User email management](users/email-management.md) |
+| Resend an activation link | `POST /users/{user_hash}/emails/{email_id}/resend` | [User email management](users/email-management.md) |
+| Send a password-reset link | `POST /users/{user_hash}/reset-password` | [Users usage](users/usage.md) |
+| Inspect delivery logs | `GET /admin/email/logs` | [Audit logs usage](audit_logs/usage.md) |
+| Manage templates (root only) | `/admin/email-templates/*` | [Email suite](email/README.md) |
 
-- root/admin user creation
-- type inspection and type changes
-- list-by-type and stats
-- caveats about overlapping `/users/{hash}/type` vs `/user-types/{hash}/type`
+The per-user routes are root or admin only, and admins are limited to users who reach one of their
+assigned projects; delivery logs need root or admin, and templates need root. The per-user routes
+and delivery logs never return a password, a reset link, a full address or a message body.
 
-Start here:
+## Operational scenarios
 
-- **[Users - User Types](users/user-types.md)**
-
----
-
-## Admin Project Management
-
-Admin-project assignment is now documented as part of the users suite because it is a user-type lifecycle concern, not a generic dashboard concern.
-
-Use it for:
-
-- listing assigned projects for an admin user
-- replacing the full assignment set
-- adding/removing one project at a time
-- understanding that assignments are implemented through admin-group membership
-
-Start here:
-
-- **[Users - User Types](users/user-types.md#admin-project-assignment-lifecycle)**
-
----
-
-## Bulk Operations
-
-User bulk update/delete is now documented in the users suite.
-
-Use it for:
-
-- route limits (`100` update / `50` delete)
-- confirmation requirements for delete
-- partial-failure handling
-- current implementation caveats on bulk update
-
-Start here:
-
-- **[Users - Bulk Operations](users/bulk-operations.md)**
-
-### Bulk Assign Roles in Project
-
-**Scenario**: Give several users the same global role, recorded against a project.
+### Daily health check
 
 ```bash
-curl -X POST "http://localhost:8000/admin/projects/PROJ_HASH/bulk-assign-roles" \
+# 1. Overall status and any component that is not healthy
+curl -s "$BASE_URL/system/health" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-a...&user_hashes=usr-b...&role_names=editor"
-```
+  | jq '{status, unhealthy: (.components | with_entries(select(.value.status != "healthy")))}'
 
-- `role_names` are role **names**. Every name is resolved before anything is written; an unknown or inactive name returns `404 ROLE_NOT_FOUND` (`NF_4007`) with `details.role_names`, and nothing is assigned.
-- A user holds a single global role, so when several `role_names` are listed each user ends up with the **last** one. Send one role name per request.
-- The response is `200` with `summary` (`total_requested`, `success_count`, `error_count`), per-assignment `results` (`user_hash`, `role_name`, `success`, and `error` on failure), and `errors`.
-
-See [Roles Troubleshooting → Bulk role assignment](roles/troubleshooting.md#bulk-role-assignment-returns-404-or-leaves-only-one-role).
-
-### Bulk Assign Users to Groups
-
-`POST /admin/user-groups/bulk-assign` adds every listed user to every listed user group (see [Scenario 3](#scenario-3-bulk-onboarding-new-team)). `group_names` are user-group **names**; an unknown or inactive name returns `404 GROUP_NOT_FOUND` (`NF_4003`) with `details.group_names`, and nothing is assigned. The `200` response aggregates all groups: `summary` plus per-user-per-group `results` (`user_hash`, `group_name`, `success`, and `error` on failure) and `errors`.
-
-All four bulk routes return `401` for an invalid or expired bearer token.
-
----
-
-## Common Scenarios
-
-### Scenario 1: Daily System Health Check
-
-**Goal**: Morning routine check of system health and overnight activity.
-
-```bash
-# Step 1: Check overall system health
-curl -X GET "http://localhost:8000/system/health" \
+# 2. Headline counts and database/Redis status
+curl -s "$BASE_URL/admin/dashboard/stats" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
-# Step 2: Get dashboard stats
-curl -X GET "http://localhost:8000/admin/dashboard/stats" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Step 3: Check overnight activity (last 12 hours)
-curl -X GET "http://localhost:8000/admin/activity?days=1&limit=100" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Step 4: Check for failed logins
-curl -X GET "http://localhost:8000/admin/activity?activity_type_filter=user_login&days=1" \
+# 3. Failed password logins in the last day
+curl -s "$BASE_URL/admin/activity?days=1&activity_type_filter=user_login&search=AUTH_1001&limit=100" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### Scenario 2: Troubleshooting Slow Performance
+Components reporting `disabled` in step 1 are expected when that integration is off. The
+`user_login` activity type is shared with platform login, validate, refresh and switch-project;
+`search=AUTH_1001` narrows it to failed password logins, whose `details` carry the error code.
 
-**Goal**: Investigate and resolve performance issues.
+### Incident lockout
 
-```bash
-# Step 1: Check system health for degraded components
-curl -X GET "http://localhost:8000/admin/health" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+To shut out compromised accounts:
 
-# Step 2: Check cache statistics
-curl -X GET "http://localhost:8000/system/cache/stats" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+1. Deactivate them. This also revokes their access sessions and refresh families.
 
-# Step 3: If cache hit rate is low, consider clearing stale data
-curl -X POST "http://localhost:8000/system/cache/clear" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+   ```bash
+   curl -X POST "$BASE_URL/admin/users/bulk-update" \
+     -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -d "user_hashes=$USER_A&user_hashes=$USER_B&is_active=false"
+   ```
 
-### Scenario 3: Bulk Onboarding New Team
+2. Check `summary.error_count`; retry any user listed in `errors`.
+3. API keys of a deactivated owner fail validation once the `60`-second validation cache expires.
+   To revoke them permanently, list them with `GET /api-keys/users/{user_hash}` and revoke each
+   (see the [API keys suite](api-keys/README.md); revocation needs a recent sign-in).
+4. Review what the accounts did, using the internal IDs from `results[].user_id`:
 
-**Goal**: Add multiple new employees to appropriate groups.
+   ```bash
+   curl "$BASE_URL/admin/activity?user_id=$INTERNAL_USER_ID&days=7" \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+   ```
 
-```bash
-# Step 1: Create users (or have them self-register)
-# ... user registration ...
+Per-user cache invalidation is not needed after deactivation, and answers `404` for an inactive user.
 
-# Step 2: Bulk assign all new users to required groups
-curl -X POST "http://localhost:8000/admin/user-groups/bulk-assign" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-new1...&user_hashes=usr-new2...&user_hashes=usr-new3...&group_names=developers&group_names=mobile_team"
+### Access review
 
-# Step 3: Verify assignments
-curl -X GET "http://localhost:8000/users/list?group_filter=mobile_team" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+1. Look at activity and growth over the review window:
 
-### Scenario 4: Emergency Account Lockout
+   ```bash
+   curl "$BASE_URL/admin/users/statistics?days=90" \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+   ```
 
-**Goal**: Quickly disable multiple compromised accounts.
+2. List deactivated users and users who never signed in:
 
-```bash
-# Step 1: Bulk deactivate suspected accounts
-curl -X POST "http://localhost:8000/admin/users/bulk-update" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "user_hashes=usr-compromised1...&user_hashes=usr-compromised2...&is_active=false"
+   ```bash
+   curl -s "$BASE_URL/users/list?include_inactive=true&limit=500" \
+     -H "Authorization: Bearer $ADMIN_TOKEN" \
+     | jq '.users | map(select(.is_active == false or .last_login == null)) | map({user_hash, username, is_active, last_login})'
+   ```
 
-# Step 2: Invalidate their caches (ends active sessions)
-for hash in usr-compromised1 usr-compromised2; do
-  curl -X POST "http://localhost:8000/system/cache/invalidate/user/$hash..." \
-    -H "Authorization: Bearer $ADMIN_TOKEN"
-done
+   Admins see only non-root users who share a project with them; run this as root for the full
+   list.
+3. Review who holds elevated types with `GET /user-types/users/admin` and
+   `GET /user-types/users/root` (listing `root` is root-only; see
+   [Users: user types](users/user-types.md)).
+4. Deactivate stale accounts with bulk update after manual review.
 
-# Step 3: Check activity for these users
-curl -X GET "http://localhost:8000/admin/activity?user_id=<compromised_user_id>&days=7" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
+## Best practices
 
-### Scenario 5: Monthly Access Review
-
-**Goal**: Review user access patterns and clean up inactive accounts.
-
-```bash
-# Step 1: Get user statistics
-curl -X GET "http://localhost:8000/admin/users/statistics?days=30" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Step 2: List inactive users
-curl -X GET "http://localhost:8000/users/list?include_inactive=true" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.users | map(select(.last_login == null or .last_login < "2024-01-01"))'
-
-# Step 3: Review and optionally deactivate long-inactive users
-# (Manual review recommended before bulk operations)
-```
-
----
-
-## Best Practices
-
-### Monitoring
-
-1. **Regular health checks** - Automate daily health checks
-2. **Monitor cache hit rates** - Low hit rates indicate potential issues
-3. **Track activity spikes** - Unusual activity may indicate problems
-4. **Set up alerts** - Configure alerts for degraded health status
-
-### Bulk Operations
-
-1. **Start small** - Test with few users before large bulk operations
-2. **Confirm critical operations** - Always use confirm_deletion=true
-3. **Document changes** - Keep records of bulk operations
-4. **Schedule wisely** - Run bulk operations during low-usage periods
-
-### Cache Management
-
-1. **Avoid frequent clears** - Only clear cache when necessary
-2. **Prefer targeted invalidation** - Invalidate specific users/projects
-3. **Monitor after clearing** - Watch for performance impact
-4. **Understand TTLs** - Know when cached data expires naturally
-
-### Security
-
-1. **Audit admin actions** - Review admin activity regularly
-2. **Limit admin access** - Minimize number of admin users
-3. **Rotate credentials** - Change admin passwords periodically
-4. **Use principle of least privilege** - Grant minimal necessary access
-
----
+- Probe liveness with `/ping` or `/system/ping`; alert on `/system/health` `status` and read
+  `components` for the cause.
+- Prefer `POST /system/cache/invalidate/user/{user_hash}` over a full clear; the full clear signs
+  everyone out.
+- Treat every bulk `200` as possibly partial: check `summary.error_count` and `errors`.
+- Keep bulk role assignments to one role name per request.
+- Test a bulk change on a couple of users before running it on a hundred.
+- Keep the number of root and admin users small, and review admin activity in the
+  [audit logs suite](audit_logs/README.md).
 
 ## Troubleshooting
 
-### Degraded System Status
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `/system/health` `status` is `degraded` | A component listed under [Component health](#component-health) is failing. | Find the component whose `status` is not `healthy` or `disabled`. |
+| Load balancer gets `401` from `/system/health` | The route needs an access session. | Probe `/ping` or `/system/ping`. |
+| `403` `AUTHZ_2001` on dashboard, activity or cache write routes | Caller's `user_type` is not root or `admin`; permissions do not count here. | Use a root or admin account. |
+| `403` `AUTHZ_2002` on bulk routes | Session lacks the `admin` (or `manage_users`) permission, or `user_type` change by non-root. | Grant the permission or use root. |
+| Everyone was signed out | `POST /system/cache/clear` deleted all access sessions. | Expected; clients refresh or sign in. |
+| `400` on `/system/cache/invalidate/project/...` | `project_id` holds a character other than letters, digits, `-` or `_`, or is longer than 128. | Send the plain project ID (`proj-...`). |
+| `404` from per-user cache invalidation | User unknown or inactive. | Deactivation already revoked the user's sessions. |
+| Bulk request `200` but `error_count > 0` | Per-item failures. | Read `results[]` and `errors[]`; retry the failed items. |
+| Only one role remains after bulk role assignment | A user has one global role; the last name wins. | Send one role per request. |
+| `statistics` contains only `error` | The statistics query failed. | Check database health. |
+| `/admin/activity?user_id=usr-...` returns nothing | A `user_hash` was sent instead of the internal ID. | Use `user.id` from the feed or `results[].user_id` from bulk update. |
+| `400` on `/admin/activity/{activity_id}` | ID is not `act-` plus 32 hex characters. | Copy `id` from the feed. |
+| `/admin/system/overview` is slow | CPU is sampled for `1` second. | Expected. |
 
-**Error**: System health shows "degraded"
+## Quick reference
 
-**Solutions**:
-1. Check individual component status in health response
-2. Verify database connectivity
-3. Check Redis is running and accessible
-4. Review recent system changes
+| Path | Method | Auth | Purpose |
+| --- | --- | --- | --- |
+| `/admin/dashboard/stats` | `GET` | Root or admin | Headline counts and database/Redis status |
+| `/admin/users/statistics` | `GET` | Root or admin | User counts, growth and activity rate (`days`) |
+| `/admin/projects/statistics` | `GET` | Root or admin | Project counts and utilization (`days`) |
+| `/admin/activity` | `GET` | Root or admin | Activity feed with filters |
+| `/admin/activity/types` | `GET` | Root or admin | Valid `activity_type_filter` values |
+| `/admin/activity/{activity_id}` | `GET` | Root or admin | One activity entry |
+| `/admin/health` | `GET` | Root or admin | Database/Redis health score |
+| `/admin/system/overview` | `GET` | Root or admin | Host, database, Redis, app, Patreon, billing |
+| `/ping` | `GET` | Public | Liveness (`204`) |
+| `/system/ping` | `GET` | Public | Liveness (`200` JSON) |
+| `/system/info` | `GET` | Any access session | Service identity and counts |
+| `/system/health` | `GET` | Any access session | Component health |
+| `/system/cache/stats` | `GET` | Any access session | Cache key counts |
+| `/system/cache/clear` | `POST` | Root or admin | Delete all auth cache and access sessions |
+| `/system/cache/invalidate/user/{user_hash}` | `POST` | Root or admin | Drop one user's cache and access sessions |
+| `/system/cache/invalidate/project/{project_id}` | `POST` | Root or admin | Drop project cache entries |
+| `/admin/users/bulk-update` | `POST` | `admin` or `manage_users` permission | Activate, deactivate or retype up to `100` users |
+| `/admin/users/bulk-delete` | `POST` | `admin` or `manage_users` permission | Delete up to `50` users |
+| `/admin/projects/{project_hash}/bulk-assign-roles` | `POST` | `admin` permission | Assign a global role to up to `100` users |
+| `/admin/user-groups/bulk-assign` | `POST` | `admin` permission | Add up to `100` users to user groups |
 
-### Cache Clear Had No Effect
+## Related
 
-**Issue**: Performance still slow after clearing cache
-
-**Solutions**:
-1. Check database performance separately
-2. Verify Redis is properly configured
-3. Check for network latency issues
-4. Review application logs for errors
-
-### Bulk Operation Partial Failure
-
-**Issue**: Some operations in bulk request failed
-
-**Solutions**:
-1. Check the errors array in response
-2. Verify all user hashes are valid
-3. Check permissions for each target user
-4. Retry failed operations individually
-
----
-
-## Quick Reference
-
-### Admin Dashboard Endpoints
-
-| Operation | Endpoint | Method | Permission |
-|-----------|----------|--------|------------|
-| Dashboard stats | `/admin/dashboard/stats` | GET | Admin/Root |
-| User statistics | `/admin/users/statistics` | GET | Admin/Root |
-| Project statistics | `/admin/projects/statistics` | GET | Admin/Root |
-| System overview | `/admin/system/overview` | GET | Admin/Root |
-| Activity feed | `/admin/activity` | GET | Admin/Root |
-| Activity detail | `/admin/activity/{activity_id}` | GET | Admin/Root |
-| Activity types | `/admin/activity/types` | GET | Admin/Root |
-| Admin health | `/admin/health` | GET | Admin/Root |
-
-### System Endpoints
-
-| Operation | Endpoint | Method | Auth Required |
-|-----------|----------|--------|---------------|
-| System info | `/system/info` | GET | Valid session |
-| Health check | `/system/health` | GET | Valid session |
-| Ping | `/system/ping` | GET | No |
-| Cache stats | `/system/cache/stats` | GET | Yes |
-| Clear cache | `/system/cache/clear` | POST | Admin/Root |
-| Invalidate user cache | `/system/cache/invalidate/user/{hash}` | POST | Admin/Root |
-| Invalidate project cache | `/system/cache/invalidate/project/{id}` | POST | Admin/Root |
-
-### Bulk Operation Endpoints
-
-| Operation | Endpoint | Method | Permission |
-|-----------|----------|--------|------------|
-| Bulk update users | `/admin/users/bulk-update` | POST | Admin / `manage_users` |
-| Bulk delete users | `/admin/users/bulk-delete` | POST | Admin / `manage_users` |
-| Bulk assign roles | `/admin/projects/{hash}/bulk-assign-roles` | POST | Admin |
-| Bulk assign groups | `/admin/user-groups/bulk-assign` | POST | Admin |
-
-See detailed behavior in **[Users - Bulk Operations](users/bulk-operations.md)**.
-
-### Bulk Operation Limits
-
-| Operation | Max Items | Confirmation Required |
-|-----------|-----------|----------------------|
-| Bulk update | 100 users | No |
-| Bulk delete | 50 users | Yes |
-| Bulk role assign | 100 users | No |
-| Bulk group assign | 100 users | No |
-
-### Cross-Reference Links
-
-| Topic | Canonical Doc |
-|-------|--------------|
-| User type lifecycle | [Users - User Types](users/user-types.md) |
-| Admin project assignment | [Users - User Types](users/user-types.md#admin-project-assignment-lifecycle) |
-| Activity feed & API audit logs | [Audit Logs Suite](audit_logs/README.md) |
-| Role catalog (metadata only) | [Roles - Usage](roles/usage.md) |
-
----
-
-## Related Documentation
-
-- **[Audit Logs Documentation Suite](audit_logs/README.md)** — Activity feed, API audit logs, security events, export, and audit statistics
-- **[Error Reference](errors.md)** — Error codes and troubleshooting
-- **[Getting Started](getting-started.md)** — Platform setup and first steps
-- **[Authentication Usage Cases](authentication-usage-cases.md)** - Login, sessions
-- **[Users Documentation Suite](users/README.md)** - User management, user types, bulk user operations
-- **[Groups Documentation Suite](groups/README.md)** - Group management, flow, and troubleshooting
-- **[Projects Documentation Suite](projects/README.md)** - Project management and access control
-- **[Permissions Documentation Suite](permissions/README.md)** - Permission management
-
+- [Error reference](errors.md)
+- [Audit logs suite](audit_logs/README.md)
+- [Users suite](users/README.md)
+- [Groups suite](groups/README.md)
+- [Projects suite](projects/README.md)
+- [Permissions suite](permissions/README.md)

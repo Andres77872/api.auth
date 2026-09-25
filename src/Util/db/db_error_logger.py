@@ -13,6 +13,7 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 
+from src.Util.audit_session_id import audit_session_id
 from src.Util.db_config import get_connection
 
 logger = logging.getLogger(__name__)
@@ -110,10 +111,8 @@ def log_error_to_database(
         # Get environment
         environment = os.getenv("ENVIRONMENT", "development")
         
-        # Truncate session_id to fit database column (VARCHAR(256))
-        # Session ID may be a JWT token which can be much longer
-        if session_id and len(session_id) > 256:
-            session_id = session_id[:256]
+        # Never store token bytes: reduce to the session_id claim or a keyed hash
+        session_id = audit_session_id(session_id)
         
         # Convert dicts to JSON strings for database storage
         query_params_json = json.dumps(request_query_params) if request_query_params else None

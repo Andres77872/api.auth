@@ -371,6 +371,62 @@ def get_customer_operational_ref(*, user_id: str, billing_group_id: str, provide
     )
 
 
+def resolve_event_scope(
+    *,
+    provider: str,
+    billing_group_id: str | None,
+    checkout_ref: str | None,
+    subscription_id_hmac: bytes | None,
+    payment_intent_id_hmac: bytes | None,
+    charge_id_hmac: bytes | None,
+    customer_id_hmac: bytes | None,
+    price_id_hmac: bytes | None,
+) -> dict[str, Any] | None:
+    """Call `sp_billing_resolve_event_scope`: map a provider event's refs to stored local rows.
+
+    Returns internal ids, opaque refs, and labels only (no ciphertext); None when nothing matches.
+    """
+
+    return _callproc_one(
+        "sp_billing_resolve_event_scope",
+        [
+            provider,
+            billing_group_id,
+            checkout_ref,
+            subscription_id_hmac,
+            payment_intent_id_hmac,
+            charge_id_hmac,
+            customer_id_hmac,
+            price_id_hmac,
+        ],
+        context=f"resolve_event_scope(provider={provider}, billing_group_id={billing_group_id})",
+    )
+
+
+def get_sync_context(
+    *,
+    provider: str,
+    user_id: str | None,
+    billing_group_id: str | None,
+    subscription_id: str | None,
+    purchase_id: str | None,
+) -> dict[str, Any] | None:
+    """Call `sp_billing_get_sync_context` for the billing sync worker.
+
+    The row carries encrypted provider refs; like every operational ref it must stay
+    server-side and never reach responses, audit, activity, logs, or metrics.
+    """
+
+    return _callproc_one(
+        "sp_billing_get_sync_context",
+        [provider, user_id, billing_group_id, subscription_id, purchase_id],
+        context=(
+            f"get_sync_context(provider={provider}, user_id={user_id}, billing_group_id={billing_group_id}, "
+            f"subscription_id={subscription_id}, purchase_id={purchase_id})"
+        ),
+    )
+
+
 # =============================================================================
 # Webhook delivery ledger
 # =============================================================================
@@ -1172,12 +1228,14 @@ __all__ = [
     "get_purchase_status_by_ref",
     "get_session_plan",
     "get_customer_operational_ref",
+    "get_sync_context",
     "list_billing_group_projects",
     "list_billing_groups",
     "list_catalog_for_group",
     "list_catalog_for_project",
     "observe_subscription",
     "resolve_billing_group_by_webhook_secret_hmac",
+    "resolve_event_scope",
     "resolve_user_billing_group",
     "record_billing_webhook_delivery",
     "record_purchase_event",

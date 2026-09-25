@@ -1,232 +1,121 @@
-# Roles Troubleshooting, Caveats, and Best Practices
+# Roles troubleshooting
 
-Things that commonly confuse operators working with the global roles system in `api.auth`.
+Symptom, cause, fix. Error codes are listed in [Roles reference](reference.md#errors); how roles turn
+into permissions is in [Permission resolution](../permissions/resolution.md).
 
----
+## Access denied
 
-## Troubleshooting
+### `403` "Admin permission required" for a consumer that has `manage_roles`
 
-### User has permissions visible via `/permissions/users/me/permissions` but they don't work during auth
+**Cause.** The `/roles` guard checks `manage_roles` through the caller's **role** only, live from the
+database. A grant through a user group or a direct assignment shows up in
+`GET /permissions/users/me/permissions` and opens the `/permissions` admin routes, but not `/roles`.
 
-This is the most critical caveat in the system.
+**Fix.** Put `manage_roles` in a group linked to the caller's role. It is a reserved name, so root has
+to do it; see [Delegate role management to a consumer](scenarios.md#delegate-role-management-to-a-consumer).
 
-The auth/session flow uses **ROLE-ONLY** permission resolution:
+### `403` "Only root users may ..."
 
-```
-users → roles → role_permission_groups → global_permission_group_permissions → global_permissions
-```
+**Cause.** The change involves a [reserved permission name](reference.md#reserved-permission-names):
+creating or editing one, moving it into or out of a group, linking or unlinking a group that contains
+one, editing or deleting a role that grants one, assigning, replacing, or removing such a role (also
+in bulk), or assigning or removing a permission group that contains one through `/permissions`.
+`admin` users are not root and are blocked too.
 
-The inspection endpoint `GET /permissions/users/me/permissions` uses **COMPREHENSIVE** resolution:
+**Fix.** Have a `root` user make the change.
 
-```
-UNION of:
-  1. role → permissions
-  2. user-group → permissions
-  3. direct user → permissions
-```
+### `403` `AUTHZ_2009` "You cannot change your own role"
 
-If a user has permissions from user-group or direct assignment, those show up
-in `/permissions/users/me/permissions` but are **NOT** recognized during login,
-session validation, or route authorization. The one exception is the
-`/permissions` admin guard, which accepts `manage_roles` from any source (see
-[below](#consumer-permission-guards-differ-between-permissions-and-roles)).
+**Cause.** Non-root callers cannot `PUT` or `DELETE` their own role, or list themselves in a bulk
+assignment.
 
-**Fix:** assign the needed permissions through the user's role instead. Or use the inspection endpoints for audit purposes only.
+**Fix.** Ask another administrator or a root user.
 
-See [../permissions/resolution.md](../permissions/resolution.md) for the full explanation.
+### `403` `AUTHZ_2009` "Cannot delete system roles"
 
----
+**Cause.** The role has `is_system_role = 1`, which can only be set in the database.
+
+**Fix.** Leave it, or change the flag in the database if it should be deletable. System roles can
+still be edited with `PUT`.
+
+### A role change does not show up in the user's session
+
+**Cause.** Validated sessions are cached for `VALIDATE_CACHE_TTL` seconds (default `30`); see
+[When changes take effect](../permissions/resolution.md#when-changes-take-effect). For `root` and
+`admin` users the role never affects session permissions.
+
+**Fix.** Wait, or have the user call `POST /auth/refresh`; a new login is not required. The user can
+confirm the role side under `sources.from_role` in `GET /permissions/users/me/permission-sources`.
+
+## Unexpected results
+
+### A deleted role, group, or permission returns `404`, and recreating it returns `409`
+
+**Cause.** Deletes are soft. Lookups by hash see active rows only, while the unique name constraint
+covers deleted rows too, compared case- and accent-insensitively.
+
+**Fix.** Pick a new name. Restoring a deleted object is a database operation.
+
+### A user whose role was deleted still shows it in `users.role_id`
+
+**Cause.** Deleting a role does not clear `users.role_id`. The role grants nothing (at auth time or in
+`/permissions/users/me/permissions`) and `GET /roles/users/{user_hash}/role` returns `role: null`,
+but the reference stays.
+
+**Fix.** Assign another role, or clear it with `DELETE /roles/users/{user_hash}/role` (this works
+because `role_id` is still set).
+
+### A deleted permission group still grants its permissions
+
+**Cause.** The database still runs resolver procedures from before this was fixed: every resolver now
+checks the group's own flag, so a deleted group grants nothing through any source.
+
+**Fix.** See [A deleted permission group still grants its permissions](../permissions/troubleshooting.md#a-deleted-permission-group-still-grants-its-permissions).
+
+### `PUT` returns `200` but nothing changed
+
+**Cause.** Either the body was JSON, which these routes do not read (every optional field is then
+omitted), or the fields were empty strings, which count as omitted. Omitted fields keep their values,
+so a description cannot be cleared.
+
+**Fix.** Send form fields with non-empty values. Names cannot be changed at all; see
+[Rename a role](scenarios.md#rename-a-role).
+
+### `404` `NF_4004` when unlinking or removing from a catalog
+
+**Cause.** The group is not linked to the role, the permission is not in the group, or the role is not
+in the project catalog (never added, or already removed). The objects themselves exist; a missing
+object returns its own code (`NF_4007`, `NF_4011`, `NF_4005`, `NF_4002`).
+
+**Fix.** Nothing to undo. Adding is idempotent if you need the link back.
+
+### `500` `INT_7001` when removing a user's role
+
+**Cause.** The user has no role. The removal updates zero rows and the route reports that as a
+failure (known defect).
+
+**Fix.** Check `GET /roles/users/{user_hash}/role` first; a `null` role on an active user whose role was
+never deleted means there is nothing to remove.
+
+### List results stop early or `pagination.total` looks wrong
+
+**Cause.** `pagination.total` is the number of items in the current page, not the overall count.
+`limit` is capped at `100`.
+
+**Fix.** Page with `offset` until a page returns fewer than `limit` items.
+
+### The project role catalog did not restrict anything
+
+**Cause.** The catalog is metadata for UIs. Any active role can be assigned to any active user.
+
+**Fix.** Enforce the restriction in your client, or control access through roles and groups.
 
 ### Bulk role assignment returns 404 or leaves only one role
 
-`POST /admin/projects/{hash}/bulk-assign-roles` resolves every `role_names` value by role **name** before writing anything:
-
-- An unknown or inactive role name returns 404 `ROLE_NOT_FOUND` (`NF_4007`) with the offending names in `details.role_names`; nothing is assigned. Send role names, not role hashes.
-- A user holds a single global role, so when several `role_names` are listed each user ends up with the **last** one.
-
-**Fix:** send one role name per request. Per-user failures (unknown user hash, for example) are reported in `results` and `errors` of the 200 response.
-
----
-
-### Pagination total is wrong
-
-List endpoints for roles, permission groups, and permissions return:
-
-```json
-{
-  "total": 10,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-The `total` value is `len(results)` — the number of items in the current page, NOT the total count in the database. If you request 10 items and get 10, `total` is 10 even if there are 500 roles in the DB.
-
-**Impact:** clients cannot calculate total pages or know if more data exists beyond the current page.
-
-**Workaround:** paginate with increasing offsets until you get fewer results than your limit.
-
----
-
-### Deleted role still shows in user's data
-
-When you soft-delete a role:
-
-- `users.role_id` is **NOT** cleared — the FK reference persists
-- `GET /roles/users/me/role` returns `null` because the stored procedure checks `is_active = TRUE`
-- But the DB row still points to the deleted role
-
-**Fix:** manually clear the user's `role_id` after deleting their role:
-
-```bash
-curl -X DELETE "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
----
-
-### Removing an already-removed link/catalog entry returns 404
-
-Three "removal" endpoints return **404** `RESOURCE_NOT_FOUND` (`NF_4004`) when the thing you are unlinking is not actually linked:
-
-| Endpoint | "Not found" branch |
-|----------|--------------------|
-| `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | Permission group is not assigned to this role |
-| `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | Permission is not assigned to this group |
-| `DELETE /roles/projects/{project_hash}/catalog/roles/{role_hash}` | Role is not in the project catalog |
-
-This applies when the **role/group/permission/project themselves DO exist** but the **link** does not; a missing role, permission group, permission, or project returns its own 404 (`ROLE_NOT_FOUND`, `PERMISSION_GROUP_NOT_FOUND`, `PERMISSION_NOT_FOUND`, `PROJECT_NOT_FOUND`). The link was already gone, so there is nothing to undo — do not retry as if the operation failed.
-
-The add counterpart (`POST /roles/projects/{hash}/catalog/roles/{role_hash}`) is idempotent: re-adding a cataloged role returns 200 and re-activates the entry.
-
----
-
-### Consumer permission guards differ between `/permissions` and `/roles`
-
-The two modules use different permission check functions:
-
-- `/roles` uses `check_user_has_permission()` → role-only resolver
-- `/permissions` uses `check_user_has_permission_extended()` → three-source resolver (`sp_check_user_has_permission_extended`)
-
-Consequently:
-
-- root and admin users pass both route guards before the consumer fallback
-- consumers with role-derived `manage_roles` pass both `/roles` and `/permissions` guards
-- consumers with `manage_roles` only through a user group or direct assignment pass the `/permissions` admin guards but are denied by `/roles`
-
-**Fix:** assign role-derived `manage_roles` when a consumer needs `/roles` access.
-
----
-
-### Cannot change a role's name
-
-The UPDATE stored procedure does not include `role_name`. Once a role is created, its machine-readable name is permanent.
-
-**Workaround:** create a new role with the desired name, migrate users to it, then soft-delete the old role.
-
----
-
-### Cannot create system roles via API
-
-The `is_system_role` field is not exposed in the create endpoint. All user-created roles have `is_system_role = FALSE`.
-
-**Workaround:** system roles must be created via direct database access.
-
----
-
-### Category accepts any string
-
-The API documentation says `group_category` should be one of `general`, `admin`, `api`, `data`. But the DB does not enforce this — any string is accepted.
-
-**Best practice:** stick to the documented categories for consistency.
-
----
-
-## Current Caveats
-
-### Role priority is ordering only
-
-`role_priority` (0-100, default 50) is used only for `ORDER BY role_priority DESC, role_name ASC` in list queries. It does NOT affect:
-
-- Permission resolution precedence
-- Auth-time behavior
-- Which permissions take effect
-
-### One role per user
-
-The `users` table has a single `role_id` column. Users cannot have multiple roles. Assigning a new role replaces the previous one.
-
-### No cascade on role deletion
-
-Deleting a role does NOT:
-- Clear `users.role_id` for affected users
-- Remove rows from `role_permission_groups`
-- Remove rows from `role_project_catalog`
-
-### Session staleness after role changes
-
-After changing a user's role:
-- `GET /permissions/users/me/permissions` reflects the change immediately (fresh DB query)
-- The session payload still contains permissions from the previous role
-- Route authorization based on session permissions may not reflect the change
-
-**Fix:** have the user re-login, refresh, or switch project context.
-
----
-
-## Best Practices
-
-### 1. Build roles from the bottom up
-
-Always follow the chain: permission → permission group → attach to role → assign to user. Skipping steps creates roles with no effective permissions.
-
-### 2. Use meaningful role names
-
-Role names are immutable. Choose carefully:
-- `content_editor` not `role1`
-- `data_analyst` not `temp_role`
-
-### 3. Use `role_priority` for UI ordering, not security
-
-Higher priority roles appear first in list queries. Use this for display ordering, not for permission precedence.
-
-### 4. Audit with `/permissions/users/me/permission-sources`
-
-When debugging "why does this user have that permission?", this endpoint breaks down the source of each permission into role, user-group, and direct assignment.
-
-### 5. Plan for session refresh after role changes
-
-After assigning or changing a user's role, communicate that they need to re-login or refresh for the change to take effect in their session.
-
-### 6. Send one role per bulk role assignment
-
-A user holds a single global role, so listing several `role_names` leaves each user with the last one. Check `results` and `errors` in the response for per-user failures.
-
-### 7. Catalog roles for organization, not enforcement
-
-Project role catalogs are useful for UI suggestions and documentation. Do not assume they restrict anything.
-
-### 8. Verify soft deletes did not orphan users
-
-After deleting a role, check if any users still reference it:
-
-```bash
-# This returns null for users with soft-deleted roles
-curl -X GET "http://localhost:8000/roles/users/USER_HASH/role" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-If it returns null but you know the user had a role, their role was likely soft-deleted. Clear their `role_id` explicitly.
-
----
-
-## Related Documentation
-
-- **[Roles Overview](README.md)**
-- **[Usage](usage.md)**
-- **[Architecture](architecture.md)**
-- **[Request & Data Flow](request-flow.md)**
-- **[Scenarios](scenarios.md)**
-- **[Operational Reference](reference.md)**
-- **[Permission Resolution](../permissions/resolution.md)** — The critical auth-vs-inspection gap
-- **[Error Reference](../errors.md)** — All error codes and response shapes
+**Cause.** `POST /admin/projects/{project_hash}/bulk-assign-roles` takes role **names**, and resolves
+every one before writing: an unknown or inactive name (or a role hash sent by mistake) returns `404`
+`NF_4007` and nothing is assigned. A user holds one global role, so with several `role_names` each user
+ends up with the last one. An unknown project returns `404` `NF_4004`.
+
+**Fix.** Send one active role name per request. Per-user failures (for example `"User not found"` for an
+unknown or inactive user) come back in `results` and `errors` of the `200` response.

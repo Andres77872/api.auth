@@ -7,13 +7,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /nn
 
-COPY requirements.txt /nn
+COPY requirements.txt requirements-assistant.txt /nn
 
 RUN pip install -r requirements.txt
 
 COPY src /nn/src
 COPY docs /nn/docs
 COPY scripts /nn/scripts
+COPY schemas /nn/schemas
 
 EXPOSE 8000
 

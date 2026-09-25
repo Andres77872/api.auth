@@ -349,52 +349,34 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
 
 
 def get_project_stats(project_id: str) -> dict:
-    """
-    Get statistics for a project (group-based implementation).
-    
-    Args:
-        project_id: Project ID to get statistics for
-        
-    Returns:
-        Dictionary with project statistics:
-        - total_users: Count of users with access via groups
-        - active_sessions: Count of active sessions for this project
-        - total_groups: Count of user groups providing access
-        - group_distribution: Dict mapping group names to user counts
-        
-    Raises:
-        DatabaseError: On database operation errors
+    """Read canonical project-info, access-count and group-distribution result sets.
+
+    The procedure reports group-based access, not active session counts. Keep the
+    legacy active_sessions field null instead of inventing a measurement.
     """
     def _get_stats():
         with get_connection() as con:
             cur = con.cursor()
-            
-            # Call stored procedure that returns multiple result sets
             cur.callproc('sp_get_project_statistics', [project_id])
-            
-            # Fetch each result set (handle None if no rows returned)
-            row = cur.fetchone()
-            total_users = row[0] if row else 0
-            cur.nextset()
-            
-            row = cur.fetchone()
-            active_sessions = row[0] if row else 0
-            cur.nextset()
-            
-            row = cur.fetchone()
-            total_groups = row[0] if row else 0
-            cur.nextset()
-            
-            rows = cur.fetchall()
-            group_distribution = {r[0]: r[1] for r in rows} if rows else {}
-
+            cur.fetchall()  # First result is project metadata, not a user count.
+            if not cur.nextset():
+                raise RuntimeError("Project statistics omitted its access-count result")
+            access = cur.fetchone()
+            if access is None or len(access) < 3:
+                raise RuntimeError("Project statistics returned invalid access counts")
+            if not cur.nextset():
+                raise RuntimeError("Project statistics omitted its group distribution")
+            distribution = {row[0]: int(row[1]) for row in cur.fetchall()}
+            while cur.nextset():
+                pass
             return {
-                "total_users": total_users,
-                "active_sessions": active_sessions,
-                "total_groups": total_groups,
-                "group_distribution": group_distribution,
+                "total_users": int(access[0]),
+                "active_sessions": None,
+                "total_groups": int(access[1]),
+                "total_project_groups": int(access[2]),
+                "group_distribution": distribution,
             }
-    
+
     return handle_db_operation(
         _get_stats,
         error_context=f"get_project_stats(project_id={project_id})"
