@@ -9,6 +9,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from src.assistant import runtime
@@ -44,8 +45,15 @@ def call(name, args=None, ident="call-1"):
     return AIMessage(content="", tool_calls=[{"name": name, "args": args or {}, "id": ident, "type": "tool_call"}])
 
 
+class MemoryCheckpointSaver(InMemorySaver):
+    """Keep graph state between runtime invocations without external storage."""
+
+    async def setup(self):
+        pass
+
+
 @pytest.fixture
-def environment(monkeypatch, tmp_path):
+def environment(monkeypatch):
     from src.assistant import catalog, tools
     skill = {"id": "users", "name": "Users", "description": "Manage users.",
              "path": "/skills/users/SKILL.md", "content": "---\nname: users\ndescription: Manage users.\n---\nRead and manage users."}
@@ -68,11 +76,11 @@ def environment(monkeypatch, tmp_path):
                                      metadata={"skill": "users", "mutates": True}),
     ]
     monkeypatch.setattr(tools, "build_agent_tools", lambda *a, **kw: definitions)
+    saver = MemoryCheckpointSaver()
     context = runtime.RuntimeContext(session_id="session-one", run_id="run-one", message="Test",
                                      profile={}, settings={"enabled_skills": ["users"], "enabled_tools": ["read_users", "change_users"],
                                                            "mutations_enabled": False, "features": {}},
-                                     checkpoint_path=str(tmp_path / "checkpoints.sqlite"), executor=SimpleNamespace(),
-                                     checkpoint_backend="sqlite")
+                                     executor=SimpleNamespace(), checkpoint_factory=lambda: saver)
     events = []
 
     async def emit(kind, data):

@@ -129,6 +129,15 @@ bootstrap order from this compact tree; use `scripts/create_database.py`.
 
 ## Tables Reference
 
+### Assistant Persistence
+
+The root assistant stores its configuration, conversations, run history, replay
+and checkpoint state in the same MySQL database. The ten `assistant_*` tables
+are defined in [`14_assistant.sql`](../tables/14_assistant.sql): settings,
+profiles, sessions, runs, messages, events, requests, the runtime lock,
+checkpoints and checkpoint writes. See the [assistant deployment guide](../../docs/ASSISTANT.md)
+for provisioning and backup requirements.
+
 ### Core Entity Tables
 
 | Table | Description | Key Columns |
@@ -747,7 +756,7 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 73
+- **Tables**: 83
 - **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
 - **Stored Procedures**: 318
 - **Functions**: 1

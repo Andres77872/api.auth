@@ -21,3 +21,4 @@ test-results
 tmp
 dist
 build
+.assistant-data

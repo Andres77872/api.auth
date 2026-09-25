@@ -60,8 +60,8 @@ events from their last sequence. Both application state and graph checkpoints
 use the application's existing configured MySQL database. `MySQLCheckpointSaver`
 implements the installed LangGraph `BaseCheckpointSaver` protocol using the
 project connection pool, with blocking database work dispatched off the event
-loop. SQLite remains an explicitly selected test backend and a read-only source
-for importing earlier local state; production does not fall back to it.
+loop. MySQL is the only persistence backend. Isolated runtime tests inject an
+in-memory checkpoint saver; durable recovery is verified against MySQL.
 Streaming uses graph message/update channels with subgraph
 namespaces. Main-answer text is separated from specialist output; tools, plans
 and specialist progress are structured events. A model callback aggregates
@@ -81,8 +81,7 @@ Checkpoint values, metadata and intermediate writes retain their LangGraph
 serializer type tags. Parent checkpoint links and nested namespaces survive a
 new graph instance. Repeated ordinary task writes keep the original result;
 reserved interrupt/error/resume writes replace their own index. These follow the
-[official checkpoint interface and default delta-history traversal](https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint/langgraph/checkpoint/base/__init__.py)
-and the [official SQLite reference implementation](https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/aio.py).
+[official checkpoint interface and default delta-history traversal](https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint/langgraph/checkpoint/base/__init__.py).
 Full namespace text is retained alongside a SHA-256 index key, so nested
 subagents do not exceed [InnoDB index-size limits](https://dev.mysql.com/doc/refman/8.4/en/innodb-limits.html).
 Schema creation belongs to the application's canonical migration; the saver
@@ -135,12 +134,13 @@ through the harness. [Filesystem permission semantics](https://docs.langchain.co
 
 Runtime tests execute real `create_deep_agent` graphs against a deterministic
 local chat model. They test progressive activation, direct tool-call denial,
-FAQ behavior, on-disk interrupt/resume with a reconstructed graph, approved and
+FAQ behavior, interrupt/resume with a reconstructed graph, approved and
 rejected mutations, subagent execution and aggregated token usage. This proves
 the framework integration without sending application data to a model service.
 
-Final runtime verification: 21 tests passed, and `pip check` reported no broken
-requirements in the combined test environment.
+Runtime tests use an injected in-memory saver. The isolated MySQL integration
+suite verifies interrupt/resume through a newly constructed durable saver,
+checkpoint deletion, namespaces, pending writes and concurrent ownership.
 
 ## Follow-up live deployment verification
 
@@ -153,21 +153,3 @@ reloading the worker corrected the failure. A real TCP WebSocket regression now
 covers successful upgrade/RPC, origin rejection, and the missing-protocol 404;
 startup diagnostics identify the serving interpreter when transport is missing.
 The dashboard displays connection repair guidance instead of indefinite loading.
-
-Live verification then used the user-specified existing Ollama server at
-`http://192.168.1.90:11434` and its existing
-`srchmnmichael/qwen3.5-9B-uncensored:Q8_0` model. The real Deep Agents runtime,
-ChatOllama adapter and SQLite checkpointer completed both cases:
-
-- General FAQ: 19.95 seconds, 47 text deltas, 4,384 total tokens, no skill reads
-  or application tools.
-- Synthetic skill: 10.05 seconds, 14 text deltas, three model calls and 13,456
-  total tokens; loaded the skill and called its read-only fixture exactly once,
-  returning the expected fictional count of 17.
-
-Streamed text matched the final answer in both cases. Only synthetic prompts and
-fixture data were sent; no application records or secrets were used. No Ollama
-server or models were installed locally or downloaded remotely. The actual root
-dashboard successfully connected, saved the remote provider profile and restored
-it after refresh. The assistant activation switch and application writes remained
-off for the user to enable deliberately.

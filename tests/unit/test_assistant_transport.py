@@ -1,5 +1,6 @@
 """WebSocket auth, disconnect/replay and job lifecycle without external models."""
 import asyncio
+from contextlib import asynccontextmanager
 import threading
 import time
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 from src.assistant.models import AssistantError
 from src.assistant.runtime import RuntimeResult
 from src.assistant.service import AssistantService
-from tests.helpers.assistant_sqlite import AssistantStore
+from tests.helpers.assistant_memory import MemoryAssistantStore
 from src.routes.assistant import origin_allowed, router
 
 
@@ -23,11 +24,18 @@ async def root_auth(token):
 
 
 @pytest.fixture
-def environment(tmp_path, monkeypatch):
+def environment(monkeypatch):
     monkeypatch.setenv("ALLOWED_ORIGINS", "http://dashboard.test")
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            await app.state.assistant_service.close()
+
+    app = FastAPI(lifespan=lifespan)
     app.include_router(router)
-    store = AssistantStore(tmp_path / "assistant")
+    store = MemoryAssistantStore()
     service = AssistantService(app, store, authenticator=root_auth)
     app.state.assistant_service = service
     return app, store, service
@@ -47,7 +55,7 @@ def headers(token="root-a"):
 
 
 def test_websocket_denies_nonroot_and_cross_origin(environment):
-    app, _, _ = environment
+    app, _, service = environment
     with TestClient(app) as client:
         for request_headers in ({"origin": "https://attacker.test", "cookie": "session_token=root-a"}, headers("admin"), headers("consumer"), {"cookie": "session_token=root-a"}):
             with pytest.raises(WebSocketDisconnect):
@@ -58,6 +66,7 @@ def test_websocket_denies_nonroot_and_cross_origin(environment):
             assert not data["settings"]["mutations_enabled"]
             assert data["profiles"][0]["provider"] == "ollama"
             assert "api_key" not in data["profiles"][0]
+            assert service.monitor_task is not None and not service.monitor_task.done()
 
 
 def test_disconnect_does_not_cancel_and_snapshot_replays(environment):
@@ -271,8 +280,7 @@ async def test_old_worker_failure_cannot_overwrite_recovered_or_reassigned_run(e
     async def runner(context, emit):
         store.update_run("root-a", context.run_id, status)
         if reassigned:
-            with store.connection() as db:
-                db.execute("UPDATE runs SET worker=? WHERE id=?", ("replacement-worker", context.run_id))
+            store.reassign_worker(context.run_id, "replacement-worker")
         if failure == "cancel":
             raise asyncio.CancelledError()
         raise RuntimeError("A provider request failed after ownership was lost")
@@ -302,7 +310,7 @@ async def test_failure_handler_survives_atomic_ownership_loss_between_read_and_u
         if method == "update_run" and args[2] == terminal_status:
             attempted.append(kwargs)
             # Model the native store's row-lock check rejecting a race after the
-            # service read. The SQLite fixture deliberately has no lease checks.
+            # service read, before its conditional update can acquire the lock.
             store.update_run(args[0], args[1], "interrupted")
             raise AssistantError("ownership_lost", "A different worker recovered this run")
         return await original_db(method, *args, **kwargs)
@@ -342,8 +350,7 @@ async def test_failed_conditional_heartbeat_cancels_its_own_generation(environme
         if method == "heartbeat":
             await started.wait()
             assert kwargs["worker"] == service.worker_id
-            with store.connection() as db:
-                db.execute("UPDATE runs SET worker=? WHERE id=?", ("replacement-worker", args[0]))
+            store.reassign_worker(args[0], "replacement-worker")
             return False
         return await original_db(method, *args, **kwargs)
 
@@ -368,23 +375,16 @@ async def test_failed_conditional_heartbeat_cancels_its_own_generation(environme
     assert saved["status"] == "running" and saved["worker"] == "replacement-worker"
 
 
-def test_service_factory_defaults_to_project_mysql_without_sqlite_fallback(tmp_path, monkeypatch):
-    import sqlite3
+def test_service_factory_uses_project_mysql_and_propagates_connection_failure(monkeypatch):
     from unittest.mock import Mock
     from src.assistant import mysql_store
     from src.assistant.service import create_service
 
-    legacy_directory = tmp_path / "must-not-be-created"
-    monkeypatch.setenv("ASSISTANT_DATA_DIR", str(legacy_directory))
     mysql_connection = Mock(side_effect=RuntimeError("Project MySQL is unavailable"))
-    sqlite_connection = Mock(side_effect=AssertionError("SQLite fallback is forbidden"))
     monkeypatch.setattr(mysql_store, "_default_connection", mysql_connection)
-    monkeypatch.setattr(sqlite3, "connect", sqlite_connection)
     service = create_service(FastAPI())
     assert isinstance(service.store, mysql_store.AssistantStore)
     mysql_connection.assert_not_called()
     with pytest.raises(RuntimeError, match="MySQL is unavailable"):
         service.store.get_settings("root-a", {})
     mysql_connection.assert_called_once()
-    sqlite_connection.assert_not_called()
-    assert not legacy_directory.exists()

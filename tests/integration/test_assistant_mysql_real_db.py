@@ -5,6 +5,7 @@ The tests never create, clear or write the application's magic_auth schema.
 Canonical tables/14_assistant.sql must already be applied to that test schema.
 """
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import asyncio
 import threading
@@ -13,6 +14,21 @@ import uuid
 import pymysql
 import pytest
 from cryptography.fernet import Fernet
+from langchain_core.messages import AIMessage
+from langgraph.checkpoint.serde.types import INTERRUPT
+
+from src.assistant.checkpoints import MySQLCheckpointSaver, namespace_hash
+from tests.unit.test_assistant_checkpoints import config, snapshot
+from tests.unit.test_assistant_runtime import (
+    environment,
+    test_faq_uses_real_deep_agent_without_app_tools as graph_faq,
+    test_skill_read_progressively_enables_tools_and_resets_next_turn as graph_skill,
+    test_ask_user_checkpoint_survives_new_graph_and_resumes as graph_question,
+    test_subagent_mutation_keeps_approval_gate_across_resume as graph_subagent_approval,
+    test_mutation_interrupt_requires_explicit_human_decision as graph_approval,
+    test_subagent_uses_scoped_skills_and_aggregate_usage as graph_subagent,
+    test_cancellation_closes_graph_and_allows_an_independent_recovery_run as graph_cancel,
+)
 
 from src.assistant.models import AssistantError
 from src.assistant.mysql_store import AssistantStore
@@ -142,7 +158,7 @@ async def test_real_deep_agent_interrupt_survives_new_mysql_saver(mysql_factory,
     thread_id = "verify-" + uuid.uuid4().hex
     context = runtime.RuntimeContext(session_id=thread_id, run_id="run", message="Ask which fixture",
                                      profile={}, settings={"enabled_skills": [], "enabled_tools": [], "features": {}},
-                                     checkpoint_path="", executor=SimpleNamespace(), checkpoint_backend="mysql",
+                                     executor=SimpleNamespace(),
                                      checkpoint_factory=lambda: MySQLCheckpointSaver(connection_factory=mysql_factory))
     events = []
     async def emit(kind, data):
@@ -186,3 +202,89 @@ def test_long_nested_namespaces_pending_writes_and_atomic_delete(store, mysql_fa
     with store.connection() as cursor:
         cursor.execute("SELECT COUNT(*) AS total FROM assistant_checkpoint_writes")
         assert cursor.fetchone()["total"] == 0
+
+
+async def test_typed_roundtrip_parent_namespace_and_listing(store, mysql_factory):
+    saver = MySQLCheckpointSaver(connection_factory=mysql_factory)
+    namespace = "task:nested|" * 300 + "日本語"
+    first = await saver.aput(config(namespace=namespace), snapshot("0001"), {"source": "input", "step": -1}, {})
+    moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second = await saver.aput(first, snapshot("0002", [AIMessage(content="With typed metadata", additional_kwargs={"moment": moment})]),
+                             {"source": "loop", "step": 0}, {})
+    await saver.aput(config(namespace=namespace + "other"), snapshot("9999"), {"source": "loop", "step": 0}, {})
+    read = await MySQLCheckpointSaver(connection_factory=mysql_factory).aget_tuple(config(namespace=namespace))
+    assert read.config == second
+    assert read.parent_config == first
+    assert read.checkpoint["channel_values"]["messages"][0].additional_kwargs["moment"] == moment
+    assert len(namespace_hash(namespace)) == 32
+    history = [item async for item in saver.alist(config(namespace=namespace), before=second, filter={"source": "input"}, limit=1)]
+    assert [item.config for item in history] == [first]
+    assert len(list(saver.list({"configurable": {"thread_id": "session:run"}}))) == 3
+    assert list(saver.list(None, limit=0)) == []
+
+
+async def test_pending_writes_retry_and_reserved_indexes(store, mysql_factory):
+    saver = MySQLCheckpointSaver(connection_factory=mysql_factory)
+    saved = await saver.aput(config(), snapshot("0001"), {"step": 0}, {})
+    await saver.aput_writes(saved, [("messages", "first")], "task", "parent|child")
+    await saver.aput_writes(saved, [("messages", "must not replace")], "task", "parent|child")
+    await saver.aput_writes(saved, [(INTERRUPT, {"question": "original"})], "task")
+    await saver.aput_writes(saved, [(INTERRUPT, {"question": "updated"})], "task")
+    result = await saver.aget_tuple(saved)
+    assert result.pending_writes == [("task", INTERRUPT, {"question": "updated"}), ("task", "messages", "first")]
+    with pytest.raises(pymysql.err.DataError):
+        await saver.aput_writes(saved, [("one", 1), ("x" * 256, 2)], "failed-task")
+    assert (await saver.aget_tuple(saved)).pending_writes == result.pending_writes
+
+
+async def test_default_delta_history_follows_parent_chain_without_branch_writes(store, mysql_factory):
+    saver = MySQLCheckpointSaver(connection_factory=mysql_factory)
+    seed = snapshot("0001")
+    seed["channel_values"] = {"events": ["seed"]}
+    first = await saver.aput(config(), seed, {}, {})
+    await saver.aput_writes(first, [("events", ["first-delta"])], "task-first")
+    middle = snapshot("0002")
+    middle["channel_values"] = {}
+    second = await saver.aput(first, middle, {}, {})
+    await saver.aput_writes(second, [("events", ["second-delta"])], "task-second")
+    branch = snapshot("0003")
+    branch["channel_values"] = {}
+    fork = await saver.aput(first, branch, {}, {})
+    await saver.aput_writes(fork, [("events", ["wrong-branch"])], "task-fork")
+    head = snapshot("0004")
+    head["channel_values"] = {}
+    target = await saver.aput(second, head, {}, {})
+    history = await saver.aget_delta_channel_history(config=target, channels=["events"])
+    assert history["events"]["seed"] == ["seed"]
+    assert [write[2] for write in history["events"]["writes"]] == [["first-delta"], ["second-delta"]]
+
+
+async def test_session_delete_is_literal_and_removes_nested_pending_writes(store, mysql_factory):
+    saver = MySQLCheckpointSaver(connection_factory=mysql_factory)
+    for thread in ("s_%", "s_%:run", "sXYZ:run", "s_%:different"):
+        for namespace in ("", "task:child"):
+            saved = await saver.aput(config(thread, namespace), snapshot("0001"), {}, {})
+            await saver.aput_writes(saved, [("messages", "value")], "task")
+    await saver.adelete_thread("s_%:different")
+    assert await saver.aget_tuple(config("s_%:different", "task:child")) is None
+    await saver.adelete_session("s_%")
+    remaining = [item async for item in saver.alist(None)]
+    assert len(remaining) == 2
+    assert all(item.config["configurable"]["thread_id"] == "sXYZ:run" for item in remaining)
+    with store.connection() as cursor:
+        cursor.execute("SELECT COUNT(*) AS total FROM assistant_checkpoint_writes")
+        assert cursor.fetchone()["total"] == 2
+
+
+@pytest.mark.parametrize("scenario", [graph_faq, graph_skill, graph_question, graph_subagent, graph_subagent_approval, graph_cancel])
+async def test_real_deep_agent_uses_mysql_adapter_protocol(environment, monkeypatch, store, mysql_factory, scenario):
+    context = environment[0]
+    context.checkpoint_factory = lambda: MySQLCheckpointSaver(connection_factory=mysql_factory)
+    await scenario(environment, monkeypatch)
+
+
+@pytest.mark.parametrize("decision,expected", [("approve", 1), ("reject", 0)])
+async def test_reconstructed_mutation_approval_with_mysql_adapter(environment, monkeypatch, store, mysql_factory, decision, expected):
+    context = environment[0]
+    context.checkpoint_factory = lambda: MySQLCheckpointSaver(connection_factory=mysql_factory)
+    await graph_approval(environment, monkeypatch, decision, expected)

@@ -5,11 +5,9 @@ langchain==1.4.2
 langchain-core==1.6.5
 langgraph==1.2.12
 langgraph-checkpoint==4.2.0
-langgraph-checkpoint-sqlite==3.1.1
 langchain-openai==1.6.6
 langchain-anthropic==1.7.4
 langchain-ollama==1.1.0
-aiosqlite==0.22.1
 httpx==0.28.1
 # SDK and graph transitives that constrain compatibility with backend pins.
 langchain-google-genai==4.4.0
@@ -38,7 +36,6 @@ ormsgpack==1.12.2
 pyyaml==6.0.3
 regex==2026.9.10
 requests-toolbelt==1.0.0
-sqlite-vec==0.1.9
 tenacity==9.1.4
 tiktoken==0.14.0
 truststore==0.10.4

@@ -1,114 +1,44 @@
-"""Checkpoint protocol tests with a local DB-API double; no live DB or model.
+"""Checkpoint serialization and DB-API boundaries without external storage.
 
-The double translates MySQL parameter/upsert syntax to SQLite solely to exercise
-serialization, transactions and real LangGraph pause/resume in fast unit tests.
-Actual MySQL syntax/DDL is covered separately by the opt-in integration suite.
+Durability, upserts, rollback and graph reconstruction run against real MySQL in
+integration/test_assistant_mysql_real_db.py.
 """
 import asyncio
-import json
-import re
-import sqlite3
 import threading
+from collections import deque
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.checkpoint.base import WRITES_IDX_MAP, empty_checkpoint
 from langgraph.checkpoint.serde.types import INTERRUPT
 
 from src.assistant.checkpoints import MySQLCheckpointSaver, namespace_hash
-from tests.unit.test_assistant_runtime import (
-    environment,
-    test_faq_uses_real_deep_agent_without_app_tools as graph_faq,
-    test_skill_read_progressively_enables_tools_and_resets_next_turn as graph_skill,
-    test_ask_user_checkpoint_survives_new_graph_and_resumes as graph_question,
-    test_subagent_mutation_keeps_approval_gate_across_resume as graph_subagent_approval,
-    test_mutation_interrupt_requires_explicit_human_decision as graph_approval,
-    test_subagent_uses_scoped_skills_and_aggregate_usage as graph_subagent,
-    test_cancellation_closes_graph_and_allows_an_independent_recovery_run as graph_cancel,
-)
+from tests.unit.test_assistant_runtime import environment
 
 pytestmark = pytest.mark.unit
 
 
-class DBAPIDouble:
-    def __init__(self, path):
-        self.path = str(path)
-        self.statements = []
-        self.opened = self.closed = self.rollbacks = 0
-        self.fail_batch = False
-        with sqlite3.connect(self.path) as connection:
-            connection.executescript('''
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE assistant_checkpoints (
-                    thread_id TEXT, checkpoint_ns_hash BLOB, checkpoint_ns TEXT,
-                    checkpoint_id TEXT, parent_checkpoint_id TEXT,
-                    checkpoint_type TEXT, checkpoint BLOB, metadata_type TEXT, metadata BLOB,
-                    PRIMARY KEY(thread_id, checkpoint_ns_hash, checkpoint_id));
-                CREATE TABLE assistant_checkpoint_writes (
-                    thread_id TEXT, checkpoint_ns_hash BLOB, checkpoint_ns TEXT,
-                    checkpoint_id TEXT, task_id TEXT, idx INTEGER, task_path TEXT,
-                    channel TEXT, type TEXT, value BLOB,
-                    PRIMARY KEY(thread_id, checkpoint_ns_hash, checkpoint_id, task_id, idx));
-            ''')
-
-    def connect(self):
-        self.opened += 1
-        db = self
-
-        class Connection:
-            def __init__(self):
-                self.raw = sqlite3.connect(db.path, timeout=30)
-
-            def begin(self):
-                self.raw.execute("BEGIN")
-
-            def cursor(self):
-                return Cursor(self.raw.cursor())
-
-            def commit(self):
-                self.raw.commit()
-
-            def rollback(self):
-                db.rollbacks += 1
-                self.raw.rollback()
-
-            def close(self):
-                db.closed += 1
-                self.raw.close()
-
-        class Cursor:
-            def __init__(self, raw):
-                self.raw = raw
-
-            def execute(self, sql, parameters=()):
-                db.statements.append((sql, parameters, threading.get_ident()))
-                translated = sql.replace("%s", "?").replace("ON DUPLICATE KEY UPDATE", "ON CONFLICT DO UPDATE SET")
-                translated = re.sub(r"VALUES\((\w+)\)", r"excluded.\1", translated)
-                return self.raw.execute(translated, parameters)
-
-            def executemany(self, sql, rows):
-                for row in rows:
-                    self.execute(sql, row)
-                    if db.fail_batch:
-                        db.fail_batch = False
-                        raise RuntimeError("Synthetic database failure")
-
-            def fetchone(self):
-                return self.raw.fetchone()
-
-            def fetchall(self):
-                return self.raw.fetchall()
-
-            def close(self):
-                self.raw.close()
-
-        return Connection()
-
-
 @pytest.fixture
-def database(tmp_path):
-    return DBAPIDouble(tmp_path / "db-api-double.sqlite")
+def database():
+    """Record DB-API operations and return explicitly supplied query results."""
+    connection = MagicMock()
+    cursor = connection.cursor.return_value
+    cursor.fetchone.return_value = None
+    cursor.fetchall.return_value = []
+    connection.statements = []
+    connection.responses = deque()
+
+    def execute(sql, parameters=()):
+        connection.statements.append((sql, parameters, threading.get_ident()))
+        if connection.responses:
+            rows = connection.responses.popleft()
+            cursor.fetchone.return_value = rows[0] if rows else None
+            cursor.fetchall.return_value = rows
+
+    cursor.execute.side_effect = execute
+    return connection
 
 
 def config(thread="session:run", namespace="", checkpoint=None):
@@ -125,101 +55,135 @@ def snapshot(ident, value=None):
     return checkpoint
 
 
-async def test_schema_validation_is_read_only_and_off_loop(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
+async def test_schema_validation_is_read_only_off_loop_and_releases_connection(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
     await saver.setup()
-    assert all(sql.startswith("SELECT ") for sql, _, _ in database.statements)
+    await saver.setup()
+    assert len(database.statements) == 2
+    assert all(sql.startswith("SELECT ") and sql.endswith(" LIMIT 0") for sql, _, _ in database.statements)
     assert all(thread != threading.get_ident() for _, _, thread in database.statements)
-    assert database.opened == database.closed == 1
+    database.begin.assert_called_once()
+    database.commit.assert_called_once()
+    database.cursor.return_value.close.assert_called_once()
+    database.close.assert_called_once()
 
 
-async def test_typed_roundtrip_parent_namespace_and_listing(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
+async def test_typed_checkpoint_parent_and_pending_writes_serialization(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
     namespace = "task:nested|" * 300 + "日本語"
-    first = await saver.aput(config(namespace=namespace), snapshot("0001"), {"source": "input", "step": -1}, {})
+    parent = config(namespace=namespace, checkpoint="0001")
     moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    second = await saver.aput(first, snapshot("0002", [AIMessage(content="With typed metadata", additional_kwargs={"moment": moment})]),
-                             {"source": "loop", "step": 0}, {})
-    await saver.aput(config(namespace=namespace + "other"), snapshot("9999"), {"source": "loop", "step": 0}, {})
-    read = await MySQLCheckpointSaver(connection_factory=database.connect).aget_tuple(config(namespace=namespace))
-    assert read.config == second
-    assert read.parent_config == first
-    assert read.checkpoint["channel_values"]["messages"][0].additional_kwargs["moment"] == moment
+    checkpoint = snapshot("0002", [AIMessage(content="Typed answer", additional_kwargs={"moment": moment})])
+    saved = await saver.aput(parent, checkpoint, {"source": "loop", "step": 0}, {})
+    _, parameters, _ = database.statements[0]
+    assert parameters[:5] == ("session:run", namespace_hash(namespace), namespace, "0002", "0001")
     assert len(namespace_hash(namespace)) == 32
-    history = [item async for item in saver.alist(config(namespace=namespace), before=second, filter={"source": "input"}, limit=1)]
-    assert [item.config for item in history] == [first]
-    assert len(list(saver.list({"configurable": {"thread_id": "session:run"}}))) == 3
+    # Feed the recorded serialized payload back as a database result, omitting
+    # the namespace hash which is used only for indexing.
+    row = (parameters[0], *parameters[2:])
+    database.responses.extend([[row], [("task", INTERRUPT, *saver.serde.dumps_typed({"question": "Choose"}))]])
+    read = await saver.aget_tuple(saved)
+    assert read.config == saved
+    assert read.parent_config == parent
+    assert read.checkpoint == checkpoint
+    assert read.metadata == {"source": "loop", "step": 0}
+    assert read.pending_writes == [("task", INTERRUPT, {"question": "Choose"})]
+    query, values, _ = database.statements[1]
+    assert "checkpoint_id=%s" in query
+    assert values == ["session:run", namespace_hash(namespace), namespace, "0002"]
+    assert database.begin.call_count == database.commit.call_count == database.close.call_count == 2
+
+
+async def test_listing_applies_metadata_filter_before_limit(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    rows = []
+    for ident, source in [("0002", "loop"), ("0001", "input")]:
+        rows.append(("session:run", "child", ident, None, *saver.serde.dumps_typed(snapshot(ident)),
+                     *saver.serde.dumps_typed({"source": source})))
+    database.responses.extend([rows, []])
+    result = [item async for item in saver.alist(config(namespace="child"), before=config(checkpoint="0003"),
+                                                filter={"source": "input"}, limit=1)]
+    assert [item.config for item in result] == [config(namespace="child", checkpoint="0001")]
+    query, parameters, _ = database.statements[0]
+    assert "LIMIT" not in query
+    assert "checkpoint_id<%s" in query
+    assert parameters == ["session:run", namespace_hash("child"), "child", "0003"]
     assert list(saver.list(None, limit=0)) == []
-    assert database.opened == database.closed
+    assert len(database.statements) == 2
 
 
-async def test_pending_writes_retry_and_reserved_indexes(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
-    saved = await saver.aput(config(), snapshot("0001"), {"step": 0}, {})
+@pytest.mark.parametrize("scope,limit,expected", [
+    (None, 2, [2]),
+    ({"configurable": {"thread_id": "thread"}}, None, ["thread"]),
+    (config("thread", "child", "0001"), 3, ["thread", namespace_hash("child"), "child", "0001", 3]),
+])
+def test_listing_query_scopes_and_limit(database, scope, limit, expected):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    assert list(saver.list(scope, limit=limit)) == []
+    query, parameters, _ = database.statements[0]
+    assert parameters == expected
+    assert (" LIMIT %s" in query) is (limit is not None)
+    assert ("checkpoint_ns=%s" in query) is bool(scope and "checkpoint_ns" in scope["configurable"])
+
+
+async def test_missing_checkpoint_returns_none(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    assert await saver.aget_tuple(config()) is None
+    assert len(database.statements) == 1
+    assert "ORDER BY checkpoint_id DESC LIMIT 1" in database.statements[0][0]
+
+
+async def test_pending_writes_use_reserved_indexes_and_retry_policy(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    saved = config(checkpoint="0001")
     await saver.aput_writes(saved, [("messages", "first")], "task", "parent|child")
-    await saver.aput_writes(saved, [("messages", "must not replace")], "task", "parent|child")
-    await saver.aput_writes(saved, [(INTERRUPT, {"question": "original"})], "task")
+    sql, rows = database.cursor.return_value.executemany.call_args.args
+    assert sql.endswith("ON DUPLICATE KEY UPDATE idx=idx")
+    assert rows[0][:8] == ("session:run", namespace_hash(""), "", "0001", "task", 0, "parent|child", "messages")
+    assert saver.serde.loads_typed(rows[0][8:]) == "first"
     await saver.aput_writes(saved, [(INTERRUPT, {"question": "updated"})], "task")
-    result = await saver.aget_tuple(saved)
-    assert result.pending_writes == [("task", INTERRUPT, {"question": "updated"}), ("task", "messages", "first")]
-    database.fail_batch = True
+    sql, rows = database.cursor.return_value.executemany.call_args.args
+    assert "value=VALUES(value)" in sql
+    assert rows[0][5] == WRITES_IDX_MAP[INTERRUPT]
+    assert saver.serde.loads_typed(rows[0][8:]) == {"question": "updated"}
+    await saver.aput_writes(saved, [], "empty")
+    assert database.cursor.return_value.executemany.call_count == 2
+
+
+async def test_batch_failure_rolls_back_and_releases_connection(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    database.cursor.return_value.executemany.side_effect = RuntimeError("Synthetic database failure")
     with pytest.raises(RuntimeError, match="Synthetic"):
-        await saver.aput_writes(saved, [("one", 1), ("two", 2)], "failed-task")
-    assert (await saver.aget_tuple(saved)).pending_writes == result.pending_writes
-    assert database.rollbacks == 1
-    assert database.opened == database.closed
+        await saver.aput_writes(config(checkpoint="0001"), [("one", 1), ("two", 2)], "failed-task")
+    database.rollback.assert_called_once()
+    database.commit.assert_not_called()
+    database.cursor.return_value.close.assert_called_once()
+    database.close.assert_called_once()
 
 
-async def test_default_delta_history_follows_parent_chain_without_branch_writes(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
-    seed = snapshot("0001")
-    seed["channel_values"] = {"events": ["seed"]}
-    first = await saver.aput(config(), seed, {}, {})
-    await saver.aput_writes(first, [("events", ["first-delta"])], "task-first")
-    middle = snapshot("0002")
-    middle["channel_values"] = {}
-    second = await saver.aput(first, middle, {}, {})
-    await saver.aput_writes(second, [("events", ["second-delta"])], "task-second")
-    branch = snapshot("0003")
-    branch["channel_values"] = {}
-    fork = await saver.aput(first, branch, {}, {})
-    await saver.aput_writes(fork, [("events", ["wrong-branch"])], "task-fork")
-    head = snapshot("0004")
-    head["channel_values"] = {}
-    target = await saver.aput(second, head, {}, {})
-    history = await saver.aget_delta_channel_history(config=target, channels=["events"])
-    assert history["events"]["seed"] == ["seed"]
-    assert [write[2] for write in history["events"]["writes"]] == [["first-delta"], ["second-delta"]]
+async def test_session_delete_escapes_wildcards_and_uses_one_transaction(database):
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
+    await saver.adelete_session("s_!%")
+    assert len(database.statements) == 2
+    assert all(parameters == ("s_!%", "s!_!!!%:%") for _, parameters, _ in database.statements)
+    assert all("ESCAPE '!'" in sql for sql, _, _ in database.statements)
+    database.begin.assert_called_once()
+    database.commit.assert_called_once()
+    database.close.assert_called_once()
 
 
-async def test_imported_json_metadata_and_string_versions_continue(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
-    saved = await saver.aput(config(), snapshot("0001"), {"source": "input"}, {})
-    with sqlite3.connect(database.path) as connection:
-        connection.execute("UPDATE assistant_checkpoints SET metadata_type='json', metadata=?", (json.dumps({"source": "input", "step": -1}).encode(),))
-    result = await saver.aget_tuple(saved)
-    assert result.metadata == {"source": "input", "step": -1}
-    assert saver.get_next_version("00000000000000000000000000000002.0.012", None).startswith("00000000000000000000000000000003.")
-
-
-async def test_session_delete_is_literal_and_removes_nested_pending_writes(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
-    for thread in ("s_%", "s_%:run", "sXYZ:run", "s_%:different"):
-        for namespace in ("", "task:child"):
-            saved = await saver.aput(config(thread, namespace), snapshot("0001"), {}, {})
-            await saver.aput_writes(saved, [("messages", "value")], "task")
-    await saver.adelete_thread("s_%:different")
-    assert await saver.aget_tuple(config("s_%:different", "task:child")) is None
-    await saver.adelete_session("s_%")
-    remaining = [item async for item in saver.alist(None)]
-    assert len(remaining) == 2
-    assert all(item.config["configurable"]["thread_id"] == "sXYZ:run" for item in remaining)
-    with sqlite3.connect(database.path) as connection:
-        assert connection.execute("SELECT count(*) FROM assistant_checkpoint_writes").fetchone()[0] == 2
+def test_versions_increase_and_sort_consistently():
+    saver = MySQLCheckpointSaver()
+    versions = [saver.get_next_version(None, None)]
+    for _ in range(12):
+        versions.append(saver.get_next_version(versions[-1], None))
+    assert versions == sorted(versions)
+    assert len(set(versions)) == len(versions)
+    assert [int(version.split(".")[0]) for version in versions] == list(range(1, 14))
 
 
 async def test_offload_cancellation_waits_for_transaction_completion(database):
-    saver = MySQLCheckpointSaver(connection_factory=database.connect)
+    saver = MySQLCheckpointSaver(connection_factory=lambda: database)
     started, release, completed = threading.Event(), threading.Event(), threading.Event()
 
     def pending_operation():
@@ -238,33 +202,11 @@ async def test_offload_cancellation_waits_for_transaction_completion(database):
     assert completed.is_set()
 
 
-@pytest.mark.parametrize("scenario", [graph_faq, graph_skill, graph_question, graph_subagent, graph_subagent_approval, graph_cancel])
-async def test_real_deep_agent_uses_mysql_adapter_protocol(environment, monkeypatch, database, scenario):
-    context = environment[0]
-    context.checkpoint_backend = "mysql"
-    context.checkpoint_factory = lambda: MySQLCheckpointSaver(connection_factory=database.connect)
-    await scenario(environment, monkeypatch)
-    assert database.opened == database.closed
-
-
-@pytest.mark.parametrize("decision,expected", [("approve", 1), ("reject", 0)])
-async def test_reconstructed_mutation_approval_with_mysql_adapter(environment, monkeypatch, database, decision, expected):
-    context = environment[0]
-    context.checkpoint_backend = "mysql"
-    context.checkpoint_factory = lambda: MySQLCheckpointSaver(connection_factory=database.connect)
-    await graph_approval(environment, monkeypatch, decision, expected)
-    assert database.opened == database.closed
-
-
-async def test_runtime_defaults_to_existing_mysql_without_sqlite_fallback(environment, monkeypatch):
-    from pathlib import Path
+async def test_runtime_defaults_to_existing_mysql_and_propagates_connection_failure(environment, monkeypatch):
     from src.assistant import checkpoints, runtime
 
-    explicit_sqlite_context = environment[0]
-    context = runtime.RuntimeContext(**{
-        key: value for key, value in vars(explicit_sqlite_context).items()
-        if key != "checkpoint_backend"
-    })
+    context = environment[0]
+    context.checkpoint_factory = None
     selected = []
 
     class ExistingDatabaseUnavailable:
@@ -278,9 +220,7 @@ async def test_runtime_defaults_to_existing_mysql_without_sqlite_fallback(enviro
             return False
 
     monkeypatch.setattr(checkpoints, "MySQLCheckpointSaver", ExistingDatabaseUnavailable)
-    assert context.checkpoint_backend == "mysql"
     with pytest.raises(RuntimeError, match="existing MySQL unavailable"):
         async with runtime._checkpoint_saver(context):
             pytest.fail("An unavailable production database must not fall back")
     assert selected == ["mysql"]
-    assert not Path(context.checkpoint_path).exists()

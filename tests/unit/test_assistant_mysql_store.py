@@ -80,14 +80,13 @@ def session_step(*, lock=False, rows=None):
     return Step("SELECT * FROM assistant_sessions WHERE owner=%s AND id=%s" + (" FOR UPDATE" if lock else ""), [SESSION] if rows is None else rows, params=("root-a", "session-1"))
 
 
-def test_constructor_is_lazy_and_has_no_local_path_fallback(tmp_path):
+def test_constructor_is_lazy_and_requires_keyword_connection_factory():
     factory = Mock(side_effect=AssertionError("Construction must not open a database"))
     store = AssistantStore(connection_factory=factory)
     factory.assert_not_called()
-    assert not hasattr(store, "path") and not hasattr(store, "checkpoint_path")
+    assert store.connection_factory is factory
     with pytest.raises(TypeError):
-        AssistantStore(tmp_path)
-    assert not list(tmp_path.iterdir())
+        AssistantStore(factory)
 
 
 def test_default_factory_uses_existing_project_database(monkeypatch):
@@ -216,9 +215,14 @@ def test_resume_checks_capacity_and_inserts_event_under_session_lock():
         Step("INSERT INTO assistant_events", lastrowid=9), Step("UPDATE assistant_sessions"),
         Step("INSERT INTO assistant_messages"), Step("UPDATE assistant_sessions"),
     )
-    result, created = db.store().resume("root-a", "session-1", "run-1", "resume-1", {"question": "Only active accounts"})
+    responses = {"question": "Only active accounts", "approval": {"decisions": [{"type": "reject"}]}}
+    result, created = db.store().resume("root-a", "session-1", "run-1", "resume-1", responses)
     assert created and result["status"] == "queued" and result["worker"] is None
-    assert result["interrupts"] == []
+    assert result["interrupts"] == [] and result["resume"] == responses
+    event = next(params for sql, params in db.trace if sql.startswith("INSERT INTO assistant_events"))
+    assert json.loads(event[2])["responses"] == responses
+    message = next(params for sql, params in db.trace if sql.startswith("INSERT INTO assistant_messages"))
+    assert message[3:5] == ("user", "Only active accounts")
     statements = [sql for sql, _ in db.trace]
     assert "assistant_runtime_lock" in statements[1] and "assistant_sessions" in statements[2]
     assert statements.index("commit") > next(i for i, sql in enumerate(statements) if "INSERT INTO assistant_events" in sql)
@@ -291,3 +295,142 @@ def test_worker_heartbeat_cannot_refresh_a_reassigned_lease():
     db = Database(Step("AND status='running' AND worker=%s", rowcount=0))
     assert not db.store().heartbeat("run-1", worker="old-worker")
     assert db.trace[1][1][-1] == "old-worker"
+
+
+@pytest.mark.parametrize("decrypt", [False, True])
+def test_profile_keys_are_visible_only_for_explicit_private_reads(monkeypatch, decrypt):
+    key = Fernet.generate_key()
+    monkeypatch.setenv("ASSISTANT_SECRET_KEY", key.decode())
+    secret = Fernet(key).encrypt(b"provider-secret").decode()
+    db = Database(Step("WHERE owner=%s AND id=%s", [{"data": '{"id":"private"}', "secret": secret}], params=("root-a", "private")))
+    result = db.store().profile("root-a", "private", decrypt=decrypt)
+    assert result["has_api_key"]
+    assert result.get("api_key") == ("provider-secret" if decrypt else None)
+    db.assert_consumed()
+
+
+def test_profile_credentials_can_be_explicitly_cleared():
+    db = Database(
+        Step("secret=IF(%s,secret,VALUES(secret))"),
+        Step("SELECT data,secret", [{"data": '{"id":"provider"}', "secret": None}]),
+    )
+    assert not db.store().save_profile("root-a", {"id": "provider", "api_key": ""})["has_api_key"]
+    assert db.trace[1][1][3:] == (None, False)
+    db.assert_consumed()
+
+
+def test_profile_lookup_and_listing_are_owner_scoped():
+    db = Database(Step("WHERE owner=%s ORDER BY id", [], params=("other-root",)))
+    assert db.store().profiles("other-root") == []
+    db.assert_consumed()
+    db = Database(Step("WHERE owner=%s AND id=%s", [], params=("other-root", "private")))
+    with pytest.raises(AssistantError, match="not found"):
+        db.store().profile("other-root", "private")
+    db.assert_consumed()
+
+
+@pytest.mark.parametrize("before_id,rows,expected,has_more", [
+    (None, [6, 5, 4, 3], [4, 5, 6], True),
+    ("msg-4", [3, 2, 1, 0], [1, 2, 3], True),
+    ("msg-1", [0], [0], False),
+])
+def test_transcript_page_is_chronological_and_excludes_cursor(before_id, rows, expected, has_more):
+    steps = [session_step()]
+    if before_id:
+        before = int(before_id.removeprefix("msg-"))
+        steps.append(Step("SELECT created_at,id FROM assistant_messages", [{"created_at": before, "id": before_id}], params=("session-1", before_id)))
+        sql = "(created_at,id)<(%s,%s) ORDER BY created_at DESC,id DESC LIMIT %s"
+        params = ("session-1", before, before_id, 4)
+    else:
+        sql = "ORDER BY created_at DESC,id DESC LIMIT %s"
+        params = ("session-1", 4)
+    steps.append(Step(sql, [{"id": f"msg-{number}", "content": str(number)} for number in rows], params=params))
+    db = Database(*steps)
+    result = db.store().message_page("root-a", "session-1", before_id, limit=3)
+    assert [message["content"] for message in result["messages"]] == [str(number) for number in expected]
+    assert result["has_more"] is has_more
+    db.assert_consumed()
+
+
+def test_transcript_cursor_cannot_belong_to_another_conversation():
+    db = Database(session_step(), Step("WHERE session_id=%s AND id=%s", [], params=("session-1", "foreign-message")))
+    with pytest.raises(AssistantError, match="cursor not found"):
+        db.store().message_page("root-a", "session-1", "foreign-message")
+    db.assert_consumed()
+
+
+def test_stale_recovery_locks_and_interrupts_without_requeuing(monkeypatch):
+    monkeypatch.setattr("src.assistant.mysql_store.time.time", lambda: 1000)
+    db = Database(
+        lock_step(),
+        Step("(status IN ('running','cancelling') AND heartbeat<%s) OR (status='queued' AND updated_at<%s) FOR UPDATE", [RUN], params=(910, 910)),
+        Step("UPDATE assistant_runs SET status='interrupted',data=%s,updated_at=%s WHERE id=%s"),
+    )
+    assert db.store().recover_stale() == [("run-1", "session-1")]
+    update = next(params for sql, params in db.trace if sql.startswith("UPDATE assistant_runs"))
+    assert json.loads(update[0])["message"] == "hello"
+    assert "never automatically replayed" in json.loads(update[0])["error"]
+    assert update[1:] == (1000, "run-1")
+    db.commit.assert_called_once()
+    db.assert_consumed()
+
+
+def test_resume_capacity_failure_preserves_waiting_run():
+    db = Database(
+        lock_step(), session_step(lock=True),
+        Step("SELECT run_id FROM assistant_requests", []),
+        Step("SELECT * FROM assistant_runs WHERE id=%s AND owner=%s FOR UPDATE", [{**RUN, "status": "waiting_input"}]),
+        Step("id<>%s AND status IN", []),
+        Step("SELECT COUNT(*) AS total", [{"total": 8}]),
+    )
+    with pytest.raises(AssistantError, match="capacity"):
+        db.store().resume("root-a", "session-1", "run-1", "reply", "answer")
+    assert not any(sql.startswith(("UPDATE", "INSERT")) for sql, _ in db.trace)
+    db.rollback.assert_called_once()
+    db.assert_consumed()
+
+
+def test_first_message_names_the_conversation(monkeypatch):
+    monkeypatch.setattr("src.assistant.mysql_store.uid", lambda prefix: f"{prefix}-1")
+    monkeypatch.setattr("src.assistant.mysql_store.time.time", lambda: 1000)
+    message = "Review  users\n and groups"
+    db = Database(
+        lock_step(), session_step(lock=True, rows=[{**SESSION, "title": "New conversation"}]),
+        Step("SELECT * FROM assistant_runs WHERE owner=%s AND request_id", []),
+        Step("SELECT id FROM assistant_runs", []),
+        Step("SELECT COUNT(*) AS total", [{"total": 0}]),
+        Step("INSERT INTO assistant_runs"),
+        Step("SELECT COUNT(*) AS total FROM assistant_runs WHERE session_id=%s", [{"total": 1}]),
+        Step("UPDATE assistant_sessions SET profile_id=%s,updated_at=%s,title=%s WHERE id=%s", params=("ollama-default", 1000, "Review users and groups", "session-1")),
+        Step("INSERT INTO assistant_messages"), Step("UPDATE assistant_sessions SET updated_at"),
+        Step("SELECT * FROM assistant_runs WHERE id=%s AND owner=%s", [RUN]),
+    )
+    _, created = db.store().create_run("root-a", "session-1", "req-1", {"message": message, "profile_id": "ollama-default"})
+    assert created
+    db.commit.assert_called_once()
+    db.assert_consumed()
+
+
+def test_second_active_run_is_rejected_under_the_session_lock():
+    db = Database(
+        lock_step(), session_step(lock=True),
+        Step("SELECT * FROM assistant_runs WHERE owner=%s AND request_id", []),
+        Step("status IN ('queued','running','waiting_input','cancelling') LIMIT 1 FOR UPDATE", [{"id": "run-1"}]),
+    )
+    with pytest.raises(AssistantError, match="active run"):
+        db.store().create_run("root-a", "session-1", "another-request", {"message": "hello", "profile_id": "ollama-default"})
+    assert not any(sql.startswith("INSERT") for sql, _ in db.trace)
+    db.rollback.assert_called_once()
+    db.assert_consumed()
+
+
+def test_history_reads_completed_runs_and_returns_chronological_messages():
+    db = Database(
+        session_step(),
+        Step("r.status='completed' ORDER BY m.created_at DESC,m.id DESC LIMIT 100",
+             [{"role": "assistant", "content": "response"}, {"role": "user", "content": "prompt"}], params=("session-1",)),
+    )
+    assert db.store().history("root-a", "session-1") == [
+        {"role": "user", "content": "prompt"}, {"role": "assistant", "content": "response"},
+    ]
+    db.assert_consumed()

@@ -15,14 +15,14 @@ import uvicorn
 
 from src.assistant import readiness
 from src.assistant.service import AssistantService
-from tests.helpers.assistant_sqlite import AssistantStore
+from tests.helpers.assistant_memory import MemoryAssistantStore
 from src.routes.assistant import router
 
 pytestmark = pytest.mark.integration
 
 
 @asynccontextmanager
-async def network_server(tmp_path, monkeypatch, *, protocol="auto"):
+async def network_server(monkeypatch, *, protocol="auto"):
     monkeypatch.setenv("ALLOWED_ORIGINS", "http://dashboard.test")
     app = FastAPI()
     app.include_router(router)
@@ -31,7 +31,7 @@ async def network_server(tmp_path, monkeypatch, *, protocol="auto"):
         assert token == "network-root"
         return SimpleNamespace(user_id="root", user_type="root")
 
-    service = AssistantService(app, AssistantStore(tmp_path / "assistant"), authenticator=authenticate)
+    service = AssistantService(app, MemoryAssistantStore(), authenticator=authenticate)
     app.state.assistant_service = service
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
@@ -97,11 +97,11 @@ async def close_client(writer):
 
 
 @pytest.mark.asyncio
-async def test_uvicorn_auto_upgrades_real_assistant_socket_and_serves_rpc(tmp_path, monkeypatch):
+async def test_uvicorn_auto_upgrades_real_assistant_socket_and_serves_rpc(monkeypatch):
     # Deliberately no importorskip: absent transport is a broken deployment,
     # even though in-memory TestClient WebSocket tests would still pass.
     assert readiness.websocket_transport_available(), "Install requirements.txt into the Python interpreter running Uvicorn"
-    async with network_server(tmp_path, monkeypatch) as port:
+    async with network_server(monkeypatch) as port:
         response, reader, writer = await handshake(port)
         try:
             assert response.startswith(b"HTTP/1.1 101 "), response.decode()
@@ -115,8 +115,8 @@ async def test_uvicorn_auto_upgrades_real_assistant_socket_and_serves_rpc(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_real_network_rejects_cross_origin_upgrade(tmp_path, monkeypatch):
-    async with network_server(tmp_path, monkeypatch) as port:
+async def test_real_network_rejects_cross_origin_upgrade(monkeypatch):
+    async with network_server(monkeypatch) as port:
         response, _, writer = await handshake(port, origin="https://attacker.test")
         try:
             assert response.startswith(b"HTTP/1.1 403 "), response.decode()
@@ -125,7 +125,7 @@ async def test_real_network_rejects_cross_origin_upgrade(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_uvicorn_auto_protocol_reproduces_404_and_actionable_warning(tmp_path, monkeypatch, caplog):
+async def test_missing_uvicorn_auto_protocol_reproduces_404_and_actionable_warning(monkeypatch, caplog):
     # Uvicorn sets this to None when neither websockets nor wsproto imports.
     # Exercise the real HTTP fallback, not a manually invented ASGI scope.
     from uvicorn.protocols.websockets import auto
@@ -135,7 +135,7 @@ async def test_missing_uvicorn_auto_protocol_reproduces_404_and_actionable_warni
     assert "-m pip install -r" in caplog.text
     assert readiness.sys.executable in caplog.text
     assert "/admin/assistant/ws" in caplog.text
-    async with network_server(tmp_path, monkeypatch) as port:
+    async with network_server(monkeypatch) as port:
         response, _, writer = await handshake(port)
         try:
             assert response.startswith(b"HTTP/1.1 404 "), response.decode()

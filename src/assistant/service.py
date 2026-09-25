@@ -316,8 +316,7 @@ class AssistantService:
             )
             context = RuntimeContext(session_id=session_id, run_id=run_id,
                 message=run["message"] if "resume" not in run else None,
-                profile=profile, settings=settings, checkpoint_path=getattr(self.store, "checkpoint_path", ""),
-                checkpoint_backend="mysql",
+                profile=profile, settings=settings,
                 executor=executor, resume=run.get("resume"),
                 checkpoint_thread_id=f"{session_id}:{run_id}",
                 history=await self.db("history", owner, session_id))

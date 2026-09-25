@@ -36,9 +36,7 @@ Set these environment variables on the backend:
   `DB_HOST=192.168.1.90`, `DB_PORT=3306` and `DB_NAME=magic_auth`. Assistant
   configuration, conversations, events, usage and LangGraph checkpoints all use
   the same database and connection pool as the application. Apply
-  `schemas/tables/14_assistant.sql` before starting the updated API. There is no
-  separate assistant database, active SQLite storage, `ASSISTANT_DATA_DIR`
-  setting, or assistant filesystem volume.
+  `schemas/tables/14_assistant.sql` before starting the API.
 - `ASSISTANT_SECRET_KEY`: a Fernet key, required before saving provider API keys.
   Generate with `python -c 'from cryptography.fernet import Fernet;
   print(Fernet.generate_key().decode())'` and store it in your deployment's
@@ -100,7 +98,7 @@ A saved profile does not install an Ollama server or download a model. See the
 [Ollama quickstart](https://docs.ollama.com/quickstart) for the separate provider
 service. An API-key profile needs `ASSISTANT_SECRET_KEY` configured before saving.
 
-## MySQL deployment and legacy import
+## MySQL deployment
 
 The canonical schema is [14_assistant.sql](../schemas/tables/14_assistant.sql).
 It creates the `assistant_*` InnoDB tables, including `assistant_checkpoints`
@@ -118,65 +116,8 @@ mysql --host=192.168.1.90 --port=3306 --user=YOUR_DB_USER --password \
   --database=magic_auth < schemas/tables/14_assistant.sql
 ```
 
-A new installation can start the API after the schema exists. To preserve a
-previous SQLite installation, complete this cutover before starting the updated
-API or opening the assistant, which may create default profile rows:
-
-1. Let all queued/running jobs finish and resolve any waiting questions or
-   approvals. Then stop the API and every assistant worker. Disable automatic
-   restarts during this maintenance window. The importer refuses any active
-   runs; it does not cancel or replay them.
-2. Keep both legacy files, `.assistant-data/assistant.sqlite3` and
-   `.assistant-data/checkpoints.sqlite3`, together with any existing WAL files.
-   Keep `ASSISTANT_SECRET_KEY` unchanged. The import copies encrypted provider
-   keys as opaque ciphertext; changing the key makes those credentials unreadable.
-3. Apply the schema above, then inspect the source inventory and dry-run report:
-
-   ```sh
-   .venv/bin/python scripts/migrations/assistant_storage.py \
-     --source-dir .assistant-data --source-only
-   .venv/bin/python scripts/migrations/assistant_storage.py \
-     --env-file .env --source-dir .assistant-data --dry-run
-   ```
-
-4. Import explicitly while all writers remain stopped:
-
-   ```sh
-   .venv/bin/python scripts/migrations/assistant_storage.py \
-     --env-file .env --source-dir .assistant-data \
-     --apply --maintenance-confirmed \
-     --backup-dir .assistant-data/mysql-cutover-backup \
-     --report .assistant-data/mysql-cutover-report.json
-   ```
-
-   The backup directory and report must be new paths; existing files are never
-   overwritten. Omitting `--backup-dir` generates a unique private backup folder
-   inside `.assistant-data`. The importer uses SQLite's backup API to include
-   committed WAL data, creates a `0700` directory and `0600` files, and leaves
-   the originals in place. Treat these legacy backups as private conversation
-   data and retain them according to your backup policy.
-5. Confirm `verified: true` and matching table counts/checksums in the report,
-   then restart the API and reopen the dashboard. Check that the existing
-   conversations and provider profile are restored. Runtime persistence now
-   uses MySQL exclusively; the preserved SQLite files are backup/import sources.
-
-The importer accepts an empty destination or an exactly matching prior import.
-It refuses conflicting or partially populated tables rather than merging or
-clearing them. It verifies every table and checks that the source did not change
-before committing the InnoDB transaction. IDs, event sequence numbers, settings,
-messages, run history, encrypted profile keys and checkpoint bytes are preserved.
-JSON payload columns use `LONGTEXT` with `JSON_VALID` checks. This preserves the
-original JSON text and numeric precision: MySQL's native JSON normalization can
-change nested floating-point values. Migration checksums compare that text
-exactly, without rounding or numeric tolerances. Reports contain counts and
-checksums, without conversation content or secrets.
-
-MySQL's event `AUTO_INCREMENT` counter is advanced monotonically after the row
-transaction when required, preserving replay cursors even if earlier events were
-deleted. This metadata operation cannot be rolled back by MySQL. If finalization
-fails, keep the API stopped and rerun `--apply --maintenance-confirmed`, using new
-backup/report paths or omitting those optional flags. An identical import is
-idempotent. Do not resume traffic until the importer reports success.
+Start the API after the schema exists. Include the assistant tables in the
+application's MySQL backup and restore procedures.
 
 ## Capabilities and safety
 
@@ -265,8 +206,7 @@ expiry; operators should set a data-retention policy appropriate for their
 installation. Include all `assistant_*` tables in the application's consistent
 MySQL backups and restore them together. Back up `ASSISTANT_SECRET_KEY` separately
 in the secret manager; database backups alone cannot recover encrypted provider
-credentials. Legacy SQLite backups are retained recovery artifacts, not runtime
-storage.
+credentials.
 
 ## WebSocket contract
 
@@ -302,8 +242,9 @@ are `tests/unit/test_assistant_*.py`; deterministic runtime tests use real Deep
 Agents with scripted local models. MySQL persistence, concurrency, replay and
 checkpoint recovery are also covered by
 `tests/integration/test_assistant_mysql_real_db.py` in an explicitly isolated
-`assistant_verify_*` database. Migration tests cover byte preservation, private
-backups, active-run rejection, conflicting destinations, rollback and retries.
+`assistant_verify_*` database. Transport tests use an in-memory store double;
+runtime tests inject an in-memory checkpoint saver. Durable persistence is
+verified against MySQL.
 A live provider smoke requires an independently running Ollama or configured
 cloud profile.
 

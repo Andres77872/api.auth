@@ -20,12 +20,10 @@ class RuntimeContext:
     message: str | None
     profile: dict[str, Any]
     settings: dict[str, Any]
-    checkpoint_path: str
     executor: Any
     resume: Any = None
     checkpoint_thread_id: str | None = None
     history: list[dict[str, Any]] | None = None
-    checkpoint_backend: str = "mysql"
     checkpoint_factory: Callable[[], Any] | None = None
 
 
@@ -324,15 +322,9 @@ def build_agent(context: RuntimeContext, checkpointer: Any, *, model: Any = None
 async def _checkpoint_saver(context: RuntimeContext):
     if context.checkpoint_factory is not None:
         manager = context.checkpoint_factory()
-    elif context.checkpoint_backend == "mysql":
+    else:
         from .checkpoints import MySQLCheckpointSaver
         manager = MySQLCheckpointSaver()
-    elif context.checkpoint_backend == "sqlite":
-        # Explicit compatibility backend for tests and offline source migration.
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        manager = AsyncSqliteSaver.from_conn_string(context.checkpoint_path)
-    else:
-        raise ValueError("Unsupported assistant checkpoint backend.")
     async with manager as saver:
         await saver.setup()
         yield saver
@@ -342,8 +334,8 @@ async def run_agent(context: RuntimeContext, emit: Emit) -> RuntimeResult:
     """Stream one durable turn or explicit human resume, including subagent usage.
 
     Exceptions/cancellation propagate to the job owner. Browser lifecycle never
-    enters this function. Checkpoint and conversation/event files must be on a
-    persistent private volume owned by the backend process.
+    enters this function. Checkpoints and conversation events persist in the
+    application database.
     """
     from deepagents.backends.utils import create_file_data
     from langchain_core.callbacks import AsyncCallbackHandler

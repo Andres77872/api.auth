@@ -57,7 +57,7 @@ class MySQLCheckpointSaver(BaseCheckpointSaver[str]):
     Parent links and pending writes implement BaseCheckpointSaver's default
     delta-channel history traversal too. Ordinary repeated task writes keep the
     first result; special interrupt/error/resume writes replace their reserved
-    index, matching the official SQLite/PostgreSQL saver semantics.
+    index, matching the LangGraph checkpoint protocol.
     """
 
     def __init__(self, *, connection_factory: Callable[[], Any] | None = None,
@@ -263,7 +263,7 @@ class MySQLCheckpointSaver(BaseCheckpointSaver[str]):
         await self._offload(self.delete_thread, thread_id)
 
     def delete_session(self, session_id: str) -> None:
-        """Remove all run-scoped graphs in one session, including old direct ids."""
+        """Remove session-scoped and run-scoped graphs for a conversation."""
         prefix = session_id.replace("!", "!!").replace("%", "!%").replace("_", "!_") + ":%"
         with self._cursor() as cursor:
             for table in ("assistant_checkpoint_writes", "assistant_checkpoints"):
@@ -274,6 +274,6 @@ class MySQLCheckpointSaver(BaseCheckpointSaver[str]):
         await self._offload(self.delete_session, session_id)
 
     def get_next_version(self, current: str | int | None, channel: Any) -> str:
-        # Accept the official SQLite format so imported checkpoints continue.
+        # Fixed-width counters keep versions sortable across graph updates.
         number = 0 if current is None else int(str(current).split(".")[0])
         return f"{number + 1:032}.{random.random():016}"

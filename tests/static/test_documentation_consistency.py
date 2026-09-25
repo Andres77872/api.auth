@@ -349,7 +349,7 @@ def test_schema_inventory_matches_canonical_sql():
         ),
     }
     assert expected_counts == {
-        "Tables": 73,
+        "Tables": 83,
         "Indexes": 83,
         "Stored Procedures": 318,
         "Functions": 1,
