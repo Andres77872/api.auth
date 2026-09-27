@@ -11,7 +11,8 @@ fix the page in the same change.
 > [!TIP]
 > In the documentation wiki (`/documentation`), press `Ctrl K` (`⌘K` on macOS) or `/` to search
 > every page, endpoint, field and error code. Add `?format=raw` to any page URL for its Markdown
-> source, or open `/documentation?format=raw` for a Markdown index of every page.
+> source, or open `/documentation?format=raw` for a Markdown index of every page. LLMs and agents
+> can start from `/llms.txt`: a short guide with curl examples, served from `docs/llms.txt`.
 
 ## Start here
 
@@ -113,8 +114,8 @@ Operations → Runbooks.
 API version `2.2.0` registers **246 HTTP method/path operations across 28 `src/routes/*.py`
 modules** (`assistant.py` adds one WebSocket endpoint and no HTTP operations). The count excludes
 FastAPI's built-in `/docs`, `/redoc` and `/openapi.json` routes and the routes declared directly in
-`src/main.py` (`/ping`, the `/documentation` wiki, the legacy `/docs/USAGE/*` redirect and the `/`
-redirect). Endpoint-level contracts live in each topic's reference page and in the running OpenAPI
+`src/main.py` (`/ping`, the `/documentation` wiki, the legacy `/docs/USAGE/*` redirect, `/llms.txt`
+and the `/` redirect). Endpoint-level contracts live in each topic's reference page and in the running OpenAPI
 document.
 
 | Surface | Prefix | Module | Operations | Authority |

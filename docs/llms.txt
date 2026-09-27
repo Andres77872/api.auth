@@ -1,0 +1,258 @@
+# api.auth
+
+> api.auth is a FastAPI authentication and authorization service (API version {{VERSION}}) for multi-project products. It provides username/password and OAuth/OIDC sign-in, short-lived access JWTs with rotating refresh tokens, group-based project access, global roles and permission groups, project-scoped API keys, transactional email, Patreon entitlement links, and Stripe billing facts. This file is a quick guide with curl examples. The complete contract for every endpoint is the OpenAPI document at {{BASE_URL}}/openapi.json.
+
+Before calling the API:
+
+- Base URL: `{{BASE_URL}}`. Every example below first sets `BASE="{{BASE_URL}}"`.
+- For anything specific, such as a route's fields, enum values, response shape, status codes, or required credential, read that operation in the [OpenAPI document]({{BASE_URL}}/openapi.json). It is generated from the code and is authoritative. Each operation's `description` states its auth, request format, and every response code.
+- Every request must send a `User-Agent` header. Without one the API answers `422` before any route runs. curl sends one by default.
+- Sign-in routes and most older CRUD and admin routes take form fields (`-F` or `-d`), not JSON. OAuth, email templates, Patreon link, and internal service routes take JSON. Password recovery and email verification accept either. Each operation's `requestBody` in OpenAPI states which.
+- Errors always use the same envelope: `{"status": "error", "error": {"code": "AUTH_1001", "category": "authentication", "message": "..."}}`. Branch on `error.code`, never on the message.
+- Public IDs are prefixed UUIDs: `usr-...` (users), `proj-...` (projects), and `ug-...` (user groups).
+- POST bodies larger than 8 MiB are rejected with `413`.
+
+## Credentials
+
+- **Access token** (JWT, 15 minutes by default): send `Authorization: Bearer <access_token>`, or rely on the HttpOnly `session_token` cookie. Every user and admin route accepts it.
+- **Refresh token** (JWT): accepted only by `POST /auth/refresh`, and by `POST /auth/switch-project` together with the access token. Send it as the `refresh_token` form field or cookie. It is single-use: each refresh returns a new pair. It lasts 72 hours, sliding, by default, or 30 days, absolute, when the sign-in sent `remember_me=true`.
+- **API key** `sk_{public_id}.{secret}`: send it in `X-API-Key`. It belongs to one user and one project. Backends use it with `POST /auth/validate-api-key`, `GET /auth/oauth/providers`, and `POST /auth/oauth/init`.
+- **Service-to-service bearers**: `BILLING_S2S_BEARER_TOKEN` for `/internal/.../billing...` routes and `PATREON_S2S_BEARER_TOKEN` for `/internal/users/{user_hash}/entitlements...`. User tokens and API keys are never accepted in their place.
+- **Webhooks** (`/webhooks/stripe...`, `/webhooks/patreon`, `/webhooks/email/resend`) are verified by the provider's signature over the raw body.
+- **Recent sign-in rule**: some routes require the session to have signed in (or completed an OAuth reauth) in the last 5 minutes (`OAUTH_RECENT_REAUTH_SECONDS`). These are creating, updating, and revoking API keys, `POST /auth/switch-project`, and the Patreon link steps. Otherwise they answer `401 AUTH_1008`. Refreshing tokens does not renew it.
+
+## Access model
+
+```text
+USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
+                 \-> PERMISSION_GROUP -> PERMISSIONS
+```
+
+- `root` users have global scope. `admin` users manage the projects assigned to them. `consumer` users reach the projects their user groups link to.
+- Global roles and permission groups grant permissions. They are separate from project reach.
+
+## Quick start: health
+
+```bash
+BASE="{{BASE_URL}}"
+
+curl -i "$BASE/ping"          # 204 No Content: the process is up (no DB or Redis check)
+curl "$BASE/system/ping"      # 200 {"success": true, "message": ..., "timestamp": ...}
+```
+
+## Quick start: sign in and sessions
+
+```bash
+# Check whether a username and/or email is free (send at least one)
+curl -X POST "$BASE/auth/check-availability" -F "username=jane" -F "email=jane@example.com"
+
+# Register a consumer into a user group. When the group reaches an active project,
+# the new account is signed in to the first project (by name) and tokens are returned.
+curl -X POST "$BASE/auth/register" \
+  -F "username=jane" -F "password=Str0ng-Passphrase-42" -F "email=jane@example.com" \
+  -F "user_group_hash=ug-..."
+
+# Sign in to a project. project_hash is required for every user type.
+curl -X POST "$BASE/auth/login" \
+  -F "username=jane" -F "password=Str0ng-Passphrase-42" -F "project_hash=proj-..."
+# -> {"access_token": "...", "refresh_token": "...", "expires_in": ..., "user": {...},
+#     "project": {...}, "accessible_projects": [...], "user_groups": [...], "plan": ...}
+
+# Root or admin dashboard sign-in, without a project
+curl -X POST "$BASE/auth/platform/login" -F "username=admin" -F "password=..."
+```
+
+```bash
+ACCESS="<access_token>"
+REFRESH="<refresh_token>"
+
+curl "$BASE/auth/validate" -H "Authorization: Bearer $ACCESS"          # user, project, session, plan
+curl "$BASE/users/profile" -H "Authorization: Bearer $ACCESS"
+curl "$BASE/users/access-summary" -H "Authorization: Bearer $ACCESS"   # groups, projects, effective permissions
+curl "$BASE/permissions/users/me/permissions/check/manage_users" -H "Authorization: Bearer $ACCESS"
+
+# Rotate the pair. The presented refresh token is spent.
+curl -X POST "$BASE/auth/refresh" -F "refresh_token=$REFRESH"
+
+# Move the session to another project (recent sign-in required)
+curl -X POST "$BASE/auth/switch-project" -H "Authorization: Bearer $ACCESS" \
+  -F "project_hash=proj-..." -F "refresh_token=$REFRESH"
+
+# End this session (revokes its refresh family and clears the cookies)
+curl -X POST "$BASE/auth/logout" -H "Authorization: Bearer $ACCESS"
+```
+
+- Never send an access token to `/auth/refresh` (`AUTH_1018`). OpenAPI names the refresh form property `refresh_token_value`, but the field sent on the wire is `refresh_token`.
+- A spent refresh token presented again within the short grace window answers `AUTH_1022`: retry with the newest token. After the window it answers `AUTH_1015` and revokes the whole family, so the user must sign in again.
+- Consumer sign-in, refresh, `/auth/validate`, and consumer API-key validation may include a `plan` object, which is the subscription resolved from the project's billing group.
+
+## Quick start: passwords and email
+
+```bash
+# Email a reset link. The answer never reveals whether the account exists.
+curl -X POST "$BASE/auth/password/forgot" -H "Content-Type: application/json" \
+  -d '{"email_or_username": "jane@example.com"}'
+
+# Consume the emailed token. Your frontend hosts the GET page the link opens and posts here.
+curl -X POST "$BASE/auth/password/reset" -H "Content-Type: application/json" \
+  -d '{"token": "<token from the email>", "new_password": "An0ther-Passphrase-43"}'
+
+# Activate an email address with the token from the activation email
+curl -X POST "$BASE/auth/email/verify" -H "Content-Type: application/json" \
+  -d '{"token": "<token from the email>"}'
+
+# Change the password while signed in. The user's other sessions are revoked.
+curl -X POST "$BASE/auth/password/change" -H "Authorization: Bearer $ACCESS" \
+  -H "Content-Type: application/json" \
+  -d '{"current_password": "Str0ng-Passphrase-42", "new_password": "An0ther-Passphrase-43"}'
+```
+
+## Quick start: API keys
+
+```bash
+# Create a key (recent sign-in required). The full key appears only in this response.
+curl -X POST "$BASE/users/api-keys" -H "Authorization: Bearer $ACCESS" \
+  -F "project_hash=proj-..." -F "name=backend" -F "expires_at=2027-01-01T00:00:00Z"
+# -> data.api_key = "sk_<public_id>.<secret>", data.id = "<public_id>"
+
+curl "$BASE/users/api-keys" -H "Authorization: Bearer $ACCESS"                          # list, metadata only
+curl -X DELETE "$BASE/users/api-keys/<public_id>" -H "Authorization: Bearer $ACCESS"    # revoke (recent sign-in)
+
+# A backend checks a key it received. Do not also send Authorization.
+curl -X POST "$BASE/auth/validate-api-key" -H "X-API-Key: sk_<public_id>.<secret>"
+# -> owner, project, key ids, groups, permissions, plan
+```
+
+## Quick start: OAuth sign-in from a project backend
+
+The project's backend keeps a project-scoped API key server-side. The project and the provisioning group always come from server-side configuration, never from the request.
+
+```bash
+KEY="sk_<public_id>.<secret>"
+
+# 1. List the providers this project can show (one button per entry)
+curl "$BASE/auth/oauth/providers" -H "X-API-Key: $KEY"
+
+# 2. When the user clicks, mint a single-use init token (valid 300 s)
+curl -X POST "$BASE/auth/oauth/init" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"connection": "google", "return_origin": "https://app.example.com"}'
+
+# 3. Redeem it and send the browser to the returned Location (303)
+curl -si -X POST "$BASE/auth/oauth/start" -H "Content-Type: application/json" \
+  -d '{"init_token": "<init_token>", "redirect_uri": "https://app.example.com/oauth/google/callback"}' \
+  | grep -i '^location:'
+
+# 4. Relay the provider's code and state from your redirect URI
+curl -G "$BASE/auth/oauth/callback" --data-urlencode "code=<code>" --data-urlencode "state=<state>"
+# -> the same LoginResponse as a password sign-in, for the API key's project
+```
+
+Branch on the error code. `EXT_8031` means the user cancelled. `EXT_8032` means a local account already uses this email: sign in with it, then link the provider. `EXT_8012`, `EXT_8014`, or `EXT_8016` mean start over with a new init token. `EXT_8013` means the URL is not on the binding's allow-list. `GET /admin/oauth/projects/{project_hash}/readiness` explains why a provider is unavailable.
+
+## Quick start: service-to-service (billing and Patreon)
+
+```bash
+# A user's billing status in a project (the free default when there is no data)
+curl "$BASE/internal/users/usr-.../billing?project_hash=proj-..." \
+  -H "Authorization: Bearer $BILLING_S2S_BEARER_TOKEN"
+
+# The project's purchasable catalog (subscriptions and credit packs)
+curl "$BASE/internal/projects/proj-.../billing/catalog" \
+  -H "Authorization: Bearer $BILLING_S2S_BEARER_TOKEN"
+
+# Stripe-hosted Checkout. Retry safely with the same Idempotency-Key.
+curl -X POST "$BASE/internal/users/usr-.../billing/checkout" \
+  -H "Authorization: Bearer $BILLING_S2S_BEARER_TOKEN" \
+  -H "Idempotency-Key: upgrade-7f3a" -H "Content-Type: application/json" \
+  -d '{"project_hash": "proj-...", "intent_type": "subscription", "price_ref": {"ref_type": "lookup_key", "value": "pro_monthly"}, "plan_code": "pro", "tier_code": "pro", "success_url": "https://app.example.com/billing/success", "cancel_url": "https://app.example.com/billing/cancel"}'
+# -> 202 {"url": "<Stripe Checkout URL>", "checkout_ref": ..., "subscription_ref": ...}
+
+# A user's normalized Patreon entitlement
+curl "$BASE/internal/users/usr-.../entitlements" \
+  -H "Authorization: Bearer $PATREON_S2S_BEARER_TOKEN"
+```
+
+## Quick start: administration
+
+Use the access token of a `root` or `admin` user. Admins only see and change what is in their assigned projects.
+
+```bash
+ADMIN="<root or admin access_token>"
+
+curl "$BASE/users/list?limit=20&offset=0&search=jane" -H "Authorization: Bearer $ADMIN"
+curl "$BASE/projects?limit=10&offset=0" -H "Authorization: Bearer $ADMIN"
+curl -X POST "$BASE/projects" -H "Authorization: Bearer $ADMIN" \
+  -F "project_name=Acme" -F "project_description=Main app"
+curl "$BASE/admin/user-groups" -H "Authorization: Bearer $ADMIN"
+curl "$BASE/admin/audit/logs?days=7&limit=50" -H "Authorization: Bearer $ADMIN"
+curl "$BASE/system/health" -H "Authorization: Bearer $ADMIN"
+```
+
+## Errors
+
+```json
+{"status": "error", "error": {"code": "VAL_3001", "category": "validation", "message": "...", "details": {"validation_errors": []}}}
+```
+
+- `400`: `VAL_3001` invalid input (see `error.details.validation_errors`), `VAL_3002` missing field, or `VAL_3007` weak password. FastAPI's default `422 {"detail": [...]}` body is never used.
+- `401`: `AUTH_1003` missing, invalid, expired, or revoked access token; `AUTH_1001` wrong credentials; `AUTH_1008` recent sign-in required; `AUTH_1013` to `AUTH_1022` refresh-token failures.
+- `403`: `AUTHZ_2001` not root or admin, `AUTHZ_2002` missing permission, or `AUTHZ_2003` no access to the project.
+- `404`: `NF_4xxx` codes, such as `NF_4001` user or `NF_4002` project.
+- `409`: `CONF_5001` username taken, `CONF_5002` email taken, or `CONF_5005` state conflict.
+- `429`: `INT_7005` or `EXT_8030` rate limited. Honour the `Retry-After` header.
+
+## Using the OpenAPI document
+
+Look up specific routes in the OpenAPI document instead of guessing them.
+
+```bash
+curl -s "$BASE/openapi.json" -o openapi.json
+
+# Every operation: METHOD path tag
+jq -r '.paths | to_entries[] | .key as $p | .value | to_entries[]
+  | select(.key | test("^(get|post|put|patch|delete)$"))
+  | "\(.key | ascii_upcase) \($p) [\(.value.tags[0])]"' openapi.json
+
+# One operation: auth, request format, fields, and every response code
+jq '.paths["/auth/login"].post' openapi.json
+jq -r '.paths["/auth/login"].post.description' openapi.json
+
+# Operations under one tag
+jq -r --arg tag "API Keys - User" '.paths | to_entries[] | .key as $p | .value | to_entries[]
+  | select(.value.tags? // [] | index($tag)) | "\(.key | ascii_upcase) \($p)"' openapi.json
+
+jq -r '.tags[] | "\(.name): \(.description)"' openapi.json   # tags (API surfaces)
+jq '.components.securitySchemes' openapi.json                # the four credential schemes
+jq '.components.schemas.LoginResponse' openapi.json          # one schema
+```
+
+## Docs
+
+- [OpenAPI document]({{BASE_URL}}/openapi.json): the generated and authoritative contract for every operation, including request bodies, responses, and security schemes.
+- [Documentation index]({{BASE_URL}}/documentation?format=raw): a Markdown index of every documentation page.
+- [Getting started]({{BASE_URL}}/documentation/USAGE/getting-started.md?format=raw): installation, configuration, first run, and bootstrapping the first root user.
+- [Authentication usage cases]({{BASE_URL}}/documentation/USAGE/authentication-usage-cases.md?format=raw): sign-in, registration, refresh, project switching, logout, and password recovery, step by step.
+- [Client authentication guide]({{BASE_URL}}/documentation/USAGE/client-authentication-guide.md?format=raw): integration patterns for browser, mobile, and backend clients.
+- [Error reference]({{BASE_URL}}/documentation/USAGE/errors.md?format=raw): every error code, the envelope, and troubleshooting by symptom.
+- [OAuth sign-in]({{BASE_URL}}/documentation/USAGE/oauth/README.md?format=raw): provider connections, project bindings, readiness, sign-in, link, reauth, and unlink.
+- [API keys]({{BASE_URL}}/documentation/USAGE/api-keys/README.md?format=raw): the key format, self-service and admin key management, and validation.
+- [Users]({{BASE_URL}}/documentation/USAGE/users/README.md?format=raw): profiles, user types, multi-email management, and admin and bulk user operations.
+- [Groups]({{BASE_URL}}/documentation/USAGE/groups/README.md?format=raw): user groups, project groups, and the links that grant project access.
+- [Projects]({{BASE_URL}}/documentation/USAGE/projects/README.md?format=raw): project CRUD, members, activity, and statistics.
+- [Roles]({{BASE_URL}}/documentation/USAGE/roles/README.md?format=raw): global roles, permission groups, permissions, and project role catalogs.
+- [Permissions]({{BASE_URL}}/documentation/USAGE/permissions/README.md?format=raw): permission-group assignment and how effective permissions are resolved.
+- [Stripe billing]({{BASE_URL}}/documentation/USAGE/stripe-billing/README.md?format=raw): billing groups, catalog, S2S checkout and portal, status, and webhooks.
+- [Patreon link]({{BASE_URL}}/documentation/USAGE/patreon-link/README.md?format=raw): entitlement-only Patreon linking, S2S reads, webhooks, and sync.
+- [Email]({{BASE_URL}}/documentation/USAGE/email/README.md?format=raw): transactional templates, outbox delivery, and the provider webhook.
+- [Audit logs]({{BASE_URL}}/documentation/USAGE/audit_logs/README.md?format=raw): the audit trail, security events, email logs, and export.
+
+## Optional
+
+- [Admin usage cases]({{BASE_URL}}/documentation/USAGE/admin-usage-cases.md?format=raw): dashboard, bulk operations, and cache management walkthroughs.
+- [Google OAuth (deprecated aliases)]({{BASE_URL}}/documentation/USAGE/google-oauth/README.md?format=raw): the legacy `/auth/google/*` routes and `GOOGLE_OAUTH_*` settings.
+- [OAuth runbook]({{BASE_URL}}/documentation/RUNBOOKS/oauth.md?format=raw): operator procedures for OAuth incidents.
+- [Stripe billing runbook]({{BASE_URL}}/documentation/RUNBOOKS/stripe-billing.md?format=raw): operator procedures for billing incidents.
+- [Patreon link runbook]({{BASE_URL}}/documentation/RUNBOOKS/patreon-link.md?format=raw): operator procedures for Patreon incidents.
+- [Email activation runbook]({{BASE_URL}}/documentation/RUNBOOKS/email-activation.md?format=raw): operator procedures for email delivery incidents.
+- [Swagger UI]({{BASE_URL}}/docs): an interactive HTML view of the OpenAPI document.
+- [ReDoc]({{BASE_URL}}/redoc): a grouped HTML reference view of the OpenAPI document.

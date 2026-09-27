@@ -9,7 +9,8 @@ This text is the OpenAPI description served at `/docs` (Swagger UI) and
 `/redoc`. ReDoc groups the tags into sections; in Swagger UI use the filter box
 to find a tag. Integration guides are rendered at
 [/documentation](/documentation) — append `?format=raw` to any documentation
-URL for plain Markdown.
+URL for plain Markdown. LLMs and agents can start from [/llms.txt](/llms.txt), a
+short guide with curl examples that links back to this document.
 
 ## Credentials
 
@@ -145,10 +146,10 @@ API version `2.2.0` registers 246 method/path operations across 28 modules in
 | `bulk_operations.py` | Bulk Operations | 4 | Bulk user, group, and role operations |
 | `system.py` | System Information | 7 | Authenticated details, public ping, cache operations |
 
-The count excludes FastAPI's built-in documentation routes and the six routes
+The count excludes FastAPI's built-in documentation routes and the seven routes
 declared directly in `src/main.py`: `/ping`, the three `/documentation` routes
 (wiki home, page renderer, and the `_search.json` index behind its search), the
-legacy `/docs/USAGE/*` redirect, and the `/` redirect to `/docs`.
+legacy `/docs/USAGE/*` redirect, `/llms.txt`, and the `/` redirect to `/docs`.
 
 ## Further Reading
 

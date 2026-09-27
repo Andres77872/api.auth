@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from starlette.responses import RedirectResponse
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -240,6 +240,35 @@ async def serve_usage_docs_legacy(
     if raw or format in RAW_DOC_FORMATS:
         target += "?format=raw"
     return RedirectResponse(url=target, status_code=308)
+
+
+# llms.txt (https://llmstxt.org): the quick guide for LLMs and agents. docs/llms.txt is a
+# template; {{BASE_URL}} and {{VERSION}} are filled in per request so every link is absolute.
+LLMS_TXT_PATH = DOCS_BASE_PATH / "llms.txt"
+
+
+@app.get(
+    "/llms.txt",
+    response_class=PlainTextResponse,
+    tags=["Documentation"],
+    responses={200: {"description": "The llms.txt guide as Markdown."}},
+)
+async def llms_txt(request: Request):
+    """
+    Quick guide to this API for LLMs and agents, in the llms.txt format (https://llmstxt.org).
+
+    Returns Markdown served as `text/plain`: a summary, the request conventions and
+    credentials, curl examples for the main flows, and links to `/openapi.json` and to the
+    raw Markdown documentation. Links are absolute, built from `PUBLIC_API_BASE_URL` when it
+    is set and otherwise from the URL this request was made to.
+    """
+    base_url = (os.environ.get("PUBLIC_API_BASE_URL") or str(request.base_url)).rstrip("/")
+    body = (
+        LLMS_TXT_PATH.read_text(encoding="utf-8")
+        .replace("{{BASE_URL}}", base_url)
+        .replace("{{VERSION}}", app.version)
+    )
+    return _docs_body(request, body, "text/plain; charset=utf-8")
 
 
 @app.get(

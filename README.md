@@ -165,6 +165,7 @@ Detailed request/response examples live in the domain docs under [docs/USAGE](do
 - OpenAPI document: `/openapi.json`
 - Documentation wiki: `/documentation` — the `docs/` tree rendered with navigation, full-text search (`Ctrl K` / `⌘K`), per-page outline, and light/dark themes matching the admin console. Renderer: `src/Util/docs_site/`.
 - Raw markdown documentation: add `?format=raw` to any `/documentation/...` page; `/documentation?format=raw` lists every page.
+- LLM guide: `/llms.txt` — an [llms.txt](https://llmstxt.org) quick guide for LLMs and agents with curl examples, request conventions, and links to `/openapi.json` and the raw docs. Its source is the template [docs/llms.txt](docs/llms.txt); `{{BASE_URL}}` is filled from `PUBLIC_API_BASE_URL`, or from the request URL when that is unset, and `{{VERSION}}` from the app version.
 
 The OpenAPI document is generated from the code. Its description is [src/README.md](src/README.md); tag descriptions, ReDoc tag groups, security schemes, and the shared `ErrorResponse` schema live in [src/Util/openapi_metadata.py](src/Util/openapi_metadata.py); every operation's own description is its route docstring. It declares four security schemes:
 
