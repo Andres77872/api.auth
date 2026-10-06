@@ -56,7 +56,7 @@ from src.Util.email.templates import (
     RenderedEmailTemplate,
     TransactionalEmailTemplate,
     get_transactional_template,
-    render_email_template,
+    render_transactional_template,
     render_transactional_template,
 )
 
@@ -94,7 +94,7 @@ __all__ = [
     "normalize_email",
     "parse_link_token",
     "purge_render_payload_if_due",
-    "render_email_template",
+    "render_transactional_template",
     "render_transactional_template",
     "request_fingerprint",
     "sanitize_email_log_value",

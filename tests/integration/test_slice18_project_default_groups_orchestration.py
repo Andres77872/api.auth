@@ -20,7 +20,7 @@ from tests.support import make_db_connection_mock
 
 
 def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
-                        session_token="test-admin-token", user_type="root"):
+                        access_token="test-admin-token", user_type="root"):
     """Project creation is root-only, so the default caller is a root user."""
     s = MagicMock()
     s.user_id = user_id
@@ -29,7 +29,7 @@ def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
     s.project_id = "1"
     s.project_hash = "prj-admin-001"
     s.permissions = ["admin"]
-    s.session_token = session_token
+    s.access_token = access_token
     return s
 
 
@@ -86,7 +86,7 @@ async def test_project_creation_calls_validate_session_first(
                 "project_name": "New Project",
                 "project_description": "A new project",
             },
-            headers={"Authorization": f"Bearer {admin_session.session_token}"},
+            headers={"Authorization": f"Bearer {admin_session.access_token}"},
         )
 
     assert response.status_code == 200
@@ -122,7 +122,7 @@ async def test_project_creation_passes_user_id_to_create_project(
                 "project_name": "Test Project",
                 "project_description": "Test description",
             },
-            headers={"Authorization": f"Bearer {admin_session.session_token}"},
+            headers={"Authorization": f"Bearer {admin_session.access_token}"},
         )
 
     assert response.status_code == 200
@@ -150,7 +150,7 @@ async def test_project_creation_requires_root(
             data={
                 "project_name": "New Project",
             },
-            headers={"Authorization": f"Bearer {non_admin_session.session_token}"},
+            headers={"Authorization": f"Bearer {non_admin_session.access_token}"},
         )
 
     assert response.status_code == 403
@@ -174,7 +174,7 @@ async def test_project_creation_requires_project_name(
         response = await client.post(
             "/projects",
             data={},  # No project_name
-            headers={"Authorization": f"Bearer {admin_session.session_token}"},
+            headers={"Authorization": f"Bearer {admin_session.access_token}"},
         )
 
     # FastAPI Form validation returns 422 for missing required fields
@@ -202,7 +202,7 @@ async def test_project_creation_returns_correct_response_shape(
                 "project_name": "New Project",
                 "project_description": "A new project",
             },
-            headers={"Authorization": f"Bearer {admin_session.session_token}"},
+            headers={"Authorization": f"Bearer {admin_session.access_token}"},
         )
 
     assert response.status_code == 200

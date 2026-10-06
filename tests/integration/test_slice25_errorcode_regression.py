@@ -18,7 +18,7 @@ from tests.integration.conftest import make_session_payload, create_test_session
 
 
 def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
-                        session_token="regression-token"):
+                        access_token="regression-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -26,7 +26,7 @@ def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
     s.project_id = "1"
     s.project_hash = "prj-admin-001"
     s.permissions = ["admin"]
-    s.session_token = session_token
+    s.access_token = access_token
     return s
 
 
@@ -54,12 +54,12 @@ async def test_grant_ug_pg_missing_project_group_returns_404_not_500(
     """
     ug = _make_user_group()
     token = "regression-grant-404-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=None):
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=None):
         response = await client.post(
             "/admin/user-groups/grp-reg-001/project-groups",
             data={"project_group_hash": "nonexistent-pg-hash"},
@@ -89,12 +89,12 @@ async def test_revoke_ug_pg_missing_project_group_returns_404_not_500(
     """
     ug = _make_user_group()
     token = "regression-revoke-404-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=None):
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=None):
         response = await client.request(
             "DELETE",
             "/admin/user-groups/grp-reg-001/project-groups/nonexistent-pg-hash",

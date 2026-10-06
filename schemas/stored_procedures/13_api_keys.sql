@@ -49,12 +49,12 @@ BEGIN
     DECLARE v_has_access BOOLEAN DEFAULT FALSE;
 
     -- Validate owner user exists and is active
-    SELECT COUNT(*) INTO v_owner_exists FROM users WHERE id = p_owner_user_id;
+    SELECT COUNT(*) INTO v_owner_exists FROM v_users WHERE id = p_owner_user_id;
     IF v_owner_exists = 0 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Owner user does not exist';
     END IF;
 
-    SELECT COUNT(*) INTO v_owner_active FROM users WHERE id = p_owner_user_id AND is_active = 1;
+    SELECT COUNT(*) INTO v_owner_active FROM v_users WHERE id = p_owner_user_id AND is_active = 1;
     IF v_owner_active = 0 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Owner user is not active';
     END IF;
@@ -81,9 +81,9 @@ BEGIN
         DECLARE v_creator_exists INT DEFAULT 0;
         
         -- Check creator exists and get their user_type
-        SELECT COUNT(*) INTO v_creator_exists FROM users WHERE id = p_created_by AND is_active = 1;
+        SELECT COUNT(*) INTO v_creator_exists FROM v_users WHERE id = p_created_by AND is_active = 1;
         IF v_creator_exists > 0 THEN
-            SELECT user_type INTO v_creator_type FROM users WHERE id = p_created_by AND is_active = 1;
+            SELECT user_type INTO v_creator_type FROM v_users WHERE id = p_created_by AND is_active = 1;
         END IF;
         
         -- If creator is root, bypass all access checks (spec requirement)
@@ -97,7 +97,7 @@ BEGIN
             -- we re-implement the check inline here for the SIGNAL:
             BEGIN
                 DECLARE v_owner_type VARCHAR(20);
-                SELECT user_type INTO v_owner_type FROM users WHERE id = p_owner_user_id AND is_active = 1;
+                SELECT user_type INTO v_owner_type FROM v_users WHERE id = p_owner_user_id AND is_active = 1;
 
                 IF v_owner_type = 'root' THEN
                     SELECT COUNT(*) > 0 INTO v_has_access
@@ -203,7 +203,7 @@ BEGIN
             'expired' as validation_status;
     ELSE
         -- Check owner is still active
-        SELECT COUNT(*) INTO v_owner_active FROM users WHERE id = v_owner_user_id AND is_active = 1;
+        SELECT COUNT(*) INTO v_owner_active FROM v_users WHERE id = v_owner_user_id AND is_active = 1;
         IF v_owner_active = 0 THEN
             SELECT
                 v_key_id as id, p_public_id as public_id, v_owner_user_id as owner_user_id,
@@ -214,7 +214,7 @@ BEGIN
             -- Check owner still has project access via group chain
             BEGIN
                 DECLARE v_user_type VARCHAR(20);
-                SELECT user_type INTO v_user_type FROM users WHERE id = v_owner_user_id AND is_active = 1;
+                SELECT user_type INTO v_user_type FROM v_users WHERE id = v_owner_user_id AND is_active = 1;
 
                 IF v_user_type = 'root' THEN
                     SELECT COUNT(*) > 0 INTO v_has_access
@@ -373,7 +373,7 @@ BEGIN
         apk.updated_at
     FROM user_project_api_keys apk
     JOIN projects p ON apk.project_id = p.id
-    JOIN users u ON apk.owner_user_id = u.id
+    JOIN v_users u ON apk.owner_user_id = u.id
     WHERE apk.project_id = p_project_id
       AND (p_active_only = FALSE OR apk.is_active = TRUE)
     ORDER BY apk.created_at DESC
@@ -485,7 +485,7 @@ BEGIN
         apk.updated_at
     FROM user_project_api_keys apk
     JOIN projects p ON apk.project_id = p.id
-    JOIN users u ON apk.owner_user_id = u.id
+    JOIN v_users u ON apk.owner_user_id = u.id
     WHERE apk.public_id = p_public_id;
 END$$
 

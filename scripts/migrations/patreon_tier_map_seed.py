@@ -101,7 +101,7 @@ def _db_config() -> dict[str, Any]:
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", "3306")),
         "user": os.getenv("DB_USER", "root"),
-        "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
+        "password": os.getenv("DB_MYSQL_PASSWORD"),
         "database": os.getenv("DB_NAME", "magic_auth"),
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
@@ -287,7 +287,7 @@ def _safe_rows(entries: list[TierMapEntry], secret: bytes) -> list[SafeSeedRow]:
 def _connect():
     db_config = _db_config()
     if not db_config["password"]:
-        raise ConfigError("Missing DB_MYSQL_PASSWORD or DB_PASSWORD for --apply")
+        raise ConfigError("Missing DB_MYSQL_PASSWORD for --apply")
     return pymysql.connect(**db_config)
 
 
@@ -376,9 +376,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     _load_env_file(args.env_file)
-    secret = os.getenv("PATREON_ID_HMAC_SECRET") or os.getenv("PATREON_HMAC_SECRET")
+    secret = os.getenv("PATREON_ID_HMAC_SECRET")
     if not secret:
-        raise ConfigError("Missing PATREON_ID_HMAC_SECRET or PATREON_HMAC_SECRET")
+        raise ConfigError("Missing PATREON_ID_HMAC_SECRET")
 
     parsed_config = _load_json_config(args)
     entries = _parse_entries(parsed_config)

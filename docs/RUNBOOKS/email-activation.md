@@ -12,7 +12,7 @@ This subsystem is **transactional auth email only**: email activation links, sel
 - Public verify/forgot/reset endpoints return generic `202 Accepted` for syntactically processable requests.
 - `429 + Retry-After` is the only detailed public exception for rate limits.
 - Activation/reset links never create sessions.
-- `user_emails` is authoritative; `users.email` is only a compatibility shadow.
+- `user_emails` is authoritative; the `v_users.email` read projection derives the activated primary address.
 - Real provider sends must stay disabled in tests unless an explicit smoke-test opt-in is set.
 - Webhooks must verify raw request bytes; do not parse and reserialize before Svix verification.
 - A hard bounce or complaint flips the matching `user_emails` row to `status='suppressed'` (and clears `is_primary`), which removes that address from email login and password-reset resolution. Username login is unaffected. The `email_suppressions` hashed ledger blocks the worker from sending; the status flip is what excludes the address from the auth flows.
@@ -96,6 +96,35 @@ Operational facts:
 - Recovery is activated-email-only; pending, removed, suppressed, unknown, or legacy-only email identifiers keep generic public posture and do not enqueue recovery mail.
 - `POST /auth/password/change` is authenticated, requires `current_password`, creates no replacement session, preserves the authorizing session, and revokes other sessions/families after success.
 - Reset-link consumption creates no session and revokes existing sessions only after a successful password update.
+
+### Reset-Link Security Design
+
+Reset links are superseded per user, across `password_reset` and `admin_password_reset` and across all of the user's activated email addresses. The earlier implementation consumed only the presented token row; an attacker with an older unused link could reset the password again after recovery. Issuance now revokes earlier links atomically, and consumption invalidates all remaining reset siblings after success.
+
+| Event | Result for previously issued reset links |
+|---|---|
+| Link A issued, then link B issued | A is revoked as `superseded`; B is valid. |
+| B successfully resets the password | B is consumed; every remaining reset sibling is revoked. |
+| Authenticated/manual password change or password-hash rehash | Old links fail verification against the current password state. |
+| Profile update or login timestamp change | Recovery links remain usable until another invalidating event or expiry. |
+| Issuance or consumption transaction fails | Token and password changes roll back together. |
+
+The URL keeps the existing `lookup_id.secret` format with a cryptographically random 256-bit secret. The application computes its purpose-separated, peppered HMAC-SHA-256 verifier. The reset procedures bind that verifier to security-relevant user state before storing it:
+
+```text
+state = SHA256(HEX(users.id) + ":" + HEX(users.password_hash))
+stored_verifier = SHA256("password-reset:v2:" + HEX(token_HMAC) + ":" + state)
+```
+
+Here `HEX` uses uppercase UTF-8 byte hex, and `state` is lowercase SHA-256 hex, matching MySQL. The user ID and salted password hash are included only inside server-side hashes; neither is added to the URL or returned to the caller. The random secret and keyed HMAC retain the existing guessing and offline-attack protections. Activation tokens keep their existing verifier format.
+
+Both reset issuers and consumption acquire the same `users` row with `FOR UPDATE` before locking email/token rows. Consumption discovers the owner with an unlocked read, then rereads both the password and token with current locking reads. This prevents a waiting request from validating against a stale snapshot after a newer issuance, another reset, or a manual password change commits. Manual password writes already acquire the same user-row lock through their `UPDATE`. Only security-relevant row state enters the digest, so incidental user updates do not break links. [MySQL's locking-read documentation](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html) describes the current-read and exclusive-lock guarantees used here.
+
+This follows [OWASP's password-recovery guidance](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html): random, securely stored, expiring, single-use tokens; generic public responses and rate limits; and invalidation of outstanding recovery links after recovery. [Django's password-reset implementation](https://github.com/django/django/blob/stable/5.2.x/django/contrib/auth/tokens.py) provides a primary-source precedent for binding recovery verifiers to the current salted password hash. The user-state binding complements explicit latest-link revocation; both are required for the behavior above.
+
+Rollout requires replacing **all three** canonical reset procedures together: `sp_password_reset_link_enqueue`, `sp_admin_password_reset_link_enqueue`, and `sp_consume_password_reset_token`. No table-column or API-format migration is needed. Existing unbound reset links deliberately fail closed after the new consumer is installed; users must request a new link. Activation links are unaffected. Pause reset issuance/consumption during the procedure replacement to avoid a mixed-version window, and do not restore the vulnerable consumer during rollback. Pending messages for older links can still arrive; only the latest bound link will work.
+
+Regression coverage is in `tests/integration/test_password_reset_tokens_real_db.py`, without contacting a real provider. It requires a disposable `reset_verify_*` schema or the isolated Docker E2E service. It exercises both purposes, manual changes, legacy links, expiry and invalid secrets, rollback, concurrent issuance/consumption, and a consumer waiting on a manual password update.
 
 Schema posture for password recovery (post-cleanup):
 

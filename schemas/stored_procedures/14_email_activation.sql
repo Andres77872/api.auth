@@ -424,7 +424,7 @@ BEGIN
 
                 IF v_existing_primary_count = 0 THEN
                     UPDATE users
-                    SET email = v_email_normalized, updated_at = NOW()
+                    SET updated_at = NOW()
                     WHERE id = v_user_id;
                 END IF;
 
@@ -510,11 +510,11 @@ BEGIN
             WHERE id = v_next_primary_id;
 
             UPDATE users
-            SET email = v_next_primary_email, updated_at = NOW()
+            SET updated_at = NOW()
             WHERE id = p_user_id;
         ELSE
             UPDATE users
-            SET email = NULL, updated_at = NOW()
+            SET updated_at = NOW()
             WHERE id = p_user_id;
         END IF;
     END IF;
@@ -527,7 +527,7 @@ END$$
 
 -- ===================================================================================
 -- sp_user_email_set_primary
--- Switches primary to an owned active activated email and syncs users.email shadow.
+-- Switches primary to an owned active activated email and updates the authoritative primary email.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_user_email_set_primary$$
 CREATE PROCEDURE sp_user_email_set_primary(
@@ -570,7 +570,7 @@ BEGIN
     WHERE id = p_user_email_id;
 
     UPDATE users
-    SET email = v_email_normalized, updated_at = NOW()
+    SET updated_at = NOW()
     WHERE id = p_user_id;
 
     COMMIT;
@@ -633,6 +633,7 @@ END$$
 -- sp_password_reset_link_enqueue
 -- Self-service forgot-password: generic public posture. If an active activated email or
 -- username resolves to a recipient, creates a hash-only reset token and outbox message.
+-- All reset purposes share the users row lock and supersede earlier recovery links.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_password_reset_link_enqueue$$
 CREATE PROCEDURE sp_password_reset_link_enqueue(
@@ -656,6 +657,9 @@ CREATE PROCEDURE sp_password_reset_link_enqueue(
 BEGIN
     DECLARE v_identifier_normalized VARCHAR(255);
     DECLARE v_user_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_username VARCHAR(100) DEFAULT NULL;
+    DECLARE v_password_hash VARCHAR(255) DEFAULT NULL;
+    DECLARE v_bound_token_hash BINARY(32) DEFAULT NULL;
     DECLARE v_user_email_id VARCHAR(64) DEFAULT NULL;
     DECLARE v_email_normalized VARCHAR(255) DEFAULT NULL;
     DECLARE v_email_hash BINARY(32) DEFAULT NULL;
@@ -671,23 +675,60 @@ BEGIN
 
     START TRANSACTION;
 
-    SELECT ue.user_id, ue.id, ue.email_normalized, ue.email_hash, ue.email_masked
-      INTO v_user_id, v_user_email_id, v_email_normalized, v_email_hash, v_email_masked
+    -- Discover the owner without locking tokens/emails before the user. Revalidate
+    -- the recipient with a current locking read after acquiring the users row.
+    SELECT ue.user_id
+      INTO v_user_id
     FROM user_emails ue
     JOIN users u ON u.id = ue.user_id AND u.is_active = TRUE
     WHERE ue.status = 'activated'
       AND ue.removed_at IS NULL
       AND (ue.email_normalized = v_identifier_normalized OR u.username = p_identifier)
     ORDER BY ue.is_primary DESC, ue.activated_at ASC, ue.added_at ASC
-    LIMIT 1
-    FOR UPDATE;
+    LIMIT 1;
 
     IF v_user_id IS NOT NULL THEN
+        SELECT username, password_hash
+          INTO v_username, v_password_hash
+        FROM users
+        WHERE id = v_user_id AND is_active = TRUE
+        FOR UPDATE;
+
+        IF v_password_hash IS NOT NULL THEN
+            SELECT id, email_normalized, email_hash, email_masked
+              INTO v_user_email_id, v_email_normalized, v_email_hash, v_email_masked
+            FROM user_emails
+            WHERE user_id = v_user_id
+              AND status = 'activated'
+              AND removed_at IS NULL
+              AND (email_normalized = v_identifier_normalized OR v_username = p_identifier)
+            ORDER BY is_primary DESC, activated_at ASC, added_at ASC
+            LIMIT 1
+            FOR UPDATE;
+        END IF;
+    END IF;
+
+    IF v_user_email_id IS NOT NULL THEN
+        -- The application supplies a peppered HMAC of a random split token.
+        -- Bind that verifier to a digest of the security-relevant user row state;
+        -- every password-hash change invalidates it, including manual changes.
+        SET v_bound_token_hash = UNHEX(SHA2(CONCAT(
+            'password-reset:v2:', HEX(p_token_hash), ':',
+            SHA2(CONCAT(HEX(v_user_id), ':', HEX(v_password_hash)), 256)
+        ), 256));
+
+        UPDATE user_email_link_tokens
+        SET revoked_at = NOW(), revocation_reason = 'superseded'
+        WHERE user_id = v_user_id
+          AND purpose IN ('password_reset','admin_password_reset')
+          AND consumed_at IS NULL
+          AND revoked_at IS NULL;
+
         INSERT INTO user_email_link_tokens (
             id, user_id, user_email_id, purpose, lookup_id, token_hash,
             token_fingerprint, expires_at, created_at, created_ip_hash
         ) VALUES (
-            p_token_id, v_user_id, v_user_email_id, 'password_reset', p_lookup_id, p_token_hash,
+            p_token_id, v_user_id, v_user_email_id, 'password_reset', p_lookup_id, v_bound_token_hash,
             p_token_fingerprint, p_token_expires_at, NOW(), p_created_ip_hash
         );
 
@@ -702,6 +743,8 @@ BEGIN
             p_provider_idempotency_key, 'pending', 5, 0, 8,
             NOW(), p_render_payload_ciphertext, DATE_ADD(NOW(), INTERVAL 30 DAY), NOW(), NOW()
         );
+    ELSE
+        SET v_user_id = NULL;
     END IF;
 
     IF p_idempotency_id IS NOT NULL AND p_idempotency_key_hash IS NOT NULL THEN
@@ -733,6 +776,7 @@ END$$
 -- sp_admin_password_reset_link_enqueue
 -- Admin/root reset-link enqueue. Does not mutate password and does not return plaintext
 -- password, full recipient, or reset link.
+-- Uses the same user lock, password-state binding, and supersession as self-service.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_admin_password_reset_link_enqueue$$
 CREATE PROCEDURE sp_admin_password_reset_link_enqueue(
@@ -750,6 +794,8 @@ CREATE PROCEDURE sp_admin_password_reset_link_enqueue(
     IN p_created_ip_hash BINARY(32)
 )
 BEGIN
+    DECLARE v_password_hash VARCHAR(255) DEFAULT NULL;
+    DECLARE v_bound_token_hash BINARY(32) DEFAULT NULL;
     DECLARE v_user_email_id VARCHAR(64) DEFAULT NULL;
     DECLARE v_email_normalized VARCHAR(255) DEFAULT NULL;
     DECLARE v_email_hash BINARY(32) DEFAULT NULL;
@@ -763,7 +809,13 @@ BEGIN
 
     START TRANSACTION;
 
-    IF NOT EXISTS (SELECT 1 FROM users WHERE id = p_target_user_id AND is_active = TRUE) THEN
+    SELECT password_hash
+      INTO v_password_hash
+    FROM users
+    WHERE id = p_target_user_id AND is_active = TRUE
+    FOR UPDATE;
+
+    IF v_password_hash IS NULL THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Target user does not exist or is inactive';
     END IF;
 
@@ -778,11 +830,23 @@ BEGIN
     FOR UPDATE;
 
     IF v_user_email_id IS NOT NULL THEN
+        SET v_bound_token_hash = UNHEX(SHA2(CONCAT(
+            'password-reset:v2:', HEX(p_token_hash), ':',
+            SHA2(CONCAT(HEX(p_target_user_id), ':', HEX(v_password_hash)), 256)
+        ), 256));
+
+        UPDATE user_email_link_tokens
+        SET revoked_at = NOW(), revocation_reason = 'superseded'
+        WHERE user_id = p_target_user_id
+          AND purpose IN ('password_reset','admin_password_reset')
+          AND consumed_at IS NULL
+          AND revoked_at IS NULL;
+
         INSERT INTO user_email_link_tokens (
             id, user_id, user_email_id, purpose, lookup_id, token_hash,
             token_fingerprint, expires_at, created_at, created_ip_hash
         ) VALUES (
-            p_token_id, p_target_user_id, v_user_email_id, 'admin_password_reset', p_lookup_id, p_token_hash,
+            p_token_id, p_target_user_id, v_user_email_id, 'admin_password_reset', p_lookup_id, v_bound_token_hash,
             p_token_fingerprint, p_token_expires_at, NOW(), p_created_ip_hash
         );
 
@@ -809,6 +873,8 @@ END$$
 -- ===================================================================================
 -- sp_consume_password_reset_token
 -- Atomically consumes password reset/admin-reset token and updates password hash.
+-- Lock the user before the token, then verify against the current password state.
+-- Legacy unbound reset verifiers intentionally fail closed after this upgrade.
 -- ===================================================================================
 DROP PROCEDURE IF EXISTS sp_consume_password_reset_token$$
 CREATE PROCEDURE sp_consume_password_reset_token(
@@ -821,6 +887,9 @@ CREATE PROCEDURE sp_consume_password_reset_token(
 BEGIN
     DECLARE v_token_id VARCHAR(64) DEFAULT NULL;
     DECLARE v_user_id VARCHAR(64) DEFAULT NULL;
+    DECLARE v_password_hash VARCHAR(255) DEFAULT NULL;
+    DECLARE v_user_active BOOLEAN DEFAULT FALSE;
+    DECLARE v_bound_token_hash BINARY(32) DEFAULT NULL;
     DECLARE v_stored_hash BINARY(32) DEFAULT NULL;
     DECLARE v_expires_at DATETIME DEFAULT NULL;
     DECLARE v_consumed_at DATETIME DEFAULT NULL;
@@ -836,17 +905,40 @@ BEGIN
 
     START TRANSACTION;
 
-    SELECT id, user_id, token_hash, expires_at, consumed_at, revoked_at
-      INTO v_token_id, v_user_id, v_stored_hash, v_expires_at, v_consumed_at, v_revoked_at
+    -- This first read only discovers the lock owner. Never trust token state from
+    -- a snapshot: another issuance/consume may commit while we wait for the user.
+    SELECT user_id
+      INTO v_user_id
     FROM user_email_link_tokens
     WHERE lookup_id = p_lookup_id
       AND purpose IN ('password_reset','admin_password_reset')
-    LIMIT 1
-    FOR UPDATE;
+    LIMIT 1;
+
+    IF v_user_id IS NOT NULL THEN
+        SELECT password_hash, is_active
+          INTO v_password_hash, v_user_active
+        FROM users
+        WHERE id = v_user_id
+        FOR UPDATE;
+
+        SELECT id, token_hash, expires_at, consumed_at, revoked_at
+          INTO v_token_id, v_stored_hash, v_expires_at, v_consumed_at, v_revoked_at
+        FROM user_email_link_tokens
+        WHERE lookup_id = p_lookup_id
+          AND user_id = v_user_id
+          AND purpose IN ('password_reset','admin_password_reset')
+        LIMIT 1
+        FOR UPDATE;
+
+        SET v_bound_token_hash = UNHEX(SHA2(CONCAT(
+            'password-reset:v2:', HEX(p_token_hash), ':',
+            SHA2(CONCAT(HEX(v_user_id), ':', HEX(v_password_hash)), 256)
+        ), 256));
+    END IF;
 
     IF v_token_id IS NULL THEN
         SET v_result = 'not_found';
-    ELSEIF v_stored_hash <> p_token_hash THEN
+    ELSEIF NOT (v_stored_hash <=> v_bound_token_hash) THEN
         SET v_result = 'invalid';
     ELSEIF v_consumed_at IS NOT NULL THEN
         SET v_result = 'already_consumed';
@@ -857,6 +949,8 @@ BEGIN
         SET revoked_at = NOW(), revocation_reason = 'expired'
         WHERE id = v_token_id;
         SET v_result = 'expired';
+    ELSEIF NOT v_user_active THEN
+        SET v_result = 'user_inactive';
     ELSE
         UPDATE user_email_link_tokens
         SET consumed_at = NOW(),
@@ -874,6 +968,16 @@ BEGIN
 
         SET v_password_changed = ROW_COUNT() > 0;
         SET v_result = CASE WHEN v_password_changed THEN 'password_changed' ELSE 'user_inactive' END;
+
+        IF v_password_changed THEN
+            UPDATE user_email_link_tokens
+            SET revoked_at = NOW(), revocation_reason = 'password_reset'
+            WHERE user_id = v_user_id
+              AND purpose IN ('password_reset','admin_password_reset')
+              AND id <> v_token_id
+              AND consumed_at IS NULL
+              AND revoked_at IS NULL;
+        END IF;
     END IF;
 
     COMMIT;
@@ -1345,8 +1449,7 @@ BEGIN
        OR ue.user_id = p_user_id;
 
     UPDATE users
-    SET email = NULL,
-        updated_at = NOW()
+    SET updated_at = NOW()
     WHERE id = p_user_id;
 
     UPDATE user_emails

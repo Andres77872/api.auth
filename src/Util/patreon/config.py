@@ -626,7 +626,6 @@ def load_patreon_config(*, env: Mapping[str, str] | None = None) -> PatreonConfi
         proof_token_pepper=_get(values, constants.PATREON_PROOF_TOKEN_PEPPER_ENV) or None,
         id_hmac_secret=(
             _get(values, constants.PATREON_ID_HMAC_SECRET_ENV)
-            or _get(values, constants.PATREON_HMAC_SECRET_ENV)
             or None
         ),
         webhook_delivery_hash_pepper=(

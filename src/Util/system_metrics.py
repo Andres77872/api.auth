@@ -1736,11 +1736,11 @@ class SystemMetrics:
                 # Average members per project
                 cur.execute("""
                             SELECT AVG(member_count)
-                            FROM (SELECT COUNT(*) as member_count
-                                  FROM user_projects up
-                                           JOIN projects p ON up.project_id = p.id
-                                  WHERE up.is_active = 1
-                                    AND p.is_active = 1
+                            FROM (SELECT COUNT(DISTINCT access.user_id) AS member_count
+                                  FROM projects p
+                                  LEFT JOIN v_user_project_access access ON access.project_id = p.id
+                                  WHERE p.is_active = TRUE
+                                    AND (p.archived = FALSE OR p.archived IS NULL)
                                   GROUP BY p.id) AS project_members
                             """)
                 avg_members_result = cur.fetchone()

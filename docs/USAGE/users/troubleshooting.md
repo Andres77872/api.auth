@@ -42,8 +42,7 @@ search term instead of raising the search `limit`, which is capped at `100`.
 
 **Cause:** by design. Changing a user's type (any type-change route or bulk update) revokes all of
 their access sessions and refresh tokens, because a session carries the type it was issued for.
-Username, legacy email and password changes do not sign the user out (a password change revokes only
-the user's other sessions).
+Username changes keep sessions valid. A password change revokes only the user's other sessions.
 
 **Fix:** the user signs in again.
 
@@ -160,7 +159,7 @@ using their `project_id`.
 ### Reset-password returns `has_delivery_target: false`
 
 **Cause:** the user has no `activated` address. Pending, removed and suppressed addresses do not
-count, and neither does the legacy `users.email` field.
+count.
 
 **Fix:** the user adds and activates an address ([User email management](email-management.md)); an
 operator can re-send a pending activation with `POST /users/{user_hash}/emails/{email_id}/resend`.

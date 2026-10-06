@@ -31,18 +31,15 @@ def test_session_full_roundtrip():
         scope="project",
         project_hash="phash_def456",
         project_name="Test Project",
-        user_project_hash="",
-        session_token="tok_test_token_123",
+        access_token="tok_test_token_123",
         session_length=3600,
         user_id="42",
         username="testuser",
         project_id="proj_1",
-        user_project_id=None,
         groups=["group_a", "group_b"],
         permissions=["read", "write"],
         available_projects=[],
         user_type="consumer",
-        assigned_project_id=None,
     )
 
     stored = cm.set_session_full("tok_test_token_123", login)
@@ -68,7 +65,7 @@ def test_session_full_roundtrip():
     assert loaded.permissions == ["read", "write"]
     assert loaded.project_name == "Test Project"
     assert loaded.user_type == "consumer"
-    assert loaded.session_token == "tok_test_token_123"
+    assert loaded.access_token == "tok_test_token_123"
 
 
 def test_session_full_roundtrip_root_user():
@@ -86,8 +83,7 @@ def test_session_full_roundtrip_root_user():
         scope="platform",
         project_hash=None,
         project_name=None,
-        user_project_hash="",
-        session_token="tok_root",
+        access_token="tok_root",
         session_length=3600,
         user_id="1",
         username="rootuser",
@@ -133,8 +129,7 @@ def test_validate_session_full_cache_does_not_bypass_access_jwt_validation():
         scope="project",
         project_hash="phash_cached",
         project_name="Cached Project",
-        user_project_hash="",
-        session_token="tampered.access.token",
+        access_token="tampered.access.token",
         session_length=3600,
         user_id="42",
         username="cacheduser",
@@ -148,9 +143,10 @@ def test_validate_session_full_cache_does_not_bypass_access_jwt_validation():
     mock_cache = MagicMock()
     mock_cache.get_session_full.return_value = cached_login
 
-    with patch.object(db_enhanced_mod, "cache_manager", mock_cache), \
-         patch.object(db_enhanced_mod, "VALIDATE_CACHE_ENABLED", True), \
-         patch("src.Util.db.db_enhanced.JWTTokenHandler.decode_access_token") as decode_access:
+    with (
+        patch("src.Util.cache_manager.cache_manager", mock_cache),
+        patch("src.Util.auth_lifecycle.JWTTokenHandler.decode_access_token") as decode_access,
+    ):
         decode_access.side_effect = HTTPException(status_code=401, detail="Invalid token")
 
         with pytest.raises(HTTPException):
@@ -170,8 +166,7 @@ def test_validate_session_full_cache_does_not_bypass_revoked_family_check():
         scope="project",
         project_hash="phash_cached",
         project_name="Cached Project",
-        user_project_hash="",
-        session_token="access.token.revoked-family",
+        access_token="access.token.revoked-family",
         session_length=3600,
         user_id="42",
         username="cacheduser",
@@ -195,11 +190,16 @@ def test_validate_session_full_cache_does_not_bypass_revoked_family_check():
         "scope": "project",
     }
 
-    with patch.object(db_enhanced_mod, "cache_manager", mock_cache), \
-         patch.object(db_enhanced_mod, "VALIDATE_CACHE_ENABLED", True), \
-         patch("src.Util.db.db_enhanced.JWTTokenHandler.decode_access_token", return_value=claims), \
-         patch("src.Util.auth_lifecycle.is_refresh_family_revoked", return_value=True):
-        with pytest.raises(HTTPException):
+    with (
+        patch("src.Util.cache_manager.cache_manager", mock_cache),
+        patch("src.Util.auth_lifecycle.JWTTokenHandler.decode_access_token", return_value=claims),
+        patch("src.Util.auth_lifecycle.is_refresh_family_revoked", return_value=True),
+        patch("src.Util.auth_lifecycle._get_json", side_effect=[
+            {"access_jti": "acc-revoked", "session_id": "ses-revoked", "family_id": "fam-revoked", "user_hash": "uhash_cached", "scope": "project", "project_hash": "phash_cached"},
+            {"status": "active"},
+        ]),
+    ):
+        with pytest.raises(HTTPException, match="Refresh family revoked"):
             db_enhanced_mod.validate_session("access.token.revoked-family")
 
         mock_cache.get_session_full.assert_not_called()
@@ -236,7 +236,7 @@ def test_validate_access_session_uses_jwt_family_context_before_full_cache(monke
 
     assert result.user_hash == "usr-hash-1"
     assert result.project_hash == "prj-hash-1"
-    assert result.session_token == pair.access_token
+    assert result.access_token == pair.access_token
     assert fake.get(f"session_full:{pair.access_claims['jti']}") is not None
 
 
@@ -262,8 +262,7 @@ def test_validate_access_session_rejects_revoked_family_even_with_full_cache(mon
         scope="project",
         project_hash="prj-hash-1",
         project_name="Project One",
-        user_project_hash="",
-        session_token=pair.access_token,
+        access_token=pair.access_token,
         session_length=900,
         user_id="usr-db-1",
         project_id="prj-db-1",
@@ -324,8 +323,7 @@ def test_validate_access_session_rejects_archived_project_before_full_cache(monk
         scope="project",
         project_hash="prj-hash-archived",
         project_name="Archived Project",
-        user_project_hash="",
-        session_token=pair.access_token,
+        access_token=pair.access_token,
         session_length=900,
         user_id="usr-archived",
         project_id="prj-archived",
@@ -465,15 +463,16 @@ def test_validate_session_jti_cache_miss_does_not_rewrite_access_session_ttl(mon
 
     user_mock = MagicMock(id="404", user_hash="uhash_ttl", username="ttl_user", user_type="consumer", is_active=True)
 
-    with patch.object(db_enhanced_mod, "VALIDATE_CACHE_ENABLED", True), \
-         patch.object(db_enhanced_mod, "get_user_by_hash", return_value=user_mock), \
-         patch.object(db_enhanced_mod, "get_project_by_hash", return_value=project_mock), \
-         patch.object(db_enhanced_mod, "get_user_groups_in_project_by_hash", return_value=[mock_group]), \
-         patch("src.Util.db.db_global_roles.get_user_permissions", return_value=["read"]), \
-         patch.object(db_enhanced_mod, "get_user_accessible_projects", return_value=[]), \
-         patch.object(cache_manager, "get_session_full", wraps=cache_manager.get_session_full) as get_full_spy, \
-         patch.object(cache_manager, "set_session", wraps=cache_manager.set_session) as set_session_spy, \
-         patch.object(cache_manager, "set_session_full", wraps=cache_manager.set_session_full) as set_full_spy:
+    with (
+        patch.object(db_enhanced_mod, "get_user_by_hash", return_value=user_mock),
+        patch.object(db_enhanced_mod, "get_project_by_hash", return_value=project_mock),
+        patch.object(db_enhanced_mod, "get_user_groups_in_project_by_hash", return_value=[mock_group]),
+        patch("src.Util.db.db_global_roles.get_user_permissions", return_value=["read"]),
+        patch.object(db_enhanced_mod, "get_user_accessible_projects", return_value=[]),
+        patch.object(cache_manager, "get_session_full", wraps=cache_manager.get_session_full) as get_full_spy,
+        patch.object(cache_manager, "set_session", wraps=cache_manager.set_session) as set_session_spy,
+        patch.object(cache_manager, "set_session_full", wraps=cache_manager.set_session_full) as set_full_spy,
+    ):
         from src.Util.db.db_enhanced import validate_session
 
         result = validate_session(pair.access_token)

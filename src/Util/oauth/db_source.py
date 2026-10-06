@@ -1,4 +1,4 @@
-"""Database-backed connection source (``OAUTH_CONFIG_SOURCE=db``).
+"""Database-backed connection source.
 
 Resolution is an AND across four layers -- global kill switch (checked by the
 routes), provider catalog, connection, project binding -- plus the project itself.
@@ -15,25 +15,10 @@ import threading
 import time
 from typing import Any, Mapping
 
-from src.Util.auth_constants import OAUTH_INIT_MODE_LEGACY_REDEEM
-from src.Util.oauth.connections import (
-    LegacyRedeemConfig,
-    OAuthConnectionUnavailable,
-    ProjectBinding,
-    ResolvedConnection,
-    UNAVAILABLE_DISABLED,
-    UNAVAILABLE_NOT_CONFIGURED,
-)
+from src.Util.oauth.connections import OAuthConnectionUnavailable, ProjectBinding, ResolvedConnection, UNAVAILABLE_DISABLED, UNAVAILABLE_NOT_CONFIGURED
 from src.Util.oauth.provider import ConnectionConfig, ConnectionSecrets
 from src.Util.oauth.registry import get_adapter, is_registered, register_default_adapters
-from src.Util.oauth.secrets import (
-    KIND_CLIENT_SECRET,
-    KIND_LEGACY_REDEEM_TOKEN,
-    KIND_LEGACY_REDEEM_URL,
-    KIND_SIGNING_KEY,
-    OAuthSecretError,
-    decrypt_secret,
-)
+from src.Util.oauth.secrets import KIND_CLIENT_SECRET, KIND_SIGNING_KEY, OAuthSecretError, decrypt_secret
 from src.Util.oauth.settings import OAuthDeploymentSettings, load_oauth_settings
 
 
@@ -180,15 +165,13 @@ class DatabaseConnectionSource:
             ),
             default_user_group_hash=str(row.get("default_user_group_hash") or "") or None,
             existing_user_policy=str(row.get("existing_user_policy") or "deny"),
-            init_mode=str(row.get("init_mode") or "api"),
             delivery_mode=str(row.get("delivery_mode") or "bff"),
             redirect_uris=_list(row.get("redirect_uris")),
             return_origins=_list(row.get("return_origins")),
             state_ttl_seconds=int(ttl) if isinstance(ttl, int) and ttl > 0 else None,
-            trusts_caller_scope=False,
         )
         adapter = get_adapter(provider_type) if is_registered(provider_type) else None
-        return ResolvedConnection(config=config, binding=binding, adapter=adapter, source_name=self.name)  # type: ignore[arg-type]
+        return ResolvedConnection(config=config, binding=binding, adapter=adapter)  # type: ignore[arg-type]
 
     # -------------------------------------------------------------------- lookup
     def get_binding(self, *, project_hash: str | None, connection_key: str) -> ResolvedConnection:
@@ -207,16 +190,6 @@ class DatabaseConnectionSource:
         )
         return self._build(row)
 
-    def find_legacy_bindings(self, *, connection_key: str) -> list[ResolvedConnection]:
-        resolved: list[ResolvedConnection] = []
-        for row in self._oauth_db.list_legacy_bindings(connection_key=connection_key):
-            try:
-                resolved.append(self._build(row))
-            except OAuthConnectionUnavailable:
-                continue
-        if not resolved:
-            raise OAuthConnectionUnavailable(UNAVAILABLE_DISABLED, "no_legacy_binding")
-        return resolved
 
     def list_project_bindings(self, *, project_hash: str) -> list[ResolvedConnection]:
         resolved: list[ResolvedConnection] = []
@@ -262,26 +235,6 @@ class DatabaseConnectionSource:
         except OAuthSecretError as exc:
             raise OAuthConnectionUnavailable(UNAVAILABLE_NOT_CONFIGURED, "credentials_undecryptable") from exc
         return ConnectionSecrets(client_secret=client_secret, signing_key=signing_key)
-
-    def load_legacy_redeem(self, resolved: ResolvedConnection) -> LegacyRedeemConfig | None:
-        if resolved.binding.init_mode != OAUTH_INIT_MODE_LEGACY_REDEEM:
-            return None
-        binding_id = resolved.binding.binding_id
-        row = self._oauth_db.get_binding_legacy_redeem(binding_id=binding_id)
-        if not row or row.get("legacy_redeem_url_ciphertext") is None or row.get("legacy_redeem_token_ciphertext") is None:
-            return None
-        try:
-            url = decrypt_secret(
-                owner_id=binding_id, kind=KIND_LEGACY_REDEEM_URL,
-                ciphertext=row["legacy_redeem_url_ciphertext"], key_id=row.get("legacy_redeem_key_id"), settings=self._settings,
-            )
-            token = decrypt_secret(
-                owner_id=binding_id, kind=KIND_LEGACY_REDEEM_TOKEN,
-                ciphertext=row["legacy_redeem_token_ciphertext"], key_id=row.get("legacy_redeem_key_id"), settings=self._settings,
-            )
-        except OAuthSecretError:
-            return None
-        return LegacyRedeemConfig(url=url, token=token)
 
 
 __all__ = ["CACHE_TTL_SECONDS", "DatabaseConnectionSource", "evaluate_binding_row", "invalidate_connection_cache"]

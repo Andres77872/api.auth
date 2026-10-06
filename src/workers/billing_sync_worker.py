@@ -1117,7 +1117,7 @@ class BillingSyncWorker:
         }
 
     async def _run_retention_backend(self, *, windows: Mapping[str, int]) -> Mapping[str, Any]:
-        method = getattr(self.db, "run_billing_retention_purge", None) or getattr(self.db, "run_retention_purge", None)
+        method = getattr(self.db, "run_retention_purge", None)
         if callable(method):
             try:
                 result = await _maybe_await(

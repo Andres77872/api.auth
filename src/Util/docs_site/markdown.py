@@ -32,17 +32,6 @@ ALERTS = {
     "caution": ("Caution", "octagon-alert"),
 }
 # Legacy "> !marker text" callouts map onto the GitHub alert kinds.
-LEGACY_ALERTS = {
-    "note": "note",
-    "info": "note",
-    "tip": "tip",
-    "important": "important",
-    "warning": "warning",
-    "warn": "warning",
-    "danger": "caution",
-    "error": "caution",
-    "caution": "caution",
-}
 
 
 def slugify(text: str) -> str:
@@ -108,7 +97,6 @@ _QUOTE_RE = re.compile(r"^ {0,3}>[ ]?(.*)$")
 _LIST_RE = re.compile(r"^( *)([-*+]|\d{1,9}[.)])(?:([ \t]+)(.*))?$")
 _TABLE_DELIM_RE = re.compile(r"^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 _ALERT_RE = re.compile(r"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$", re.IGNORECASE)
-_LEGACY_ALERT_RE = re.compile(r"^!(\w+)\b[ \t]*(.*)$")
 _TASK_RE = re.compile(r"^\[([ xX])\][ \t]+")
 
 
@@ -308,14 +296,11 @@ class _Renderer:
         if first is not None:
             head = body[first].strip()
             alert = _ALERT_RE.match(head)
-            legacy = _LEGACY_ALERT_RE.match(head)
             if alert:
                 kind = alert.group(1).lower()
                 rest = alert.group(2)
                 body = body[:first] + ([rest] if rest else []) + body[first + 1:]
-            elif legacy and legacy.group(1).lower() in LEGACY_ALERTS:
-                kind = LEGACY_ALERTS[legacy.group(1).lower()]
-                body = body[:first] + [legacy.group(2)] + body[first + 1:]
+
 
         inner = self.render(body)
         if kind:

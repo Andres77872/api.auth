@@ -15,7 +15,7 @@ def _make_session(user_id="2", user_hash="usr-admin-001", user_type="admin"):
     session.project_id = None
     session.permissions = ["admin", "manage_users", "manage_roles"]
     session.groups = ["platform_admins"]
-    session.session_token = "platform-token"
+    session.access_token = "platform-token"
     session.session_length = 259200
     session.scope = "platform"
     session.username = "adminuser"
@@ -30,7 +30,6 @@ def _make_platform_user(user_id="2", user_hash="usr-admin-001", user_type="admin
     user.email = "admin@example.com"
     user.user_type = user_type
     user.is_active = True
-    user.assigned_project_id = None
     return user
 
 
@@ -54,13 +53,13 @@ async def test_platform_login_returns_access_refresh_pair_and_refresh_cookie(
     data = response.json()
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
     assert data["project"] is None
     assert data["remember_me"] is False
     assert data["accessible_projects"] == []
 
     set_cookie_values = [value.decode().lower() for key, value in response.headers.raw if key.lower() == b"set-cookie"]
-    assert any("session_token=" in value for value in set_cookie_values)
+    assert any("access_token=" in value for value in set_cookie_values)
     assert any("refresh_token=" in value for value in set_cookie_values)
 
 

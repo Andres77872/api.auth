@@ -510,12 +510,6 @@ def get_entitlement_by_user_hash(user_hash: str) -> dict[str, Any] | None:
     )
 
 
-def get_patreon_entitlement_by_user_hash(user_hash: str) -> dict[str, Any] | None:
-    """Backward-readable alias over `sp_patreon_get_entitlement_by_user_hash`."""
-
-    return get_entitlement_by_user_hash(user_hash)
-
-
 def get_patreon_link_by_provider_sub_hash(*, provider_sub_hash: bytes) -> dict[str, Any] | None:
     """Resolve an active Patreon external account by provider subject hash.
 
@@ -529,12 +523,6 @@ def get_patreon_link_by_provider_sub_hash(*, provider_sub_hash: bytes) -> dict[s
         ["patreon", provider_sub_hash],
         context="get_patreon_link_by_provider_sub_hash(provider=patreon)",
     )
-
-
-def resolve_patreon_link_by_provider_hash(*, provider_sub_hash: bytes) -> dict[str, Any] | None:
-    """Alias for webhook/sync callers resolving linked Patreon authority."""
-
-    return get_patreon_link_by_provider_sub_hash(provider_sub_hash=provider_sub_hash)
 
 
 def list_active_patreon_memberships(
@@ -665,12 +653,6 @@ def record_patreon_webhook_delivery(
     )
 
 
-def record_webhook_delivery(**kwargs: Any) -> dict[str, Any] | None:
-    """Alias over `sp_patreon_webhook_delivery_record` for route seams."""
-
-    return record_patreon_webhook_delivery(**kwargs)
-
-
 def mark_patreon_webhook_delivery(*, delivery_id: str, status: str) -> dict[str, Any] | None:
     """Call `sp_patreon_webhook_delivery_mark` with the delivery's final outcome."""
 
@@ -721,12 +703,6 @@ def enqueue_patreon_sync_job(
     )
 
 
-def enqueue_sync_job(**kwargs: Any) -> dict[str, Any] | None:
-    """Alias over `sp_patreon_sync_job_enqueue` for webhook/sync seams."""
-
-    return enqueue_patreon_sync_job(**kwargs)
-
-
 def claim_patreon_sync_jobs(*, worker_id: str, limit: int, lease_seconds: int) -> list[dict[str, Any]]:
     """Call `sp_patreon_sync_job_claim`."""
 
@@ -736,12 +712,6 @@ def claim_patreon_sync_jobs(*, worker_id: str, limit: int, lease_seconds: int) -
         context=f"claim_patreon_sync_jobs(worker_id={worker_id}, limit={limit})",
         commit=True,
     )
-
-
-def claim_sync_jobs(**kwargs: Any) -> list[dict[str, Any]]:
-    """Alias over `sp_patreon_sync_job_claim` for worker seams."""
-
-    return claim_patreon_sync_jobs(**kwargs)
 
 
 def complete_patreon_sync_job(
@@ -763,12 +733,6 @@ def complete_patreon_sync_job(
         context=f"complete_patreon_sync_job(job_id={job_id}, status={status})",
         commit=True,
     )
-
-
-def complete_sync_job(**kwargs: Any) -> dict[str, Any] | None:
-    """Alias over `sp_patreon_sync_job_complete` for worker seams."""
-
-    return complete_patreon_sync_job(**kwargs)
 
 
 # =============================================================================
@@ -911,12 +875,6 @@ def upsert_patreon_provider_token_state(
         context=f"upsert_patreon_provider_token_state(token_state_id={token_state_id}, status={status})",
         commit=True,
     )
-
-
-def upsert_provider_token_state(**kwargs: Any) -> dict[str, Any] | None:
-    """Alias for worker/client seams; never accepts raw token values."""
-
-    return upsert_patreon_provider_token_state(**kwargs)
 
 
 def get_patreon_provider_token_state() -> dict[str, Any] | None:
@@ -1087,12 +1045,6 @@ def quarantine_patreon_raw_payload(
     return {"persisted": bool(result), **safe_result}
 
 
-def capture_patreon_raw_payload_quarantine(**kwargs: Any) -> dict[str, Any]:
-    """Alias for worker/test seams; returns only safe status metadata."""
-
-    return quarantine_patreon_raw_payload(**kwargs)
-
-
 # =============================================================================
 # Retention purge
 # =============================================================================
@@ -1173,17 +1125,12 @@ def record_patreon_activity(
 __all__ = [
     "check_patreon_link_conflict",
     "claim_patreon_sync_jobs",
-    "claim_sync_jobs",
-    "capture_patreon_raw_payload_quarantine",
     "complete_patreon_sync_job",
-    "complete_sync_job",
     "consume_patreon_proof",
     "create_patreon_proof",
     "enqueue_patreon_sync_job",
-    "enqueue_sync_job",
     "get_entitlement_by_user_hash",
     "get_patreon_link_by_provider_sub_hash",
-    "get_patreon_entitlement_by_user_hash",
     "get_patreon_creator_token_health",
     "get_patreon_provider_token_state",
     "insert_patreon_raw_payload_quarantine",
@@ -1201,15 +1148,12 @@ __all__ = [
     "list_patreon_webhooks_admin",
     "observe_patreon_membership",
     "record_patreon_webhook_delivery",
-    "record_webhook_delivery",
     "record_patreon_activity",
     "record_patreon_creator_token_degraded",
     "relink_patreon_account",
-    "resolve_patreon_link_by_provider_hash",
     "quarantine_patreon_raw_payload",
     "run_patreon_retention_purge",
     "unlink_patreon_account",
     "upsert_patreon_entitlement_snapshot",
     "upsert_patreon_provider_token_state",
-    "upsert_provider_token_state",
 ]

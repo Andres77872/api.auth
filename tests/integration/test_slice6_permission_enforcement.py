@@ -15,7 +15,7 @@ from tests.integration.conftest import make_session_payload, create_test_session
 
 def _make_session(user_type="consumer", user_id="1", user_hash="usr-test-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
-                  session_token="test-token"):
+                  access_token="test-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -25,7 +25,7 @@ def _make_session(user_type="consumer", user_id="1", user_hash="usr-test-001",
     s.project_id = project_id
     s.permissions = permissions or []
     s.groups = []
-    s.session_token = session_token
+    s.access_token = access_token
     s.session_length = 259200
     s.username = "testuser"
     return s
@@ -40,7 +40,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-test-001",
     u.email = "test@example.com"
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     return u
 
 
@@ -85,18 +84,19 @@ async def test_consumer_cannot_list_users(client, fake_redis, patched_db_connect
                                            patched_activity_logger):
     """Consumer user gets 403 on GET /users/list."""
     token = "test-consumer-token"
-    session = _make_session(user_type="consumer", session_token=token)
+    session = _make_session(user_type="consumer", access_token=token)
     create_test_session(fake_redis, token, make_session_payload(
-        user_type="consumer", session_token=token))
+        user_type="consumer", access_token=token))
 
     # users.py uses HTTPBearerOrCookie → Seccurity.validate_session
     # and @log_and_handle_errors → decorators.validate_session
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=_make_user(user_type="consumer")), \
-         patch("src.routes.users.get_user_by_hash", return_value=_make_user(user_type="consumer")), \
-         patch("src.routes.users.is_root_user", return_value=False), \
-         patch("src.routes.users.get_user_type", return_value="consumer"):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=_make_user(user_type="consumer")),
+        patch("src.routes.users.get_user_by_hash", return_value=_make_user(user_type="consumer")),
+        patch("src.routes.users.is_root_user", return_value=False),
+        patch("src.routes.users.get_user_type", return_value="consumer"),
+    ):
         response = await client.get(
             "/users/list",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -112,16 +112,17 @@ async def test_consumer_cannot_create_project(client, fake_redis, patched_db_con
                                                patched_activity_logger):
     """Consumer user gets 403 on POST /projects."""
     token = "test-consumer-token2"
-    session = _make_session(user_type="consumer", session_token=token)
+    session = _make_session(user_type="consumer", access_token=token)
     create_test_session(fake_redis, token, make_session_payload(
-        user_type="consumer", session_token=token))
+        user_type="consumer", access_token=token))
 
     # projects.py directly imports validate_session from src.Util.db
     # Admin check is done via session_data.permissions, not is_admin_user
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=_make_user(user_type="consumer")):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=_make_user(user_type="consumer")),
+    ):
         response = await client.post(
             "/projects",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -140,17 +141,18 @@ async def test_admin_cannot_change_user_type(client, fake_redis, patched_db_conn
                                               patched_activity_logger):
     """Admin user gets 403 on PATCH /users/{hash}/type (root only)."""
     token = "test-admin-token"
-    session = _make_session(user_type="admin", session_token=token,
+    session = _make_session(user_type="admin", access_token=token,
                             permissions=["admin"])
     create_test_session(fake_redis, token, make_session_payload(
-        user_type="admin", session_token=token, permissions=["admin"]))
+        user_type="admin", access_token=token, permissions=["admin"]))
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=_make_user(user_type="admin")), \
-         patch("src.routes.users.get_user_by_hash", return_value=_make_user(user_type="admin")), \
-         patch("src.routes.users.is_root_user", return_value=False), \
-         patch("src.routes.users.get_user_type", return_value="admin"):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=_make_user(user_type="admin")),
+        patch("src.routes.users.get_user_by_hash", return_value=_make_user(user_type="admin")),
+        patch("src.routes.users.is_root_user", return_value=False),
+        patch("src.routes.users.get_user_type", return_value="admin"),
+    ):
         response = await client.patch(
             "/users/usr-test-001/type",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -170,26 +172,27 @@ async def test_root_can_list_users(client, fake_redis, patched_db_connection,
     """Root user can access GET /users/list."""
     token = "test-root-token"
     session = _make_session(user_type="root", user_id="0", user_hash="usr-root-001",
-                            project_hash=None, project_id=None, session_token=token)
+                            project_hash=None, project_id=None, access_token=token)
     create_test_session(fake_redis, token, make_session_payload(
         user_type="root", user_id="0", user_hash="usr-root-001",
-        project_hash=None, project_id=None, session_token=token))
+        project_hash=None, project_id=None, access_token=token))
 
     root_user = _make_user(user_type="root", user_id="0", user_hash="usr-root-001")
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=root_user), \
-         patch("src.routes.users.get_user_by_hash", return_value=root_user), \
-         patch("src.routes.users.is_root_user", return_value=True), \
-         patch("src.routes.users.get_user_type", return_value="root"), \
-         patch("src.routes.users.list_users_with_access", return_value=[]), \
-         patch("src.routes.users.count_users", return_value=0), \
-         patch("src.routes.users.get_user_accessible_projects", return_value=[]), \
-         patch("src.routes.users.get_user_type_info", return_value=MagicMock()), \
-         patch("src.routes.users.get_project_by_hash", return_value=None), \
-         patch("src.routes.users.get_user_effective_permissions", return_value=[]), \
-         patch("src.routes.users.get_user_groups_in_project_by_hash", return_value=[]):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=root_user),
+        patch("src.routes.users.get_user_by_hash", return_value=root_user),
+        patch("src.routes.users.is_root_user", return_value=True),
+        patch("src.routes.users.get_user_type", return_value="root"),
+        patch("src.routes.users.list_users_with_access", return_value=[]),
+        patch("src.routes.users.count_users", return_value=0),
+        patch("src.routes.users.get_user_accessible_projects", return_value=[]),
+        patch("src.routes.users.get_user_type_info", return_value=MagicMock()),
+        patch("src.routes.users.get_project_by_hash", return_value=None),
+        patch("src.routes.users.get_user_permissions", return_value=[]),
+        patch("src.routes.users.get_user_groups_in_project_by_hash", return_value=[]),
+    ):
         response = await client.get(
             "/users/list?page=1&per_page=10",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -206,21 +209,22 @@ async def test_root_can_change_user_type(client, fake_redis, patched_db_connecti
     """Root user can access PATCH /users/{hash}/type."""
     token = "test-root-token2"
     session = _make_session(user_type="root", user_id="0", user_hash="usr-root-001",
-                            project_hash=None, project_id=None, session_token=token)
+                            project_hash=None, project_id=None, access_token=token)
     create_test_session(fake_redis, token, make_session_payload(
         user_type="root", user_id="0", user_hash="usr-root-001",
-        project_hash=None, project_id=None, session_token=token))
+        project_hash=None, project_id=None, access_token=token))
 
     root_user = _make_user(user_type="root", user_id="0", user_hash="usr-root-001")
     target_user = _make_user(user_type="consumer", user_id="2", user_hash="usr-target-001")
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", side_effect=lambda h, **kw: root_user if h == "usr-root-001" else target_user), \
-         patch("src.routes.users.get_user_by_hash", side_effect=lambda h, **kw: root_user if h == "usr-root-001" else target_user), \
-         patch("src.routes.users.is_root_user", return_value=True), \
-         patch("src.routes.users.get_user_type", return_value="root"), \
-         patch("src.routes.users.update_user_type", return_value={"success": True}):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", side_effect=lambda h, **kw: root_user if h == "usr-root-001" else target_user),
+        patch("src.routes.users.get_user_by_hash", side_effect=lambda h, **kw: root_user if h == "usr-root-001" else target_user),
+        patch("src.routes.users.is_root_user", return_value=True),
+        patch("src.routes.users.get_user_type", return_value="root"),
+        patch("src.routes.users.update_user_type", return_value={"success": True}),
+    ):
         response = await client.patch(
             "/users/usr-target-001/type",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

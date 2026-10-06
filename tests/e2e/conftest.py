@@ -158,7 +158,7 @@ def fake_redis():
     session_mock.project_id = "1"
     session_mock.permissions = []
     session_mock.groups = []
-    session_mock.session_token = "e2e-token"
+    session_mock.access_token = "e2e-token"
     session_mock.session_length = 259200
     session_mock.username = "e2euser"
 
@@ -172,7 +172,6 @@ def fake_redis():
     with patch("src.Util.db_config.redis_client", fake), \
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.auth_lifecycle.redis_client", fake), \
-         patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake), \
          patch("src.Util.db.db_session_analytics.redis_client", fake), \
          patch("src.Util.system_metrics.redis_client", fake), \
@@ -273,7 +272,6 @@ def patched_cache_manager():
     mock.set_session_full = MagicMock(return_value=True)
     mock.delete_session = MagicMock()
     with patch("src.Util.cache_manager.cache_manager", mock), \
-         patch("src.Util.db.db_enhanced.cache_manager", mock), \
          patch("src.routes.system.cache_manager", mock):
         yield mock
 
@@ -313,9 +311,9 @@ def e2e_env(fake_redis, patched_cache_manager, patched_activity_logger,
 
 def make_e2e_session(user_type="consumer", user_id="1", user_hash="usr-e2e-001",
                      project_hash="prj-e2e-001", project_id="1", permissions=None,
-                     session_token=None):
-    if session_token is None:
-        session_token = f"e2e-token-{uuid.uuid4().hex[:16]}"
+                     access_token=None):
+    if access_token is None:
+        access_token = f"e2e-token-{uuid.uuid4().hex[:16]}"
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -325,7 +323,7 @@ def make_e2e_session(user_type="consumer", user_id="1", user_hash="usr-e2e-001",
     s.project_id = project_id
     s.permissions = permissions or []
     s.groups = []
-    s.session_token = session_token
+    s.access_token = access_token
     s.session_length = 259200
     s.username = "e2euser"
     return s
@@ -340,7 +338,6 @@ def make_e2e_user(user_type="consumer", user_id="1", user_hash="usr-e2e-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     return u
 
 
@@ -365,7 +362,7 @@ def create_e2e_session(fake_redis, token: str, user_type="consumer",
         "project_id": "1",
         "permissions": permissions or [],
         "groups": [],
-        "session_token": token,
+        "access_token": token,
         "session_length": 259200,
     }
     fake_redis.set(f"session:{token}", json.dumps(payload), ex=259200)

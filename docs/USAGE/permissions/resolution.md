@@ -113,7 +113,7 @@ API-key requests resolve the owner the same way (`verify_api_key` in
   session expiry and `plan`).
 - `POST /auth/validate-api-key` returns `permissions` for the key owner.
 - No endpoint returns a consumer's role-derived list directly. Reconstruct it from the role:
-  `GET /roles/users/me/role`, then `GET /roles/roles/{role_hash}/permission-groups`, then
+  `GET /roles/users/me/role`, then `GET /roles/{role_hash}/permission-groups`, then
   `GET /roles/permission-groups/{group_hash}/permissions`, or read the `from_role` section of
   `GET /permissions/users/me/permission-sources`.
 
@@ -203,10 +203,10 @@ Nothing in these suites is hard-deleted. What each change does to the two views:
 
 | Change | Auth-time set (consumers) | `/me/permissions`, `/check`, `/permissions` admin guard | `/me/permission-sources` |
 | --- | --- | --- | --- |
-| `DELETE /roles/roles/{role_hash}` | Role's permissions dropped | Role source dropped (`users.role_id` and links stay, ignored) | Role rows dropped |
+| `DELETE /roles/{role_hash}` | Role's permissions dropped | Role source dropped (`users.role_id` and links stay, ignored) | Role rows dropped |
 | `DELETE /roles/permission-groups/{group_hash}` | Dropped unless another linked group grants it (links stay, ignored) | Dropped unless another source grants it | Group rows dropped |
 | `DELETE /roles/permissions/{permission_hash}` | Dropped | Dropped | Unchanged (lists groups) |
-| `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | Dropped unless another linked group grants it | Dropped for the role source | Dropped |
+| `DELETE /roles/{role_hash}/permission-groups/{group_hash}` | Dropped unless another linked group grants it | Dropped for the role source | Dropped |
 | `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | Dropped | Dropped | Unchanged |
 | `DELETE /roles/users/{user_hash}/role` | Emptied | Role source dropped | Role rows dropped |
 | Remove a user-group or direct assignment | No effect (never counted) | Dropped | Dropped |
@@ -234,8 +234,7 @@ stay as history and grant nothing.
   `sp_get_user_scoped_roles` exist in `schemas/` but no Python code calls them. There is no active
   deny rule anywhere.
 - **`require_permission()`** in `src/middleware/authentication.py` is defined but no route uses it.
-- **Legacy models.** `Permission`, `PermissionGroup`, and `UserProjectPermissionGroup` in
-  `src/Util/Models.py` still carry `project_id`; the routes do not use them.
+
 
 ## Worked examples
 
@@ -249,7 +248,7 @@ has group `api_access` (→ `call_api`), and root gave him a direct assignment o
 | `GET /permissions/users/me/permissions` | `call_api`, `manage_roles`, `read_data` |
 | `GET /permissions/users/me/permissions/check/manage_roles` | `true` |
 | `POST /permissions/users/{user_hash}/permission-groups` as bob | Allowed for a group without reserved names (extended `manage_roles`); `403` for `reporting` |
-| `POST /roles/roles` as bob | `403` (role-only check finds no `manage_roles`) |
+| `POST /roles` as bob | `403` (role-only check finds no `manage_roles`) |
 | `/admin/project-groups` as bob | `403` (session permissions lack `admin` and `manage_roles`) |
 
 If an admin now links `api_access` to role `viewer`, bob's session gains `call_api` within 30

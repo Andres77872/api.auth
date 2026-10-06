@@ -72,7 +72,6 @@ BEGIN
     UPDATE projects SET is_active = 0, updated_at = NOW() WHERE id = p_project_id AND is_active = 1;
     UPDATE project_group_members SET is_active = 0, removed_at = NOW(), removed_by = p_deleted_by
     WHERE project_id = p_project_id AND is_active = 1;
-    UPDATE user_sessions SET is_active = 0 WHERE project_id = p_project_id AND is_active = 1;
     SELECT ROW_COUNT() as rows_affected;
 END$$
 
@@ -159,33 +158,6 @@ END$$
 -- PROJECT STATISTICS
 -- ===================================================================================
 
-DROP PROCEDURE IF EXISTS sp_get_project_stats$$
-CREATE PROCEDURE sp_get_project_stats(IN p_project_id VARCHAR(64))
-BEGIN
-    -- Total distinct users with access (via groups of groups)
-    SELECT COUNT(DISTINCT ugm.user_id) as total_users
-    FROM user_group_members ugm
-    JOIN user_group_project_groups ugpg ON ugm.user_group_id = ugpg.user_group_id AND ugpg.is_active = 1
-    JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
-    WHERE pgm.project_id = p_project_id AND ugm.is_active = 1;
-    
-    -- Active sessions
-    SELECT COUNT(*) as active_sessions
-    FROM user_sessions
-    WHERE project_id = p_project_id AND is_active = 1 AND expires_at > NOW();
-    
-    -- Project groups containing this project
-    SELECT COUNT(DISTINCT pgm.project_group_id) as project_group_count
-    FROM project_group_members pgm
-    WHERE pgm.project_id = p_project_id AND pgm.is_active = 1;
-    
-    -- User groups with access
-    SELECT COUNT(DISTINCT ugpg.user_group_id) as user_group_count
-    FROM user_group_project_groups ugpg
-    JOIN project_group_members pgm ON ugpg.project_group_id = pgm.project_group_id AND pgm.is_active = 1
-    WHERE pgm.project_id = p_project_id AND ugpg.is_active = 1;
-END$$
-
 DROP PROCEDURE IF EXISTS sp_get_project_statistics$$
 CREATE PROCEDURE sp_get_project_statistics(IN p_project_id VARCHAR(64))
 BEGIN
@@ -224,7 +196,7 @@ BEGIN
     -- Root users (always have access)
     SELECT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.is_active, u.created_at,
            NULL as granted_at, NULL as user_group, NULL as project_group, 'root_access' as access_type
-    FROM users u
+    FROM v_users u
     WHERE u.user_type = 'root' AND u.is_active = 1
     
     UNION
@@ -232,7 +204,7 @@ BEGIN
     -- Users via groups of groups
     SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.is_active, u.created_at,
            ugpg.granted_at, ug.group_name as user_group, pg.group_name as project_group, 'group_access' as access_type
-    FROM users u
+    FROM v_users u
     JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
     JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
     JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
@@ -260,7 +232,7 @@ BEGIN
                     u.created_at,
                     vupa.access_granted_at,
                     NULL AS granted_by
-    FROM users u
+    FROM v_users u
     INNER JOIN v_user_project_access vupa ON u.id = vupa.user_id
     WHERE u.is_active = 1
       AND vupa.project_id = p_project_id
@@ -269,7 +241,7 @@ BEGIN
     LIMIT p_limit OFFSET p_offset;
 
     SELECT COUNT(DISTINCT u.id) AS total_count
-    FROM users u
+    FROM v_users u
     INNER JOIN v_user_project_access vupa ON u.id = vupa.user_id
     WHERE u.is_active = 1
       AND vupa.project_id = p_project_id
@@ -294,6 +266,26 @@ BEGIN
     LIMIT 1;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_remove_admin_from_project$$
+CREATE PROCEDURE sp_remove_admin_from_project(
+    IN p_user_id VARCHAR(64),
+    IN p_project_id VARCHAR(64),
+    IN p_removed_by VARCHAR(64)
+)
+BEGIN
+    UPDATE user_group_members ugm
+    JOIN user_groups ug ON ug.id = ugm.user_group_id
+    JOIN user_group_project_groups ugpg ON ugpg.user_group_id = ug.id AND ugpg.is_active = TRUE
+    JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = TRUE
+    JOIN project_group_members pgm ON pgm.project_group_id = pg.id AND pgm.is_active = TRUE
+    SET ugm.is_active = FALSE, ugm.removed_at = NOW(), ugm.removed_by = p_removed_by
+    WHERE ugm.user_id = p_user_id
+      AND ugm.is_active = TRUE
+      AND pgm.project_id = p_project_id
+      AND ug.group_name = CONCAT('admin_', p_project_id);
+    SELECT ROW_COUNT() AS removed;
+END$$
+
 DROP PROCEDURE IF EXISTS sp_get_admin_assigned_projects$$
 CREATE PROCEDURE sp_get_admin_assigned_projects(IN p_user_id VARCHAR(64))
 BEGIN
@@ -304,7 +296,7 @@ BEGIN
     INNER JOIN user_group_project_groups ugpg ON pg.id = ugpg.project_group_id AND ugpg.is_active = 1
     INNER JOIN user_groups ug ON ug.id = ugpg.user_group_id AND ug.is_active = 1
     INNER JOIN user_group_members ugm ON ugpg.user_group_id = ugm.user_group_id AND ugm.is_active = 1
-    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    INNER JOIN v_users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
     WHERE ugm.user_id = p_user_id
       AND p.is_active = 1
       AND (p.archived = FALSE OR p.archived IS NULL)
@@ -317,7 +309,7 @@ CREATE PROCEDURE sp_check_admin_multi_project_access(IN p_user_id VARCHAR(64), I
 BEGIN
     SELECT COUNT(*) > 0 AS has_access
     FROM user_group_members ugm
-    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    INNER JOIN v_users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
     INNER JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = 1
     INNER JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
     INNER JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = 1
@@ -349,7 +341,7 @@ BEGIN
     INNER JOIN user_group_project_groups ugpg ON pg.id = ugpg.project_group_id AND ugpg.is_active = 1
     INNER JOIN user_groups ug ON ugpg.user_group_id = ug.id AND ug.is_active = 1
     INNER JOIN user_group_members ugm ON ug.id = ugm.user_group_id AND ugm.is_active = 1
-    INNER JOIN users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
+    INNER JOIN v_users u ON u.id = ugm.user_id AND u.is_active = 1 AND u.user_type = 'admin'
     WHERE ugm.user_id = p_user_id
       AND p.is_active = 1
       AND (p.archived = FALSE OR p.archived IS NULL)

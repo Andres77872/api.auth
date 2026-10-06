@@ -23,8 +23,7 @@ EXPORT_HARD_LIMIT = 10_000
 EXPORT_DEFAULT_LIMIT = 1_000
 
 # Valid export sources and formats
-# Note: "api_audit" is the spec-defined source name; "audit" is kept for backward compat.
-VALID_SOURCES = {"activity", "audit", "api_audit"}
+VALID_SOURCES = {"activity", "api_audit"}
 VALID_FORMATS = {"csv", "json"}
 
 
@@ -37,7 +36,7 @@ def validate_export_request(
     Validate export request parameters.
 
     Args:
-        source: Data source ("activity" or "audit")
+        source: Data source ("activity" or "api_audit")
         fmt: Output format ("csv" or "json")
         limit: Optional row limit
 
@@ -78,14 +77,14 @@ def _fetch_export_data(
     Fetch export data from the appropriate source.
 
     Args:
-        source: "activity" or "audit"
+        source: "activity" or "api_audit"
         filters: Filter parameters passed to the stored procedure
         limit: Maximum number of rows to fetch
 
     Returns:
         List of row dictionaries
     """
-    if source in ("audit", "api_audit"):
+    if source == "api_audit":
         from src.Util.db.db_audit_analytics import get_audit_logs
 
         return get_audit_logs(
@@ -127,7 +126,7 @@ def _check_export_count(
     Returns:
         Count of matching records
     """
-    if source in ("audit", "api_audit"):
+    if source == "api_audit":
         from src.Util.db.db_audit_analytics import count_audit_logs
 
         return count_audit_logs(
@@ -183,7 +182,7 @@ async def stream_csv_export(
     Yields CSV header row followed by data rows.
 
     Args:
-        source: "activity" or "audit"
+        source: "activity" or "api_audit"
         filters: Filter parameters
         limit: Maximum number of rows
 
@@ -201,7 +200,7 @@ async def stream_csv_export(
         return
 
     # Determine columns based on source
-    if source in ("audit", "api_audit"):
+    if source == "api_audit":
         columns = [
             "id", "request_id", "http_method", "endpoint_path", "route_pattern",
             "user_id", "user_type", "username", "user_hash",
@@ -245,7 +244,7 @@ async def stream_json_export(
     Yields JSON objects one at a time (JSON Lines format).
 
     Args:
-        source: "activity" or "audit"
+        source: "activity" or "api_audit"
         filters: Filter parameters
         limit: Maximum number of rows
 

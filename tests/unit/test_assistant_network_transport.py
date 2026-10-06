@@ -65,7 +65,7 @@ async def handshake(port, *, origin="http://dashboard.test"):
         f"GET /admin/assistant/ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
         "Upgrade: websocket\r\nConnection: Upgrade\r\n"
         f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
-        f"Origin: {origin}\r\nCookie: session_token=network-root\r\n\r\n"
+        f"Origin: {origin}\r\nCookie: access_token=network-root\r\n\r\n"
     ).encode())
     await writer.drain()
     response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=3)

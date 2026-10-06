@@ -288,7 +288,7 @@ DROP PROCEDURE IF EXISTS sp_global_get_user_role$$
 CREATE PROCEDURE sp_global_get_user_role(IN p_user_id VARCHAR(64))
 BEGIN
     SELECT r.* FROM roles r
-    JOIN users u ON r.id = u.role_id
+    JOIN v_users u ON r.id = u.role_id
     WHERE u.id = p_user_id AND u.is_active = TRUE AND r.is_active = TRUE;
 END$$
 
@@ -313,7 +313,7 @@ DROP PROCEDURE IF EXISTS sp_global_get_user_permissions$$
 CREATE PROCEDURE sp_global_get_user_permissions(IN p_user_id VARCHAR(64))
 BEGIN
     SELECT DISTINCT gp.permission_name, gp.permission_display_name, gp.permission_category
-    FROM users u
+    FROM v_users u
     JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
     JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
     JOIN global_permission_groups gpg ON rpg.permission_group_id = gpg.id AND gpg.is_active = TRUE
@@ -327,7 +327,7 @@ DROP PROCEDURE IF EXISTS sp_global_check_user_has_permission$$
 CREATE PROCEDURE sp_global_check_user_has_permission(IN p_user_id VARCHAR(64), IN p_permission_name VARCHAR(100))
 BEGIN
     SELECT EXISTS(
-        SELECT 1 FROM users u
+        SELECT 1 FROM v_users u
         JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
         JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
         JOIN global_permission_groups gpg ON rpg.permission_group_id = gpg.id AND gpg.is_active = TRUE
@@ -378,7 +378,7 @@ BEGIN
         u.username as added_by_username
     FROM role_project_catalog rpc
     JOIN roles r ON rpc.role_id = r.id AND r.is_active = TRUE
-    LEFT JOIN users u ON rpc.added_by = u.id
+    LEFT JOIN v_users u ON rpc.added_by = u.id
     WHERE rpc.project_id = p_project_id AND rpc.is_active = TRUE
     ORDER BY r.role_priority DESC, r.role_name ASC;
 END$$

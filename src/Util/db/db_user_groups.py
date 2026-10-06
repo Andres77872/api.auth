@@ -509,7 +509,6 @@ def get_users_in_group(user_group_id: str) -> List[User]:
                     email=row[3],
                     password_hash="",  # Not returned by stored procedure for security
                     user_type=row[4],
-                    assigned_project_id=None,
                     created_at=row[6],
                     updated_at=row[7],
                     last_login=None,

@@ -15,8 +15,6 @@ from src.Util.JWT_Security import (
     JWTTokenHandler,
     JWT_SECRET_KEY,
     JWT_ALGORITHM,
-    jwt_encode,
-    jwt_decode,
 )
 
 
@@ -346,20 +344,3 @@ class TestValidateTokenStructure:
 
 
 # ─── jwt_encode / jwt_decode compat ─────────────────────────────────────────
-
-class TestJwtCompatFunctions:
-    def test_jwt_encode_returns_tuple(self):
-        token, error = jwt_encode(1, "usr-abc", "proj-xyz")
-        assert isinstance(token, str)
-        assert error is None
-
-    def test_jwt_decode_valid_token(self):
-        token, _ = jwt_encode(42, "usr-abc", "proj-xyz")
-        session_ids, error = jwt_decode(token)
-        assert session_ids == [42]
-        assert error is None
-
-    def test_jwt_decode_invalid_token(self):
-        session_ids, error = jwt_decode("invalid_token")
-        assert session_ids == [0]
-        assert error is None

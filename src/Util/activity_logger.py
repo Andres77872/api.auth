@@ -86,17 +86,6 @@ class ActivityType(Enum):
     EMAIL_MESSAGE_COMPLAINED = "email_message_complained"
     EMAIL_MESSAGE_DEAD_LETTERED = "email_message_dead_lettered"
     EMAIL_SUPPRESSION_UPDATED = "email_suppression_updated"
-    GOOGLE_OAUTH_STARTED = "google_oauth_started"
-    GOOGLE_OAUTH_PROVIDER_INIT_REJECTED = "google_oauth_provider_init_rejected"
-    GOOGLE_OAUTH_CALLBACK_RECEIVED = "google_oauth_callback_received"
-    GOOGLE_OAUTH_STATE_REJECTED = "google_oauth_state_rejected"
-    GOOGLE_OAUTH_NONCE_REJECTED = "google_oauth_nonce_rejected"
-    GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED = "google_oauth_token_exchange_failed"
-    GOOGLE_OAUTH_ID_TOKEN_REJECTED = "google_oauth_id_token_rejected"
-    GOOGLE_OAUTH_LOGIN_SUCCEEDED = "google_oauth_login_succeeded"
-    GOOGLE_OAUTH_LOGIN_DENIED = "google_oauth_login_denied"
-    GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED = "google_oauth_external_account_linked"
-    GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED = "google_oauth_external_account_unlinked"
     PATREON_LINK_PROOF_REQUESTED = "patreon_link_proof_requested"
     PATREON_LINK_PROOF_CONSUMED = "patreon_link_proof_consumed"
     PATREON_LINKED = "patreon_linked"
@@ -176,19 +165,6 @@ PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE = {
     "act-cat-063": ActivityType.PASSWORD_CHANGED.value,
 }
 
-GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE = {
-    "act-cat-064": ActivityType.GOOGLE_OAUTH_STARTED.value,
-    "act-cat-065": ActivityType.GOOGLE_OAUTH_PROVIDER_INIT_REJECTED.value,
-    "act-cat-066": ActivityType.GOOGLE_OAUTH_CALLBACK_RECEIVED.value,
-    "act-cat-067": ActivityType.GOOGLE_OAUTH_STATE_REJECTED.value,
-    "act-cat-068": ActivityType.GOOGLE_OAUTH_NONCE_REJECTED.value,
-    "act-cat-069": ActivityType.GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED.value,
-    "act-cat-070": ActivityType.GOOGLE_OAUTH_ID_TOKEN_REJECTED.value,
-    "act-cat-071": ActivityType.GOOGLE_OAUTH_LOGIN_SUCCEEDED.value,
-    "act-cat-072": ActivityType.GOOGLE_OAUTH_LOGIN_DENIED.value,
-    "act-cat-073": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED.value,
-    "act-cat-074": ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED.value,
-}
 
 OAUTH_ACTIVITY_CATALOG_RANGE = {
     "act-cat-107": ActivityType.OAUTH_STARTED.value,
@@ -505,39 +481,6 @@ def assert_password_recovery_activity_catalog_alignment(catalog_codes: Optional[
             )
 
 
-def assert_google_oauth_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
-    """Fail loudly if Google OAuth ActivityType values drift from act-cat-064..074."""
-
-    enum_values = {item.value for item in ActivityType}
-    expected_values = set(GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE.values())
-    missing_enum_values = expected_values - enum_values
-    if missing_enum_values:
-        raise RuntimeError(f"Missing Google OAuth ActivityType values: {sorted(missing_enum_values)}")
-
-    reserved_numbers = {
-        int(catalog_id.rsplit("-", 1)[1])
-        for catalog_id in GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE
-    }
-    if reserved_numbers != set(range(64, 75)):
-        raise RuntimeError(
-            "Google OAuth activity catalog drift: "
-            f"reserved_range={sorted(reserved_numbers)} expected={list(range(64, 75))}"
-        )
-
-    if catalog_codes is not None:
-        missing_catalog_ids = set(GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE) - set(catalog_codes)
-        mismatched_values = {
-            catalog_id: expected
-            for catalog_id, expected in GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE.items()
-            if catalog_codes.get(catalog_id) != expected
-        }
-        if missing_catalog_ids or mismatched_values:
-            raise RuntimeError(
-                "Google OAuth activity catalog drift: "
-                f"missing={sorted(missing_catalog_ids)} mismatched={mismatched_values}"
-            )
-
-
 def assert_patreon_activity_catalog_alignment(catalog_codes: Optional[Dict[str, str]] = None) -> None:
     """Fail loudly if Patreon ActivityType values drift from act-cat-075..090."""
 
@@ -607,7 +550,6 @@ def assert_billing_activity_catalog_alignment(catalog_codes: Optional[Dict[str, 
     occupied_ranges = {
         "email": {int(catalog_id.rsplit("-", 1)[1]) for catalog_id in EMAIL_ACTIVITY_CATALOG_RANGE},
         "password": {int(catalog_id.rsplit("-", 1)[1]) for catalog_id in PASSWORD_RECOVERY_ACTIVITY_CATALOG_RANGE},
-        "google": {int(catalog_id.rsplit("-", 1)[1]) for catalog_id in GOOGLE_OAUTH_ACTIVITY_CATALOG_RANGE},
         "patreon": {int(catalog_id.rsplit("-", 1)[1]) for catalog_id in PATREON_ACTIVITY_CATALOG_RANGE},
     }
     overlaps = {

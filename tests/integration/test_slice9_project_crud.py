@@ -29,7 +29,7 @@ def project_admin_directory():
 
 def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
-                  session_token="test-token"):
+                  access_token="test-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -39,7 +39,7 @@ def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
     s.project_id = project_id
     s.permissions = permissions or ["admin"]
     s.groups = []
-    s.session_token = session_token
+    s.access_token = access_token
     s.session_length = 259200
     s.username = "adminuser"
     return s
@@ -77,20 +77,21 @@ async def test_admin_list_projects_returns_200(client, fake_redis, patched_db_co
                                                 patched_activity_logger):
     """Admin can GET /projects and sees all projects."""
     token = "test-admin-projects-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.list_all_projects", return_value=[project]), \
-         patch("src.routes.projects.get_user_groups_for_user", return_value=[]), \
-         patch("src.routes.projects.get_permission_groups_for_project", return_value=[]), \
-         patch("src.routes.projects.get_project_stats", return_value={}):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.list_all_projects", return_value=[project]),
+        patch("src.routes.projects.get_user_groups_for_user", return_value=[]),
+        patch("src.routes.projects.get_project_groups_for_project", return_value=[]),
+        patch("src.routes.projects.get_project_stats", return_value={}),
+    ):
         response = await client.get(
             "/projects",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -109,17 +110,18 @@ async def test_admin_create_project_returns_200(client, fake_redis, patched_db_c
     """Root can POST /projects to create a new project (creation is root-only)."""
     project_admin_directory["1"] = "root"
     token = "test-admin-create-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     new_project = _make_project(project_hash="prj-new-001", project_name="New Project")
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.create_project", return_value=new_project):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.create_project", return_value=new_project),
+    ):
         response = await client.post(
             "/projects",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -138,20 +140,21 @@ async def test_get_project_details_returns_200(client, fake_redis, patched_db_co
                                                 patched_activity_logger):
     """GET /projects/{hash} returns project details."""
     token = "test-project-details-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project), \
-         patch("src.routes.projects.get_project_stats", return_value={}), \
-         patch("src.routes.projects.get_user_groups_for_user", return_value=[]), \
-         patch("src.routes.projects.get_permission_groups_for_project", return_value=[]):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+        patch("src.routes.projects.get_project_stats", return_value={}),
+        patch("src.routes.projects.get_user_groups_for_user", return_value=[]),
+        patch("src.routes.projects.get_project_groups_for_project", return_value=[]),
+    ):
         response = await client.get(
             "/projects/prj-test-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -169,8 +172,8 @@ async def test_admin_update_project_returns_200(client, fake_redis, patched_db_c
                                                  patched_activity_logger):
     """Admin can PUT /projects/{hash} to update."""
     token = "test-admin-update-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
@@ -183,12 +186,13 @@ async def test_admin_update_project_returns_200(client, fake_redis, patched_db_c
     updated_project.owner_id = "1"
     updated_project.is_active = True
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project), \
-         patch("src.routes.projects.update_project", return_value=updated_project):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+        patch("src.routes.projects.update_project", return_value=updated_project),
+    ):
         response = await client.put(
             "/projects/prj-test-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -207,18 +211,19 @@ async def test_admin_delete_project_returns_200(client, fake_redis, patched_db_c
                                                  patched_activity_logger):
     """Admin can DELETE /projects/{hash}."""
     token = "test-admin-delete-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project), \
-         patch("src.routes.projects.delete_project", return_value={"success": True}):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+        patch("src.routes.projects.delete_project", return_value={"success": True}),
+    ):
         response = await client.delete(
             "/projects/prj-test-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -236,16 +241,17 @@ async def test_project_not_found_returns_404(client, fake_redis, patched_db_conn
                                               patched_activity_logger):
     """GET /projects/{hash} with non-existent hash returns 404."""
     token = "test-project-404-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=None):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=None),
+    ):
         response = await client.get(
             "/projects/prj-nonexistent",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -261,8 +267,8 @@ async def test_stub_owner_endpoint_returns_501(client, fake_redis, patched_db_co
                                                 patched_activity_logger):
     """PATCH /projects/{hash}/owner returns 501 Not Implemented."""
     token = "test-admin-owner-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
@@ -273,11 +279,12 @@ async def test_stub_owner_endpoint_returns_501(client, fake_redis, patched_db_co
             return admin_user
         return new_owner
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", side_effect=mock_get_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", side_effect=mock_get_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+    ):
         response = await client.patch(
             "/projects/prj-test-001/owner",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -296,17 +303,18 @@ async def test_stub_archive_endpoint_returns_501(client, fake_redis, patched_db_
                                                   patched_activity_logger):
     """PATCH /projects/{hash}/archive returns 501 Not Implemented."""
     token = "test-admin-archive-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+    ):
         response = await client.patch(
             "/projects/prj-test-001/archive",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -325,8 +333,8 @@ async def test_get_project_activity_pagination_is_honest(client, fake_redis, pat
                                                           patched_activity_logger):
     """GET /projects/{hash}/activity returns correct pagination.total and has_more."""
     token = "test-activity-pagination-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
@@ -334,13 +342,14 @@ async def test_get_project_activity_pagination_is_honest(client, fake_redis, pat
     # Simulate 5 activities returned on this page, but 23 total exist
     mock_activities = [{"id": str(i), "activity_type": "login", "details": {}} for i in range(5)]
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project), \
-         patch("src.routes.projects.get_recent_activity", return_value=mock_activities), \
-         patch("src.routes.projects.count_activity_logs", return_value=23):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+        patch("src.routes.projects.get_recent_activity", return_value=mock_activities),
+        patch("src.routes.projects.count_activity_logs", return_value=23),
+    ):
         response = await client.get(
             "/projects/prj-test-001/activity?limit=5&offset=0",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -361,8 +370,8 @@ async def test_get_project_activity_pagination_no_more_pages(client, fake_redis,
                                                               patched_activity_logger):
     """GET /projects/{hash}/activity has_more=false when on last page."""
     token = "test-activity-last-page-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     project = _make_project()
@@ -370,13 +379,14 @@ async def test_get_project_activity_pagination_no_more_pages(client, fake_redis,
     # 3 activities on page, total is also 3 — no more pages
     mock_activities = [{"id": str(i), "activity_type": "login", "details": {}} for i in range(3)]
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=project), \
-         patch("src.routes.projects.get_recent_activity", return_value=mock_activities), \
-         patch("src.routes.projects.count_activity_logs", return_value=3):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=project),
+        patch("src.routes.projects.get_recent_activity", return_value=mock_activities),
+        patch("src.routes.projects.count_activity_logs", return_value=3),
+    ):
         response = await client.get(
             "/projects/prj-test-001/activity?limit=10&offset=0",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

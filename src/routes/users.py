@@ -43,7 +43,7 @@ from src.Util.Models import (
     ListUsersResponse, GetUserDetailsResponse, UpdateUserStatusResponse,
     ChangeUserTypeResponse, UserInfo, ProfileProjectInfo, PaginationInfo, UpdateUserResponse
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors, log_operation_details
 from src.Util.log_context_models import LogContext, OperationMetadata
 from src.Util.activity_logger import ActivityType
@@ -58,7 +58,7 @@ from src.Util.db import (
     get_user_by_hash, update_user, set_user_active_status,
     get_user_accessible_projects, get_user_groups_for_user,
     list_users_with_access, count_users,
-    is_root_user, get_user_groups_in_project_by_hash, get_user_effective_permissions,
+    is_root_user, get_user_groups_in_project_by_hash, get_user_permissions,
     get_user_group_membership, get_user_type_info,
     get_user_type, get_project_by_hash, get_projects_for_user_group,
     update_user_type, get_project_by_id
@@ -340,7 +340,7 @@ async def get_user_profile(
     """Return the caller's own profile.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Responses:** `200` with account fields, `user_type_info`, group
     memberships, and accessible projects with the caller's effective
@@ -380,7 +380,7 @@ async def get_user_profile(
     projects = []
     for project in user_projects:
         # Get effective permissions for this user in this project
-        effective_permissions = get_user_effective_permissions(user_data.id, project.id)
+        effective_permissions = get_user_permissions(user_data.id)
         permission_names = effective_permissions if effective_permissions else []
         
         projects.append(ProfileProjectInfo(
@@ -415,38 +415,19 @@ async def get_user_profile(
 async def update_user_profile(
         request: Request,
         username: Optional[str] = Form(None, description="New username (must be unique)."),
-        email: Optional[str] = Form(
-            None,
-            description="New value for the account's legacy `email` field (not verified; not a login identifier).",
-        ),
-        password: Optional[str] = Form(
-            None,
-            description="Not supported: any value is rejected with `400`; use `POST /auth/password/change`.",
-        ),
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> UpdateProfileResponse:
-    """
-    Update the caller's own `username` and/or legacy `email` field.
+    """Update username with an access JWT in Bearer or the access_token cookie.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
-
-    **Request:** form fields (`application/x-www-form-urlencoded` or
-    `multipart/form-data`); send at least one of `username`, `email`. `email`
-    overwrites the account's compatibility `email` field directly: it is not
-    verified, is not used for sign-in, and does not touch the addresses managed
-    under `/users/me/emails`. Your current and other sessions stay valid.
-
-    **Responses:**
-    - `200` — the updated user.
-    - `400` — no field provided, or a password field was submitted
-      (`password`, `current_password`, `new_password`, `password_confirmation`,
-      `password_hash`); password changes must use `POST /auth/password/change`.
-    - `409` — username already taken (`CONF_5004`).
+    Email changes use /users/me/emails; password changes use /auth/password/change.
+    Username changes preserve sessions. User-type changes revoke authentication state.
+    Returns the updated account, 400 for invalid input, and 409 for a username conflict.
     """
     payload = await read_request_payload(request)
-    password_field = _submitted_profile_password_field(payload, password)
+    if "email" in payload:
+        raise ValidationError("Use /users/me/emails to manage email identities", ErrorCode.INVALID_INPUT)
+    password_field = _submitted_profile_password_field(payload, None)
     if password_field is not None:
         raise create_profile_password_rejection_error(password_field)
 
@@ -460,15 +441,12 @@ async def update_user_profile(
     # Track changes
     changes = {}
     if username: changes['username'] = username
-    if email: changes['email'] = email
 
     # Update user
     updated_user = handle_db_operation(
         lambda: update_user(
             current_user.id,
-            username=username,
-            email=email,
-            password=None
+            username=username
         ),
         error_context="user profile update"
     )
@@ -525,7 +503,7 @@ async def get_user_access_summary(
     Summarize the caller's group memberships, accessible projects, and effective permissions.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Responses:** `200` with `access_summary`: `user`, `user_groups` (with
     per-group `projects_count`), `accessible_projects` (access groups and
@@ -571,7 +549,7 @@ async def get_user_access_summary(
     project_list = []
     for proj in accessible_projects:
         # Get user's effective permissions for this project
-        effective_permissions = get_user_effective_permissions(user_data.id, proj.id)
+        effective_permissions = get_user_permissions(user_data.id)
         permission_names = effective_permissions if effective_permissions else []
         
         # Get user's group memberships for this project
@@ -651,7 +629,7 @@ async def list_all_users(
     List users with filtering, sorting, and pagination.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`. Root
+    `access_token` cookie) of a root or admin user; consumers get `403`. Root
     sees all users; admins see themselves plus users who share at least one
     accessible project with them.
 
@@ -738,7 +716,7 @@ async def list_all_users(
                 # Get project_id from project_hash for permission check
                 project_data = get_project_by_hash(proj["project_hash"])
                 if project_data:
-                    effective_permissions = get_user_effective_permissions(user_id, project_data.id)
+                    effective_permissions = get_user_permissions(user_id)
                     proj["permissions"] = effective_permissions if effective_permissions else []
                 else:
                     proj["permissions"] = []
@@ -795,7 +773,7 @@ async def list_current_user_emails(
     """List the caller's email addresses and their lifecycle state.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Responses:** `200` with `emails`; each row has `id`, the full `email`,
     `email_masked`, `status` (`pending`, `activated`, or `suppressed`),
@@ -838,7 +816,7 @@ async def add_current_user_email(
     """Add an email address to the caller's account and email it an activation link.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Request:** `email` in a JSON body or as a form field
     (`application/x-www-form-urlencoded` or `multipart/form-data`). Optional
@@ -950,7 +928,7 @@ async def resend_current_user_email_activation(
     """Resend the activation link for one of the caller's pending email addresses.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Request:** no body. Optional `Idempotency-Key` header.
 
@@ -1041,7 +1019,7 @@ async def remove_current_user_email(
     """Remove one of the caller's email addresses.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Request:** no body.
 
@@ -1083,7 +1061,7 @@ async def set_current_user_primary_email(
     """Make one of the caller's activated email addresses the primary address.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie); any user type.
+    `access_token` cookie); any user type.
 
     **Request:** no body.
 
@@ -1123,7 +1101,7 @@ async def admin_list_user_emails(
     """List a user's email addresses for administration, with addresses masked.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; others get `403`. Admins
+    `access_token` cookie) of a root or admin user; others get `403`. Admins
     may only view themselves and users who reach one of the projects they are
     assigned to administer; other users return `403`.
 
@@ -1167,7 +1145,7 @@ async def admin_resend_user_email_activation(
     """Resend the activation link for a user's pending email address, as an administrator.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; others get `403`. Admins
+    `access_token` cookie) of a root or admin user; others get `403`. Admins
     may only act on themselves and users who reach one of the projects they are
     assigned to administer; other users return `403`.
 
@@ -1256,7 +1234,7 @@ async def get_user_details(
     Get a user's account fields, type info, group memberships, and accessible projects.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie). Any user may read their own record. Root may read
+    `access_token` cookie). Any user may read their own record. Root may read
     any user; admins may read non-root users who share at least one accessible
     project with them; everyone else gets `403`.
 
@@ -1339,7 +1317,7 @@ async def get_user_details(
         # Get effective permissions for this project
         if include_permission_details:
             # Get user's effective permissions for this project
-            effective_permissions = get_user_effective_permissions(target_user.id, proj.id)
+            effective_permissions = get_user_permissions(target_user.id)
             permission_names = effective_permissions if effective_permissions else []
             project_data["effective_permissions"] = permission_names
             
@@ -1393,7 +1371,7 @@ async def update_user_status(
     Activate or deactivate a user account.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`.
+    `access_token` cookie) of a root or admin user; consumers get `403`.
     Admins may only change non-root users who share at least one accessible
     project with them.
 
@@ -1515,7 +1493,7 @@ async def reset_user_password(
     Queue a password-reset link to a user's activated email address.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`.
+    `access_token` cookie) of a root or admin user; consumers get `403`.
     Admins may only reset themselves and users who reach one of the projects
     they are assigned to administer.
 
@@ -1660,7 +1638,7 @@ async def delete_user_endpoint(
     Soft-delete a user: deactivate the account and its group memberships.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`.
+    `access_token` cookie) of a root or admin user; consumers get `403`.
     Root may delete any other user. Admins may delete non-root users who share
     at least one accessible project with them.
 
@@ -1779,7 +1757,7 @@ async def hard_delete_user_endpoint(
     Permanently delete a user account and everything it owns (irreversible).
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; others get `403`.
+    `access_token` cookie) of a root user; others get `403`.
 
     **Request:** no body. Unlike `DELETE /users/{user_hash}`, the user row is
     removed; owned and identity data go with it through foreign-key cascades,
@@ -1908,7 +1886,7 @@ async def search_users_endpoint(
     Search users by username or email.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`. Root
+    `access_token` cookie) of a root or admin user; consumers get `403`. Root
     searches every user. Admins only get themselves and users who reach one of
     the projects they are assigned to administer; that filter runs after the
     `limit` is applied, so an admin can receive fewer than `limit` results.
@@ -1997,7 +1975,7 @@ async def change_user_type_endpoint(
     Change a user's type (promote or demote).
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; others get `403` (`AUTHZ_2002`).
+    `access_token` cookie) of a root user; others get `403` (`AUTHZ_2002`).
 
     **Request:** form field `user_type` (`application/x-www-form-urlencoded` or
     `multipart/form-data`). No project is assigned when promoting to `admin`;
@@ -2096,11 +2074,8 @@ async def change_user_type_endpoint(
 )
 async def update_user_details_endpoint(
         user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
+        request: Request,
         username: Optional[str] = Form(None, description="New username (must be unique)."),
-        email: Optional[str] = Form(
-            None,
-            description="New value for the legacy `email` field (not verified; not a login identifier).",
-        ),
         user_type: Optional[str] = Form(
             None,
             description="New user type (`root`, `admin`, `consumer`); root callers only.",
@@ -2108,32 +2083,15 @@ async def update_user_details_endpoint(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> UpdateUserResponse:
+    """Update username and user type (root only) with an access JWT in Bearer or the access_token cookie.
+
+    Email changes use /users/me/emails; password changes use /auth/password/change.
+    Username changes preserve sessions. User-type changes revoke authentication state.
+    Returns the updated account, 400 for invalid input, and 409 for a username conflict.
     """
-    Update another user's username, legacy `email` field, or user type.
+    if "email" in await read_request_payload(request):
+        raise ValidationError("Use /users/me/emails to manage email identities", ErrorCode.INVALID_INPUT)
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`.
-    Root may update any user, including `user_type`. Admins may update non-root
-    users who share at least one accessible project with them, but not
-    `user_type`.
-
-    **Request:** form fields (`application/x-www-form-urlencoded` or
-    `multipart/form-data`); send at least one field. `email` only overwrites
-    the compatibility `email` field; verified addresses live under the
-    `/users/me/emails` lifecycle.
-
-    **Effects:** the user's sessions stay valid after a `username`/`email`
-    change. When `user_type` changes, the user's access sessions and refresh
-    families are revoked and they must sign in again.
-
-    **Responses:**
-    - `200` — the updated user.
-    - `400` — no field provided, or invalid `user_type` (`VAL_3012`).
-    - `403` — not root/admin, admin sending `user_type` (`AUTHZ_2002`), or
-      an admin targeting a root user or a user outside the admin's projects.
-    - `404` — unknown or inactive `user_hash`.
-    - `409` — username already taken (`CONF_5004`).
-    """
     # Get current user
     current_user = handle_db_operation(
         lambda: get_user_by_hash(log_context.user_hash),
@@ -2179,19 +2137,17 @@ async def update_user_details_endpoint(
         _require_target_in_admin_projects(current_user, target_user)
     
     # Check if at least one field is provided
-    if not any([username, email, user_type]):
+    if not any([username, user_type]):
         raise ValidationError(
             message="At least one field must be provided to update",
             error_code=ErrorCode.INVALID_INPUT,
-            details={"required_fields": ["username", "email", "user_type"]}
+            details={"required_fields": ["username", "user_type"]}
         )
     
     # Track changes
     changes = {}
     if username:
         changes['username'] = username
-    if email:
-        changes['email'] = email
     if user_type:
         changes['user_type'] = user_type
     
@@ -2200,7 +2156,6 @@ async def update_user_details_endpoint(
         lambda: update_user(
             target_user.id,
             username=username,
-            email=email,
             user_type=user_type
         ),
         error_context="user update"

@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, APIKeyHeader
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.db import is_root_user, is_admin_user
 from src.Util.db.db_enhanced import validate_session
 from src.Util.db.db_api_keys import validate_api_key_lookup
@@ -28,7 +28,7 @@ from src.Util.error_handler import ErrorCode, DatabaseError, InternalError
 
 logger = logging.getLogger(__name__)
 
-# Access token security: Bearer first, then session_token cookie.
+# Access token security: Bearer first, then access_token cookie.
 security = HTTPBearerOrCookie()
 
 # API Key header extractor (auto_error=False so missing header is handled gracefully)
@@ -49,15 +49,15 @@ async def verify_session(credentials: HTTPAuthorizationCredentials = Depends(sec
         HTTPException: If session is invalid
     """
     try:
-        session_token = credentials.credentials
-        if not isinstance(session_token, str) or session_token.count(".") != 2:
+        access_token = credentials.credentials
+        if not isinstance(access_token, str) or access_token.count(".") != 2:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid access token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        session_data = validate_session(session_token)
+        session_data = validate_session(access_token)
 
         if not session_data:
             raise HTTPException(
@@ -74,7 +74,7 @@ async def verify_session(credentials: HTTPAuthorizationCredentials = Depends(sec
             "project_hash": session_data.project_hash,
             "permissions": session_data.permissions,
             "groups": session_data.groups,
-            "session_token": session_token,
+            "access_token": access_token,
             "scope": session_data.scope,
             "username": getattr(session_data, "username", None),
         }
@@ -447,7 +447,7 @@ async def verify_project_access(
             # Check if user has access to this project through user-project relationships
             from src.Util.db import get_user_project_access
             user_project = get_user_project_access(user_id, project_id)
-            if user_project and user_project.is_active:
+            if user_project:
                 return current_user
 
         raise HTTPException(
@@ -496,8 +496,9 @@ def require_permission(permission: str):
                 project_id = current_user.get("project_id")
 
                 if user_id and project_id:
-                    from src.Util.db import check_user_permission
-                    if check_user_permission(user_id, project_id, permission):
+                    from src.Util.db import get_user_permissions
+                    resolved_permissions = get_user_permissions(user_id)
+                    if permission in resolved_permissions or "admin" in resolved_permissions:
                         return current_user
 
             raise HTTPException(
@@ -539,8 +540,8 @@ Optional[Dict[str, Any]]:
         return None
 
     try:
-        session_token = credentials.credentials
-        session_data = validate_session(session_token)
+        access_token = credentials.credentials
+        session_data = validate_session(access_token)
 
         if session_data:
             return {
@@ -551,7 +552,7 @@ Optional[Dict[str, Any]]:
                 "project_hash": session_data.project_hash,
                 "permissions": session_data.permissions,
                 "groups": session_data.groups,
-                "session_token": session_token
+                "access_token": access_token
             }
     except HTTPException:
         # Credential rejection (expired/invalid/revoked JWT) bubbling up from

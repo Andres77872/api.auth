@@ -28,7 +28,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-e2e-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     return u
 
 
@@ -55,7 +54,7 @@ def _make_project(project_id="1", project_hash="prj-e2e-001",
 
 def _make_register_result(user_hash="usr-new-001", username="newuser",
                           email="new@example.com", user_type="consumer",
-                          session_token="e2e-session-token",
+                          access_token="e2e-session-token",
                           project_hash=None, project_name=None,
                           user_id="99"):
     r = MagicMock()
@@ -63,7 +62,7 @@ def _make_register_result(user_hash="usr-new-001", username="newuser",
     r.username = username
     r.email = email
     r.user_type = user_type
-    r.session_token = session_token
+    r.access_token = access_token
     r.project_hash = project_hash
     r.project_name = project_name
     r.user_id = user_id
@@ -128,8 +127,8 @@ class TestRegistrationGroupNoProjects:
         data = response.json()
         assert data["success"] is True
         assert data["project"] is None
-        assert data["session_token"] is None
-        assert "session_token" not in response.cookies
+        assert data["access_token"] is None
+        assert "access_token" not in response.cookies
 
 
 # ─── Login: project-scoped with multi-group resilience ───────────────────────
@@ -376,7 +375,7 @@ class TestLoginProjectGroupCrossLoginHardening:
             project_hash="current-project",
             project_name="Current Project",
             user_project_hash="",
-            session_token="current.access.token",
+            access_token="current.access.token",
             session_length=900,
             user_id="usr-switch-id",
             project_id="current-project-id",

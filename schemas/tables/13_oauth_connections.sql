@@ -1,5 +1,5 @@
 -- ===================================================================================
--- Provider-agnostic OAuth configuration (docs/agnostic_oauth)
+-- Provider-agnostic OAuth configuration (docs/USAGE/oauth)
 -- ===================================================================================
 -- Three levels:
 --   oauth_provider_catalog   provider TYPE registry + master kill switch (adapter code lives
@@ -10,7 +10,7 @@
 --   project_oauth_bindings   per-project policy for one connection, with exact-match URL
 --                            allow-lists in project_oauth_allowed_urls.
 --
--- Secrets: client secrets, signing keys and legacy redeem tokens are stored ONLY as
+-- Secrets: client secrets and signing keys are stored ONLY as
 -- ciphertext with a key id. HMAC/fingerprint columns exist for row-binding checks and safe
 -- display. Peppers, the state HMAC key and the encryption keys stay in the environment.
 -- ===================================================================================
@@ -104,10 +104,6 @@ CREATE TABLE IF NOT EXISTS project_oauth_bindings (
     provisioning_mode ENUM('disabled','link_only','auto_create','both') NOT NULL DEFAULT 'disabled',
     default_user_group_id VARCHAR(64) NULL,
     existing_user_policy ENUM('deny','join_default_group') NOT NULL DEFAULT 'deny',
-    init_mode ENUM('api','legacy_redeem') NOT NULL DEFAULT 'api',
-    legacy_redeem_url_ciphertext LONGBLOB NULL,
-    legacy_redeem_token_ciphertext LONGBLOB NULL,
-    legacy_redeem_key_id VARCHAR(128) NULL,
     delivery_mode ENUM('bff','hosted') NOT NULL DEFAULT 'bff',
     state_ttl_seconds SMALLINT UNSIGNED NULL COMMENT 'NULL = deployment default; capped by the env ceiling',
     rate_limit_overrides JSON NULL COMMENT 'may only lower the deployment ceilings',
@@ -120,7 +116,6 @@ CREATE TABLE IF NOT EXISTS project_oauth_bindings (
     UNIQUE KEY uk_project_oauth_key (project_id, connection_key),
     UNIQUE KEY uk_project_oauth_connection (project_id, connection_id),
     INDEX idx_pob_connection (connection_id, enabled),
-    INDEX idx_pob_init_mode (init_mode, connection_key),
     CONSTRAINT fk_pob_project FOREIGN KEY (project_id)
         REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_pob_connection FOREIGN KEY (connection_id)

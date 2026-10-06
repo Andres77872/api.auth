@@ -69,25 +69,25 @@ def test_error_message_sanitizer_redacts_oauth_query_and_claim_material():
     assert "oauth" in sanitized.lower() or "[REDACTED]" in sanitized
 
 
-def test_google_oauth_callback_remains_audited_instead_of_excluded():
+def test_oauth_callback_remains_audited_instead_of_excluded():
     assert APIAuditLogger.should_log_request(
-        "/auth/google/callback?code=fake-code-for-redaction&state=fake-state-for-redaction",
+        "/auth/oauth/callback?code=fake-code-for-redaction&state=fake-state-for-redaction",
         "GET",
     ) is True
 
 
-def test_google_oauth_callback_tags_identify_authentication_google_oauth_and_external_idp():
-    tags = APIAuditLogger.generate_tags("/auth/google/callback", "GET", 400, user_type=None)
+def test_oauth_callback_tags_identify_authentication_oauth_and_external_idp():
+    tags = APIAuditLogger.generate_tags("/auth/oauth/callback", "GET", 400, user_type=None)
 
     assert "authentication" in tags
-    assert "google_oauth" in tags
+    assert "oauth" in tags
     assert "external_idp" in tags
     assert "security_event" in tags
 
 
-def test_google_oauth_callback_client_and_server_failures_are_security_events():
-    assert APIAuditLogger.is_security_event("/auth/google/callback", "GET", 400) is True
-    assert APIAuditLogger.is_security_event("/auth/google/callback", "GET", 502) is True
+def test_oauth_callback_client_and_server_failures_are_security_events():
+    assert APIAuditLogger.is_security_event("/auth/oauth/callback", "GET", 400) is True
+    assert APIAuditLogger.is_security_event("/auth/oauth/callback", "GET", 502) is True
 
 
 def test_filter_headers_redacts_cookie_and_provider_init_authorization_boundaries():

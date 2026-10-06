@@ -35,7 +35,7 @@ TOKEN_RE = re.compile(r"(?P<token>[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{24,})")
 FORBIDDEN_RESPONSE_FIELDS = {
     "access_token",
     "refresh_token",
-    "session_token",
+    "access_token",
     "api_key",
     "patreon_user_id",
     "patreon_member_id",
@@ -122,7 +122,7 @@ def _assert_no_session_or_raw_provider_leak(response, *, context: str) -> None:
     serialized = json.dumps(payload, sort_keys=True).lower() if not isinstance(payload, str) else payload.lower()
     for field in FORBIDDEN_RESPONSE_FIELDS:
         assert field not in serialized, f"{context}: forbidden `{field}` leaked"
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
 
 

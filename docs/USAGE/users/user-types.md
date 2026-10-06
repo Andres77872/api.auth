@@ -39,12 +39,11 @@ but adds nobody. The admin assignment routes below only add or remove that membe
 curl -X POST "http://localhost:8000/user-types/root" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
   --data-urlencode "username=new_root" \
-  --data-urlencode "password=$INITIAL_PASSWORD" \
-  --data-urlencode "email=root@example.com"
+  --data-urlencode "password=$INITIAL_PASSWORD"
 ```
 
-The password must pass the shared policy (`400`, `VAL_3007`). `email` is optional and only fills the
-legacy `users.email` column; no activation email is sent. The new user needs no project or group.
+The password must pass the shared policy (`400`, `VAL_3007`). Enroll email addresses after
+sign-in through `/users/me/emails`. The new user needs no project or group.
 
 ## Create an admin user
 
@@ -58,14 +57,12 @@ curl -X POST "http://localhost:8000/user-types/admin" \
   -d "assigned_project_ids=$PROJECT_ID_1&assigned_project_ids=$PROJECT_ID_2"
 ```
 
-- Send `assigned_project_ids` (repeated) or a single `assigned_project_id`; at least one is required
+- Send `assigned_project_ids` (repeated); at least one is required
   (`400`, `VAL_3002`). Every ID must exist (`404`, `NF_4002`) before the user is created.
 - The user is added to each project's admin group. A project without an admin group is skipped: the
   response's `assigned_project_ids` and `assigned_projects` list only the projects actually assigned,
   and `skipped_projects` lists the others with `reason: "no_admin_group"`. The user is created either
   way.
-- `primary_project_id` is the first assigned project (`null` if every project was skipped); it is
-  informational only.
 
 ## Inspect a user's type
 
@@ -77,7 +74,7 @@ curl "http://localhost:8000/user-types/$USER_HASH/info" \
 ```
 
 Returns `user_type`, `capabilities` and, for admin targets, `assigned_projects`,
-`total_assigned_projects` and `assigned_project_id` (the first assigned project by name). Root users
+`total_assigned_projects`. Root users
 are outside every admin's scope (`403`). Use `GET /users/{user_hash}` for groups and effective
 permissions.
 
@@ -87,9 +84,9 @@ Three routes change `user_type`. Only one of them assigns an admin project.
 
 | Route | Caller | Assigns an admin project | Notes |
 | --- | --- | --- | --- |
-| `PUT /user-types/{user_hash}/type` | Root | Yes, `assigned_project_id` is required for `admin` | Preferred for promotions |
+| `PUT /user-types/{user_hash}/type` | Root | Yes, `assigned_project_ids` is required for `admin` | Preferred for promotions |
 | `PATCH /users/{user_hash}/type` | Root | No | Returns `previous_type` and `new_type` |
-| `PUT /users/{user_hash}` with `user_type` | Root | No | Can change username and legacy email in the same call |
+| `PUT /users/{user_hash}` with `user_type` | Root | No | Can change username in the same call |
 
 When the type actually changes, each of them (and bulk update with `user_type`) signs the user out
 everywhere: their access sessions and refresh tokens are revoked, because a session carries the type
@@ -101,7 +98,7 @@ already has keeps their sessions.
 ```bash
 curl -X PUT "http://localhost:8000/user-types/$USER_HASH/type" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -d "user_type=admin&assigned_project_id=$PROJECT_ID"
+  -d "user_type=admin&assigned_project_ids=$PROJECT_ID"
 ```
 
 The response's `user_type_info` lists the new admin's `assigned_projects`. A project without an admin

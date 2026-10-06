@@ -21,7 +21,6 @@ def _make_user():
     user.email = "e2e@example.com"
     user.user_type = "consumer"
     user.is_active = True
-    user.assigned_project_id = None
     return user
 
 

@@ -68,7 +68,6 @@ _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
     "src.Util.cache_manager.redis_client",
     "src.Util.auth_lifecycle.redis_client",
-    "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
     "src.Util.system_metrics.redis_client",
@@ -225,7 +224,6 @@ async def test_full_register_login_access_chain_live_redis(
             data={
                 "username": f"e2e_user_{unique_suffix}",
                 "password": "E2EP@ss123!",
-                "email": f"e2e_{unique_suffix}@test.com",
                 "user_group_hash": ug["group_hash"],
             },
             headers={"User-Agent": "e2e-test"},
@@ -234,9 +232,9 @@ async def test_full_register_login_access_chain_live_redis(
     assert response.status_code == 200, f"Registration failed: {response.json()}"
     reg_data = response.json()
     assert reg_data["success"] is True
-    # session_token is set as a cookie
-    assert "session_token" in response.cookies, "Registration should set session_token cookie"
-    reg_token = response.cookies["session_token"]
+    # access_token is set as a cookie
+    assert "access_token" in response.cookies, "Registration should set access_token cookie"
+    reg_token = response.cookies["access_token"]
     assert reg_data["project"]["project_hash"] == proj["project_hash"]
 
     # Step 3: Verify session is stored in LIVE Redis
@@ -276,7 +274,7 @@ async def test_full_register_login_access_chain_live_redis(
     )
 
     # Step 6: Verify login session in LIVE Redis has group data
-    login_token = login_data.get("session_token")
+    login_token = login_data.get("access_token")
     _, login_session_raw = _get_access_session_from_redis(live_redis, login_token)
     assert login_session_raw is not None, f"Login session should exist in live Redis"
     login_session = json.loads(login_session_raw)
@@ -323,8 +321,8 @@ async def test_register_login_session_persistence_live_redis(
         )
 
     assert reg_resp.status_code == 200
-    token = reg_resp.cookies.get("session_token")
-    assert token is not None, "Registration should set session_token cookie"
+    token = reg_resp.cookies.get("access_token")
+    assert token is not None, "Registration should set access_token cookie"
 
     # Verify session exists in live Redis
     _, session_raw = _get_access_session_from_redis(live_redis, token)
@@ -384,7 +382,6 @@ async def test_direct_link_revoke_deletes_lost_session_and_preserves_alternate_c
             data={
                 "username": username,
                 "password": password,
-                "email": f"e2e_revoke_{unique_suffix}@test.com",
                 "user_group_hash": primary_ug["group_hash"],
             },
             headers={"User-Agent": "e2e-revoke-test"},
@@ -418,8 +415,8 @@ async def test_direct_link_revoke_deletes_lost_session_and_preserves_alternate_c
     assert lost_login.status_code == 200, lost_login.text
     assert preserved_login.status_code == 200, preserved_login.text
 
-    lost_token = lost_login.json()["session_token"]
-    preserved_token = preserved_login.json()["session_token"]
+    lost_token = lost_login.json()["access_token"]
+    preserved_token = preserved_login.json()["access_token"]
     lost_jti = JWTTokenHandler.decode_access_token(lost_token)["jti"]
     preserved_jti = JWTTokenHandler.decode_access_token(preserved_token)["jti"]
 

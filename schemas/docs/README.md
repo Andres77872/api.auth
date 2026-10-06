@@ -32,9 +32,9 @@ The Magic Auth database implements a sophisticated **multi-project authenticatio
 - **Hierarchical Groups**: Both user groups and project groups support parent-child hierarchies
 - **Global Role System**: Roles with permission groups containing individual permissions
 - **Scoped Permissions**: Grant or deny permissions at project-group level with priority
-- **Comprehensive Auditing**: Full activity logging with 111 activity types in the canonical SQL seed
+- **Comprehensive Auditing**: Full activity logging with 100 activity types in the canonical SQL seed
 - **Error Tracking**: Dedicated error logging with statistics and alerting
-- **Performance Optimized**: 83 explicit indexes, permission caching, and 18 SQL views
+- **Performance Optimized**: 77 explicit indexes, permission caching, and 18 SQL views
 
 ---
 
@@ -178,10 +178,9 @@ for provisioning and backup requirements.
 
 | Table | Description |
 |-------|-------------|
-| `user_sessions` | Active user sessions per project |
 | `api_audit_log` | Complete API request/response logging |
 | `activity_logs` | User and system activity tracking |
-| `activity_catalog` | 111 seeded activity type definitions |
+| `activity_catalog` | 100 seeded activity type definitions |
 | `permission_audit_log` | Permission change audit trail |
 | `role_assignment_history` | Role/permission assignment history |
 
@@ -297,7 +296,6 @@ for provisioning and backup requirements.
 | `sp_count_projects` | Count projects |
 | `sp_search_projects` | Search projects |
 | `sp_get_recent_projects_count` | Count recent projects |
-| `sp_get_project_stats` | Get project statistics |
 | `sp_get_project_statistics` | Detailed project statistics |
 | `sp_get_project_members` | Get all users with project access |
 | `sp_get_admin_assigned_projects` | Get admin's accessible projects |
@@ -402,7 +400,6 @@ for provisioning and backup requirements.
 
 | Procedure | Description |
 |-----------|-------------|
-| `sp_cleanup_expired_sessions` | Clean expired sessions |
 | `sp_cleanup_permission_cache` | Clean expired cache |
 | `sp_cleanup_orphaned_records` | Clean orphaned data |
 | `sp_system_health_check` | Run health diagnostics |
@@ -495,7 +492,6 @@ definition. Additional authoritative procedure families are:
 |------|-------------|
 | `v_user_project_access` | Complete user → project access paths |
 | `v_user_project_access_summary` | User access counts and groups |
-| `v_active_user_sessions` | Currently active sessions |
 | `v_user_all_groups` | User groups including inherited |
 | `v_user_scoped_permissions` | User permissions with scope and grant/deny |
 | `v_user_project_scoped_roles` | User roles per project context |
@@ -544,7 +540,6 @@ definition. Additional authoritative procedure families are:
 | `tr_roles_updated_at` | `roles` | Auto-update timestamp |
 | `tr_global_permission_groups_updated_at` | `global_permission_groups` | Auto-update timestamp |
 | `tr_global_permissions_updated_at` | `global_permissions` | Auto-update timestamp |
-| `tr_validate_session_expiry` | `user_sessions` | Validate session and project access |
 | `tr_validate_permission_cache_expiry` | `permission_cache` | Validate cache expiry |
 | `tr_validate_bulk_operation_counts` | `bulk_operations_log` | Validate counts |
 | `tr_validate_bulk_operation_completion` | `bulk_operations_log` | Validate completion time |
@@ -596,8 +591,6 @@ definition. Additional authoritative procedure families are:
 | `trg_after_upg_delete` | `user_permission_groups` | DELETE | `permission_group_revoked` |
 | `trg_after_gpgp_insert` | `global_permission_group_permissions` | INSERT | `permission_grant` |
 | `trg_after_gpgp_delete` | `global_permission_group_permissions` | DELETE | `permission_revoke` |
-| `trg_after_session_insert` | `user_sessions` | INSERT | `session_created` |
-| `trg_after_session_update` | `user_sessions` | UPDATE | `user_logout` |
 | `trg_after_ugpgp_insert` | `user_group_project_group_permissions` | INSERT | `permission_group_assigned/permission_revoke` |
 | `trg_after_ugpgp_update` | `user_group_project_group_permissions` | UPDATE | `permission_group_revoked` |
 | `trg_after_ugpgp_delete` | `user_group_project_group_permissions` | DELETE | `permission_group_revoked` |
@@ -661,7 +654,6 @@ CALL sp_check_user_permission_for_project_with_deny('user-id', 'project-id', 'pe
 | Frequency | Task | Procedure |
 |-----------|------|-----------|
 | Daily | Health check | `CALL sp_system_health_check();` |
-| Daily | Clean expired sessions | `CALL sp_cleanup_expired_sessions();` |
 | Weekly | Clean permission cache | `CALL sp_cleanup_permission_cache();` |
 | Weekly | Check critical errors | `CALL sp_get_critical_errors(100, 168);` |
 | Monthly | Clean orphaned records | `CALL sp_cleanup_orphaned_records();` |
@@ -676,9 +668,6 @@ CALL sp_system_health_check();
 
 -- Recent activity (last 7 days)
 CALL sp_get_activity_logs(100, 0, NULL, NULL, NULL, 7);
-
--- Active session count
-SELECT COUNT(*) FROM user_sessions WHERE is_active = 1 AND expires_at > NOW();
 
 -- User statistics by type
 SELECT user_type, COUNT(*) as count FROM users WHERE is_active = 1 GROUP BY user_type;
@@ -714,36 +703,17 @@ WHERE trigger_schema = 'magic_auth';
 
 ## Initial Data & Credentials
 
-`schemas/tables/05_initialize_data.sql` currently creates this development root
-row:
-
-```
-Username: root
-Seeded plaintext: 1248163264
-Email: root@system.local
-Type: root
-Stored hash: legacy unsalted SHA-256
-```
-
-This is not a usable current login. `src/Util/password_security.py` verifies
-Argon2id hashes only. In addition, `scripts/create_database.py` and
-`scripts/recreate_database.py` incorrectly print `admin123` after applying the
-SQL; that value differs from the seed and also cannot authenticate.
-
-Do not deploy either known value. Follow the
-[first-root repair step](../../docs/USAGE/getting-started.md#first-root-bootstrap-and-current-seed-caveat)
-to replace the seeded hash with a policy-compliant Argon2id hash before login.
-If the initializer is omitted, create the first root through the application
-helper described in the same guide.
+SQL seeds metadata and catalogs without a default root credential. The Python database
+scripts call `scripts/bootstrap_root_user.py` with an operator-supplied password from
+`BOOTSTRAP_ROOT_PASSWORD` or a secure prompt. The helper validates the password policy,
+stores an Argon2id hash, and leaves existing active root accounts untouched. See
+[first-root bootstrap](../../docs/USAGE/getting-started.md#first-root-bootstrap).
 
 ### Activity Catalog
 
-`schemas/tables/08_activity_logging_tables.sql` currently seeds 111 catalog rows:
-`act-cat-001` through `act-cat-090` across core authentication/administration,
-email, Google OAuth, and Patreon categories, plus `act-cat-107` through
-`act-cat-127` for provider-agnostic OAuth (the shared sign-in pipeline and the
-OAuth admin API). The `google_oauth_*` rows are kept for history and are still
-emitted by the deprecated `/auth/google` alias routes.
+The canonical activity catalog seeds core, email, Patreon and provider-independent
+`oauth_*` activities. Retired Google-specific routes do not emit activities; historical
+rows remain available for audit retention.
 
 Runtime code also reserves billing IDs `act-cat-091` through `act-cat-106`, but
 the canonical SQL bootstrap does not currently seed those 16 rows. Treat this
@@ -756,13 +726,13 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 83
-- **Indexes**: 83 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
-- **Stored Procedures**: 318
+- **Tables**: 82
+- **Indexes**: 77 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
+- **Stored Procedures**: 314
 - **Functions**: 1
 - **Views**: 18
-- **Triggers**: 125 total (110 activity/domain triggers plus 15 validation triggers in table setup)
-- **Activity Types**: 111 seeded (including 21 provider-agnostic `oauth_*` rows, `act-cat-107` to `act-cat-127`); 16 billing IDs reserved in runtime but not yet seeded
+- **Triggers**: 122 total (108 activity/domain triggers plus 14 validation triggers in table setup)
+- **Activity Types**: 100 seeded (including 21 provider-agnostic `oauth_*` rows, `act-cat-107` to `act-cat-127`); 16 billing IDs reserved in runtime but not yet seeded
 
 ---
 

@@ -8,7 +8,7 @@ way.
 | Layer | User groups | Project groups |
 | --- | --- | --- |
 | Routes | `src/routes/admin_user_groups.py` | `src/routes/admin_project_groups.py` |
-| DB helpers | `src/Util/db/db_user_groups.py` | `src/Util/db/db_project_groups.py` (exported from `src/Util/db/__init__.py` under `*_project_permission_group*` aliases) |
+| DB helpers | `src/Util/db/db_user_groups.py` | `src/Util/db/db_project_groups.py` |
 | Stored procedures | `schemas/stored_procedures/02_user_groups.sql` | `schemas/stored_procedures/04_project_groups.sql` |
 | Tables | `schemas/tables/02_create_tables.sql` | same |
 

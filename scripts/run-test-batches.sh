@@ -24,6 +24,7 @@ PYTEST_PLUGIN_ARGS=(
 )
 
 declare -A REAL_DB_ONLY_TARGETS=(
+  ["tests/integration/test_assistant_mysql_real_db.py"]=1
   ["tests/integration/test_slice22_real_access_resolution.py"]=1
   ["tests/integration/test_slice23_soft_delete_cascades.py"]=1
   ["tests/integration/test_slice24_real_default_groups.py"]=1
@@ -32,7 +33,10 @@ declare -A REAL_DB_ONLY_TARGETS=(
   ["tests/integration/test_api_key_procedures_real_db.py"]=1
   ["tests/integration/test_permission_resolution_real_db.py"]=1
   ["tests/integration/test_patreon_real_db.py"]=1
+  ["tests/integration/test_password_reset_tokens_real_db.py"]=1
 )
+
+export MALLOC_ARENA_MAX=2 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 
 discover_host_targets() {
   local layer="$1"

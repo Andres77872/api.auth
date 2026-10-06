@@ -11,12 +11,10 @@ USE magic_auth;
 -- ===================================================================================
 -- USERS TABLE INDEXES
 -- ===================================================================================
-CREATE INDEX idx_email ON users (email);
 CREATE INDEX idx_user_type ON users (user_type);
 CREATE INDEX idx_active_users ON users (is_active, user_type);
 CREATE INDEX idx_users_type_active ON users (user_type, is_active);
 CREATE INDEX idx_users_username_password ON users (username, password_hash, is_active);
-CREATE INDEX idx_users_email_password ON users (email, password_hash, is_active);
 CREATE INDEX idx_users_role_active ON users(role_id, is_active);
 CREATE INDEX idx_permission_check ON users(id, role_id, is_active);
 
@@ -88,14 +86,6 @@ CREATE INDEX idx_ugpgr_projectgroup_active ON user_group_project_group_roles(pro
 CREATE INDEX idx_ugpgr_role_active ON user_group_project_group_roles(role_id, is_active);
 CREATE INDEX idx_ugpgr_scoped_lookup ON user_group_project_group_roles(user_group_id, project_group_id, role_id, is_active);
 CREATE INDEX idx_ugpgr_full_lookup ON user_group_project_group_roles(user_group_id, project_group_id, is_active);
-
--- ===================================================================================
--- USER_SESSIONS TABLE INDEXES
--- ===================================================================================
-CREATE INDEX idx_user_sessions ON user_sessions (user_id, project_id, is_active);
-CREATE INDEX idx_active_sessions ON user_sessions (is_active, expires_at);
-CREATE INDEX idx_user_sessions_token_expires ON user_sessions (session_token, is_active, expires_at);
-CREATE INDEX idx_sessions_token_active ON user_sessions (session_token, is_active, expires_at);
 
 -- ===================================================================================
 -- ROLE_ASSIGNMENT_HISTORY TABLE INDEXES

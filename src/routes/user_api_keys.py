@@ -18,7 +18,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Form, Path, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
 from src.Util.api_key_security import generate_api_key_token
 from src.Util.db import (
@@ -137,8 +137,8 @@ def _assert_key_ownership(key_data: dict, current_user_id: str):
 def _require_recent_reauth_for_user_api_key_mutation(current_user: dict, operation: str) -> None:
     require_recent_reauthentication(
         user_id=str(current_user.get("user_id") or ""),
-        session_token=current_user.get("session_token"),
-        session_id=access_token_session_id(current_user.get("session_token")),
+        access_token=current_user.get("access_token"),
+        session_id=access_token_session_id(current_user.get("access_token")),
         operation=operation,
     )
 
@@ -183,7 +183,7 @@ async def user_create_api_key(
     """Create an API key owned by the caller and scoped to one project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie), any user type, plus recent authentication: a
+    `access_token` cookie), any user type, plus recent authentication: a
     sign-in, or an OAuth reauth of this session, within the recent-auth window
     (5 minutes by default; refreshing the session does not renew it). API keys (`X-API-Key`) are not accepted. The caller must have
     access to the project (root: any active project).
@@ -291,7 +291,7 @@ async def user_list_api_keys(
     """List the caller's own API keys (metadata only, never the secret).
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie), any user type. No recent authentication needed.
+    `access_token` cookie), any user type. No recent authentication needed.
 
     **Responses:**
     - `200` — `data.keys`, `data.total`, `data.limit`, `data.offset`. Revoked
@@ -355,7 +355,7 @@ async def user_get_api_key(
     """Get metadata for one of the caller's API keys (never the secret or its hash).
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie), any user type.
+    `access_token` cookie), any user type.
 
     **Responses:** `404` when the key does not exist or belongs to someone else
     (ownership is not disclosed).
@@ -407,7 +407,7 @@ async def user_update_api_key(
     """Update the name, description, or expiry of one of the caller's API keys.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) plus recent authentication (a sign-in, or an OAuth reauth of this session, within the
+    `access_token` cookie) plus recent authentication (a sign-in, or an OAuth reauth of this session, within the
     recent-auth window, 5 minutes by default; refreshing the session does not renew it).
 
     **Request:** form fields; send at least one of `name`, `description`,
@@ -498,7 +498,7 @@ async def user_revoke_api_key(
     """Revoke one of the caller's API keys.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) plus recent authentication (a sign-in, or an OAuth reauth of this session, within the
+    `access_token` cookie) plus recent authentication (a sign-in, or an OAuth reauth of this session, within the
     recent-auth window, 5 minutes by default; refreshing the session does not renew it).
 
     **Request:** no body.

@@ -63,11 +63,6 @@ class GoogleAdapter(GenericOIDCAdapter):
         return problems
 
     def _endpoint(self, connection: ConnectionConfig, attribute: str, discovery_key: str) -> str:
-        # Test doubles and the legacy environment overrides may set explicit endpoints on
-        # the environment-sourced connection; database connections of this type never can.
-        explicit = getattr(connection, attribute, None)
-        if explicit:
-            return str(explicit)
         return {
             "authorize_endpoint": GOOGLE_AUTHORIZE_ENDPOINT,
             "token_endpoint": GOOGLE_TOKEN_ENDPOINT,

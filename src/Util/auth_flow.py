@@ -78,12 +78,12 @@ def resolve_target_project(
     )
 
 
-def _binding_value(provider_init_binding: Any, key: str) -> Any:
-    if provider_init_binding is None:
+def _binding_value(oauth_binding: Any, key: str) -> Any:
+    if oauth_binding is None:
         return None
-    if isinstance(provider_init_binding, Mapping):
-        return provider_init_binding.get(key)
-    return getattr(provider_init_binding, key, None)
+    if isinstance(oauth_binding, Mapping):
+        return oauth_binding.get(key)
+    return getattr(oauth_binding, key, None)
 
 
 def _project_hash_from_any(project: Any) -> Optional[str]:
@@ -96,78 +96,78 @@ def _project_hash_from_any(project: Any) -> Optional[str]:
     return getattr(project, "project_hash", None)
 
 
-def provider_init_bound_project_hash(provider_init_binding: Any) -> str:
-    """Return the provider-init-bound project hash or fail without leaking it."""
+def oauth_bound_project_hash(oauth_binding: Any) -> str:
+    """Return the OAuth-bound project hash or fail without leaking it."""
 
-    project_hash = str(_binding_value(provider_init_binding, "project_hash") or "").strip()
+    project_hash = str(_binding_value(oauth_binding, "project_hash") or "").strip()
     if not project_hash:
         raise AuthorizationError(
-            message="Provider-init project binding is required",
+            message="OAuth init project binding is required",
             error_code=ErrorCode.OAUTH_PROJECT_ACCESS_DENIED,
-            details={"reason": "missing_provider_init_project_binding"},
+            details={"reason": "missing_oauth_project_binding"},
         )
     return project_hash
 
 
-def assert_provider_init_project_binding(
+def assert_oauth_project_binding(
     *,
-    provider_init_binding: Any,
+    oauth_binding: Any,
     resolved_project: Any | None = None,
     requested_project_hash: Optional[str] = None,
 ) -> str:
-    """Ensure callback project selection stays pinned to provider-init scope.
+    """Ensure callback project selection stays pinned to OAuth init scope.
 
     This helper intentionally compares strict hashes but returns/raises only masked
     values. OAuth callbacks must never silently fall back to a different accessible
-    project when the provider-init-bound project is missing or denied.
+    project when the OAuth-bound project is missing or denied.
     """
 
-    bound_project_hash = provider_init_bound_project_hash(provider_init_binding)
+    bound_project_hash = oauth_bound_project_hash(oauth_binding)
 
     if requested_project_hash and not hmac.compare_digest(str(requested_project_hash), bound_project_hash):
         raise AuthorizationError(
-            message="Provider-init project binding mismatch",
+            message="OAuth init project binding mismatch",
             error_code=ErrorCode.OAUTH_PROJECT_ACCESS_DENIED,
             details={
                 "requested_project": mask_uuid(str(requested_project_hash)),
                 "bound_project": mask_uuid(bound_project_hash),
-                "reason": "requested_project_differs_from_provider_init_binding",
+                "reason": "requested_project_differs_from_oauth_binding",
             },
         )
 
     resolved_project_hash = _project_hash_from_any(resolved_project)
     if resolved_project_hash and not hmac.compare_digest(str(resolved_project_hash), bound_project_hash):
         raise AuthorizationError(
-            message="Resolved project does not match provider-init binding",
+            message="Resolved project does not match OAuth init binding",
             error_code=ErrorCode.OAUTH_PROJECT_ACCESS_DENIED,
             details={
                 "resolved_project": mask_uuid(str(resolved_project_hash)),
                 "bound_project": mask_uuid(bound_project_hash),
-                "reason": "resolved_project_differs_from_provider_init_binding",
+                "reason": "resolved_project_differs_from_oauth_binding",
             },
         )
 
     return bound_project_hash
 
 
-def resolve_provider_init_bound_project(
+def resolve_oauth_bound_project(
     *,
     accessible_projects: List[Any],
-    provider_init_binding: Any,
+    oauth_binding: Any,
     get_project_by_hash_fn=None,
     handle_db_operation_fn=None,
 ) -> Any:
-    """Resolve only the provider-init-bound project; never auto-pick fallback."""
+    """Resolve only the OAuth-bound project; never auto-pick fallback."""
 
-    bound_project_hash = provider_init_bound_project_hash(provider_init_binding)
+    bound_project_hash = oauth_bound_project_hash(oauth_binding)
     target_project = resolve_target_project(
         accessible_projects=accessible_projects,
         requested_project_hash=bound_project_hash,
         get_project_by_hash_fn=get_project_by_hash_fn,
         handle_db_operation_fn=handle_db_operation_fn,
     )
-    assert_provider_init_project_binding(
-        provider_init_binding=provider_init_binding,
+    assert_oauth_project_binding(
+        oauth_binding=oauth_binding,
         resolved_project=target_project,
     )
     return target_project
@@ -184,20 +184,20 @@ def _recent_reauth_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
         return 300
 
 
-def _access_token_claims(session_token: Optional[str], decode_access_token_fn=None) -> Optional[Mapping[str, Any]]:
-    if not session_token:
+def _access_token_claims(access_token: Optional[str], decode_access_token_fn=None) -> Optional[Mapping[str, Any]]:
+    if not access_token:
         return None
     try:
         if decode_access_token_fn is None:
             from src.Util.JWT_Security import JWTTokenHandler
 
             decode_access_token_fn = JWTTokenHandler.decode_access_token
-        return decode_access_token_fn(session_token)
+        return decode_access_token_fn(access_token)
     except Exception:
         return None
 
 
-def access_token_session_id(session_token: Optional[str]) -> Optional[str]:
+def access_token_session_id(access_token: Optional[str]) -> Optional[str]:
     """The ``session_id`` claim of an access token: the id reauth markers are keyed by.
 
     It is stable across refreshes and project switches of one sign-in, unlike the token
@@ -205,13 +205,13 @@ def access_token_session_id(session_token: Optional[str]) -> Optional[str]:
     later sensitive operation of the same session.
     """
 
-    claims = _access_token_claims(session_token)
+    claims = _access_token_claims(access_token)
     session_id = claims.get("session_id") if claims else None
     return str(session_id) if session_id not in (None, "") else None
 
 
 def access_token_has_recent_auth(
-    session_token: Optional[str],
+    access_token: Optional[str],
     *,
     ttl_seconds: Optional[int] = None,
     now_epoch: Optional[int] = None,
@@ -224,7 +224,7 @@ def access_token_has_recent_auth(
     a new token, so a recent ``iat`` proves nothing about the user.
     """
 
-    claims = _access_token_claims(session_token, decode_access_token_fn)
+    claims = _access_token_claims(access_token, decode_access_token_fn)
     if not claims:
         return False
 
@@ -253,7 +253,7 @@ def _has_recent_reauth_marker(*, user_id: str, session_id: Optional[str] = None,
 def require_recent_reauthentication(
     *,
     user_id: str,
-    session_token: Optional[str] = None,
+    access_token: Optional[str] = None,
     session_id: Optional[str] = None,
     operation: str = "sensitive_operation",
     sensitive_operation: bool = True,
@@ -268,16 +268,16 @@ def require_recent_reauthentication(
     recent sign-in time (``auth_time``) embedded in the access token or a Redis
     reauth marker recorded by an OAuth reauth for the same session. ``session_id``
     must be the access token's ``session_id`` claim (``access_token_session_id``);
-    when omitted it is taken from ``session_token``.
+    when omitted it is taken from ``access_token``.
     """
 
     if not sensitive_operation:
         return False
     if credential_proof_present:
         return True
-    if access_token_has_recent_auth(session_token, ttl_seconds=ttl_seconds):
+    if access_token_has_recent_auth(access_token, ttl_seconds=ttl_seconds):
         return True
-    session_id = session_id or access_token_session_id(session_token)
+    session_id = session_id or access_token_session_id(access_token)
     if user_id and _has_recent_reauth_marker(user_id=str(user_id), session_id=session_id, reauth_store=reauth_store):
         return True
 

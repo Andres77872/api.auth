@@ -2,8 +2,8 @@
 
 Symptom, cause and fix, grouped by where the failure shows up. Start with
 `GET /admin/oauth/projects/{project_hash}/readiness`: it names the failing configuration
-layer. For a failed round trip, filter the activity log by `oauth_*` (or `google_oauth_*`
-for the alias routes) and read `reason` and `sub_reason`; public error messages are
+layer. For a failed round trip, filter the activity log by `oauth_*`
+and read `reason` and `sub_reason`; public error messages are
 neutral on purpose. Never paste codes, states, tokens, secrets or raw e-mails into
 tickets; use the `correlation_id`, fingerprints and activity ids.
 
@@ -11,8 +11,8 @@ tickets; use the `correlation_id`, fingerprints and activity ids.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `GET /auth/oauth/providers` returns an empty list | `OAUTH_ENABLED` off; or no binding in the key's project passes readiness with `login_enabled` on | Check readiness for the project. With `OAUTH_CONFIG_SOURCE=env` only `google` exists and needs `GOOGLE_OAUTH_ENABLED` and `GOOGLE_OAUTH_CLIENT_ID`. |
-| Every OAuth route fails and readiness reports `oauth_globally_disabled` although `OAUTH_ENABLED=true` | The settings loader rejected the environment: a pepper set under both the `OAUTH_*` and `GOOGLE_OAUTH_*` names with different values, a value out of range, or `OAUTH_CONFIG_SOURCE` other than `env`/`db` | Make both pepper names identical or set only one; bring ceilings into range. See [Deployment settings](reference.md#deployment-settings). |
+| `GET /auth/oauth/providers` returns an empty list | `OAUTH_ENABLED` off; or no binding in the key's project passes readiness with `login_enabled` on | Check readiness for the project. |
+| Every OAuth route fails and readiness reports `oauth_globally_disabled` although `OAUTH_ENABLED=true` | The settings loader rejected the environment: a bounded deployment setting outside its allowed range | Bring ceilings into range and configure the required peppers. See [Deployment settings](reference.md#deployment-settings). |
 | Returning users are no longer recognized after a deployment | The provider-sub pepper changed, so no stored identity key matches | Restore the previous `OAUTH_PROVIDER_SUB_PEPPER` value. Never rotate it. |
 | Readiness `credentials_not_active` right after `PUT .../credentials` | The `PUT` failed: no `OAUTH_SECRET_*` keys on the server | Set `OAUTH_SECRET_ENCRYPTION_KEY`, `OAUTH_SECRET_ENCRYPTION_KEY_ID` and `OAUTH_SECRET_HMAC_KEY`, then store the secret again. |
 | Callbacks answer `502` `EXT_8018` after an encryption-key rotation | The key id the secret was stored under is no longer loaded, so the secret cannot be decrypted for the exchange (`oauth_token_exchange_failed`) | Put the previous key in `OAUTH_SECRET_DECRYPTION_KEYS_JSON`, or re-enter the secret. |
@@ -23,7 +23,7 @@ tickets; use the `correlation_id`, fingerprints and activity ids.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `init` `403` `EXT_8011` | `OAUTH_ENABLED` off, or the binding's `login_enabled` (or the catalog's) off | Turn the switch on, or use the binding only for linking. |
-| `init` `404` `EXT_8011` or `503` `EXT_8010` | The binding is disabled, or the connection, credentials, catalog entry or project is not usable; or the `connection` key does not exist in the key's project | Check readiness. Under `OAUTH_CONFIG_SOURCE=env` the only key is `google`. |
+| `init` `404` `EXT_8011` or `503` `EXT_8010` | The binding is disabled, or the connection, credentials, catalog entry or project is not usable; or the `connection` key does not exist in the key's project | Check readiness. |
 | `init` `400` `EXT_8012` | The body carries `project_hash`, `user_group_hash`, `project` or `user_group`, lacks `connection` or `return_origin`, or sets `purpose` other than `login` | Send only the documented fields. The project comes from the API key. |
 | `init` `400` `EXT_8013` | `return_origin` is not byte-identical to a return origin on the binding | Compare scheme, host, port and trailing slash. `http://localhost:3000` and `http://127.0.0.1:3000` are different origins. |
 | `init` `401` | The API key is missing, malformed, revoked or expired | Issue a project-scoped user API key for the project. |
@@ -55,7 +55,7 @@ tickets; use the `correlation_id`, fingerprints and activity ids.
 | `auto_create_disabled` | New identity and the binding's mode is `disabled` or `link_only` | Switch to `auto_create` or `both`, or have the user link from an existing account. |
 | `email_collision` | A local account has the e-mail, and the provider did not verify it or its e-mail is administrator-controlled (Microsoft, generic OIDC) | The user signs in locally and links. |
 | `email_collision_link_required` | Same, with a provider-verified e-mail; the client saw `EXT_8032` | As above. |
-| `no_bound_user_group`, `user_group_not_found` | Auto-create has no usable default group. Always the case for `/auth/oauth/init` under `OAUTH_CONFIG_SOURCE=env` | Set the binding's default group (database source). |
+| `no_bound_user_group`, `user_group_not_found` | Auto-create has no usable default group.  | Set the binding's default group . |
 | `existing_user_not_active_consumer` | The linked account is inactive, or is a root or admin user | OAuth signs in consumers only. |
 | `auto_create_error`, `auto_create_incomplete`, `auto_create_inactive` | Account creation failed in the database | Check the default group is active and the provider type's catalog status is `enabled` with login allowed. |
 
@@ -91,5 +91,3 @@ When the binding's `login_enabled` is off the denial carries `reason`
 ## Related
 
 - [OAuth runbook](../../RUNBOOKS/oauth.md) — migration, key rotation, emergency switches.
-- [Google OAuth troubleshooting](../google-oauth/troubleshooting.md) — the legacy
-  provider-init handshake of `/auth/google/start`.

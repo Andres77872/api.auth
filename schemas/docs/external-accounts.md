@@ -57,7 +57,7 @@ For `google` and `patreon` the namespace equals the provider, so every link crea
 
 For Google, `provider_sub_hash` is the HMAC of Google's stable `sub` claim. For Patreon, `provider_sub_hash` is the HMAC of the Patreon `user.id` returned by trusted creator-owned API/webhook reconciliation. Raw provider identifiers stay server-only.
 
-Email address, `email_verified`, display name, picture, hosted domain, local `users.email`, masked email, or email equality are not primary linking keys.
+Email address, `email_verified`, display name, picture, hosted domain, local email summary, masked email, or email equality are not primary linking keys.
 
 Email-only collision is treated as an account-takeover risk and must not auto-link accounts.
 
@@ -92,7 +92,7 @@ They must not:
 - activate a local email,
 - mark a local email primary,
 - enable password recovery,
-- mutate `users.email`,
+- modify activated local email addresses,
 - bypass the local `user_emails` activation lifecycle.
 
 Auto-created users may get a pending `user_emails` row. That row remains pending until the existing local activation flow succeeds.
@@ -168,5 +168,5 @@ Do not destructively drop external-account schema when live or historical rows, 
 
 Preferred rollback is disabling the affected provider behavior while leaving this table and audit/activity evidence in place:
 
-- Google rollback disables Google OAuth/provider-init issuance without dropping historical Google external-account evidence.
+- OAuth rollback disables init-token issuance without dropping historical external-account evidence.
 - Patreon rollback disables linking, webhooks, sync, and S2S entitlement reads through flags/ingress/worker controls without deleting live Patreon history.

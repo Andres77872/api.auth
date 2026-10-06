@@ -153,15 +153,9 @@ platform middleware -> schema (400) -> bearer + flags (401) -> blank UA (422)
    a sync job (priority `3`). An event resolved to no user queues nothing.
 10. `200` `accepted`.
 
-### Global route
-
-Same as the path-scoped route, except step 2 also needs `STRIPE_WEBHOOK_SECRET`, step 3 is
-skipped, the signature is checked with `STRIPE_WEBHOOK_SECRET`, and facts are filed under the
-group resolved from the metadata `project_hash` or the matched rows.
-
 ## Admin routes
 
-1. `HTTPBearerOrCookie` reads the access token from the header or the `session_token` cookie;
+1. `HTTPBearerOrCookie` reads the access token from the header or the `access_token` cookie;
    the session must be valid (`401`).
 2. The session needs `admin` or `manage_billing` (`403`).
 3. Group routes resolve the caller's scope: root, or an admin user with assigned projects;

@@ -1,7 +1,6 @@
 """Redis-backed OAuth state, nonce, PKCE and recent-reauth storage (provider-agnostic).
 
-Trace: `.dev/sdd/changes/google-oauth-login/tasks.md` task 6.1; generalised by
-`docs/agnostic_oauth`. The state record binds the connection and project binding
+The state record binds the connection and project binding
 chosen at start, so the callback selects the provider from the record only and
 never from caller input (mix-up defence).
 
@@ -13,9 +12,7 @@ Security posture:
 - Redis errors fail closed by default. There is no process-memory fallback.
 - Deployment settings are loaded lazily through ``src.Util.oauth.settings``; this
   module does not parse ``.env`` or read secrets at import time.
-- Keys use neutral ``oauth_state:`` prefixes. The historical ``google_oauth_*``
-  prefixes are still *read* on consume so transactions in flight across a deploy
-  survive; nothing is written under them any more.
+- Keys use neutral ``oauth_state:`` prefixes.
 """
 
 from __future__ import annotations
@@ -31,19 +28,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from src.Util.auth_constants import (
-    GOOGLE_OAUTH_RECENT_REAUTH_PREFIX,
-    GOOGLE_OAUTH_STATE_CONSUMED_PREFIX,
-    GOOGLE_OAUTH_STATE_PREFIX,
-    OAUTH_RECENT_REAUTH_PREFIX,
-    OAUTH_STATE_CONSUMED_PREFIX,
-    OAUTH_STATE_PREFIX,
-)
+from src.Util.auth_constants import OAUTH_RECENT_REAUTH_PREFIX, OAUTH_STATE_CONSUMED_PREFIX, OAUTH_STATE_PREFIX
 from src.Util.oauth.settings import load_oauth_settings
 
 
 STATE_RECORD_VERSION = 2
-_SUPPORTED_STATE_RECORD_VERSIONS = {1, 2}
+_SUPPORTED_STATE_RECORD_VERSIONS = {STATE_RECORD_VERSION}
 
 
 # Test fixtures patch this usage location after the module exists. Keep the
@@ -100,7 +90,7 @@ class OAuthStateCreated:
     expires_in: int
     expires_at: str
     state_fingerprint: str
-    provider_init_fingerprint: str | None
+    init_token_fingerprint: str | None
     cookie_metadata: OAuthBindingCookieMetadata
 
 
@@ -115,18 +105,16 @@ class OAuthStateRecord:
     code_challenge: str
     code_challenge_method: str
     state_fingerprint: str
-    provider_init_fingerprint: str | None = None
+    init_token_fingerprint: str | None = None
     project_hash: str | None = field(default=None, repr=False)
-    user_group_hash: str | None = field(default=None, repr=False)
     scope_fingerprint: str | None = None
     ip_hash: str | None = None
     ua_hash: str | None = None
     created_at: str | None = None
     expires_at: str | None = None
-    provider_init_binding: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    oauth_binding: Mapping[str, Any] = field(default_factory=dict, repr=False)
     connection_id: str | None = None
     binding_id: str | None = None
-    config_source: str | None = None
     expected_issuer: str | None = None
     delivery_mode: str | None = None
     prompt: str | None = None
@@ -309,45 +297,35 @@ class OAuthStateStore:
         consumed_prefix: str,
         secret: str,
         label: str,
-        legacy_prefixes: tuple[tuple[str, str], ...] = (),
     ) -> dict[str, Any]:
         _ensure_state_shape(secret, label=label)
         consumed_key = self._key(consumed_prefix, secret)
         value = self._get_and_delete(self._key(prefix, secret))
-        legacy_consumed_keys = [self._key(legacy_consumed, secret) for _, legacy_consumed in legacy_prefixes]
         if value is None:
-            # Transactions started before the prefix rename are still honoured.
-            for legacy_prefix, _ in legacy_prefixes:
-                value = self._get_and_delete(self._key(legacy_prefix, secret))
-                if value is not None:
-                    break
-        if value is None:
-            if self._exists(consumed_key) or any(self._exists(key) for key in legacy_consumed_keys):
+            if self._exists(consumed_key):
                 raise OAuthStateReplayError(f"OAuth {label} was already consumed")
             raise OAuthStateInvalidError(f"OAuth {label} is missing or expired")
         self._set(consumed_key, "1", ttl_seconds=MAX_OAUTH_STATE_TTL_SECONDS, nx=False)
         return _json_loads(value)
 
-    def create_state(self, *, provider_init_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
+    def create_state(self, *, oauth_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
         """Create Redis-backed OAuth state bound to a connection and its init binding."""
 
         ttl = _ttl(ttl_seconds, load_oauth_settings().max_state_ttl_seconds)
         material = generate_oauth_material()
         now = time.time()
         expires_at = _utc_timestamp(now + ttl)
-        binding = dict(provider_init_binding or {})
-        provider_init_fingerprint = binding.get("provider_init_fingerprint")
+        binding = dict(oauth_binding or {})
+        init_token_fingerprint = binding.get("init_token_fingerprint")
         payload = {
             "version": STATE_RECORD_VERSION,
             "provider": binding.get("provider", "google"),
             "purpose": binding.get("purpose", "login"),
             "connection_id": binding.get("connection_id"),
             "binding_id": binding.get("binding_id"),
-            "config_source": binding.get("config_source"),
             "expected_issuer": binding.get("expected_issuer"),
             "delivery_mode": binding.get("delivery_mode"),
             "project_hash": binding.get("project_hash"),
-            "user_group_hash": binding.get("user_group_hash"),
             "return_origin": binding.get("return_origin"),
             "redirect_uri": binding.get("redirect_uri"),
             "prompt": binding.get("prompt"),
@@ -359,7 +337,7 @@ class OAuthStateStore:
             "code_challenge": material.code_challenge,
             "code_challenge_method": material.code_challenge_method,
             "state_fingerprint": fingerprint_oauth_value(material.state),
-            "provider_init_fingerprint": provider_init_fingerprint,
+            "init_token_fingerprint": init_token_fingerprint,
             "scope_fingerprint": binding.get("scope_fingerprint"),
             "ip_hash": binding.get("ip_hash"),
             "ua_hash": binding.get("ua_hash"),
@@ -376,7 +354,7 @@ class OAuthStateStore:
             expires_in=ttl,
             expires_at=expires_at,
             state_fingerprint=payload["state_fingerprint"],
-            provider_init_fingerprint=provider_init_fingerprint,
+            init_token_fingerprint=init_token_fingerprint,
             cookie_metadata=OAuthBindingCookieMetadata(max_age_seconds=ttl),
         )
 
@@ -390,10 +368,9 @@ class OAuthStateStore:
             consumed_prefix=OAUTH_STATE_CONSUMED_PREFIX,
             secret=state,
             label="state",
-            legacy_prefixes=((GOOGLE_OAUTH_STATE_PREFIX, GOOGLE_OAUTH_STATE_CONSUMED_PREFIX),),
         )
         try:
-            version = int(payload.get("version") or 1)
+            version = int(payload.get("version") or 0)
         except (TypeError, ValueError) as exc:
             raise OAuthStateInvalidError("OAuth state payload is malformed") from exc
         if version not in _SUPPORTED_STATE_RECORD_VERSIONS:
@@ -408,18 +385,16 @@ class OAuthStateStore:
             code_challenge=str(payload.get("code_challenge") or ""),
             code_challenge_method=str(payload.get("code_challenge_method") or "S256"),
             state_fingerprint=str(payload.get("state_fingerprint") or fingerprint_oauth_value(state)),
-            provider_init_fingerprint=payload.get("provider_init_fingerprint"),
+            init_token_fingerprint=payload.get("init_token_fingerprint"),
             project_hash=payload.get("project_hash"),
-            user_group_hash=payload.get("user_group_hash"),
             scope_fingerprint=payload.get("scope_fingerprint"),
             ip_hash=payload.get("ip_hash"),
             ua_hash=payload.get("ua_hash"),
             created_at=payload.get("created_at"),
             expires_at=payload.get("expires_at"),
-            provider_init_binding=payload,
+            oauth_binding=payload,
             connection_id=payload.get("connection_id"),
             binding_id=payload.get("binding_id"),
-            config_source=payload.get("config_source"),
             expected_issuer=payload.get("expected_issuer"),
             delivery_mode=payload.get("delivery_mode"),
             prompt=payload.get("prompt"),
@@ -445,13 +420,11 @@ class OAuthStateStore:
         """Return whether a recent reauthentication marker exists."""
 
         material = f"{user_id}|{session_id or ''}"
-        return self._exists(self._key(OAUTH_RECENT_REAUTH_PREFIX, material)) or self._exists(
-            self._key(GOOGLE_OAUTH_RECENT_REAUTH_PREFIX, material)
-        )
+        return self._exists(self._key(OAUTH_RECENT_REAUTH_PREFIX, material))
 
 
-def create_state(*, provider_init_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
-    return OAuthStateStore().create_state(provider_init_binding=provider_init_binding, ttl_seconds=ttl_seconds)
+def create_state(*, oauth_binding: Mapping[str, Any], ttl_seconds: int | None = None) -> OAuthStateCreated:
+    return OAuthStateStore().create_state(oauth_binding=oauth_binding, ttl_seconds=ttl_seconds)
 
 
 def consume_state(state: str) -> OAuthStateRecord:

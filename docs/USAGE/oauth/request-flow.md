@@ -2,8 +2,6 @@
 
 What each `/auth/oauth/*` request does, in order, and where it can stop. Status codes
 and error codes are listed per endpoint in [reference.md](reference.md#error-codes-by-endpoint).
-The `/auth/google/*` aliases run the same pipeline; their differences are in the
-[Google OAuth request flow](../google-oauth/request-flow.md).
 
 ## Transaction material
 
@@ -33,7 +31,7 @@ request, so a caller cannot switch provider, project or user mid-flight.
 3. The JSON body is read. `project_hash`, `user_group_hash`, `project` or `user_group`
    present, `connection` or `return_origin` missing, or `purpose` other than `login`:
    `400` `EXT_8012`.
-4. The binding `(project, connection)` is resolved. With `OAUTH_CONFIG_SOURCE=db` a
+4. The binding `(project, connection)` is resolved. A
    binding is refused when its provider type, adapter, connection, credentials, binding
    or project is unusable: disabled layers answer `404` `EXT_8011`, missing configuration
    `503` `EXT_8010`.
@@ -117,7 +115,7 @@ the provider returned.
 4. The project must be reachable through the user's groups and be active and not
    archived: `403` `EXT_8025`. No other project is ever picked.
 5. A local token pair is issued for that project with the `remember_me` from the state,
-   the `session_token` and `refresh_token` cookies are set, `oauth_login_succeeded` is
+   the `access_token` and `refresh_token` cookies are set, `oauth_login_succeeded` is
    recorded, and the `LoginResponse` is returned.
 
 Every refusal records `oauth_login_denied` with a `sub_reason` for operators, such as
@@ -177,8 +175,7 @@ access token.
 
 ## Configuration reads
 
-With `OAUTH_CONFIG_SOURCE=db`, binding rows are cached per process for `30` seconds and
-the cache is cleared on this instance by every admin write. Secrets are decrypted per
-code exchange and never cached. JWKS and discovery documents are cached in process
-memory, not in Redis. With `OAUTH_CONFIG_SOURCE=env` the single `google` connection is
-rebuilt from the `GOOGLE_OAUTH_*` variables on each request.
+Binding rows are cached per process for 30 seconds and invalidated after administration
+writes. Connection credentials are decrypted in memory from their database ciphertext;
+provider secrets are never cached in Redis. Deployment settings control feature gates,
+cryptographic keys, state lifetime ceilings and rate limits.

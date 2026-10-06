@@ -122,7 +122,7 @@ def _new_client(module: ModuleType, session: FakeAiohttpSession):
 
 
 async def _fetch_campaign_members(client: Any, campaign_id: str) -> Any:
-    for name in ("fetch_campaign_members", "list_campaign_members", "get_campaign_members"):
+    for name in ("fetch_campaign_members", "list_campaign_members", "fetch_campaign_members"):
         method = getattr(client, name, None)
         if callable(method):
             return await method(campaign_id)

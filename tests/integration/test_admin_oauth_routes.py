@@ -110,9 +110,9 @@ class FakeOAuthDB:
             "binding_id": kwargs["id"], "project_id": kwargs["project_id"], "project_hash": "ph-1", "project_name": "Project One",
             "project_is_active": True, "project_archived": False, "connection_key": kwargs["connection_key"],
             "enabled": False, "login_enabled": True, "link_enabled": True, "provisioning_mode": "disabled",
-            "existing_user_policy": "deny", "init_mode": "api", "delivery_mode": "bff", "redirect_uris": [], "return_origins": [],
+            "existing_user_policy": "deny", "delivery_mode": "bff", "redirect_uris": [], "return_origins": [],
         }
-        for name in ("enabled", "login_enabled", "link_enabled", "provisioning_mode", "existing_user_policy", "init_mode"):
+        for name in ("enabled", "login_enabled", "link_enabled", "provisioning_mode", "existing_user_policy"):
             if kwargs.get(name) is not None:
                 row[name] = kwargs[name]
         row.update(
@@ -152,12 +152,6 @@ class FakeOAuthDB:
 
     def list_binding_urls(self, *, binding_id):
         return list(self.urls.get(binding_id, []))
-
-    def set_binding_legacy_redeem(self, *, binding_id, url_ciphertext, token_ciphertext, key_id, actor):
-        row = next(row for row in self.bindings.values() if row["binding_id"] == binding_id)
-        row.update(init_mode="legacy_redeem", has_legacy_redeem=True)
-        return row
-
 
 @pytest.fixture
 def oauth_db():
@@ -211,7 +205,6 @@ async def test_non_admin_is_refused_everywhere(client, oauth_db):
         ("post", "/admin/oauth/connections/HASH/credentials/test", {"client_secret": SECRET}),
         ("post", "/admin/oauth/connections/HASH/activate", None),
         ("put", "/admin/oauth/providers/google", {"status": "disabled"}),
-        ("put", "/admin/oauth/projects/ph-1/bindings/google/legacy-redeem", {"redeem_url": "https://b/x", "redeem_token": "t"}),
     ],
 )
 async def test_every_secret_accepting_or_structural_route_is_root_only(client, oauth_db, method, path, body):
@@ -344,30 +337,17 @@ async def test_an_empty_string_clears_one_secret_but_never_the_last(client, oaut
     assert len(oauth_db.credential_calls) == 2
 
 
-async def _binding(client) -> str:
-    connection_hash = await _active_connection(client)
-    await client.put("/admin/oauth/projects/ph-1/bindings/google", headers=AUTH, json={"connection_hash": connection_hash})
-    return "/admin/oauth/projects/ph-1/bindings/google/legacy-redeem"
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "url, expected",
-    [
-        ("https://companion.example/internal/redeem", 200),
-        ("https://10.1.2.3/internal/redeem", 200),
-        ("http://localhost:8010/internal/auth/provider-init/redeem", 200),
-        ("http://companion.internal/internal/redeem", 400),
-        ("http://10.1.2.3/internal/redeem", 400),
-        ("https://user:pw@companion.example/internal/redeem", 400),
-    ],
-)
-async def test_legacy_redeem_url_must_be_https_except_on_localhost(client, oauth_db, url, expected):
+async def test_retired_redeem_bridge_is_absent_even_for_root(client, oauth_db):
     with _as(oauth_db, root=True):
-        path = await _binding(client)
-        response = await client.put(path, headers=AUTH, json={"redeem_url": url, "redeem_token": "companion-bearer"})
-    assert response.status_code == expected, response.text
-    assert url not in response.text and "companion-bearer" not in response.text
+        response = await client.put(
+            "/admin/oauth/projects/ph-1/bindings/google/legacy-redeem",
+            headers=AUTH,
+            json={"redeem_url": "https://companion.example/redeem", "redeem_token": "retired-secret"},
+        )
+    assert response.status_code == 404
+    assert "retired-secret" not in response.text
+    assert oauth_db.bindings == {}
 
 
 @pytest.mark.asyncio

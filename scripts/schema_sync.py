@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit and apply additive MySQL schema catch-up for the dev database.
+"""Audit and apply canonical MySQL schema catch-up for the dev database.
 
 This tool is intentionally conservative: it does not drop or recreate the
 database. It applies only canonical schema files and explicit stale-artifact
@@ -27,32 +27,35 @@ PATCH_FILES = (
     "tables/09_email_activation_tables.sql",
     "tables/10_external_accounts.sql",
     "tables/11_patreon_entitlements.sql",
-    # OAuth catalog/connections/bindings. Listed before the procedure and trigger files:
-    # the external-account triggers validate the provider against oauth_provider_catalog.
     "tables/13_oauth_connections.sql",
     "tables/14_assistant.sql",
-    # sp_delete_user: reported the memberships update's ROW_COUNT, so deleting a user
-    # without active group memberships looked like a failure.
+    "tables/06_create_views.sql",
     "stored_procedures/01_user_management.sql",
-    # Permission resolvers: soft-deleted roles, permission groups and user groups used to
-    # keep granting (sp_global_get_user_permissions, sp_get_user_all_permissions, ...).
+    "stored_procedures/02_user_groups.sql",
+    "stored_procedures/03_projects.sql",
+    "stored_procedures/04_project_groups.sql",
     "stored_procedures/05_global_roles.sql",
     "stored_procedures/06_permission_assignments.sql",
-    # sp_update_api_key: keys without an expiry used to be reported as "API key not found".
+    "stored_procedures/07_sessions_analytics.sql",
+    "stored_procedures/08_admin_operations.sql",
+    "stored_procedures/09_system_maintenance.sql",
+    "stored_procedures/10_error_logging.sql",
+    "stored_procedures/11_activity_logging.sql",
+    "stored_procedures/12_activity_context.sql",
     "stored_procedures/13_api_keys.sql",
     "stored_procedures/14_email_activation.sql",
     "stored_procedures/15_external_accounts.sql",
     "stored_procedures/16_patreon_entitlements.sql",
-    # sp_billing_get_purchase_status_by_ref: the S2S purchase-status read.
     "stored_procedures/17_billing_provider_facts.sql",
     "stored_procedures/18_billing_groups.sql",
     "stored_procedures/19_oauth_connections.sql",
-    # api_key_expired when sp_cleanup_expired_api_keys deactivates a key.
+    "triggers/01_activity_logging_triggers.sql",
+    "triggers/02_permission_activity_triggers.sql",
     "triggers/03_api_key_activity_triggers.sql",
-    # email_message_enqueued / email_message_dead_lettered from the outbox row.
     "triggers/04_email_activation_triggers.sql",
     "triggers/05_external_accounts_triggers.sql",
     "triggers/06_patreon_entitlements_triggers.sql",
+    "triggers/07_billing_provider_facts_triggers.sql",
     "triggers/08_oauth_connections_triggers.sql",
 )
 
@@ -70,7 +73,7 @@ COLUMN_PATCHES = (
         "billing_groups.catalog_sync_error_redacted",
         "ALTER TABLE billing_groups ADD COLUMN catalog_sync_error_redacted TEXT NULL",
     ),
-    # Namespace-keyed external identities (docs/agnostic_oauth). Additive: the HMAC input and
+    # Namespace-keyed external identities (docs/USAGE/oauth). Additive: the HMAC input and
     # the pepper are untouched, so every existing link keeps resolving.
     (
         "user_external_accounts.identity_namespace",
@@ -135,6 +138,12 @@ INDEX_PATCHES = (
     ),
 )
 
+INDEX_PATCHES += (
+    ("drop retired idx_email", "users", "idx_email", "drop", "ALTER TABLE users DROP INDEX idx_email"),
+    ("drop retired idx_users_email_password", "users", "idx_users_email_password", "drop", "ALTER TABLE users DROP INDEX idx_users_email_password"),
+    ("drop retired idx_pob_init_mode", "project_oauth_bindings", "idx_pob_init_mode", "drop", "ALTER TABLE project_oauth_bindings DROP INDEX idx_pob_init_mode"),
+)
+
 # Plain (non-unique) indexes added to existing Patreon tables for the admin lists, the
 # tier-map-miss metric and retention. CREATE TABLE IF NOT EXISTS never adds them to a
 # live table, so they are patched in the same idempotent way.
@@ -170,7 +179,14 @@ INDEX_PATCHES += (
 )
 
 # Generated columns made obsolete by INDEX_PATCHES; dropped only once their index is gone.
-STALE_COLUMNS = (("user_external_accounts", "active_user_provider"),)
+STALE_COLUMNS = (
+    ("user_external_accounts", "active_user_provider"),
+    ("users", "email"),
+    ("project_oauth_bindings", "init_mode"),
+    ("project_oauth_bindings", "legacy_redeem_url_ciphertext"),
+    ("project_oauth_bindings", "legacy_redeem_token_ciphertext"),
+    ("project_oauth_bindings", "legacy_redeem_key_id"),
+)
 
 CANONICAL_ENUMS = {
     ("user_external_accounts", "provider"): "enum('google','patreon','github','discord','microsoft','oidc')",
@@ -220,7 +236,18 @@ ENUM_PATCHES = (
     ),
 )
 
-STALE_PROCEDURES = ("sp_backfill_legacy_user_emails",)
+STALE_VIEWS = ("v_active_user_sessions",)
+STALE_TRIGGERS = ("tr_validate_session_expiry", "trg_after_session_insert", "trg_after_session_update")
+STALE_TABLES = ("user_sessions",)
+
+STALE_PROCEDURES = (
+    "sp_cleanup_expired_sessions",
+    "sp_get_project_stats",
+    "sp_backfill_legacy_user_emails",
+    "sp_oauth_binding_set_legacy_redeem",
+    "sp_oauth_binding_get_legacy_redeem",
+    "sp_oauth_binding_list_legacy",
+)
 STALE_TEMPLATE_CODE = "free_credit_invite"
 
 
@@ -258,7 +285,7 @@ def _db_config() -> dict[str, object]:
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", "3306")),
         "user": os.getenv("DB_USER", "root"),
-        "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
+        "password": os.getenv("DB_MYSQL_PASSWORD"),
         "database": os.getenv("DB_NAME", "magic_auth"),
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
@@ -272,7 +299,7 @@ def _db_config() -> dict[str, object]:
 def _connect():
     cfg = _db_config()
     if not cfg["password"]:
-        raise SystemExit("Missing DB_MYSQL_PASSWORD or DB_PASSWORD")
+        raise SystemExit("Missing DB_MYSQL_PASSWORD")
     return pymysql.connect(**cfg)
 
 
@@ -452,7 +479,7 @@ def _apply_index_patches(cursor, *, dry_run: bool) -> list[str]:
             cursor.execute(sql)
     for table, column in STALE_COLUMNS:
         if _table_exists(cursor, table) and _column_type(cursor, table, column) is not None:
-            changed.append(f"drop stale generated column {table}.{column}")
+            changed.append(f"drop retired column {table}.{column}")
             if not dry_run:
                 cursor.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     return changed
@@ -529,12 +556,37 @@ def _cleanup_stale_objects(cursor, *, dry_run: bool) -> list[str]:
             if not dry_run:
                 cursor.execute(f"DROP PROCEDURE IF EXISTS {procedure}")
 
+    for kind, names, metadata_table, schema_column, name_column in (
+        ("VIEW", STALE_VIEWS, "views", "table_schema", "table_name"),
+        ("TRIGGER", STALE_TRIGGERS, "triggers", "trigger_schema", "trigger_name"),
+        ("TABLE", STALE_TABLES, "tables", "table_schema", "table_name"),
+    ):
+        for name in names:
+            cursor.execute(
+                f"SELECT COUNT(*) AS count FROM information_schema.{metadata_table} "
+                f"WHERE {schema_column} = DATABASE() AND {name_column} = %s",
+                (name,),
+            )
+            if int(cursor.fetchone()["count"]):
+                actions.append(f"drop retired {kind.lower()} {name}")
+                if not dry_run:
+                    cursor.execute(f"DROP {kind} IF EXISTS {name}")
+
+    if _table_exists(cursor, "activity_catalog"):
+        cursor.execute("SELECT COUNT(*) AS count FROM activity_catalog "
+                       "WHERE activity_code LIKE 'google\\_oauth\\_%' AND is_active = TRUE")
+        if int(cursor.fetchone()["count"]):
+            actions.append("deactivate retired Google OAuth activity catalog rows; keep audit history")
+            if not dry_run:
+                cursor.execute("UPDATE activity_catalog SET is_active = FALSE "
+                               "WHERE activity_code LIKE 'google\\_oauth\\_%' AND is_active = TRUE")
+
     # The stale template is DEACTIVATED, never deleted. Removing its catalog row (below)
     # already makes the code unreachable -- rendering and the admin listing both resolve
     # through email_template_catalog -- so a DELETE would add nothing except risk:
     # email_templates is version history, a delete would take operator-authored versions
     # with it, and gating it on "no email_messages row references the code" would make
-    # this additive tool destroy rows at whatever later moment that stops being true.
+    # this tool destroy history at whatever later moment that stops being true.
     active_template_rows = 0
     if _table_exists(cursor, "email_templates"):
         cursor.execute(
@@ -655,6 +707,15 @@ def _diff_objects(cursor) -> list[Drift]:
 
 def _verify_markers(cursor) -> list[str]:
     failures: list[str] = []
+    live = _live_objects(cursor)
+    for kind, names in (("tables", STALE_TABLES), ("views", STALE_VIEWS), ("triggers", STALE_TRIGGERS)):
+        for name in names:
+            if name in live[kind]:
+                failures.append(f"retired {kind[:-1]} still exists: {name}")
+    cursor.execute("SELECT COUNT(*) AS count FROM activity_catalog "
+                   "WHERE activity_code LIKE 'google\\_oauth\\_%' AND is_active = TRUE")
+    if int(cursor.fetchone()["count"]):
+        failures.append("retired Google OAuth activity catalog rows are still active")
     for (table, column), expected in CANONICAL_ENUMS.items():
         current = _column_type(cursor, table, column)
         if current != expected:
@@ -752,7 +813,7 @@ def _verify_oauth_markers(cursor) -> list[str]:
             failures.append(f"provider-keyed unique key still present: {index_name}")
     for stale_table, column in STALE_COLUMNS:
         if _column_type(cursor, stale_table, column) is not None:
-            failures.append(f"stale generated column still present: {stale_table}.{column}")
+            failures.append(f"retired column still present: {stale_table}.{column}")
 
     if _column_type(cursor, table, "identity_namespace") is None:
         failures.append("missing column user_external_accounts.identity_namespace")
@@ -814,7 +875,7 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
     try:
         with connection.cursor() as cursor:
             if dry_run:
-                print("\nPlanned additive actions:")
+                print("\nPlanned schema actions:")
                 enum_actions = _apply_enum_patches(cursor, dry_run=True)
                 for action in enum_actions:
                     print(f"  - {action}")
@@ -835,7 +896,7 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
                 return 0
 
             if apply:
-                print("\nApplying additive schema catch-up...")
+                print("\nApplying canonical schema catch-up...")
                 # A DDL statement that cannot get its metadata lock queues, and every later
                 # query on that table queues behind it. Fail fast instead of stalling logins;
                 # keep this below the connection's read timeout so the server gives up first.
@@ -888,11 +949,11 @@ def run(*, dry_run: bool, apply: bool, verify: bool) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Audit/apply additive schema cleanup against a MySQL env file."
+        description="Audit/apply canonical schema cleanup, including retired columns and objects, against a MySQL env file."
     )
     parser.add_argument("--env-file", default=".env", help="Env file with DB_* settings")
     parser.add_argument("--dry-run", action="store_true", help="Show planned actions")
-    parser.add_argument("--apply", action="store_true", help="Apply additive cleanup")
+    parser.add_argument("--apply", action="store_true", help="Apply canonical definitions and retire obsolete schema objects")
     parser.add_argument("--verify", action="store_true", help="Verify object drift and markers")
     return parser
 

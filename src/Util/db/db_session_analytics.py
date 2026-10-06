@@ -171,62 +171,6 @@ def get_recent_users_count(days: int = 30) -> int:
     )
 
 
-def get_user_login_statistics(days: int = 30) -> Dict[str, Any]:
-    """
-    Get user login statistics.
-    
-    Args:
-        days: Number of days to look back
-        
-    Returns:
-        Dictionary with login statistics (error dict on failure)
-        
-    Raises:
-        DatabaseError: On database operation errors
-        
-    Note:
-        Returns safe error dict to prevent breaking analytics dashboards.
-    """
-    def _get():
-        with get_connection() as con:
-            cur = con.cursor()
-
-            # Try to get login stats from activity logs (if table exists)
-            try:
-                cur.callproc('sp_get_login_statistics', [days])
-                login_count = cur.fetchone()[0]
-                cur.nextset()
-                unique_users = cur.fetchone()[0]
-
-                return {
-                    "total_logins": login_count,
-                    "unique_users": unique_users,
-                    "period_days": days,
-                    "source": "activity_logs"
-                }
-
-            except Exception:
-                # Fallback: estimate based on user creation and session data
-                recent_users = get_recent_users_count(days)
-                active_sessions = count_active_sessions()
-
-                # Rough estimation
-                estimated_logins = max(recent_users, active_sessions) * 2
-
-                return {
-                    "total_logins": estimated_logins,
-                    "unique_users": recent_users,
-                    "period_days": days,
-                    "source": "estimated"
-                }
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_user_login_statistics(days={days})",
-        default_return={"total_logins": 0, "unique_users": 0, "period_days": days, "source": "error"}
-    )
-
-
 # =================== PROJECT ANALYTICS ===================
 
 def get_recent_projects_count(days: int = 30) -> int:
@@ -304,90 +248,6 @@ def get_project_members(project_id: str) -> List[Dict[str, Any]]:
         _get,
         error_context=f"get_project_members(project_id={project_id})",
         default_return=[]
-    )
-
-
-def add_user_to_project(user_id: str, project_id: str, assigned_by: Optional[str] = None) -> bool:
-    """
-    Add a user to a project (for consumer users).
-    
-    Args:
-        user_id: User ID
-        project_id: Project ID
-        assigned_by: ID of user making the assignment
-        
-    Returns:
-        True if added successfully
-        
-    Raises:
-        NotFoundError: If user not found
-        ValidationError: If user type invalid
-        DatabaseError: On database operation errors
-    """
-    def _add():
-        # Import here to avoid circular imports
-        from src.Util.db import grant_user_project_access, get_user_by_id
-
-        # Get user to check type
-        user = get_user_by_id(user_id)
-        if not user:
-            return False
-
-        if user.user_type == 'consumer':
-            # Grant project access for consumer users
-            result = grant_user_project_access(user_id, project_id, granted_by=assigned_by)
-
-            if result:
-                # Log the action
-                try:
-                    from src.Util.activity_logger import ActivityType, log_activity
-                    log_activity(
-                        user_id=assigned_by,
-                        activity_type=ActivityType.PROJECT_MEMBER_ADD.value,
-                        details={
-                            "target_user_id": user_id,
-                            "project_id": project_id,
-                            "action": "add_consumer_to_project"
-                        },
-                        project_id=project_id,
-                        target_user_id=user_id
-                    )
-                except:
-                    pass
-
-            return result is not None
-
-        elif user.user_type == 'admin':
-            # Add admin to project
-            from src.Util.db import add_admin_to_project
-            success = add_admin_to_project(user_id, project_id, assigned_by=assigned_by)
-
-            if success:
-                # Log the action
-                try:
-                    from src.Util.activity_logger import ActivityType, log_activity
-                    log_activity(
-                        user_id=assigned_by,
-                        activity_type=ActivityType.PROJECT_MEMBER_ADD.value,
-                        details={
-                            "target_user_id": user_id,
-                            "project_id": project_id,
-                            "action": "add_admin_to_project"
-                        },
-                        project_id=project_id,
-                        target_user_id=user_id
-                    )
-                except:
-                    pass
-
-            return success
-
-        # Root users automatically have access to all projects
-        return user.user_type == 'root'
-    
-    return handle_db_operation(
-        _add,
-        error_context=f"add_user_to_project(user_id={user_id}, project_id={project_id})"
     )
 
 
@@ -485,20 +345,3 @@ def get_recent_activity_count(days: int = 7) -> int:
         error_context=f"get_recent_activity_count(days={days})",
         default_return=0
     )
-
-
-def initialize_activity_logs_table() -> bool:
-    """Initialize the activity_logs table if it doesn't exist
-    
-    Note: This function is deprecated as the table is now created in the schema files.
-    
-    Returns:
-        Success status
-    """
-    try:
-        logger.info("Activity logs table should be created via schema files (02_create_tables.sql)")
-        return True
-
-    except Exception as e:
-        logger.error(f"Note: {str(e)}")
-        return False

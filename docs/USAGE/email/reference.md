@@ -7,7 +7,7 @@ email configuration. Suite-wide rules are in [README.md](README.md#rules-and-cav
 
 ### Template admin
 
-Prefix `/admin/email-templates`. Access token (`Authorization: Bearer` or the `session_token`
+Prefix `/admin/email-templates`. Access token (`Authorization: Bearer` or the `access_token`
 cookie) of a root user. `{template_code}` is matched case-insensitively.
 
 | Path | Method | Body | Purpose |

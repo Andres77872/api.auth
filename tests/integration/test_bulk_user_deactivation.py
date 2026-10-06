@@ -16,7 +16,7 @@ def _admin_session():
     session.project_hash = "prj-test-001"
     session.permissions = ["admin", "manage_users"]
     session.groups = ["project_admins"]
-    session.session_token = "bulk-admin-token"
+    session.access_token = "bulk-admin-token"
     return session
 
 

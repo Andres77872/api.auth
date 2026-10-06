@@ -99,28 +99,6 @@ def hash_patreon_identifier(
     return hmac.digest(_ensure_bytes(pepper, name="pepper"), material, "sha256")
 
 
-def hash_patreon_id(
-    *,
-    raw_id: str | None = None,
-    identifier: str | None = None,
-    value: str | None = None,
-    kind: str = "user",
-    pepper: str | bytes,
-) -> bytes:
-    return hash_patreon_identifier(raw_id=raw_id, identifier=identifier, value=value, kind=kind, pepper=pepper)
-
-
-def hash_provider_identifier(
-    *,
-    raw_id: str | None = None,
-    identifier: str | None = None,
-    value: str | None = None,
-    kind: str = "user",
-    pepper: str | bytes,
-) -> bytes:
-    return hash_patreon_identifier(raw_id=raw_id, identifier=identifier, value=value, kind=kind, pepper=pepper)
-
-
 def fingerprint_from_digest(digest: bytes) -> str:
     """Return the short non-reversible support marker used by DB rows."""
 
@@ -149,40 +127,6 @@ def fingerprint_patreon_identifier(
     return fingerprint_from_digest(digest)
 
 
-def fingerprint_patreon_id(
-    *,
-    raw_id: str | None = None,
-    identifier: str | None = None,
-    value: str | None = None,
-    kind: str = "user",
-    pepper: str | bytes,
-) -> str:
-    return fingerprint_patreon_identifier(
-        raw_id=raw_id,
-        identifier=identifier,
-        value=value,
-        kind=kind,
-        pepper=pepper,
-    )
-
-
-def fingerprint_provider_identifier(
-    *,
-    raw_id: str | None = None,
-    identifier: str | None = None,
-    value: str | None = None,
-    kind: str = "user",
-    pepper: str | bytes,
-) -> str:
-    return fingerprint_patreon_identifier(
-        raw_id=raw_id,
-        identifier=identifier,
-        value=value,
-        kind=kind,
-        pepper=pepper,
-    )
-
-
 def hash_patreon_email(
     *,
     email: str | None = None,
@@ -194,16 +138,6 @@ def hash_patreon_email(
 
     normalized = normalize_patreon_email(_first_text(email, raw_email, value, name="Patreon email"))
     return hmac.digest(_ensure_bytes(pepper, name="pepper"), normalized.encode("utf-8"), "sha256")
-
-
-def hash_provider_email(
-    *,
-    email: str | None = None,
-    raw_email: str | None = None,
-    value: str | None = None,
-    pepper: str | bytes,
-) -> bytes:
-    return hash_patreon_email(email=email, raw_email=raw_email, value=value, pepper=pepper)
 
 
 def mask_patreon_email(email: str) -> str:
@@ -240,36 +174,6 @@ def hash_patreon_proof_token(
     return hmac.digest(_ensure_bytes(pepper, name="pepper"), material, "sha256")
 
 
-def hash_proof_token(
-    *,
-    lookup_id: str,
-    secret: str,
-    pepper: str | bytes,
-    purpose: str = PATREON_PROOF_PURPOSE,
-) -> bytes:
-    return hash_patreon_proof_token(
-        lookup_id=lookup_id,
-        secret=secret,
-        pepper=pepper,
-        purpose=purpose,
-    )
-
-
-def hash_link_proof_token(
-    *,
-    lookup_id: str,
-    secret: str,
-    pepper: str | bytes,
-    purpose: str = PATREON_PROOF_PURPOSE,
-) -> bytes:
-    return hash_patreon_proof_token(
-        lookup_id=lookup_id,
-        secret=secret,
-        pepper=pepper,
-        purpose=purpose,
-    )
-
-
 def generate_patreon_proof_token(
     *,
     ttl_seconds: int,
@@ -297,36 +201,6 @@ def generate_patreon_proof_token(
         token_hash=token_hash,
         token_fingerprint=token_fingerprint,
         expires_at=issued_at + timedelta(seconds=ttl_seconds),
-    )
-
-
-def generate_proof_token(
-    *,
-    ttl_seconds: int,
-    pepper: str | bytes,
-    purpose: str = PATREON_PROOF_PURPOSE,
-    now: datetime | None = None,
-) -> GeneratedPatreonProofToken:
-    return generate_patreon_proof_token(
-        ttl_seconds=ttl_seconds,
-        pepper=pepper,
-        purpose=purpose,
-        now=now,
-    )
-
-
-def generate_link_proof_token(
-    *,
-    ttl_seconds: int,
-    pepper: str | bytes,
-    purpose: str = PATREON_PROOF_PURPOSE,
-    now: datetime | None = None,
-) -> GeneratedPatreonProofToken:
-    return generate_patreon_proof_token(
-        ttl_seconds=ttl_seconds,
-        pepper=pepper,
-        purpose=purpose,
-        now=now,
     )
 
 
@@ -395,36 +269,6 @@ def verify_s2s_bearer_token(
     return bool(left_text and right_text and matches)
 
 
-def constant_time_s2s_token_equals(
-    *,
-    presented: str | None = None,
-    expected: str | None = None,
-    presented_token: str | None = None,
-    expected_token: str | None = None,
-) -> bool:
-    return verify_s2s_bearer_token(
-        presented=presented,
-        expected=expected,
-        presented_token=presented_token,
-        expected_token=expected_token,
-    )
-
-
-def verify_internal_bearer_token(
-    *,
-    presented: str | None = None,
-    expected: str | None = None,
-    presented_token: str | None = None,
-    expected_token: str | None = None,
-) -> bool:
-    return verify_s2s_bearer_token(
-        presented=presented,
-        expected=expected,
-        presented_token=presented_token,
-        expected_token=expected_token,
-    )
-
-
 def compute_patreon_webhook_signature(
     *,
     raw_body: bytes | bytearray | memoryview | None = None,
@@ -435,15 +279,6 @@ def compute_patreon_webhook_signature(
 
     payload = _ensure_raw_body(raw_body if raw_body is not None else body)
     return hmac.new(_ensure_bytes(secret, name="webhook secret"), payload, "md5").hexdigest()
-
-
-def compute_webhook_signature(
-    *,
-    raw_body: bytes | bytearray | memoryview | None = None,
-    body: bytes | bytearray | memoryview | None = None,
-    secret: str | bytes,
-) -> str:
-    return compute_patreon_webhook_signature(raw_body=raw_body, body=body, secret=secret)
 
 
 def verify_patreon_webhook_signature(
@@ -466,16 +301,6 @@ def verify_patreon_webhook_signature(
     compared = candidate if valid_shape else "0" * 32
     matches = hmac.compare_digest(actual, compared)
     return bool(valid_shape and matches)
-
-
-def verify_webhook_signature(
-    *,
-    raw_body: bytes | bytearray | memoryview | None = None,
-    body: bytes | bytearray | memoryview | None = None,
-    signature: str | None,
-    secret: str | bytes,
-) -> bool:
-    return verify_patreon_webhook_signature(raw_body=raw_body, body=body, signature=signature, secret=secret)
 
 
 def raw_body_sha256(raw_body: bytes | bytearray | memoryview) -> bytes:
@@ -514,25 +339,6 @@ def compute_patreon_delivery_hash(
     if pepper:
         return hmac.digest(_ensure_bytes(pepper, name="delivery pepper"), material, "sha256")
     return hashlib.sha256(material).digest()
-
-
-def compute_delivery_hash(
-    *,
-    event_type: str,
-    raw_body: bytes | bytearray | memoryview,
-    member_id: str | None = None,
-    member_reference: str | None = None,
-    campaign_id: str | None = None,
-    pepper: str | bytes | None = None,
-) -> bytes:
-    return compute_patreon_delivery_hash(
-        event_type=event_type,
-        raw_body=raw_body,
-        member_id=member_id,
-        member_reference=member_reference,
-        campaign_id=campaign_id,
-        pepper=pepper,
-    )
 
 
 def patreon_redaction_field_names() -> tuple[str, ...]:

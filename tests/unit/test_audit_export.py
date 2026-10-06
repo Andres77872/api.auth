@@ -57,7 +57,7 @@ class TestValidateExportRequest:
         assert limit == EXPORT_DEFAULT_LIMIT
 
     def test_valid_audit_json(self):
-        is_valid, msg, limit = validate_export_request("audit", "json")
+        is_valid, msg, limit = validate_export_request("api_audit", "json")
         assert is_valid is True
         assert limit == EXPORT_DEFAULT_LIMIT
 
@@ -73,12 +73,12 @@ class TestValidateExportRequest:
         assert limit == 500
 
     def test_valid_with_custom_limit(self):
-        is_valid, msg, limit = validate_export_request("audit", "json", limit=500)
+        is_valid, msg, limit = validate_export_request("api_audit", "json", limit=500)
         assert is_valid is True
         assert limit == 500
 
     def test_valid_with_max_limit(self):
-        is_valid, msg, limit = validate_export_request("audit", "json", limit=EXPORT_HARD_LIMIT)
+        is_valid, msg, limit = validate_export_request("api_audit", "json", limit=EXPORT_HARD_LIMIT)
         assert is_valid is True
         assert limit == EXPORT_HARD_LIMIT
 
@@ -94,24 +94,24 @@ class TestValidateExportRequest:
         assert limit == 0
 
     def test_invalid_format(self):
-        is_valid, msg, limit = validate_export_request("audit", "xml")
+        is_valid, msg, limit = validate_export_request("api_audit", "xml")
         assert is_valid is False
         assert "Invalid format" in msg
         assert limit == 0
 
     def test_limit_exceeds_hard_limit(self):
-        is_valid, msg, limit = validate_export_request("audit", "json", limit=15000)
+        is_valid, msg, limit = validate_export_request("api_audit", "json", limit=15000)
         assert is_valid is False
         assert "exceeds maximum" in msg
         assert limit == 0
 
     def test_limit_zero(self):
-        is_valid, msg, limit = validate_export_request("audit", "json", limit=0)
+        is_valid, msg, limit = validate_export_request("api_audit", "json", limit=0)
         assert is_valid is False
         assert limit == 0
 
     def test_limit_negative(self):
-        is_valid, msg, limit = validate_export_request("audit", "json", limit=-1)
+        is_valid, msg, limit = validate_export_request("api_audit", "json", limit=-1)
         assert is_valid is False
         assert limit == 0
 
@@ -120,7 +120,7 @@ class TestValidateExportRequest:
         assert is_valid is False
 
     def test_none_format(self):
-        is_valid, msg, limit = validate_export_request("audit", None)  # type: ignore
+        is_valid, msg, limit = validate_export_request("api_audit", None)  # type: ignore
         assert is_valid is False
 
 
@@ -175,7 +175,7 @@ class TestSerializeValue:
 # ─── _fetch_export_data routing ─────────────────────────────────────────────
 
 class TestFetchExportData:
-    @pytest.mark.parametrize("source", ["audit", "api_audit"])
+    @pytest.mark.parametrize("source", ["api_audit"])
     @patch("src.Util.db.db_audit_analytics.get_audit_logs")
     def test_audit_sources_forward_every_supported_filter(
         self,
@@ -216,7 +216,7 @@ class TestFetchExportData:
     def test_audit_source_supplies_filter_defaults(self, get_audit_logs):
         get_audit_logs.return_value = []
 
-        assert _fetch_export_data("audit", {}, limit=5) == []
+        assert _fetch_export_data("api_audit", {}, limit=5) == []
         get_audit_logs.assert_called_once_with(
             limit=5,
             offset=0,
@@ -292,7 +292,7 @@ class TestFetchExportData:
 # ─── _check_export_count routing ────────────────────────────────────────────
 
 class TestCheckExportCount:
-    @pytest.mark.parametrize("source", ["audit", "api_audit"])
+    @pytest.mark.parametrize("source", ["api_audit"])
     @patch("src.Util.db.db_audit_analytics.count_audit_logs")
     def test_audit_sources_forward_every_supported_filter(
         self,
@@ -329,7 +329,7 @@ class TestCheckExportCount:
     def test_audit_count_supplies_filter_defaults(self, count_audit_logs):
         count_audit_logs.return_value = 0
 
-        assert _check_export_count("audit", {}, limit=1) == 0
+        assert _check_export_count("api_audit", {}, limit=1) == 0
         count_audit_logs.assert_called_once_with(
             user_id=None,
             project_id=None,
@@ -414,7 +414,7 @@ class TestStreamCsvExport:
         fetch_export_data.assert_called_once_with("activity", filters, 10)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("source", ["audit", "api_audit"])
+    @pytest.mark.parametrize("source", ["api_audit"])
     @patch("src.Util.audit_export._fetch_export_data")
     async def test_audit_export_yields_header_and_formatted_rows(
         self,
@@ -501,12 +501,12 @@ class TestStreamJsonExport:
         filters = {"days": 30}
 
         chunks = await _collect_stream(
-            stream_json_export("audit", filters, limit=50)
+            stream_json_export("api_audit", filters, limit=50)
         )
 
         assert chunks == ["[", "]"]
         assert json.loads("".join(chunks)) == []
-        fetch_export_data.assert_called_once_with("audit", filters, 50)
+        fetch_export_data.assert_called_once_with("api_audit", filters, 50)
 
     @pytest.mark.asyncio
     @patch("src.Util.audit_export._fetch_export_data")
@@ -580,7 +580,7 @@ class TestStreamJsonExport:
         conn.cursor.return_value = cursor
 
         with patch("src.Util.db.db_audit_analytics.get_connection", return_value=conn):
-            chunks = await _collect_stream(stream_json_export("audit", {}, limit=1))
+            chunks = await _collect_stream(stream_json_export("api_audit", {}, limit=1))
 
         body = "".join(chunks)
         payload = json.loads(body)

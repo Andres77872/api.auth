@@ -23,7 +23,7 @@ from src.Util.Models import (
     GrantUserGroupProjectGroupAccessResponse, RevokeUserGroupProjectGroupAccessResponse,
     ListProjectGroupsForUserGroupResponse
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import (
     validate_session, get_user_by_hash,
@@ -37,7 +37,7 @@ from src.Util.db import (
     grant_user_group_project_group_access, revoke_user_group_project_group_access,
     get_project_groups_for_user_group,
     # Project group functions
-    get_project_permission_group_by_hash
+    get_project_group_by_hash
 )
 from src.Util.admin_scope import is_project_admin_group_name
 from src.Util.db import is_root_user
@@ -119,7 +119,7 @@ async def list_user_groups(
     """
     List active user groups with their member counts.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users` (every root/admin session does; consumers only through a
     global role).
 
@@ -168,7 +168,7 @@ async def create_user_group_endpoint(
     """
     Create a global user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -226,7 +226,7 @@ async def get_user_group_details(
     """
     Get a user group with its members, granted project groups and reachable projects.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
 
     - `members`: active users in the group.
@@ -310,7 +310,7 @@ async def update_user_group_endpoint(
     """
     Rename a user group and/or change its description.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -367,7 +367,7 @@ async def delete_user_group_endpoint(
     """
     Soft-delete a user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -425,7 +425,7 @@ async def assign_user_to_group_endpoint(
 
     The user gains access to every project reachable through the group's project groups.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -501,7 +501,7 @@ async def remove_user_from_group_endpoint(
     """
     Remove a user from a user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -562,7 +562,7 @@ async def grant_user_group_project_group_access_endpoint(
     Every member of the user group gains access to every active, non-archived project in the project group
     (user → user group → project group → project). This is the only way to give a user group project access.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -584,7 +584,7 @@ async def grant_user_group_project_group_access_endpoint(
     _require_root_for_admin_group(session_data, user_group.group_name)
 
     # Get project group
-    project_group = get_project_permission_group_by_hash(project_group_hash)
+    project_group = get_project_group_by_hash(project_group_hash)
     if not project_group:
         raise NotFoundError(
             message="Project group not found",
@@ -637,7 +637,7 @@ async def revoke_user_group_project_group_access_endpoint(
     grants them. Their active project-scoped sessions (and refresh-token families) for projects they can no
     longer reach are revoked.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -656,7 +656,7 @@ async def revoke_user_group_project_group_access_endpoint(
     _require_root_for_admin_group(session_data, user_group.group_name)
 
     # Get project group
-    project_group = get_project_permission_group_by_hash(project_group_hash)
+    project_group = get_project_group_by_hash(project_group_hash)
     if not project_group:
         raise NotFoundError(
             message="Project group not found",
@@ -697,7 +697,7 @@ async def list_project_groups_for_user_group(
     """
     List the active project groups granted to a user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
 
     Entries are sorted by name and carry `group_id`, `group_hash`, `group_name`, `group_description`,
@@ -744,7 +744,7 @@ async def get_group_members_with_pagination(
     """
     List a user group's active members, with pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
 
     Members are sorted by username; inactive users are excluded. `joined_at` is when the membership was last
@@ -819,7 +819,7 @@ async def bulk_add_users_to_group(
     """
     Add up to 100 users to a user group in one request.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
@@ -933,7 +933,7 @@ async def get_user_groups(
     """
     List the active user groups a user belongs to.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_users`.
 
     Groups are sorted by name; each includes `joined_at` (when the membership was last (re)activated).

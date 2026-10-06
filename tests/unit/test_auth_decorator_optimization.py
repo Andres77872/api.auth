@@ -23,7 +23,7 @@ async def test_decorator_uses_session_data_not_get_user_by_hash():
         project_hash="prj-test-001",
         project_name="Test Project",
         user_project_hash="",
-        session_token="tok-decorator-test",
+        access_token="tok-decorator-test",
         session_length=3600,
         user_id="usr-test-001",
         username="testuser",

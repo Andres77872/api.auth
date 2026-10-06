@@ -136,16 +136,16 @@ def log_and_handle_errors(
                     t_auth = time.monotonic()
                     
                     # Validate session and get user info
-                    session_token = credentials.credentials
+                    access_token = credentials.credentials
 
                     # Phase 2.2b: Try request.state.session_validation first (set by AuthContextMiddleware)
                     if REQUEST_STATE_PASSTHROUGH and request is not None:
                         session_data = getattr(request.state, 'session_validation', None)
                         if session_data is None:
                             logger.info("AUTH_PERF|decorator_state_miss|fallback_to_direct")
-                            session_data = validate_session(session_token)
+                            session_data = validate_session(access_token)
                     else:
-                        session_data = validate_session(session_token)
+                        session_data = validate_session(access_token)
                     
                     if not session_data:
                         raise AuthenticationError(

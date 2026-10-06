@@ -3,7 +3,7 @@
 Security posture (mirrors ``db_billing``):
 - Only procedures from ``schemas/stored_procedures/19_oauth_connections.sql`` are called.
 - Wrapper argument order mirrors SQL exactly; callers use keyword arguments.
-- ``get_connection_operational_credentials`` and ``get_binding_legacy_redeem`` return
+- ``get_connection_operational_credentials`` returns
   ciphertext and key metadata for authorised server-side code only; nothing they
   return may reach a DTO, a log line or an error context.
 - Error contexts name ids/hashes and field names, never secrets, client ids or URLs.
@@ -26,7 +26,7 @@ _JSON_RESULT_FIELDS = frozenset(
 _BOOL_RESULT_FIELDS = frozenset(
     {
         "login_enabled", "link_enabled", "tenant_endpoints_allowed", "has_client_secret", "has_signing_key",
-        "catalog_login_enabled", "catalog_link_enabled", "enabled", "has_legacy_redeem", "project_is_active",
+        "catalog_login_enabled", "catalog_link_enabled", "enabled", "project_is_active",
         "project_archived", "default_user_group_is_active", "default_user_group_reaches_project",
     }
 )
@@ -282,7 +282,6 @@ def upsert_binding(
     provisioning_mode: str | None,
     default_user_group_id: str | None,
     existing_user_policy: str | None,
-    init_mode: str | None,
     delivery_mode: str | None,
     state_ttl_seconds: int | None,
     rate_limit_overrides: JsonParam,
@@ -292,7 +291,7 @@ def upsert_binding(
         "sp_oauth_binding_upsert",
         [
             id, project_id, connection_id, connection_key, enabled, login_enabled, link_enabled,
-            provisioning_mode, default_user_group_id, existing_user_policy, init_mode, delivery_mode,
+            provisioning_mode, default_user_group_id, existing_user_policy, delivery_mode,
             state_ttl_seconds, _json_param(rate_limit_overrides), actor,
         ],
         context=f"upsert_oauth_binding(connection_key={connection_key})",
@@ -333,27 +332,6 @@ def list_bindings_for_connection(*, connection_id: str) -> list[dict[str, Any]]:
     )
 
 
-def list_legacy_bindings(*, connection_key: str) -> list[dict[str, Any]]:
-    return _resolved_bindings("sp_oauth_binding_list_legacy", [connection_key], context="list_oauth_legacy_bindings")
-
-
-def set_binding_legacy_redeem(
-    *, binding_id: str, url_ciphertext: bytes | None, token_ciphertext: bytes | None, key_id: str | None, actor: str | None
-) -> dict[str, Any] | None:
-    return _callproc_one(
-        "sp_oauth_binding_set_legacy_redeem",
-        [binding_id, url_ciphertext, token_ciphertext, key_id, actor],
-        context="set_oauth_binding_legacy_redeem",
-        commit=True,
-    )
-
-
-def get_binding_legacy_redeem(*, binding_id: str) -> dict[str, Any] | None:
-    """SERVER-ONLY: encrypted companion-handshake material."""
-
-    return _callproc_one("sp_oauth_binding_get_legacy_redeem", [binding_id], context="get_oauth_binding_legacy_redeem")
-
-
 def delete_binding(*, binding_id: str) -> dict[str, Any] | None:
     return _callproc_one("sp_oauth_binding_delete", [binding_id], context="delete_oauth_binding", commit=True)
 
@@ -380,7 +358,6 @@ __all__ = [
     "get_binding",
     "get_binding_by_id",
     "get_binding_by_ids",
-    "get_binding_legacy_redeem",
     "get_connection_by_hash",
     "get_connection_by_id",
     "get_connection_operational_credentials",
@@ -389,10 +366,8 @@ __all__ = [
     "list_bindings_for_connection",
     "list_bindings_for_project",
     "list_connections",
-    "list_legacy_bindings",
     "list_provider_catalog",
     "remove_binding_url",
-    "set_binding_legacy_redeem",
     "set_connection_credentials",
     "set_connection_status",
     "set_provider_catalog_status",

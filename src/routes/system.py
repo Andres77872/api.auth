@@ -16,7 +16,7 @@ from src.Util.Models import (
     SystemInfoResponse, HealthCheckResponse, PingResponse,
     CacheStatsResponse, ClearCacheResponse, InvalidateCacheResponse
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
 from src.Util.activity_logger import ActivityType
@@ -26,7 +26,7 @@ from src.Util.cache_manager import cache_manager
 from src.Util.system_metrics import SystemMetrics
 from src.Util.db import (
     count_users, count_projects, count_user_groups,
-    count_project_permission_groups, validate_session, is_root_user, get_user_type
+    count_project_groups, validate_session, is_root_user, get_user_type
 )
 
 # Configure logging
@@ -49,7 +49,7 @@ async def get_system_info(
     Return service identity, aggregate tenant counts, and the advertised feature list.
 
     **Auth:** requires a valid access session: `Authorization: Bearer <access JWT>` or the
-    `session_token` cookie. Any user type may call it; it is not a public endpoint.
+    `access_token` cookie. Any user type may call it; it is not a public endpoint.
 
     **Responses:** 200 with `system` (name, version, architecture, status), `statistics`
     (total users, projects, user groups, project groups) and `features`. Each count
@@ -87,7 +87,7 @@ async def get_system_info(
     )
     
     total_project_groups = handle_db_operation(
-        lambda: count_project_permission_groups(),
+        lambda: count_project_groups(),
         error_context="count project groups for system info",
         default_return=0
     )
@@ -139,7 +139,7 @@ async def system_health(
     Report per-component health (database, Redis, groups, email, Patreon, billing) and an overall status.
 
     **Auth:** requires a valid access session: `Authorization: Bearer <access JWT>` or the
-    `session_token` cookie. Any user type may call it; it is not a public endpoint, so it
+    `access_token` cookie. Any user type may call it; it is not a public endpoint, so it
     cannot serve as a credential-less container/load-balancer probe (use `GET /system/ping`).
 
     **Responses:** a completed check returns 200 with `status` = `healthy` or `degraded`;
@@ -203,7 +203,7 @@ async def system_health(
     # Check group system
     def check_group_system():
         user_groups_count = count_user_groups()
-        project_groups_count = count_project_permission_groups()
+        project_groups_count = count_project_groups()
         return {"user_groups": user_groups_count, "project_groups": project_groups_count}
     
     group_stats = handle_db_operation(
@@ -322,7 +322,7 @@ async def get_cache_statistics(
     """
     Return Redis key counts per authentication-cache namespace and the configured cache TTLs.
 
-    **Auth:** any valid access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** any valid access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie); no user-type or permission check.
 
     **Responses:** 200 with `cache_statistics` (key counts for sessions, access checks,
@@ -361,7 +361,7 @@ async def clear_cache(
     """
     Delete every authentication-cache and access-session key in Redis.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user; other users get 403.
 
     **Effect:** removes all `session:*`, `access:*`, `role:*`, `permission:*`, `user_info:*`
@@ -415,7 +415,7 @@ async def invalidate_user_cache(
     """
     Drop one user's cached access, permission, user-type and user-info entries, plus their access sessions.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user; other users get 403.
 
     **Effect:** the user's `session:*`/`session_full:*` records are deleted as well, so
@@ -483,7 +483,7 @@ async def invalidate_project_cache(
     """
     Drop cached access, permission and role-check entries whose keys reference a project ID.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user; other users get 403.
 
     **Responses:** 200 with a confirmation, even when no key matched (the project is not

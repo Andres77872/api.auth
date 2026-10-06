@@ -6,7 +6,7 @@ health, the authentication cache, and bulk user operations. Error codes are expl
 [platform-wide contracts](README.md#platform-wide-contracts).
 
 Authenticated routes here take the access token as `Authorization: Bearer <access JWT>` or the
-`session_token` cookie. The admin gate is not the same across route families:
+`access_token` cookie. The admin gate is not the same across route families:
 
 | Route family | Who may call | Otherwise |
 | --- | --- | --- |

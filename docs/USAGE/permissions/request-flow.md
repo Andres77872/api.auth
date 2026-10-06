@@ -10,7 +10,7 @@ Every route in the suite starts the same way.
 1. The app middleware runs first (request validation, API audit logging, auth context). The
    auth-context middleware only records the caller on `request.state`; it never rejects.
 2. `HTTPBearerOrCookie` takes the token from `Authorization: Bearer ...`, else from the
-   `session_token` cookie. No token: `401`. `X-API-Key` is not read.
+   `access_token` cookie. No token: `401`. `X-API-Key` is not read.
 3. `validate_session(token)` hands a JWT to `validate_access_session`:
    1. decode the access token (signature, expiry, `type`, required claims);
    2. load `session:{access_jti}` from Redis and match it against the claims;

@@ -58,7 +58,7 @@ BEGIN
         ea.linked_at,
         ea.last_seen_at
     FROM user_external_accounts ea
-    INNER JOIN users u ON u.id = ea.user_id
+    INNER JOIN v_users u ON u.id = ea.user_id
     WHERE ea.provider = p_provider
       AND ea.provider_sub_hash = p_provider_sub_hash
       AND ea.status = 'linked'
@@ -111,7 +111,7 @@ BEGIN
     START TRANSACTION;
 
     SELECT COUNT(*) INTO v_user_is_consumer
-    FROM users
+    FROM v_users
     WHERE id = p_user_id
       AND user_type = 'consumer'
       AND is_active = TRUE;
@@ -316,9 +316,9 @@ BEGIN
     END IF;
 
     INSERT INTO users (
-        id, user_hash, username, email, password_hash, user_type, created_by, created_at
+        id, user_hash, username, password_hash, user_type, created_by, created_at
     ) VALUES (
-        p_user_id, p_user_hash, p_username, NULL, p_password_hash, 'consumer', p_created_by, NOW()
+        p_user_id, p_user_hash, p_username, p_password_hash, 'consumer', p_created_by, NOW()
     );
 
     IF p_user_email_id IS NOT NULL
@@ -384,7 +384,7 @@ BEGIN
         ea.linked_at,
         ea.last_seen_at,
         p_user_group_id AS assigned_user_group_id
-    FROM users u
+    FROM v_users u
     INNER JOIN user_external_accounts ea ON ea.user_id = u.id
     WHERE u.id = p_user_id
       AND ea.id = p_external_account_id;

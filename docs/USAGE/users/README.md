@@ -15,8 +15,7 @@ managed by other suites.
 - **Admin assignment is group membership.** An admin is assigned to a project by joining its
   `admin_<project_id>` user group.
 - **Email addresses are separate identities.** `user_emails` holds up to 5 pending or activated
-  addresses per user; only activated ones sign in or receive reset links. `users.email` is a legacy
-  shadow of the primary address.
+  addresses per user; only activated ones sign in or receive reset links. The email in user summaries comes from the activated primary address.
 - **Soft delete by default.** Deactivation and soft delete keep the row; hard delete removes it and
   everything the user owns. No route reactivates an account.
 
@@ -43,7 +42,7 @@ managed by other suites.
   deactivate, delete, reset or list them, singly or in bulk.
 - Inactive users return `404` on every route except hard delete, and cannot be reactivated through
   the API.
-- Updating a profile, username or legacy email keeps the user's sessions. Changing a user's type
+- Updating a profile, username keeps the user's sessions. Changing a user's type
   signs them out everywhere (access sessions and refresh families).
 - Only `PUT /user-types/{user_hash}/type` assigns a project when promoting to `admin`.
 - Hard delete is root-only and irreversible; use it only when permanent removal is required.

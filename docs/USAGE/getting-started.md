@@ -66,84 +66,21 @@ From another shell, `curl -s http://localhost:8000/system/ping` answers `200` wi
 there is no configurable base-path prefix. Email delivery needs `EMAIL_DELIVERY_ENABLED` and the
 worker (`python -m src.workers.email_worker`); see the [email suite](email/README.md).
 
-## First-root bootstrap and current seed caveat
+## First-root bootstrap
 
-There is no API-based bootstrap for the very first root user: `POST /user-types/root` itself
-requires a root access token. The repository ships a SQL seed, but its credential cannot be used
-with the current login:
+The first root account is created by `scripts/create_database.py` or
+`scripts/recreate_database.py`. Those scripts read `BOOTSTRAP_ROOT_PASSWORD`, or securely
+prompt and confirm when it is empty. The password must satisfy the
+[password policy](authentication-usage-cases.md#password-policy); only an Argon2id hash is
+stored. SQL does not contain a default password or root account.
 
-- `scripts/create_database.py` and `scripts/recreate_database.py` execute
-  `schemas/tables/05_initialize_data.sql`;
-- that SQL inserts user `root` (email `root@system.local`) with a legacy SHA-256 hash of the
-  plaintext `1248163264`;
-- the active password verifier accepts Argon2id hashes only, so that seeded credential cannot log
-  in;
-- both Python scripts print `admin123` on completion, which matches neither the seed nor any hash
-  and also cannot log in.
+There is no unauthenticated API bootstrap: `POST /user-types/root` requires an existing
+root access token. Additional root users are created through that authenticated endpoint.
+The initializer never overwrites an existing active root account. Attach and activate email
+addresses through the dedicated email lifecycle after sign-in.
 
-Treat both values as invalid development artifacts, never as deployment credentials. Pick one of
-the two paths below.
-
-> [!WARNING]
-> Until the seed is corrected, the rotation below is required before the first root login on a
-> database created by the canonical scripts.
-
-### Rotate the seeded root password
-
-Run from the repository root after `scripts/create_database.py`. The password must satisfy the
-[password policy](authentication-usage-cases.md#password-policy).
-
-```bash
-.venv/bin/python - <<'PY'
-from getpass import getpass
-from src.Util.db_config import get_connection
-from src.Util.password_security import assert_password_policy, hash_password
-
-password = getpass("Root password: ")
-assert_password_policy(password, username="root", email="root@system.local")
-
-with get_connection() as connection:
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT id FROM users "
-            "WHERE username = %s AND user_type = 'root' AND is_active = TRUE "
-            "LIMIT 1",
-            ("root",),
-        )
-        row = cursor.fetchone()
-        if not row:
-            raise SystemExit("Seeded root row was not found")
-        cursor.callproc("sp_update_password_hash", [row[0], hash_password(password)])
-    connection.commit()
-
-print("Seeded root password rotated to Argon2id")
-PY
-```
-
-### Create the first root without the seed
-
-If the seed row was deliberately omitted, create the first root through the application helper. It
-generates the IDs, hashes the password with Argon2id and calls the six-argument
-`sp_create_root_user` procedure:
-
-```bash
-.venv/bin/python - <<'PY'
-from getpass import getpass
-from src.Util.db.db_users import create_root_user
-from src.Util.password_security import assert_password_policy
-
-username = input("Root username: ").strip()
-email = input("Root email (optional): ").strip() or None
-password = getpass("Root password: ")
-assert_password_policy(password, username=username, email=email)
-user = create_root_user(username=username, password=password, email=email, created_by=None)
-print(f"Created {user.user_hash}")
-PY
-```
-
-Do not call `sp_create_root_user` with a plaintext password: it expects generated IDs and a
-password hash. `created_by=None` is acceptable only for this first user; create further root users
-with `POST /user-types/root`.
+For an existing schema with no root, run `python scripts/bootstrap_root_user.py`.
+It uses the same operator password and Argon2id policy as the creation scripts.
 
 ### Log in as root
 
@@ -204,8 +141,7 @@ curl -s -X POST "$API/user-types/admin" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
   --data-urlencode "username=project_admin" \
   --data-urlencode "password=$ADMIN_PASSWORD" \
-  --data-urlencode "email=admin@example.com" \
-  --data-urlencode "assigned_project_id=$PROJECT_ID"
+  --data-urlencode "assigned_project_ids=$PROJECT_ID"
 ```
 
 The admin can then log in with `/auth/login` and this `project_hash`, or with
@@ -263,9 +199,9 @@ are in [Authentication](authentication-usage-cases.md#password-policy).
 
 - Sign-in returns an **access token** (15 minutes by default) and a **refresh token** (72-hour
   sliding family, or 30 days absolute with `remember_me=true`) in the JSON body, and also sets them
-  as the `session_token` and `refresh_token` cookies.
+  as the `access_token` and `refresh_token` cookies.
 - Protected routes accept the access token as `Authorization: Bearer <token>` (APIs, mobile,
-  scripts) or through the `session_token` cookie (same-site browser apps).
+  scripts) or through the `access_token` cookie (same-site browser apps).
 - `POST /auth/refresh` exchanges the refresh token for a new pair. Each refresh token works once,
   and the previous access token stops working at the same moment.
 - A user API key in `X-API-Key` is not a general credential; `POST /auth/validate-api-key` resolves
@@ -285,7 +221,7 @@ Platform-wide rules (`User-Agent` on every request, 8 MiB POST limit, content ty
 | Server stops at import with `Missing required environment variable: DB_HOST` or `KeyError: 'API_KEY_PEPPER'` | A required variable is unset | Set it in `.env` or the environment |
 | Stored-procedure or unknown-database errors on first requests | `DB_NAME` differs from the schema the scripts created | Use `DB_NAME=magic_auth` |
 | `422` with body `{"status": "Error", "action": "User-Agent header not found"}` | No `User-Agent` header (curl sends one; some HTTP libraries and proxies do not) | Send a `User-Agent` on every request |
-| The seeded or printed root password is rejected | Legacy seed; see the bootstrap caveat | [Rotate the seeded root password](#rotate-the-seeded-root-password) |
+| The root password is rejected | Check the operator-supplied bootstrap password and password policy | [First root bootstrap](#first-root-bootstrap) |
 | `400 VAL_3002` "Project identifier is required for login" | `/auth/login` without `project_hash` | Send it, or use `/auth/platform/login` for root and admin |
 | `403` on a consumer login | No user group of the user reaches that project | Link the groups as shown above |
 | `401 AUTH_1001` when logging in with the registration email | That email is stored but not activated | Log in with the username, or add and activate the address with `/users/me/emails` |

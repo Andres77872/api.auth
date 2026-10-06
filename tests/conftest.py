@@ -61,30 +61,12 @@ os.environ.setdefault("LOG_TOKEN_REALM", "test_log_token_realm")
 
 # Phase 1 Google OAuth RED harness defaults.
 # These intentionally live in-process until task 4.3 owns .env.test edits.
-_GOOGLE_OAUTH_TEST_ENV_DEFAULTS = {
-    "GOOGLE_OAUTH_ENABLED": "false",
-    "GOOGLE_OAUTH_CLIENT_ID": "test-google-client-id.apps.googleusercontent.com",
-    "GOOGLE_OAUTH_CLIENT_SECRET": "test-google-client-secret-not-real",
-    "GOOGLE_OAUTH_DISCOVERY_URL": "https://accounts.google.com/.well-known/openid-configuration",
-    "GOOGLE_OAUTH_AUTHORIZE_ENDPOINT": "https://accounts.google.com/o/oauth2/v2/auth",
-    "GOOGLE_OAUTH_TOKEN_ENDPOINT": "https://oauth2.googleapis.com/token",
-    "GOOGLE_OAUTH_JWKS_URI": "https://www.googleapis.com/oauth2/v3/certs",
-    "GOOGLE_OAUTH_ISSUERS": "https://accounts.google.com,accounts.google.com",
-    "GOOGLE_OAUTH_SCOPES": "openid email",
-    "GOOGLE_OAUTH_REDIRECT_URIS": "http://localhost:8000/auth/google/callback,http://127.0.0.1:8000/auth/google/callback",
-    "GOOGLE_OAUTH_RETURN_ORIGINS": "http://localhost:3000,http://localhost:5173",
-    "GOOGLE_OAUTH_PROVISIONING_MODE": "disabled",
-    "GOOGLE_OAUTH_STATE_TTL_SECONDS": "600",
-    "GOOGLE_OAUTH_RECENT_REAUTH_SECONDS": "300",
-    "GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS": "3600",
-    "GOOGLE_OAUTH_LEEWAY_SECONDS": "30",
-    "GOOGLE_OAUTH_STATE_PEPPER": "test-oauth-state-pepper-not-real-min-32-bytes!!",
-    "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": "test-oauth-provider-sub-pepper-not-real-min-32-bytes!!",
-    "GOOGLE_OAUTH_EMAIL_HASH_PEPPER": "test-oauth-email-hash-pepper-not-real-min-32-bytes!!",
-    "GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "true",
-    "PROVIDER_INIT_REDEEM_URL": "http://provider-init.test/internal/auth/provider-init/redeem",
-    "PROVIDER_INIT_REDEEM_TOKEN": "test-provider-init-redeem-token-not-real",
-    "PROVIDER_INIT_RETURN_ORIGINS": "http://localhost:3000,http://localhost:5173",
+_OAUTH_TEST_ENV_DEFAULTS = {
+    "OAUTH_ENABLED": "false",
+    "OAUTH_STATE_PEPPER": "test-oauth-state-pepper-not-real-min-32-bytes!!",
+    "OAUTH_PROVIDER_SUB_PEPPER": "test-oauth-provider-sub-pepper-not-real-min-32-bytes!!",
+    "OAUTH_EMAIL_HASH_PEPPER": "test-oauth-email-hash-pepper-not-real-min-32-bytes!!",
+    "OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "true",
 }
 
 _PATREON_TEST_TIER_MAP_JSON = json.dumps(
@@ -206,7 +188,7 @@ _PATREON_TEST_ENV_DEFAULTS = {
     "PATREON_TEST_MEMBER_EMAIL": "",
 }
 
-for _oauth_env_key, _oauth_env_value in _GOOGLE_OAUTH_TEST_ENV_DEFAULTS.items():
+for _oauth_env_key, _oauth_env_value in _OAUTH_TEST_ENV_DEFAULTS.items():
     os.environ.setdefault(_oauth_env_key, _oauth_env_value)
 
 for _patreon_env_key, _patreon_env_value in _PATREON_TEST_ENV_DEFAULTS.items():
@@ -479,8 +461,6 @@ _PATREON_FIXTURE_ONLY_SECRET_VALUES = (
 _OAUTH_REDIS_PATCH_LOCATIONS = (
     "src.Util.oauth_state.redis_client",
     "src.Util.oauth_rate_limit.redis_client",
-    "src.Util.provider_init.redis_client",
-    "src.routes.auth_google.redis_client",
 )
 
 
@@ -610,7 +590,7 @@ def build_fake_google_claims(
     now = issued_at or int(time.time())
     claims = {
         "iss": issuer,
-        "aud": audience or os.environ["GOOGLE_OAUTH_CLIENT_ID"],
+        "aud": audience or "test-google-client-id.apps.googleusercontent.com",
         "sub": sub,
         "email": email,
         "email_verified": email_verified,
@@ -672,7 +652,6 @@ def mock_redis():
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.auth_lifecycle.redis_client", fake), \
          patch("src.Util.email.route_support.redis_client", fake), \
-         patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake), \
          patch("src.Util.db.db_session_analytics.redis_client", fake), \
          patch("src.Util.system_metrics.redis_client", fake), \

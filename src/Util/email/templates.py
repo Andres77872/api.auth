@@ -931,23 +931,6 @@ def render_transactional_template(
     return render_template_parts(template, variables, message_id=message_id)
 
 
-def render_email_template(
-    template_code: str,
-    variables: Mapping[str, Any] | None = None,
-    *,
-    message_id: str | None = None,
-    fail_closed_on_db_error: bool = False,
-) -> RenderedEmailTemplate:
-    """Compatibility alias for callers that use a shorter name."""
-
-    return render_transactional_template(
-        template_code,
-        variables,
-        message_id=message_id,
-        fail_closed_on_db_error=fail_closed_on_db_error,
-    )
-
-
 # Realistic, non-sensitive sample values used to render previews / send-tests and
 # to smoke-render a draft during validation. Links are obviously fake so a test
 # email is never confused with a real one.
@@ -1050,7 +1033,6 @@ __all__ = [
     "TransactionalEmailTemplate",
     "allowed_variables",
     "get_transactional_template",
-    "render_email_template",
     "render_template_parts",
     "render_transactional_template",
     "resolve_template",

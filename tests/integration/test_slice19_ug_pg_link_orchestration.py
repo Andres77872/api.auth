@@ -17,7 +17,7 @@ from tests.integration.conftest import make_session_payload, create_test_session
 
 
 def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
-                        session_token="test-admin-token"):
+                        access_token="test-admin-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -25,7 +25,7 @@ def _make_admin_session(user_id="admin-1", user_hash="usr-admin-001",
     s.project_id = "1"
     s.project_hash = "prj-admin-001"
     s.permissions = ["admin"]
-    s.session_token = session_token
+    s.access_token = access_token
     return s
 
 
@@ -58,8 +58,8 @@ async def test_grant_ug_pg_calls_correct_db_function(
     ug = _make_user_group()
     pg = _make_project_group()
     token = "grant-test-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     captured_args = None
 
@@ -75,7 +75,7 @@ async def test_grant_ug_pg_calls_correct_db_function(
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=pg), \
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=pg), \
          patch("src.routes.admin_user_groups.get_user_by_hash", return_value=MagicMock(id="admin-1")), \
          patch("src.routes.admin_user_groups.grant_user_group_project_group_access", side_effect=capture_grant):
         response = await client.post(
@@ -101,8 +101,8 @@ async def test_revoke_ug_pg_calls_correct_db_function(
     ug = _make_user_group()
     pg = _make_project_group()
     token = "revoke-test-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     captured_args = None
 
@@ -113,7 +113,7 @@ async def test_revoke_ug_pg_calls_correct_db_function(
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=pg), \
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=pg), \
          patch("src.routes.admin_user_groups.get_user_by_hash", return_value=MagicMock(id="admin-1")), \
          patch("src.routes.admin_user_groups.revoke_user_group_project_group_access", side_effect=capture_revoke):
         response = await client.request(
@@ -137,8 +137,8 @@ async def test_grant_ug_pg_returns_404_for_missing_user_group(
 ):
     """Grant must return 404 if user group doesn't exist."""
     token = "grant-404-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=None):
@@ -160,12 +160,12 @@ async def test_grant_ug_pg_returns_404_for_missing_project_group(
     """Grant must return 404 if project group doesn't exist."""
     ug = _make_user_group()
     token = "grant-404-pg-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=None):
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=None):
         response = await client.post(
             "/admin/user-groups/grp-ug-link-001/project-groups",
             data={"project_group_hash": "nonexistent-pg"},
@@ -183,8 +183,8 @@ async def test_revoke_ug_pg_returns_404_for_missing_user_group(
 ):
     """Revoke must return 404 if user group doesn't exist."""
     token = "revoke-404-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=None):
@@ -207,8 +207,8 @@ async def test_grant_ug_pg_response_contains_access_details(
     ug = _make_user_group()
     pg = _make_project_group()
     token = "grant-details-token"
-    admin_session = _make_admin_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    admin_session = _make_admin_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     access_result = {
         "access_id": "access-123",
@@ -219,7 +219,7 @@ async def test_grant_ug_pg_response_contains_access_details(
 
     with patch("src.routes.admin_user_groups.validate_session", return_value=admin_session), \
          patch("src.routes.admin_user_groups.get_user_group_by_hash", return_value=ug), \
-         patch("src.routes.admin_user_groups.get_project_permission_group_by_hash", return_value=pg), \
+         patch("src.routes.admin_user_groups.get_project_group_by_hash", return_value=pg), \
          patch("src.routes.admin_user_groups.get_user_by_hash", return_value=MagicMock(id="admin-1")), \
          patch("src.routes.admin_user_groups.grant_user_group_project_group_access", return_value=access_result):
         response = await client.post(

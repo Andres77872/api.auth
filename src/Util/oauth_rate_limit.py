@@ -14,27 +14,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from src.Util.auth_constants import (
-    GOOGLE_OAUTH_CALLBACK_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_CALLBACK_RATE_PREFIX,
-    GOOGLE_OAUTH_CALLBACK_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX,
-    GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_START_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_START_RATE_PREFIX,
-    GOOGLE_OAUTH_START_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX,
-    GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX,
-    GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV,
-    GOOGLE_OAUTH_UNLINK_RATE_LIMIT_ENV,
-    GOOGLE_OAUTH_UNLINK_RATE_PREFIX,
-    GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV,
-)
-from src.Util.google_oauth_config import load_google_oauth_config
+from src.Util.auth_constants import OAUTH_CALLBACK_RATE_LIMIT_ENV, OAUTH_CALLBACK_RATE_PREFIX, OAUTH_CALLBACK_RATE_WINDOW_SECONDS_ENV, OAUTH_START_RATE_LIMIT_ENV, OAUTH_START_RATE_PREFIX, OAUTH_START_RATE_WINDOW_SECONDS_ENV, OAUTH_STATE_CONSUME_RATE_LIMIT_ENV, OAUTH_STATE_CONSUME_RATE_PREFIX, OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV, OAUTH_SUB_COLLISION_RATE_LIMIT_ENV, OAUTH_SUB_COLLISION_RATE_PREFIX, OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV, OAUTH_UNLINK_RATE_LIMIT_ENV, OAUTH_UNLINK_RATE_PREFIX, OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV
 
 
 redis_client = None
@@ -49,9 +29,6 @@ class OAuthRateLimitExceeded(RuntimeError):
         self.limit = int(limit)
         self.key = key
         super().__init__(f"OAuth rate limit exceeded for {bucket}; retry after {self.retry_after}s")
-
-
-RateLimitExceeded = OAuthRateLimitExceeded
 
 
 @dataclass(frozen=True)
@@ -69,8 +46,6 @@ class OAuthRateLimitPolicy:
     start_window_seconds: int = 60
     callback_limit: int = 30
     callback_window_seconds: int = 60
-    provider_init_limit: int = 20
-    provider_init_window_seconds: int = 60
     state_consume_limit: int = 60
     state_consume_window_seconds: int = 60
     sub_collision_limit: int = 10
@@ -91,12 +66,7 @@ def _default_redis_client():
 
 
 def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
-    # Rate limits are deployment ceilings shared by every provider. The neutral OAUTH_* name
-    # wins; the historical GOOGLE_OAUTH_* name keeps working.
-    neutral = name.removeprefix("GOOGLE_")
-    raw = env.get(neutral)
-    if raw is None or str(raw).strip() == "":
-        raw = env.get(name)
+    raw = env.get(name)
     if raw is None or str(raw).strip() == "":
         return default
     try:
@@ -113,18 +83,16 @@ def load_oauth_rate_limit_policy(*, env: Mapping[str, str] | None = None) -> OAu
 
     oauth_config = load_oauth_settings(env=values)
     return OAuthRateLimitPolicy(
-        start_limit=_env_int(values, GOOGLE_OAUTH_START_RATE_LIMIT_ENV, 20),
-        start_window_seconds=_env_int(values, GOOGLE_OAUTH_START_RATE_WINDOW_SECONDS_ENV, 60),
-        callback_limit=_env_int(values, GOOGLE_OAUTH_CALLBACK_RATE_LIMIT_ENV, 30),
-        callback_window_seconds=_env_int(values, GOOGLE_OAUTH_CALLBACK_RATE_WINDOW_SECONDS_ENV, 60),
-        provider_init_limit=_env_int(values, GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT_ENV, 20),
-        provider_init_window_seconds=_env_int(values, GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS_ENV, 60),
-        state_consume_limit=_env_int(values, GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT_ENV, 60),
-        state_consume_window_seconds=_env_int(values, GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV, 60),
-        sub_collision_limit=_env_int(values, GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT_ENV, 10),
-        sub_collision_window_seconds=_env_int(values, GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV, 300),
-        unlink_limit=_env_int(values, GOOGLE_OAUTH_UNLINK_RATE_LIMIT_ENV, 10),
-        unlink_window_seconds=_env_int(values, GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV, 300),
+        start_limit=_env_int(values, OAUTH_START_RATE_LIMIT_ENV, 20),
+        start_window_seconds=_env_int(values, OAUTH_START_RATE_WINDOW_SECONDS_ENV, 60),
+        callback_limit=_env_int(values, OAUTH_CALLBACK_RATE_LIMIT_ENV, 30),
+        callback_window_seconds=_env_int(values, OAUTH_CALLBACK_RATE_WINDOW_SECONDS_ENV, 60),
+        state_consume_limit=_env_int(values, OAUTH_STATE_CONSUME_RATE_LIMIT_ENV, 60),
+        state_consume_window_seconds=_env_int(values, OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS_ENV, 60),
+        sub_collision_limit=_env_int(values, OAUTH_SUB_COLLISION_RATE_LIMIT_ENV, 10),
+        sub_collision_window_seconds=_env_int(values, OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS_ENV, 300),
+        unlink_limit=_env_int(values, OAUTH_UNLINK_RATE_LIMIT_ENV, 10),
+        unlink_window_seconds=_env_int(values, OAUTH_UNLINK_RATE_WINDOW_SECONDS_ENV, 300),
         fail_closed_on_redis_error=oauth_config.fail_closed_on_redis_error,
     )
 
@@ -187,10 +155,10 @@ class OAuthRateLimiter:
             raise OAuthRateLimitExceeded(bucket=bucket, retry_after=self._ttl(key, window_seconds), limit=limit, key=key)
         return OAuthRateLimitDecision(allowed=True, bucket=bucket, remaining=max(0, limit - count))
 
-    def check_start(self, *, ip_address: str, provider_init_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
+    def check_start(self, *, ip_address: str, init_token_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "start",
-            _bucket_key(GOOGLE_OAUTH_START_RATE_PREFIX, "start", _digest(ip_address), provider_init_fingerprint, scope=scope),
+            _bucket_key(OAUTH_START_RATE_PREFIX, "start", _digest(ip_address), init_token_fingerprint, scope=scope),
             limit=self.policy.start_limit,
             window_seconds=self.policy.start_window_seconds,
         )
@@ -198,25 +166,16 @@ class OAuthRateLimiter:
     def check_callback(self, *, ip_address: str, state_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "callback",
-            _bucket_key(GOOGLE_OAUTH_CALLBACK_RATE_PREFIX, "callback", _digest(ip_address), state_fingerprint, scope=scope),
+            _bucket_key(OAUTH_CALLBACK_RATE_PREFIX, "callback", _digest(ip_address), state_fingerprint, scope=scope),
             limit=self.policy.callback_limit,
             window_seconds=self.policy.callback_window_seconds,
         )
 
-    def check_provider_init_redeem(self, *, ip_address: str, provider_init_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
-        return self._consume_bucket(
-            "provider_init",
-            _bucket_key(GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX, "provider_init", _digest(ip_address), provider_init_fingerprint, scope=scope),
-            limit=self.policy.provider_init_limit,
-            window_seconds=self.policy.provider_init_window_seconds,
-        )
-
-    check_provider_init = check_provider_init_redeem
 
     def check_state_consumption(self, *, ip_address: str, state_fingerprint: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "state_consume",
-            _bucket_key(GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX, "state_consume", _digest(ip_address), state_fingerprint, scope=scope),
+            _bucket_key(OAUTH_STATE_CONSUME_RATE_PREFIX, "state_consume", _digest(ip_address), state_fingerprint, scope=scope),
             limit=self.policy.state_consume_limit,
             window_seconds=self.policy.state_consume_window_seconds,
         )
@@ -226,7 +185,7 @@ class OAuthRateLimiter:
     def check_provider_sub_collision(self, *, provider_sub_fingerprint: str, ip_address: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "sub_collision",
-            _bucket_key(GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX, "sub_collision", provider_sub_fingerprint, _digest(ip_address), scope=scope),
+            _bucket_key(OAUTH_SUB_COLLISION_RATE_PREFIX, "sub_collision", provider_sub_fingerprint, _digest(ip_address), scope=scope),
             limit=self.policy.sub_collision_limit,
             window_seconds=self.policy.sub_collision_window_seconds,
         )
@@ -234,7 +193,7 @@ class OAuthRateLimiter:
     def check_unlink_attempt(self, *, user_id: str, ip_address: str | None = None, scope: str | None = None) -> OAuthRateLimitDecision:
         return self._consume_bucket(
             "unlink",
-            _bucket_key(GOOGLE_OAUTH_UNLINK_RATE_PREFIX, "unlink", _digest(user_id), _digest(ip_address), scope=scope),
+            _bucket_key(OAUTH_UNLINK_RATE_PREFIX, "unlink", _digest(user_id), _digest(ip_address), scope=scope),
             limit=self.policy.unlink_limit,
             window_seconds=self.policy.unlink_window_seconds,
         )
@@ -248,6 +207,5 @@ __all__ = [
     "OAuthRateLimitExceeded",
     "OAuthRateLimitPolicy",
     "OAuthRateLimiter",
-    "RateLimitExceeded",
     "load_oauth_rate_limit_policy",
 ]

@@ -14,7 +14,7 @@ example uses `API=http://localhost:8000` and relies on curl's default `User-Agen
 
 ## Endpoints at a glance
 
-"Access token" means `Authorization: Bearer <access_token>` or the `session_token` cookie.
+"Access token" means `Authorization: Bearer <access_token>` or the `access_token` cookie.
 
 | Method | Path | Credential | Body | Purpose |
 | --- | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ example uses `API=http://localhost:8000` and relies on curl's default `User-Agen
 | `POST` | `/auth/logout` | access token | none | Revoke the session's refresh family and clear cookies |
 | `POST` | `/auth/validate-api-key` | `X-API-Key` | none | Resolve the owner and project of a user API key |
 
-OAuth sign-in (`/auth/oauth/*`) and the deprecated `/auth/google/*` aliases are covered in
+OAuth sign-in (`/auth/oauth/*`)  are covered in
 [OAuth sign-in](#oauth-sign-in).
 
 ## Tokens and sessions
@@ -46,8 +46,6 @@ project switch retires the current pair and issues the next one.
   refresh or project switch invalidates the previous one immediately, even before it expires.
 - **Refresh token** — HS256 JWT (`type: refresh_token`). Single use, accepted only by
   `POST /auth/refresh` and `POST /auth/switch-project`.
-- **`session_token`** — deprecated alias: the JSON field has the same value as `access_token`, and
-  the access cookie carries this name. It is never a refresh credential.
 - **Scope** — `project` sessions are bound to one project (login, registration, OAuth, switch);
   `platform` sessions come from `/auth/platform/login` and have no project.
 - **Sign-in time** — the access token's `auth_time` claim records when the user last proved
@@ -64,17 +62,17 @@ it. If the context check fails, the whole family is revoked and the request gets
 
 | Item | Default | Configured by | Behavior |
 | --- | --- | --- | --- |
-| Access token and `session_token` cookie | `900` seconds | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default `15`) | Fixed per token |
+| Access token and `access_token` cookie | `900` seconds | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default `15`) | Fixed per token |
 | Refresh family, `remember_me=false` | `259200` seconds (72 hours) | fixed | Sliding: every successful refresh restarts the 72-hour window |
 | Refresh family, `remember_me=true` | `2592000` seconds (30 days) | fixed | Absolute: ends 30 days after sign-in; `refresh_expires_in` counts down |
 | Refresh replay grace | `10` seconds | `REFRESH_REPLAY_GRACE_SECONDS` (`0` disables) | See [Refresh the token pair](#refresh-the-token-pair) |
-| Recent sign-in window | `300` seconds | `OAUTH_RECENT_REAUTH_SECONDS` (falls back to `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS`) | Gates `/auth/switch-project` and other sensitive operations |
+| Recent sign-in window | `300` seconds | `OAUTH_RECENT_REAUTH_SECONDS` | Gates `/auth/switch-project` and other sensitive operations |
 
 ### Where each credential is accepted
 
 | Credential | Transport | Accepted by |
 | --- | --- | --- |
-| Access token | `Authorization: Bearer <token>` (exact `Bearer ` prefix), or the `session_token` cookie. The header wins when both are sent. | Every protected route, including `/auth/validate`, `/auth/logout`, `/auth/switch-project`, `/auth/password/change` |
+| Access token | `Authorization: Bearer <token>` (exact `Bearer ` prefix), or the `access_token` cookie. The header wins when both are sent. | Every protected route, including `/auth/validate`, `/auth/logout`, `/auth/switch-project`, `/auth/password/change` |
 | Refresh token | `refresh_token` cookie (`Path=/auth`) and/or `refresh_token` form field. If both are sent they must be identical. `Authorization` is ignored. | `/auth/refresh`, `/auth/switch-project` |
 | User API key | `X-API-Key: sk_<public_id>.<secret>` | `/auth/validate-api-key`, plus `POST /auth/oauth/init` and `GET /auth/oauth/providers` ([OAuth suite](oauth/README.md)). No other route treats it as a credential. |
 
@@ -91,7 +89,6 @@ share these top-level token fields:
 | --- | --- | --- |
 | `access_token` | string | Access JWT |
 | `refresh_token` | string | Refresh JWT |
-| `session_token` | string | Deprecated alias; same value as `access_token` |
 | `token_type` | string | Always `Bearer` |
 | `expires_in` | integer | Access-token lifetime in seconds |
 | `refresh_expires_in` | integer | Seconds until the refresh family expires |
@@ -103,7 +100,7 @@ share these top-level token fields:
 
 | Field | Meaning |
 | --- | --- |
-| `user` | `user_hash`, `username`, `email` (the account's legacy email field), `user_type` |
+| `user` | `user_hash`, `username`, `email` (the primary activated address), `user_type` |
 | `project` | `project_hash`, `project_name`, `project_description`; `null` for platform sessions |
 | `accessible_projects` | Projects the user can target later with `/auth/switch-project` |
 | `user_groups` | `{group_hash, group_name, description}` objects; empty for root and admin |
@@ -160,7 +157,7 @@ curl -s -X POST "$API/auth/login" \
   --data-urlencode "project_hash=$PROJECT_HASH"
 ```
 
-The response sets the `session_token` and `refresh_token` cookies and returns:
+The response sets the `access_token` and `refresh_token` cookies and returns:
 
 ```jsonc
 {
@@ -168,7 +165,7 @@ The response sets the `session_token` and `refresh_token` cookies and returns:
   "message": "Login successful",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
@@ -203,7 +200,7 @@ Root and admin responses have `user_groups: []` and `plan: null`. The admin's
 
 Send the email in the `username` field. The server resolves an exact username first, then an
 **activated** address from the user's email list. Pending, removed or unknown addresses, and the
-legacy `email` given at registration, fail with the same `401 AUTH_1001` as a wrong password. Add
+unactivated email addresses, fail with the same `401 AUTH_1001` as a wrong password. Add
 and activate addresses with `/users/me/emails` ([email management](users/email-management.md)).
 
 ### Platform login
@@ -251,8 +248,7 @@ the check fails closed with `429` and `Retry-After: 1`.
 ### Check availability
 
 `POST /auth/check-availability` — form fields `username` and/or `email` (at least one, else
-`400 VAL_3002`). Each value is compared against active accounts' usernames and legacy `email`
-fields.
+`400 VAL_3002`). Each value is compared against active accounts' usernames and enrolled email addresses.
 
 ```bash
 curl -s -X POST "$API/auth/check-availability" \
@@ -274,9 +270,8 @@ whether an email is activated, and it must not drive activation or recovery logi
 | Field | Required | Notes |
 | --- | --- | --- |
 | `username` | yes | Must not match any active account's username or email |
-| `password` | yes | Checked by the [password policy](#password-policy) with the username and email as context |
+| `password` | yes | Checked by the [password policy](#password-policy) with the username as context |
 | `user_group_hash` | yes | User group the consumer joins; anyone who knows the hash can register into it |
-| `email` | no | Stored in the account's legacy `email` field only (see below) |
 
 ```bash
 curl -s -X POST "$API/auth/register" \
@@ -284,6 +279,8 @@ curl -s -X POST "$API/auth/register" \
   --data-urlencode "password=$ALICE_PASSWORD" \
   --data-urlencode "user_group_hash=$GROUP_HASH"
 ```
+
+Email enrollment uses `POST /users/me/emails` after registration.
 
 The account is always a consumer. When the group reaches at least one active project, the new
 session is scoped to the first one by name, the token fields are filled and both cookies are set;
@@ -295,7 +292,7 @@ otherwise the token fields are `null` and no cookie is set.
   "message": "User registered successfully",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
@@ -389,8 +386,7 @@ expire after `EMAIL_ACTIVATION_TOKEN_TTL_SECONDS` (default `86400`).
 
 ### Request a password reset email
 
-`POST /auth/password/forgot` — body `email_or_username` (aliases `identifier`, `email`,
-`username`). A missing identifier is the only non-`202` validation error (`400 VAL_3002`).
+`POST /auth/password/forgot` — body `email_or_username`. A missing identifier is the only non-`202` validation error (`400 VAL_3002`).
 
 ```bash
 curl -s -X POST "$API/auth/password/forgot" \
@@ -401,7 +397,7 @@ curl -s -X POST "$API/auth/password/forgot" \
 
 A message is queued only when the identifier matches an active account's **activated** email, or
 its username (the message then goes to the primary activated email). Pending, removed or unknown
-addresses and legacy-only `email` values get the same `202` and no message.
+addresses get the same `202` and no message.
 
 The emailed link is built from, in order: a pinned base URL (`AUTH_EMAIL_PUBLIC_BASE_URL`, then
 `PUBLIC_AUTH_BASE_URL` or `BASE_URL`); the `X-Public-Base-Url` request header, when it is an http(s)
@@ -410,7 +406,7 @@ should send its frontend origin in `X-Public-Base-Url` unless the deployment pin
 
 ### Reset the password
 
-`POST /auth/password/reset` — body `new_password` (alias `password`) and `token` (or `lookup_id` +
+`POST /auth/password/reset` — body `new_password` and `token` (or `lookup_id` +
 `secret`). Links from `POST /auth/password/forgot` and admin-issued reset links are both accepted.
 
 ```bash
@@ -571,7 +567,7 @@ groups.
   "message": "Successfully switched to project: Second Project",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
   "expires_in": 900,
   "refresh_expires_in": 259200,
@@ -606,7 +602,7 @@ curl -s -X POST "$API/auth/logout" -H "Authorization: Bearer $ACCESS_TOKEN"
 {"success": true, "message": "Logged out successfully"}
 ```
 
-Logout revokes the caller's refresh family and its access session and clears the `session_token`
+Logout revokes the caller's refresh family and its access session and clears the `access_token`
 (`Path=/`) and `refresh_token` (`Path=/auth`) cookies. The user's other sessions are untouched.
 
 The access token must still be valid: an expired or revoked one gets `401` before the handler runs,
@@ -661,8 +657,7 @@ the project's backend mints a single-use `init_token` with `POST /auth/oauth/ini
 the browser posts it to `POST /auth/oauth/start`, and `GET /auth/oauth/callback` completes the
 login. The callback returns the same `LoginResponse` and sets the same cookies as
 `POST /auth/login`; only active consumer accounts can sign in this way. Everything on this page
-(validation, refresh, switching, logout) then applies unchanged. The deprecated `/auth/google/*`
-aliases run on the same pipeline; see the [Google OAuth suite](google-oauth/README.md).
+(validation, refresh, switching, logout) then applies unchanged.
 
 ## Session revocation
 

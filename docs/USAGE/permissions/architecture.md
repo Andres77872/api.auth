@@ -12,7 +12,7 @@ into effective permissions is in [Permission resolution](resolution.md).
 | Stored procedures | `schemas/stored_procedures/06_permission_assignments.sql` |
 | Tables | `schemas/tables/02_create_tables.sql` |
 | Activity triggers | `schemas/triggers/02_permission_activity_triggers.sql` |
-| Token validation | `HTTPBearerOrCookie` in `src/Util/Seccurity.py`, `validate_session` in `src/Util/db/db_enhanced.py`, `src/Util/auth_lifecycle.py` |
+| Token validation | `HTTPBearerOrCookie` in `src/Util/security.py`, `validate_session` in `src/Util/db/db_enhanced.py`, `src/Util/auth_lifecycle.py` |
 
 ## Tables
 

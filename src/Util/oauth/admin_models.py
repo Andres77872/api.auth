@@ -111,13 +111,6 @@ class BindingUrlCreate(_Model):
     url: str = Field(..., min_length=1, max_length=2048)
 
 
-class LegacyRedeemUpdate(_Model):
-    """Write-only companion-handshake bridge (``init_mode='legacy_redeem'``). Root only."""
-
-    redeem_url: str = Field(..., min_length=1, max_length=2048, repr=False)
-    redeem_token: str = Field(..., min_length=1, max_length=4096, repr=False)
-
-
 # ───────────────────────────────────────────────────────────────────── responses
 
 class _Response(BaseModel):
@@ -205,8 +198,6 @@ class BindingInfo(_Response):
     default_user_group_hash: Optional[str] = None
     default_user_group_name: Optional[str] = None
     existing_user_policy: str = "deny"
-    init_mode: str = "api"
-    has_legacy_redeem: bool = False
     delivery_mode: str = "bff"
     state_ttl_seconds: Optional[int] = None
     urls: list[AllowedUrl] = Field(default_factory=list)
@@ -231,7 +222,6 @@ __all__ = [
     "ConnectionUpdate",
     "CredentialProbeResult",
     "CredentialsStatus",
-    "LegacyRedeemUpdate",
     "OAUTH_DTO_FORBIDDEN_FIELD_NAMES",
     "ProviderCatalogEntry",
     "ProviderCatalogUpdate",

@@ -60,7 +60,6 @@ AUTH_CONTRACT_MODEL_NAMES = (
     "LoginResponse",
     "RegisterResponse",
     "SwitchProjectResponse",
-    "UserLogin",
     "EnhancedUserLogin",
 )
 
@@ -127,7 +126,7 @@ def test_future_billing_forbidden_field_constants_cover_auth_boundary_terms():
     assert missing_terms == [], "billing forbidden-field constants must cover every auth/session boundary term"
 
 
-def test_auth_response_models_and_legacy_login_models_remain_billing_free():
+def test_auth_response_models_and_session_context_remain_billing_free():
     from src.Util import Models
 
     for model_name in AUTH_CONTRACT_MODEL_NAMES:

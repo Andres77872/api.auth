@@ -30,13 +30,12 @@ No user credentials. The `Stripe-Signature` header over the exact raw body is th
 | Method | Path | Signature checked with | Statuses |
 | --- | --- | --- | --- |
 | POST | `/webhooks/stripe/{billing_group_hash}` | The group's stored webhook secret, and only that one | `200`, `401`, `429`, `503` |
-| POST | `/webhooks/stripe` | `STRIPE_WEBHOOK_SECRET` (single-account fallback) | `200`, `401`, `429`, `503` |
 
 Details: [webhook contract](#webhook-contract).
 
 ### Admin billing endpoints
 
-22 routes. Access token (`Authorization: Bearer <access JWT>` or the `session_token` cookie)
+22 routes. Access token (`Authorization: Bearer <access JWT>` or the `access_token` cookie)
 of a root or admin user whose session has `admin` or `manage_billing`. Rows marked Root also
 require a root user. Scope rules: [admin authorization and scope](#admin-authorization-and-scope).
 
@@ -292,8 +291,7 @@ allowlist answers `503` first).
 ### Portal
 
 `POST /internal/users/{user_hash}/billing/portal` creates a Stripe Customer Portal session with
-the billing group's own portal configuration. There is no fallback to
-`STRIPE_PORTAL_CONFIGURATION_ID`.
+the billing group's own stored portal configuration.
 
 | Field | Type | Required | Rules |
 | --- | --- | --- | --- |
@@ -405,7 +403,6 @@ Checked before the signature. Failing any row returns `503`
 | --- | --- |
 | Both | `BILLING_ENABLED` and `STRIPE_WEBHOOKS_ENABLED` on; `BILLING_ID_HMAC_SECRET` set |
 | `/webhooks/stripe/{billing_group_hash}` | The group exists, is `active`, has `webhooks_enabled` on, has `active` credentials, and a webhook secret that decrypts. Unknown and unconfigured groups are indistinguishable |
-| `/webhooks/stripe` | `STRIPE_WEBHOOK_SECRET` set |
 
 ### Verification
 
@@ -823,7 +820,6 @@ value is `1`, `true`, `yes`, `y`, or `on`.
 | `BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID` | Id stored with each ciphertext; 1-128 characters from `A-Z a-z 0-9 . _ : -` |
 | `BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON` | JSON object of key id to key for older ciphertext; the active key is added automatically. Default `{}` |
 | `BILLING_RETURN_URL_ALLOWLIST` | Allowed return origins ([return URLs](#return-urls)) |
-| `BILLING_ALLOWED_RETURN_ORIGINS` | Read only when `BILLING_RETURN_URL_ALLOWLIST` is empty |
 
 Generate values outside source control and never paste them into tickets or docs.
 
@@ -834,9 +830,6 @@ Generate values outside source control and never paste them into tickets or docs
 | `STRIPE_API_VERSION` | `2026-05-27.dahlia` | API version sent to Stripe. Any other value shows as a critical mismatch in health; routes do not block on it |
 | `STRIPE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS` | `300` | Signature timestamp tolerance; must be positive |
 | `STRIPE_ALLOWED_WEBHOOK_EVENTS` | The 9 handled event types | Event types the webhooks process; any other type is answered `ignored_noop` without writes. May list a subset; a type outside the 9 makes Stripe config loading fail. Health reports it as a count |
-| `STRIPE_SECRET_KEY` | Empty | Not used by the routes or the worker; read by `scripts/migrations/billing_group_bootstrap.py` to seed a group's credentials |
-| `STRIPE_WEBHOOK_SECRET` | Empty | Secret for `POST /webhooks/stripe`; also read by the bootstrap script |
-| `STRIPE_PORTAL_CONFIGURATION_ID` | Empty | Not a runtime fallback; read by the bootstrap script |
 
 The installed `stripe` package must be `15.2.1` for health to report the provider ready.
 

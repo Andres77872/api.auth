@@ -35,7 +35,7 @@ sources. The full endpoint list is in [Permissions reference](reference.md).
 
 ## Rules and caveats
 
-- **Access tokens only.** Send `Authorization: Bearer <access JWT>` or the `session_token` cookie.
+- **Access tokens only.** Send `Authorization: Bearer <access JWT>` or the `access_token` cookie.
   API keys are not accepted.
 - **Form fields.** Writes take `application/x-www-form-urlencoded` or `multipart/form-data`. A JSON
   body is not read, so a required field is reported missing (`400` `VAL_3001`).

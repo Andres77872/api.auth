@@ -98,10 +98,7 @@ flags are forced off while the group or its credentials are not `active`.
 
 Each group has its own Stripe account. Every Stripe call (Checkout, Portal, provisioning,
 reconcile, import, worker reads) builds a client from that group's decrypted secret key and
-`STRIPE_API_VERSION`. No route or worker call uses the global `STRIPE_SECRET_KEY`. Webhooks are
-path-scoped so the URL selects exactly one signing secret; nothing tries several secrets. The
-global `/webhooks/stripe` route exists for single-account deployments and uses
-`STRIPE_WEBHOOK_SECRET`.
+`STRIPE_API_VERSION`. Webhook URLs select exactly one group and its stored signing secret.
 
 ## Idempotency and deduplication
 

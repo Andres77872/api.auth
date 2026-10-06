@@ -23,7 +23,7 @@ async def test_decorator_reads_from_request_state():
         project_hash="phash_state",
         project_name="State Project",
         user_project_hash="",
-        session_token="tok_state_test",
+        access_token="tok_state_test",
         session_length=3600,
         user_id="555",
         username="stateuser",
@@ -80,7 +80,7 @@ async def test_decorator_reads_from_request_state_with_activity_logging():
         project_hash="phash_log",
         project_name="Log Project",
         user_project_hash="",
-        session_token="tok_log_test",
+        access_token="tok_log_test",
         session_length=3600,
         user_id="666",
         username="loguser",
@@ -158,7 +158,7 @@ async def test_decorator_falls_back_when_state_missing():
         project_hash="phash_fb",
         project_name="Fallback Project",
         user_project_hash="",
-        session_token="tok_fallback",
+        access_token="tok_fallback",
         session_length=3600,
         user_id="777",
         username="fallbackuser",
@@ -216,7 +216,7 @@ async def test_decorator_falls_back_when_passthrough_disabled():
         project_hash="phash_dis",
         project_name="Disabled Project",
         user_project_hash="",
-        session_token="tok_disabled",
+        access_token="tok_disabled",
         session_length=3600,
         user_id="888",
         username="disableduser",
@@ -264,7 +264,7 @@ async def test_auth_context_middleware_uses_session_cookie_for_state():
         project_hash="phash_cookie",
         project_name="Cookie Project",
         user_project_hash="",
-        session_token="jwt.cookie.access",
+        access_token="jwt.cookie.access",
         session_length=3600,
         user_id="999",
         username="cookieuser",
@@ -277,7 +277,7 @@ async def test_auth_context_middleware_uses_session_cookie_for_state():
 
     request = MagicMock()
     request.headers = {}
-    request.cookies = {"session_token": "jwt.cookie.access"}
+    request.cookies = {"access_token": "jwt.cookie.access"}
     request.state = SimpleNamespace()
 
     async def call_next(req):

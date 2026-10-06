@@ -106,7 +106,6 @@ def test_manually_authenticated_routes_document_their_credentials(app):
 def test_webhooks_and_manual_body_routes_document_a_request_body(app):
     schema = _schema(app)
     for path in (
-        "/webhooks/stripe",
         "/webhooks/stripe/{billing_group_hash}",
         "/webhooks/patreon",
         "/webhooks/email/resend",
@@ -116,9 +115,7 @@ def test_webhooks_and_manual_body_routes_document_a_request_body(app):
         assert "requestBody" in schema["paths"][path]["post"], path
 
 
-def test_google_aliases_are_deprecated_and_point_to_oauth(app):
+def test_retired_routes_are_absent(app):
     schema = _schema(app)
-    for method, path, operation in _operations(schema):
-        if path.startswith("/auth/google/"):
-            assert operation.get("deprecated") is True, f"{method} {path}"
-            assert "/auth/oauth" in operation["description"], f"{method} {path}"
+    assert "/webhooks/stripe" not in schema["paths"]
+    assert not any(path.startswith("/auth/google/") for path in schema["paths"])

@@ -35,18 +35,17 @@ BEGIN
     -- shadowed by another account's activated email identity.
     SELECT id
       INTO v_resolved_user_id
-    FROM users
+    FROM v_users
     WHERE is_active = 1
       AND username = p_username_email
     LIMIT 1;
 
-    -- Email login uses user_emails only. Legacy users.email is a compatibility
-    -- shadow and must not grant login by itself.
+    -- Email login uses activated user_emails identities only.
     IF v_resolved_user_id IS NULL THEN
         SELECT u.id
           INTO v_resolved_user_id
         FROM user_emails ue
-        JOIN users u ON u.id = ue.user_id
+        JOIN v_users u ON u.id = ue.user_id
         WHERE u.is_active = 1
           AND ue.status = 'activated'
           AND ue.removed_at IS NULL
@@ -56,7 +55,7 @@ BEGIN
     END IF;
 
     SELECT id, user_hash, username, email, password_hash, user_type, role_id, created_at, last_login, is_active
-    FROM users
+    FROM v_users
     WHERE id = v_resolved_user_id
       AND is_active = 1;
 END$$
@@ -75,7 +74,7 @@ DROP PROCEDURE IF EXISTS sp_get_user_by_id$$
 CREATE PROCEDURE sp_get_user_by_id(IN p_user_id VARCHAR(64))
 BEGIN
     SELECT id, user_hash, username, email, password_hash, user_type, role_id, created_at, last_login, updated_at, is_active
-    FROM users WHERE id = p_user_id AND is_active = 1;
+    FROM v_users WHERE id = p_user_id AND is_active = 1;
 END$$
 
 DROP PROCEDURE IF EXISTS sp_get_user_by_hash$$
@@ -83,17 +82,17 @@ CREATE PROCEDURE sp_get_user_by_hash(IN p_user_hash VARCHAR(255), IN p_include_i
 BEGIN
     IF p_include_inactive = 1 THEN
         SELECT id, user_hash, username, email, password_hash, user_type, role_id, created_at, last_login, updated_at, is_active
-        FROM users WHERE user_hash = p_user_hash;
+        FROM v_users WHERE user_hash = p_user_hash;
     ELSE
         SELECT id, user_hash, username, email, password_hash, user_type, role_id, created_at, last_login, updated_at, is_active
-        FROM users WHERE user_hash = p_user_hash AND is_active = 1;
+        FROM v_users WHERE user_hash = p_user_hash AND is_active = 1;
     END IF;
 END$$
 
 DROP PROCEDURE IF EXISTS sp_get_user_type$$
 CREATE PROCEDURE sp_get_user_type(IN p_user_id VARCHAR(64))
 BEGIN
-    SELECT user_type FROM users WHERE id = p_user_id AND is_active = 1;
+    SELECT user_type FROM v_users WHERE id = p_user_id AND is_active = 1;
 END$$
 
 DROP PROCEDURE IF EXISTS sp_check_username_email_available$$
@@ -101,7 +100,7 @@ CREATE PROCEDURE sp_check_username_email_available(IN p_username_or_email VARCHA
 BEGIN
     -- Compatibility inventory only. Email activation/reset flows must use
     -- user_emails lifecycle procedures instead of this availability oracle.
-    SELECT COUNT(*) as count FROM users
+    SELECT COUNT(*) as count FROM v_users
     WHERE (username = p_username_or_email OR email = p_username_or_email) AND is_active = 1;
 END$$
 
@@ -114,13 +113,12 @@ CREATE PROCEDURE sp_create_consumer_user(
     IN p_user_id VARCHAR(64),
     IN p_user_hash VARCHAR(255),
     IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255),
     IN p_password_hash VARCHAR(255),
     IN p_created_by VARCHAR(64)
 )
 BEGIN
-    INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
-    VALUES (p_user_id, p_user_hash, p_username, p_email, p_password_hash, 'consumer', p_created_by, NOW());
+    INSERT INTO users (id, user_hash, username, password_hash, user_type, created_by, created_at)
+    VALUES (p_user_id, p_user_hash, p_username, p_password_hash, 'consumer', p_created_by, NOW());
 END$$
 
 DROP PROCEDURE IF EXISTS sp_create_admin_user$$
@@ -128,13 +126,12 @@ CREATE PROCEDURE sp_create_admin_user(
     IN p_user_id VARCHAR(64),
     IN p_user_hash VARCHAR(255),
     IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255),
     IN p_password_hash VARCHAR(255),
     IN p_created_by VARCHAR(64)
 )
 BEGIN
-    INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
-    VALUES (p_user_id, p_user_hash, p_username, p_email, p_password_hash, 'admin', p_created_by, NOW());
+    INSERT INTO users (id, user_hash, username, password_hash, user_type, created_by, created_at)
+    VALUES (p_user_id, p_user_hash, p_username, p_password_hash, 'admin', p_created_by, NOW());
 END$$
 
 DROP PROCEDURE IF EXISTS sp_create_root_user$$
@@ -142,13 +139,12 @@ CREATE PROCEDURE sp_create_root_user(
     IN p_user_id VARCHAR(64),
     IN p_user_hash VARCHAR(255),
     IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255),
     IN p_password_hash VARCHAR(255),
     IN p_created_by VARCHAR(64)
 )
 BEGIN
-    INSERT INTO users (id, user_hash, username, email, password_hash, user_type, created_by, created_at)
-    VALUES (p_user_id, p_user_hash, p_username, p_email, p_password_hash, 'root', p_created_by, NOW());
+    INSERT INTO users (id, user_hash, username, password_hash, user_type, created_by, created_at)
+    VALUES (p_user_id, p_user_hash, p_username, p_password_hash, 'root', p_created_by, NOW());
 END$$
 
 -- ===================================================================================
@@ -159,15 +155,11 @@ DROP PROCEDURE IF EXISTS sp_update_user$$
 CREATE PROCEDURE sp_update_user(
     IN p_user_id VARCHAR(64),
     IN p_username VARCHAR(100),
-    IN p_email VARCHAR(255),
-    IN p_password_hash VARCHAR(255),
     IN p_user_type VARCHAR(20)
 )
 BEGIN
     UPDATE users
     SET username = COALESCE(p_username, username),
-        email = COALESCE(p_email, email),
-        password_hash = COALESCE(p_password_hash, password_hash),
         user_type = COALESCE(p_user_type, user_type),
         updated_at = NOW()
     WHERE id = p_user_id AND is_active = 1;
@@ -264,7 +256,7 @@ BEGIN
         ELSE 'u.username' END;
     SET @dir := IF(LOWER(p_sort_order) = 'desc', 'DESC', 'ASC');
     
-    SET @sql := CONCAT('SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.created_at, u.last_login, u.is_active FROM users u ');
+    SET @sql := CONCAT('SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.created_at, u.last_login, u.is_active FROM v_users u ');
     
     IF p_group_filter IS NOT NULL OR p_project_filter IS NOT NULL THEN
         SET @sql := CONCAT(@sql, 
@@ -355,7 +347,7 @@ BEGIN
         'WHERE ugm2.user_id = u.id ',
           'AND ugm2.is_active = 1 AND ugpg.is_active = 1 AND pgm.is_active = 1 AND p.is_active = 1) sub',
         '), JSON_ARRAY()) AS projects_json ',
-        'FROM users u WHERE 1=1 '
+        'FROM v_users u WHERE 1=1 '
     );
 
     IF p_include_inactive = FALSE THEN
@@ -403,15 +395,15 @@ CREATE PROCEDURE sp_count_users(IN p_user_type VARCHAR(20), IN p_include_inactiv
 BEGIN
     IF p_user_type IS NOT NULL THEN
         IF p_include_inactive THEN
-            SELECT COUNT(*) as count FROM users WHERE user_type = p_user_type;
+            SELECT COUNT(*) as count FROM v_users WHERE user_type = p_user_type;
         ELSE
-            SELECT COUNT(*) as count FROM users WHERE user_type = p_user_type AND is_active = 1;
+            SELECT COUNT(*) as count FROM v_users WHERE user_type = p_user_type AND is_active = 1;
         END IF;
     ELSE
         IF p_include_inactive THEN
-            SELECT COUNT(*) as count FROM users;
+            SELECT COUNT(*) as count FROM v_users;
         ELSE
-            SELECT COUNT(*) as count FROM users WHERE is_active = 1;
+            SELECT COUNT(*) as count FROM v_users WHERE is_active = 1;
         END IF;
     END IF;
 END$$
@@ -421,14 +413,14 @@ CREATE PROCEDURE sp_search_users(IN p_search_term VARCHAR(255), IN p_user_type V
 BEGIN
     IF p_user_type IS NOT NULL THEN
         SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active
-        FROM users
+        FROM v_users
         WHERE is_active = 1
           AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
           AND user_type = p_user_type
         ORDER BY username ASC LIMIT p_limit;
     ELSE
         SELECT id, user_hash, username, email, user_type, role_id, created_at, last_login, is_active
-        FROM users
+        FROM v_users
         WHERE is_active = 1
           AND (username LIKE CONCAT('%', p_search_term, '%') OR email LIKE CONCAT('%', p_search_term, '%'))
         ORDER BY username ASC LIMIT p_limit;
@@ -442,7 +434,7 @@ END$$
 DROP PROCEDURE IF EXISTS sp_get_user_status$$
 CREATE PROCEDURE sp_get_user_status(IN p_user_id VARCHAR(64))
 BEGIN
-    SELECT is_active FROM users WHERE id = p_user_id;
+    SELECT is_active FROM v_users WHERE id = p_user_id;
 END$$
 
 DROP PROCEDURE IF EXISTS sp_set_user_status$$
@@ -455,7 +447,7 @@ END$$
 DROP PROCEDURE IF EXISTS sp_get_recent_users_count$$
 CREATE PROCEDURE sp_get_recent_users_count(IN p_days INT)
 BEGIN
-    SELECT COUNT(*) as count FROM users
+    SELECT COUNT(*) as count FROM v_users
     WHERE created_at >= DATE_SUB(NOW(), INTERVAL p_days DAY) AND is_active = 1;
 END$$
 

@@ -15,7 +15,7 @@ from src.middleware.auth_context import AuthContextMiddleware
 from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
 from src.routes import (
-    auth, auth_google, auth_oauth, auth_patreon, email_webhooks, patreon_webhooks,
+    auth, auth_oauth, auth_patreon, email_webhooks, patreon_webhooks,
     stripe_webhooks, internal_patreon, internal_billing, internal_email, users, user_types_auth, projects,
     admin_user_groups, admin_project_groups, admin_dashboard, admin_patreon, system, bulk_operations, global_roles, permission_assignments,
     audit_logs, api_keys, user_api_keys, email_templates, admin_billing, admin_oauth, assistant,
@@ -49,7 +49,7 @@ app = FastAPI(
     summary='Authentication, authorization, OAuth sign-in, API keys, transactional email, '
             'and billing/entitlement facts for multi-project products.',
     description=description,
-    version='2.2.0',
+    version='3.0.0',
     contact={
         "name": "Andrés",
         "url": "https://arizmendi.io",
@@ -71,7 +71,6 @@ register_default_adapters()
 # src/Util/openapi_metadata.py.
 app.include_router(auth.router)
 app.include_router(auth_oauth.router)
-app.include_router(auth_google.router)
 app.include_router(auth_patreon.router)
 app.include_router(email_webhooks.router)
 app.include_router(patreon_webhooks.router)
@@ -199,7 +198,6 @@ async def serve_documentation(
     request: Request,
     path: str,
     format: Optional[DocFormat] = Query(None, description="Output format: html (default), raw/md/markdown for raw markdown"),
-    raw: bool = Query(False, description="Deprecated: Use format=raw instead")
 ):
     """
     Serve documentation markdown files.
@@ -209,7 +207,6 @@ async def serve_documentation(
     - **format**: Output format
         - `html` (default): Rendered page with navigation, search and outline
         - `raw`, `md`, `markdown`: Raw markdown content (for LLM/API consumption)
-    - **raw**: Deprecated - use `format=raw` instead
 
     **LLM Usage**: Add `?format=raw` to get plain markdown text suitable for AI/LLM processing.
 
@@ -222,24 +219,9 @@ async def serve_documentation(
         path,
         base_url=DOCS_BASE_URL,
         version=app.version,
-        raw=raw or format in RAW_DOC_FORMATS,
+        raw=format in RAW_DOC_FORMATS,
     )
     return _docs_response(request, result)
-
-
-@app.get("/docs/USAGE/{filename:path}", include_in_schema=False)
-async def serve_usage_docs_legacy(
-    filename: str,
-    format: Optional[DocFormat] = Query(None),
-    raw: bool = Query(False)
-):
-    """
-    Legacy route for /docs/USAGE/* - redirects to /documentation/USAGE/*
-    """
-    target = f"{DOCS_BASE_URL}/USAGE/{filename}"
-    if raw or format in RAW_DOC_FORMATS:
-        target += "?format=raw"
-    return RedirectResponse(url=target, status_code=308)
 
 
 # llms.txt (https://llmstxt.org): the quick guide for LLMs and agents. docs/llms.txt is a

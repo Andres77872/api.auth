@@ -9,8 +9,7 @@
 -- from the insert trigger. The *_external_identity procedures below key on
 -- (identity_namespace, provider_sub_hash) instead.
 --
--- Two procedures return ciphertext and are SERVER-ONLY:
---   sp_oauth_connection_get_operational_credentials, sp_oauth_binding_get_legacy_redeem.
+-- sp_oauth_connection_get_operational_credentials is SERVER-ONLY and returns ciphertext.
 -- Nothing else selects a ciphertext or HMAC column.
 -- ===================================================================================
 
@@ -329,9 +328,8 @@ CREATE PROCEDURE sp_oauth_binding_select(IN p_binding_id VARCHAR(64))
 BEGIN
     -- One fully resolved row: binding policy + connection non-secret config + catalog gate.
     SELECT b.id AS binding_id, b.connection_key, b.enabled, b.login_enabled, b.link_enabled,
-           b.provisioning_mode, b.existing_user_policy, b.init_mode, b.delivery_mode,
+           b.provisioning_mode, b.existing_user_policy, b.delivery_mode,
            b.state_ttl_seconds, b.rate_limit_overrides,
-           (b.legacy_redeem_url_ciphertext IS NOT NULL AND b.legacy_redeem_token_ciphertext IS NOT NULL) AS has_legacy_redeem,
            b.created_at AS binding_created_at, b.updated_at AS binding_updated_at,
            p.id AS project_id, p.project_hash, p.project_name,
            p.is_active AS project_is_active, p.archived AS project_archived,
@@ -378,7 +376,6 @@ CREATE PROCEDURE sp_oauth_binding_upsert(
     IN p_provisioning_mode VARCHAR(16),
     IN p_default_user_group_id VARCHAR(64),
     IN p_existing_user_policy VARCHAR(32),
-    IN p_init_mode VARCHAR(16),
     IN p_delivery_mode VARCHAR(16),
     IN p_state_ttl_seconds INT,
     IN p_rate_limit_overrides JSON,
@@ -427,13 +424,13 @@ BEGIN
         SET v_binding_id = p_id;
         INSERT INTO project_oauth_bindings (
             id, project_id, connection_id, connection_key, enabled, login_enabled, link_enabled,
-            provisioning_mode, default_user_group_id, existing_user_policy, init_mode,
+            provisioning_mode, default_user_group_id, existing_user_policy,
             delivery_mode, state_ttl_seconds, rate_limit_overrides, created_by, created_at
         ) VALUES (
             v_binding_id, p_project_id, p_connection_id, p_connection_key,
             COALESCE(p_enabled, FALSE), COALESCE(p_login_enabled, TRUE), COALESCE(p_link_enabled, TRUE),
             COALESCE(p_provisioning_mode, 'disabled'), p_default_user_group_id,
-            COALESCE(p_existing_user_policy, 'deny'), COALESCE(p_init_mode, 'api'),
+            COALESCE(p_existing_user_policy, 'deny'),
             COALESCE(p_delivery_mode, 'bff'), p_state_ttl_seconds, p_rate_limit_overrides,
             p_actor, NOW()
         );
@@ -446,7 +443,6 @@ BEGIN
             provisioning_mode = COALESCE(p_provisioning_mode, provisioning_mode),
             default_user_group_id = p_default_user_group_id,
             existing_user_policy = COALESCE(p_existing_user_policy, existing_user_policy),
-            init_mode = COALESCE(p_init_mode, init_mode),
             delivery_mode = COALESCE(p_delivery_mode, delivery_mode),
             state_ttl_seconds = p_state_ttl_seconds,
             rate_limit_overrides = p_rate_limit_overrides,
@@ -458,35 +454,9 @@ BEGIN
     CALL sp_oauth_binding_select(v_binding_id);
 END$$
 
-DROP PROCEDURE IF EXISTS sp_oauth_binding_set_legacy_redeem$$
-CREATE PROCEDURE sp_oauth_binding_set_legacy_redeem(
-    IN p_binding_id VARCHAR(64),
-    IN p_url_ciphertext LONGBLOB,
-    IN p_token_ciphertext LONGBLOB,
-    IN p_key_id VARCHAR(128),
-    IN p_actor VARCHAR(64)
-)
-BEGIN
-    UPDATE project_oauth_bindings
-    SET legacy_redeem_url_ciphertext = p_url_ciphertext,
-        legacy_redeem_token_ciphertext = p_token_ciphertext,
-        legacy_redeem_key_id = p_key_id,
-        updated_by = p_actor,
-        updated_at = NOW()
-    WHERE id = p_binding_id;
 
-    CALL sp_oauth_binding_select(p_binding_id);
-END$$
 
-DROP PROCEDURE IF EXISTS sp_oauth_binding_get_legacy_redeem$$
-CREATE PROCEDURE sp_oauth_binding_get_legacy_redeem(IN p_binding_id VARCHAR(64))
-BEGIN
-    -- SERVER-ONLY. Returns encrypted companion-handshake material. Never expose to DTOs.
-    SELECT id AS binding_id, legacy_redeem_url_ciphertext, legacy_redeem_token_ciphertext, legacy_redeem_key_id
-    FROM project_oauth_bindings
-    WHERE id = p_binding_id AND init_mode = 'legacy_redeem'
-    LIMIT 1;
-END$$
+
 
 DROP PROCEDURE IF EXISTS sp_oauth_binding_get$$
 CREATE PROCEDURE sp_oauth_binding_get(IN p_project_hash VARCHAR(255), IN p_connection_key VARCHAR(64))
@@ -531,14 +501,7 @@ BEGIN
     ORDER BY p.project_name;
 END$$
 
-DROP PROCEDURE IF EXISTS sp_oauth_binding_list_legacy$$
-CREATE PROCEDURE sp_oauth_binding_list_legacy(IN p_connection_key VARCHAR(64))
-BEGIN
-    SELECT b.id AS binding_id
-    FROM project_oauth_bindings b
-    WHERE b.init_mode = 'legacy_redeem' AND b.connection_key = p_connection_key
-    ORDER BY b.created_at;
-END$$
+
 
 DROP PROCEDURE IF EXISTS sp_oauth_binding_delete$$
 CREATE PROCEDURE sp_oauth_binding_delete(IN p_binding_id VARCHAR(64))
@@ -606,7 +569,7 @@ BEGIN
            ea.provider_email_verified_at_link, ea.status AS external_account_status,
            ea.linked_at, ea.last_seen_at
     FROM user_external_accounts ea
-    JOIN users u ON u.id = ea.user_id
+    JOIN v_users u ON u.id = ea.user_id
     WHERE ea.identity_namespace = p_identity_namespace
       AND ea.provider_sub_hash = p_provider_sub_hash
       AND ea.status = 'linked'
@@ -852,9 +815,9 @@ BEGIN
     END IF;
 
     INSERT INTO users (
-        id, user_hash, username, email, password_hash, user_type, created_by, created_at
+        id, user_hash, username, password_hash, user_type, created_by, created_at
     ) VALUES (
-        p_user_id, p_user_hash, p_username, NULL, p_password_hash, 'consumer', p_created_by, NOW()
+        p_user_id, p_user_hash, p_username, p_password_hash, 'consumer', p_created_by, NOW()
     );
 
     IF p_user_email_id IS NOT NULL
@@ -899,7 +862,7 @@ BEGIN
            ea.id AS external_account_id, ea.provider, ea.identity_namespace,
            ea.provider_sub_fingerprint, ea.provider_email_masked,
            ea.provider_email_verified_at_link, ea.status AS external_account_status
-    FROM users u
+    FROM v_users u
     JOIN user_external_accounts ea ON ea.user_id = u.id AND ea.id = p_external_account_id
     WHERE u.id = p_user_id
     LIMIT 1;

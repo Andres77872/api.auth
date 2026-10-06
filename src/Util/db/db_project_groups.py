@@ -5,8 +5,8 @@ REFACTORED TO USE STORED PROCEDURES
 This module handles all project group-related database operations in the new
 hierarchical access control system where:
 - Projects belong to Project Groups
-- Project Groups define permissions
-- Users get permissions through: User Group → Project Access → Project Group Permissions
+- Project groups contain projects
+- Users reach projects through user-group grants; global roles resolve permissions
 """
 
 import json
@@ -31,14 +31,13 @@ logger = logging.getLogger(__name__)
 
 # =================== PROJECT GROUP MANAGEMENT ===================
 
-def create_project_group(group_name: str, permissions: List[str], group_description: str = None,
+def create_project_group(group_name: str, group_description: str = None,
                          created_by: str = None) -> ProjectGroup:
     """
-    Create a new project group with permissions using stored procedure.
+    Create a project container using the canonical stored procedure.
     
     Args:
         group_name: Name of the project group
-        permissions: List of permission strings
         group_description: Optional description
         created_by: User ID of creator
         
@@ -69,7 +68,6 @@ def create_project_group(group_name: str, permissions: List[str], group_descript
                 group_hash=group_hash,
                 group_name=group_name,
                 group_description=group_description,
-                permissions=permissions,
                 created_at=datetime.now(),
                 is_active=True
             )
@@ -114,7 +112,6 @@ def get_project_group_by_id(group_id: str) -> Optional[ProjectGroup]:
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=[],  # Permissions not included in SP
                     created_at=result[4],
                     updated_at=result[5],
                     is_active=bool(result[7])
@@ -158,7 +155,6 @@ def get_project_group_by_hash(group_hash: str) -> Optional[ProjectGroup]:
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=[],  # Permissions not included in SP
                     created_at=result[4],
                     updated_at=result[5],
                     is_active=bool(result[7])
@@ -202,7 +198,6 @@ def get_project_group_by_name(group_name: str) -> Optional[ProjectGroup]:
                     group_hash=result[1],
                     group_name=result[2],
                     group_description=result[3],
-                    permissions=[],  # Permissions not included in SP
                     created_at=result[4],
                     updated_at=result[5],
                     is_active=bool(result[7])
@@ -251,7 +246,6 @@ def list_all_project_groups(
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    permissions=[],  # Not returned by SP
                     created_at=row[4],
                     updated_at=row[5],
                     is_active=bool(row[6])
@@ -269,8 +263,7 @@ def list_all_project_groups(
     )
 
 
-def update_project_group(group_id: str, group_name: str = None, group_description: str = None,
-                         permissions: List[str] = None) -> Optional[ProjectGroup]:
+def update_project_group(group_id: str, group_name: str = None, group_description: str = None) -> Optional[ProjectGroup]:
     """
     Update project group information using stored procedure.
     
@@ -278,7 +271,6 @@ def update_project_group(group_id: str, group_name: str = None, group_descriptio
         group_id: Project group ID
         group_name: New group name (optional)
         group_description: New description (optional)
-        permissions: Deprecated; project groups are containers. Only None/[] is accepted.
         
     Returns:
         Updated ProjectGroup object, None if no fields to update
@@ -287,12 +279,6 @@ def update_project_group(group_id: str, group_name: str = None, group_descriptio
         NotFoundError: If group not found
         DatabaseError: On database operation errors
     """
-    if permissions:
-        raise ValidationError(
-            message="Project groups are containers; assign permissions through permission groups instead",
-            error_code=ErrorCode.INVALID_INPUT,
-        )
-
     def _update():
         if not group_name and group_description is None:
             return None
@@ -396,16 +382,9 @@ def assign_project_to_group(project_id: str, project_group_id: str, assigned_by:
                     is_active=True
                 )
 
-            except pymysql.IntegrityError:
-                # Project already in group, reactivate if needed
-                cur.callproc('sp_reactivate_project_in_group', [project_id, project_group_id, assigned_by])
-                
-                # Clean up result sets
-                while cur.nextset():
-                    pass
-                
-                con.commit()
-                return get_project_group_membership(project_id, project_group_id)
+            except Exception:
+                con.rollback()
+                raise
     
     return handle_db_operation(
         _assign,
@@ -447,50 +426,6 @@ def remove_project_from_group(project_id: str, project_group_id: str, removed_by
     )
 
 
-def get_project_group_membership(project_id: str, project_group_id: str) -> Optional[ProjectGroupMember]:
-    """
-    Get specific project group membership using stored procedure.
-    
-    Args:
-        project_id: Project ID
-        project_group_id: Project group ID
-        
-    Returns:
-        ProjectGroupMember object if found, None otherwise
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_get_project_group_membership', [project_id, project_group_id])
-            
-            result = cur.fetchone()
-            
-            # Clean up result sets
-            while cur.nextset():
-                pass
-            
-            if result:
-                return ProjectGroupMember(
-                    id=result[0],
-                    project_id=result[1],
-                    project_group_id=result[2],
-                    assigned_at=result[3],
-                    assigned_by=result[4],
-                    removed_at=result[5],
-                    removed_by=result[6],
-                    is_active=bool(result[7])
-                )
-        return None
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_project_group_membership(project_id={project_id}, project_group_id={project_group_id})"
-    )
-
-
 def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
     """
     Get all project groups a project belongs to using stored procedure.
@@ -518,7 +453,6 @@ def get_project_groups_for_project(project_id: str) -> List[ProjectGroup]:
                     group_hash=row[1],
                     group_name=row[2],
                     group_description=row[3],
-                    permissions=[],  # Not returned by SP, use default
                     created_at=row[4],
                     updated_at=row[5],
                     is_active=bool(row[6])
@@ -594,7 +528,6 @@ def get_users_with_access_to_project_group(project_group_id: str) -> List[User]:
                     email=row[3],
                     password_hash="",
                     user_type=row[4],
-                    assigned_project_id=None,
                     created_at=datetime.now(),
                     is_active=True,
                 ))
@@ -612,102 +545,8 @@ def get_users_with_access_to_project_group(project_group_id: str) -> List[User]:
 
 # =================== PERMISSION UTILITIES ===================
 
-def get_project_permissions(project_id: str) -> List[str]:
-    """
-    Get all permissions available for a project (from all its project groups) using stored procedure.
-    
-    Args:
-        project_id: Project ID
-        
-    Returns:
-        List of permission strings
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_get_project_permissions', [project_id])
-            
-            all_permissions = set()
-            for row in cur.fetchall():
-                permissions = json.loads(row[0]) if row[0] else []
-                all_permissions.update(permissions)
-            
-            # Clean up result sets
-            while cur.nextset():
-                pass
-
-            return list(all_permissions)
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_project_permissions(project_id={project_id})"
-    )
-
-
-def get_user_project_permissions(user_id: str, project_id: str) -> List[str]:
-    """
-    Get permissions a user has for a specific project.
-    Note: After refactor to global role system, permissions are now global (not project-specific).
-    This function maintains backward compatibility by returning global permissions.
-    """
-    try:
-        # Import here to avoid circular imports
-        from src.Util.db.db_global_roles import get_user_permissions
-        
-        # Get global permissions for the user
-        permissions = get_user_permissions(user_id)
-        return permissions
-    except Exception as e:
-        logger.error(f"Error getting user project permissions: {str(e)}")
-        return []
-
-
-def check_user_project_permission(user_id: str, project_id: str, required_permission: str) -> bool:
-    """Check if user has a specific permission for a project"""
-    user_permissions = get_user_project_permissions(user_id, project_id)
-    return required_permission in user_permissions or 'admin' in user_permissions
-
 
 # =================== DEFAULT GROUPS ===================
-
-def create_default_project_groups():
-    """Create default project groups"""
-    default_groups = [
-        {
-            'name': 'full-access',
-            'description': 'Full access to project resources',
-            'permissions': ['admin', 'read', 'write', 'delete', 'manage_users', 'manage_groups', 'export_data']
-        },
-        {
-            'name': 'read-write',
-            'description': 'Read and write access to project resources',
-            'permissions': ['read', 'write', 'create']
-        },
-        {
-            'name': 'read-only',
-            'description': 'Read-only access to project resources',
-            'permissions': ['read', 'view']
-        }
-    ]
-
-    created_groups = []
-    for group_data in default_groups:
-        # Check if group already exists
-        existing_group = get_project_group_by_name(group_data['name'])
-        if not existing_group:
-            group = create_project_group(
-                group_name=group_data['name'],
-                group_description=group_data['description'],
-                permissions=group_data['permissions']
-            )
-            created_groups.append(group)
-        else:
-            created_groups.append(existing_group)
-
-    return created_groups
 
 
 # =================== UTILITIES ===================
@@ -741,49 +580,4 @@ def count_project_groups(search: str = None) -> int:
     return handle_db_operation(
         _count,
         error_context=f"count_project_groups(search={search})"
-    )
-
-
-def search_project_groups(search_term: str, limit: int = 50) -> List[ProjectGroup]:
-    """
-    Search project groups by name or description using stored procedure.
-    
-    Args:
-        search_term: Search term to match against group name or description
-        limit: Maximum number of results
-        
-    Returns:
-        List of matching ProjectGroup objects
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _search():
-        with get_connection() as con:
-            cur = con.cursor()
-            cur.callproc('sp_search_project_groups', [search_term, limit])
-            
-            results = []
-            for row in cur.fetchall():
-                # SP should return: id, group_hash, group_name, group_description, created_at, updated_at, created_by, is_active
-                results.append(ProjectGroup(
-                    id=row[0],
-                    group_hash=row[1],
-                    group_name=row[2],
-                    group_description=row[3],
-                    permissions=[],  # Permissions not included in SP
-                    created_at=row[4],
-                    updated_at=row[5],
-                    is_active=bool(row[7])
-                ))
-            
-            # Clean up result sets
-            while cur.nextset():
-                pass
-
-            return results
-    
-    return handle_db_operation(
-        _search,
-        error_context=f"search_project_groups(search_term={search_term})"
     )

@@ -41,10 +41,7 @@ class StripeConfig:
     checkout_enabled: bool = False
     portal_enabled: bool = False
     sync_enabled: bool = False
-    secret_key: str | None = field(default=None, repr=False)
-    webhook_secret: str | None = field(default=None, repr=False)
     api_version: str = SUPPORTED_STRIPE_API_VERSION
-    portal_configuration_id: str | None = field(default=None, repr=False)
     allowed_webhook_events: tuple[str, ...] = constants.DEFAULT_STRIPE_ALLOWED_WEBHOOK_EVENTS
     webhook_signature_tolerance_seconds: int = DEFAULT_STRIPE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS
     installed_sdk_version: str | None = None
@@ -193,11 +190,8 @@ def load_stripe_config(*, env: Mapping[str, str] | None = None) -> StripeConfig:
         checkout_enabled=_bool(_get(values, constants.STRIPE_CHECKOUT_ENABLED_ENV), default=False),
         portal_enabled=_bool(_get(values, constants.STRIPE_PORTAL_ENABLED_ENV), default=False),
         sync_enabled=_bool(_get(values, constants.STRIPE_SYNC_ENABLED_ENV), default=False),
-        secret_key=_get(values, constants.STRIPE_SECRET_KEY_ENV) or None,
-        webhook_secret=_get(values, constants.STRIPE_WEBHOOK_SECRET_ENV) or None,
         api_version=_get(values, constants.STRIPE_API_VERSION_ENV, SUPPORTED_STRIPE_API_VERSION)
         or SUPPORTED_STRIPE_API_VERSION,
-        portal_configuration_id=_get(values, constants.STRIPE_PORTAL_CONFIGURATION_ID_ENV) or None,
         allowed_webhook_events=allowed_events,
         webhook_signature_tolerance_seconds=_positive_int(
             values,
@@ -217,9 +211,6 @@ def _readiness_config_from_kwargs(
     checkout_enabled: bool | None = None,
     portal_enabled: bool | None = None,
     sync_enabled: bool | None = None,
-    secret_key: str | None = None,
-    webhook_secret: str | None = None,
-    portal_configuration_id: str | None = None,
     allowed_webhook_events: Sequence[str] | str | None = None,
 ) -> StripeConfig:
     return StripeConfig(
@@ -229,10 +220,7 @@ def _readiness_config_from_kwargs(
         checkout_enabled=bool(checkout_enabled if checkout_enabled is not None else stripe_enabled),
         portal_enabled=bool(portal_enabled if portal_enabled is not None else False),
         sync_enabled=bool(sync_enabled if sync_enabled is not None else False),
-        secret_key=secret_key,
-        webhook_secret=webhook_secret,
         api_version=configured_api_version or SUPPORTED_STRIPE_API_VERSION,
-        portal_configuration_id=portal_configuration_id,
         allowed_webhook_events=validate_allowed_webhook_events(allowed_webhook_events),
         installed_sdk_version=installed_sdk_version,
     )
@@ -248,10 +236,6 @@ def validate_stripe_runtime_readiness(
     checkout_enabled: bool | None = None,
     portal_enabled: bool | None = None,
     sync_enabled: bool | None = None,
-    secret_key: str | None = None,
-    webhook_secret: str | None = None,
-    portal_configuration_id: str | None = None,
-    portal_configuration_verified: bool | None = None,
     allowed_webhook_events: Sequence[str] | str | None = None,
 ) -> StripeReadiness:
     """Return fail-closed Stripe readiness with non-secret diagnostics.
@@ -268,9 +252,6 @@ def validate_stripe_runtime_readiness(
         checkout_enabled=checkout_enabled,
         portal_enabled=portal_enabled,
         sync_enabled=sync_enabled,
-        secret_key=secret_key,
-        webhook_secret=webhook_secret,
-        portal_configuration_id=portal_configuration_id,
         allowed_webhook_events=allowed_webhook_events,
     )
 
@@ -282,7 +263,7 @@ def validate_stripe_runtime_readiness(
             enabled=False,
             sdk_version=cfg.installed_sdk_version or installed_sdk_version,
             api_version=cfg.api_version,
-            capabilities=_capabilities(cfg, portal_configuration_verified=portal_configuration_verified),
+            capabilities=_capabilities(cfg),
         )
 
     missing: list[str] = []
@@ -292,28 +273,16 @@ def validate_stripe_runtime_readiness(
     api_version = configured_api_version or cfg.api_version
 
     if sdk_version != SUPPORTED_STRIPE_SDK_VERSION:
-        mismatches.append(constants.STRIPE_SECRET_KEY_ENV.replace("SECRET_KEY", "SDK_VERSION"))
+        mismatches.append("STRIPE_SDK_VERSION")
     if api_version != SUPPORTED_STRIPE_API_VERSION:
         mismatches.append(constants.STRIPE_API_VERSION_ENV)
 
-    # Per-group Stripe accounts own the real secret key, webhook secret, and portal configuration
-    # (set + encrypted per billing group; resolved via get_stripe_client_for_group). The global env
-    # STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET / STRIPE_PORTAL_CONFIGURATION_ID are OPTIONAL,
-    # single-account/migration-only values and no longer gate readiness — operational readiness is
-    # reported per group via the admin/health rollup (system_metrics + /admin/billing/metrics). The
-    # global feature flags below act purely as kill switches; SDK/API version pins stay fail-closed.
+    # Credentials and portal configuration are resolved per billing group.
     if cfg.webhooks_enabled:
         try:
             validate_allowed_webhook_events(cfg.allowed_webhook_events)
         except StripeConfigError:
             degraded.append(constants.STRIPE_ALLOWED_WEBHOOK_EVENTS_ENV)
-    if cfg.portal_enabled and cfg.portal_configuration_id:
-        # Only verify the optional global/migration portal config when the operator actually set it;
-        # per-group portal-config readiness is surfaced via the per-group rollup.
-        if portal_configuration_verified is False:
-            mismatches.append("STRIPE_PORTAL_CONFIGURATION_RESTRICTED")
-        elif portal_configuration_verified is None:
-            degraded.append("portal_configuration_unverified")
 
     status = "ready"
     ready = True
@@ -333,21 +302,17 @@ def validate_stripe_runtime_readiness(
         critical_mismatches=tuple(dict.fromkeys(mismatches)),
         sdk_version=sdk_version,
         api_version=api_version,
-        capabilities=_capabilities(cfg, portal_configuration_verified=portal_configuration_verified),
+        capabilities=_capabilities(cfg),
     )
 
 
-def _capabilities(cfg: StripeConfig, *, portal_configuration_verified: bool | None = None) -> dict[str, bool]:
+def _capabilities(cfg: StripeConfig) -> dict[str, bool]:
     return {
         "webhooks": bool(cfg.webhooks_enabled),
         "checkout": bool(cfg.checkout_enabled),
-        "portal": bool(cfg.portal_enabled and portal_configuration_verified is True),
+        "portal": bool(cfg.portal_enabled),
         "sync": bool(cfg.sync_enabled),
     }
-
-
-def stripe_runtime_readiness(**kwargs: Any) -> StripeReadiness:
-    return validate_stripe_runtime_readiness(**kwargs)
 
 
 def provider_readiness_from_stripe_config(config: StripeConfig) -> ProviderReadiness:
@@ -373,7 +338,6 @@ __all__ = [
     "get_installed_stripe_sdk_version",
     "load_stripe_config",
     "provider_readiness_from_stripe_config",
-    "stripe_runtime_readiness",
     "validate_allowed_webhook_events",
     "validate_stripe_runtime_readiness",
 ]

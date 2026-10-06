@@ -37,13 +37,6 @@ OPENAPI_TAGS: List[Dict[str, str]] = [
         ),
     },
     {
-        "name": "Google OAuth",
-        "description": (
-            "Deprecated `/auth/google/*` aliases onto the OAuth pipeline with connection "
-            "`google`. New integrations should use the `OAuth` routes."
-        ),
-    },
-    {
         "name": "Patreon Link",
         "description": (
             "Link a Patreon account to an existing local user as entitlement proof. "
@@ -117,8 +110,8 @@ OPENAPI_TAGS: List[Dict[str, str]] = [
     {
         "name": "Stripe Webhooks",
         "description": (
-            "Raw Stripe event intake, verified against the `Stripe-Signature` header: a "
-            "global fallback endpoint and one endpoint per billing group."
+            "Raw Stripe event intake at each billing group's endpoint, verified against "
+            "the `Stripe-Signature` header with that group's stored webhook secret."
         ),
     },
     {
@@ -186,7 +179,7 @@ OPENAPI_TAGS: List[Dict[str, str]] = [
 # ReDoc sidebar grouping. Every tag above must appear in exactly one group,
 # because ReDoc hides tags that belong to no group.
 OPENAPI_TAG_GROUPS: List[Dict[str, Any]] = [
-    {"name": "Sign-in", "tags": ["Authentication", "OAuth", "Google OAuth", "Patreon Link"]},
+    {"name": "Sign-in", "tags": ["Authentication", "OAuth", "Patreon Link"]},
     {
         "name": "Users and Access",
         "tags": [
@@ -221,7 +214,7 @@ SECURITY_SCHEMES: Dict[str, Dict[str, Any]] = {
         "description": (
             "Short-lived access token from a login, OAuth callback, or refresh. Send "
             "`Authorization: Bearer <access_token>`; browser clients may instead rely on the "
-            "HttpOnly `session_token` cookie set by the same responses. Refresh tokens are "
+            "HttpOnly `access_token` cookie set by the same responses. Refresh tokens are "
             "rejected here and are accepted only by `POST /auth/refresh`."
         ),
     },

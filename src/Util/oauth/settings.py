@@ -5,11 +5,6 @@ peppers, fail-closed posture, clock leeway, cache tuning, ceilings and the
 encryption keys for connection secrets. Everything a project or a provider could
 legitimately want to differ lives on the connection or the project binding.
 
-Every ``OAUTH_*`` name falls back to its historical ``GOOGLE_OAUTH_*`` name. The
-peppers MUST keep their values across the rename -- the provider-subject HMAC is
-the durable identity key, and a different pepper orphans every existing link. If
-both names are set with different values the loader fails loudly instead of
-silently picking one.
 """
 
 from __future__ import annotations
@@ -19,35 +14,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from src.Util.auth_constants import (
-    GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV,
-    GOOGLE_OAUTH_ENABLED_ENV,
-    GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV,
-    GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS_ENV,
-    GOOGLE_OAUTH_LEEWAY_SECONDS_ENV,
-    GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV,
-    GOOGLE_OAUTH_RECENT_REAUTH_SECONDS_ENV,
-    GOOGLE_OAUTH_STATE_PEPPER_ENV,
-    GOOGLE_OAUTH_STATE_TTL_SECONDS_ENV,
-    OAUTH_ALLOW_PRIVATE_IDP_HOSTS_ENV,
-    OAUTH_CONFIG_SOURCE_DB,
-    OAUTH_CONFIG_SOURCE_ENV,
-    OAUTH_CONFIG_SOURCE_ENV_NAME,
-    OAUTH_EMAIL_HASH_PEPPER_ENV,
-    OAUTH_ENABLED_ENV,
-    OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV,
-    OAUTH_JWKS_CACHE_TTL_SECONDS_ENV,
-    OAUTH_LEEWAY_SECONDS_ENV,
-    OAUTH_MAX_STATE_TTL_SECONDS_ENV,
-    OAUTH_PROVIDER_SUB_PEPPER_ENV,
-    OAUTH_RECENT_REAUTH_SECONDS_ENV,
-    OAUTH_SECRET_DECRYPTION_KEYS_JSON_ENV,
-    OAUTH_SECRET_ENCRYPTION_KEY_ENV,
-    OAUTH_SECRET_ENCRYPTION_KEY_ID_ENV,
-    OAUTH_SECRET_HMAC_KEY_ENV,
-    OAUTH_STATE_PEPPER_ENV,
-    OAUTH_TRUSTED_PROXY_CIDRS_ENV,
-)
+from src.Util.auth_constants import OAUTH_ALLOW_PRIVATE_IDP_HOSTS_ENV, OAUTH_EMAIL_HASH_PEPPER_ENV, OAUTH_ENABLED_ENV, OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV, OAUTH_JWKS_CACHE_TTL_SECONDS_ENV, OAUTH_LEEWAY_SECONDS_ENV, OAUTH_MAX_STATE_TTL_SECONDS_ENV, OAUTH_PROVIDER_SUB_PEPPER_ENV, OAUTH_RECENT_REAUTH_SECONDS_ENV, OAUTH_SECRET_DECRYPTION_KEYS_JSON_ENV, OAUTH_SECRET_ENCRYPTION_KEY_ENV, OAUTH_SECRET_ENCRYPTION_KEY_ID_ENV, OAUTH_SECRET_HMAC_KEY_ENV, OAUTH_STATE_PEPPER_ENV, OAUTH_TRUSTED_PROXY_CIDRS_ENV
 
 
 HARD_MAX_STATE_TTL_SECONDS = 600
@@ -67,24 +34,6 @@ def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
 def _text(env: Mapping[str, str], name: str) -> str:
     value = env.get(name)
     return "" if value is None else str(value).strip()
-
-
-def env_with_fallback(env: Mapping[str, str], name: str, legacy_name: str, *, default: str = "", strict: bool = False) -> str:
-    """Read ``name``, falling back to ``legacy_name``.
-
-    ``strict`` is for identity-bearing secrets (the peppers): two different values would
-    mean two different identity keys, so that fails loudly instead of silently picking
-    one. For ordinary settings the new name simply takes precedence.
-    """
-
-    current = _text(env, name)
-    legacy = _text(env, legacy_name)
-    if strict and current and legacy and current != legacy:
-        raise OAuthSettingsError(
-            f"{name} and {legacy_name} are both set with different values; "
-            "they must be identical (or set only one)"
-        )
-    return current or legacy or default
 
 
 def _bool(raw: str, *, default: bool) -> bool:
@@ -117,7 +66,6 @@ def _csv(raw: str) -> tuple[str, ...]:
 @dataclass(frozen=True)
 class OAuthDeploymentSettings:
     enabled: bool
-    config_source: str
     state_pepper: str = field(repr=False)
     provider_sub_pepper: str = field(repr=False)
     email_hash_pepper: str = field(repr=False)
@@ -133,9 +81,6 @@ class OAuthDeploymentSettings:
     secret_decryption_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
     secret_hmac_key: str | None = field(default=None, repr=False)
 
-    @property
-    def uses_database(self) -> bool:
-        return self.config_source == OAUTH_CONFIG_SOURCE_DB
 
     @property
     def secrets_ready(self) -> bool:
@@ -165,44 +110,37 @@ def load_oauth_settings(*, env: Mapping[str, str] | None = None) -> OAuthDeploym
     """Parse deployment-level OAuth settings without touching providers, Redis or the database."""
 
     values = _env(env)
-    source = (_text(values, OAUTH_CONFIG_SOURCE_ENV_NAME) or OAUTH_CONFIG_SOURCE_ENV).lower()
-    if source not in {OAUTH_CONFIG_SOURCE_ENV, OAUTH_CONFIG_SOURCE_DB}:
-        raise OAuthSettingsError(
-            f"{OAUTH_CONFIG_SOURCE_ENV_NAME} must be '{OAUTH_CONFIG_SOURCE_ENV}' or '{OAUTH_CONFIG_SOURCE_DB}'"
-        )
-
     max_state_ttl = _bounded_int(
-        env_with_fallback(values, OAUTH_MAX_STATE_TTL_SECONDS_ENV, GOOGLE_OAUTH_STATE_TTL_SECONDS_ENV),
+        _text(values, OAUTH_MAX_STATE_TTL_SECONDS_ENV),
         name=OAUTH_MAX_STATE_TTL_SECONDS_ENV,
         default=HARD_MAX_STATE_TTL_SECONDS,
         minimum=1,
         maximum=HARD_MAX_STATE_TTL_SECONDS,
     )
-    recent_reauth_raw = env_with_fallback(values, OAUTH_RECENT_REAUTH_SECONDS_ENV, GOOGLE_OAUTH_RECENT_REAUTH_SECONDS_ENV)
+    recent_reauth_raw = _text(values, OAUTH_RECENT_REAUTH_SECONDS_ENV)
     try:
         recent_reauth = int(recent_reauth_raw) if recent_reauth_raw else DEFAULT_RECENT_REAUTH_SECONDS
     except ValueError as exc:
         raise OAuthSettingsError(f"{OAUTH_RECENT_REAUTH_SECONDS_ENV} must be an integer") from exc
 
     return OAuthDeploymentSettings(
-        enabled=_bool(env_with_fallback(values, OAUTH_ENABLED_ENV, GOOGLE_OAUTH_ENABLED_ENV), default=False),
-        config_source=source,
-        state_pepper=env_with_fallback(values, OAUTH_STATE_PEPPER_ENV, GOOGLE_OAUTH_STATE_PEPPER_ENV, strict=True),
-        provider_sub_pepper=env_with_fallback(values, OAUTH_PROVIDER_SUB_PEPPER_ENV, GOOGLE_OAUTH_PROVIDER_SUB_PEPPER_ENV, strict=True),
-        email_hash_pepper=env_with_fallback(values, OAUTH_EMAIL_HASH_PEPPER_ENV, GOOGLE_OAUTH_EMAIL_HASH_PEPPER_ENV, strict=True),
+        enabled=_bool(_text(values, OAUTH_ENABLED_ENV), default=False),
+        state_pepper=_text(values, OAUTH_STATE_PEPPER_ENV),
+        provider_sub_pepper=_text(values, OAUTH_PROVIDER_SUB_PEPPER_ENV),
+        email_hash_pepper=_text(values, OAUTH_EMAIL_HASH_PEPPER_ENV),
         fail_closed_on_redis_error=_bool(
-            env_with_fallback(values, OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV, GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV),
+            _text(values, OAUTH_FAIL_CLOSED_ON_REDIS_ERROR_ENV),
             default=True,
         ),
         leeway_seconds=_bounded_int(
-            env_with_fallback(values, OAUTH_LEEWAY_SECONDS_ENV, GOOGLE_OAUTH_LEEWAY_SECONDS_ENV),
+            _text(values, OAUTH_LEEWAY_SECONDS_ENV),
             name=OAUTH_LEEWAY_SECONDS_ENV,
             default=HARD_MAX_LEEWAY_SECONDS,
             minimum=0,
             maximum=HARD_MAX_LEEWAY_SECONDS,
         ),
         jwks_cache_ttl_seconds=_bounded_int(
-            env_with_fallback(values, OAUTH_JWKS_CACHE_TTL_SECONDS_ENV, GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS_ENV),
+            _text(values, OAUTH_JWKS_CACHE_TTL_SECONDS_ENV),
             name=OAUTH_JWKS_CACHE_TTL_SECONDS_ENV,
             default=HARD_MAX_JWKS_CACHE_TTL_SECONDS,
             minimum=1,
@@ -223,6 +161,5 @@ __all__ = [
     "HARD_MAX_STATE_TTL_SECONDS",
     "OAuthDeploymentSettings",
     "OAuthSettingsError",
-    "env_with_fallback",
     "load_oauth_settings",
 ]

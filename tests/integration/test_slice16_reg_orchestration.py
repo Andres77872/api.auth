@@ -38,7 +38,7 @@ def _make_project(project_id="1", project_hash="prj-orch-001",
 
 def _make_register_result(user_hash="usr-reg-001", username="reguser",
                           email="reg@example.com", user_type="consumer",
-                          session_token="reg-session-token",
+                          access_token="reg-session-token",
                           project_hash="prj-orch-001", project_name="Orch Project",
                           user_id="99"):
     r = MagicMock()
@@ -46,10 +46,22 @@ def _make_register_result(user_hash="usr-reg-001", username="reguser",
     r.username = username
     r.email = email
     r.user_type = user_type
-    r.session_token = session_token
+    r.access_token = access_token
     r.project_hash = project_hash
     r.project_name = project_name
     r.user_id = user_id
+    if project_hash:
+        from src.Util.auth_lifecycle import issue_project_token_pair
+        pair = issue_project_token_pair(
+            user={"id": user_id, "user_hash": user_hash, "username": username or user_hash, "user_type": user_type},
+            project={"id": "1", "project_hash": project_hash, "project_name": project_name},
+            permissions=[], groups=[],
+        )
+        for field in ("access_token", "refresh_token", "token_type", "expires_in", "refresh_expires_in", "expires_at", "refresh_expires_at", "remember_me", "cookie_metadata"):
+            setattr(r, field, getattr(pair, field))
+    else:
+        r.access_token = ""
+        r.refresh_token = None
     return r
 
 
@@ -79,7 +91,6 @@ async def test_registration_calls_check_username_first(
             data={
                 "username": "reguser",
                 "password": "SecureP@ss123",
-                "email": "reg@example.com",
                 "user_group_hash": "grp-ug-001",
             },
             headers={"User-Agent": "test"},
@@ -127,16 +138,15 @@ async def test_registration_validates_group_before_register(
             data={
                 "username": "reguser",
                 "password": "SecureP@ss123",
-                "email": "reg@example.com",
                 "user_group_hash": "grp-ug-001",
             },
             headers={"User-Agent": "test"},
         )
 
     assert response.status_code == 200
-    # Sequence: check(username) → check(email) → group_lookup → register
+    # Sequence: check(username) → group_lookup → register
     # get_projects_for_user_group is called inside enhanced_register, not at route level
-    assert call_sequence == ["check", "check", "group_lookup", "register"]
+    assert call_sequence == ["check", "group_lookup", "register"]
 
 
 @pytest.mark.asyncio
@@ -194,7 +204,7 @@ async def test_registration_passes_group_id_to_projects_lookup(
 
     def capture_hash(*args):
         nonlocal captured_hash
-        captured_hash = args[3]  # group_hash is the 4th argument
+        captured_hash = args[2]  # group_hash is the third argument
         return result
 
     with patch("src.routes.auth.check_username_email_available", return_value=True), \
@@ -220,7 +230,7 @@ async def test_registration_passes_correct_params_to_enhanced_register(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Registration must pass (username, password, email, user_group_hash) to enhanced_register."""
+    """Registration must pass (username, password, user_group_hash) to enhanced_register."""
     group = _make_user_group()
     project = _make_project()
     result = _make_register_result()
@@ -241,7 +251,6 @@ async def test_registration_passes_correct_params_to_enhanced_register(
             data={
                 "username": "orchuser",
                 "password": "SecureP@ss123",
-                "email": "orch@example.com",
                 "user_group_hash": "grp-ug-001",
             },
             headers={"User-Agent": "test"},
@@ -251,43 +260,4 @@ async def test_registration_passes_correct_params_to_enhanced_register(
     assert captured_args is not None
     assert captured_args[0] == "orchuser"       # username
     assert captured_args[1] == "SecureP@ss123"  # password
-    assert captured_args[2] == "orch@example.com"  # email
-    assert captured_args[3] == "grp-ug-001"     # user_group_hash
-
-
-@pytest.mark.asyncio
-async def test_registration_email_check_is_second_username_check(
-    client, fake_redis, patched_cache_manager, patched_activity_logger,
-    patched_audit_logger, patched_audit_ids, patched_db_connection,
-    patched_db_error_logger,
-):
-    """When email is provided, check_username_email_available is called twice: username then email."""
-    group = _make_user_group()
-    project = _make_project()
-    result = _make_register_result()
-
-    checked_values = []
-
-    def track_check(val):
-        checked_values.append(val)
-        return True
-
-    with patch("src.routes.auth.check_username_email_available", side_effect=track_check), \
-         patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
-         patch("src.routes.auth.get_projects_for_user_group", return_value=[project]), \
-         patch("src.routes.auth.enhanced_register", return_value=result):
-        response = await client.post(
-            "/auth/register",
-            data={
-                "username": "reguser",
-                "password": "SecureP@ss123",
-                "email": "reg@example.com",
-                "user_group_hash": "grp-ug-001",
-            },
-            headers={"User-Agent": "test"},
-        )
-
-    assert response.status_code == 200
-    assert len(checked_values) == 2
-    assert checked_values[0] == "reguser"
-    assert checked_values[1] == "reg@example.com"
+    assert captured_args[2] == "grp-ug-001"     # user_group_hash

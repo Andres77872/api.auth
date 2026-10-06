@@ -32,7 +32,6 @@ DEAD_KEY_FILES = (
     "docker-compose.test.yml",
     "docs/USAGE/patreon-link/reference.md",
     "docs/USAGE/stripe-billing/reference.md",
-    "docs/USAGE/google-oauth/reference.md",
     "docs/USAGE/oauth/reference.md",
 )
 DEAD_KEYS = (

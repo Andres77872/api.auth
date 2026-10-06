@@ -18,6 +18,10 @@ PYTEST_PLUGIN_ARGS=(
   -p anyio.pytest_plugin
 )
 
+# Concurrent SQL tests must fit the address-space limit without per-thread
+# allocator arenas or numerical-library thread pools reserving unused memory.
+export MALLOC_ARENA_MAX=2 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+
 validate_skip_report() {
   python - "$1" "$2" <<'PY'
 import os

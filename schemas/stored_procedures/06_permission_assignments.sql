@@ -107,7 +107,7 @@ BEGIN
     SELECT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id,
            upg.assigned_at, upg.assigned_by, upg.notes
     FROM user_permission_groups upg
-    INNER JOIN users u ON upg.user_id = u.id
+    INNER JOIN v_users u ON upg.user_id = u.id
     WHERE upg.permission_group_id = p_permission_group_id AND upg.is_active = TRUE AND u.is_active = TRUE
     ORDER BY u.username;
 END$$
@@ -127,7 +127,7 @@ BEGIN
     INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id AND pgp.is_active = TRUE
     INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id AND pg.is_active = TRUE
     WHERE p.is_active = TRUE AND pg.id IN (
-        SELECT rpg.permission_group_id FROM users u
+        SELECT rpg.permission_group_id FROM v_users u
         INNER JOIN roles r ON r.id = u.role_id AND r.is_active = TRUE
         INNER JOIN role_permission_groups rpg ON rpg.role_id = r.id AND rpg.is_active = TRUE
         WHERE u.id = p_user_id AND u.is_active = TRUE
@@ -150,7 +150,7 @@ BEGIN
     INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id AND pgp.is_active = TRUE
     INNER JOIN global_permission_groups pg ON pgp.permission_group_id = pg.id AND pg.is_active = TRUE
     WHERE p.permission_name = p_permission_name AND p.is_active = TRUE AND pg.id IN (
-        SELECT rpg.permission_group_id FROM users u
+        SELECT rpg.permission_group_id FROM v_users u
         INNER JOIN roles r ON r.id = u.role_id AND r.is_active = TRUE
         INNER JOIN role_permission_groups rpg ON rpg.role_id = r.id AND rpg.is_active = TRUE
         WHERE u.id = p_user_id AND u.is_active = TRUE
@@ -177,7 +177,7 @@ BEGIN
     FROM role_permission_groups rpg
     INNER JOIN roles r ON rpg.role_id = r.id
     INNER JOIN global_permission_groups pg ON rpg.permission_group_id = pg.id
-    INNER JOIN users u ON u.role_id = r.id
+    INNER JOIN v_users u ON u.role_id = r.id
     WHERE u.id = p_user_id AND rpg.is_active = TRUE AND r.is_active = TRUE
       AND pg.is_active = TRUE AND u.is_active = TRUE
     UNION ALL
@@ -251,7 +251,7 @@ BEGIN
         r.id as role_id, r.role_hash, r.role_name, r.role_display_name, r.role_priority,
         CASE WHEN ugpgr.id IS NOT NULL THEN 'scoped' ELSE 'global' END as role_scope,
         pg.group_name as project_group_name
-    FROM users u
+    FROM v_users u
     LEFT JOIN (
         -- Scoped roles via user group -> project group -> role
         SELECT ugpgr.role_id, ugpgr.id, pg.group_name, pgm.project_id
@@ -306,7 +306,7 @@ BEGIN
     DECLARE v_max_grant_priority INT DEFAULT 0;
     
     -- Check user type (root bypasses all checks)
-    SELECT user_type INTO v_user_type FROM users WHERE id = p_user_id AND is_active = TRUE;
+    SELECT user_type INTO v_user_type FROM v_users WHERE id = p_user_id AND is_active = TRUE;
     
     IF v_user_type = 'root' THEN
         SELECT TRUE as has_permission, 'root_bypass' as source;
@@ -340,7 +340,7 @@ BEGIN
             INNER JOIN global_permission_group_permissions pgp ON p.id = pgp.permission_id
             WHERE p.permission_name = p_permission_name AND pgp.permission_group_id IN (
                 SELECT rpg.permission_group_id FROM role_permission_groups rpg
-                INNER JOIN users u ON u.role_id = rpg.role_id
+                INNER JOIN v_users u ON u.role_id = rpg.role_id
                 WHERE u.id = p_user_id AND rpg.is_active = TRUE AND u.is_active = TRUE
                 UNION
                 SELECT ugpg.permission_group_id FROM user_group_permission_groups ugpg

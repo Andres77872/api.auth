@@ -87,7 +87,7 @@ def test_a_project_switch_does_not_refresh_sign_in_proof():
 
 def test_step_up_without_proof_is_refused():
     with pytest.raises(AuthenticationError):
-        require_recent_reauthentication(user_id="u-1", session_token=_token(), operation="switch_project")
+        require_recent_reauthentication(user_id="u-1", access_token=_token(), operation="switch_project")
 
 
 # ── the OAuth reauth marker must be found by every sensitive operation ─────────
@@ -105,7 +105,7 @@ def test_api_key_mutations_accept_an_oauth_reauth_of_the_same_session(fake_redis
 
     check = getattr(importlib.import_module(module_name), helper)
     token = _token()  # no sign-in proof of its own
-    current_user = {"user_id": "u-1", "session_token": token}
+    current_user = {"user_id": "u-1", "access_token": token}
 
     with pytest.raises(AuthenticationError):
         check(current_user, "api_key_mutation")
@@ -120,7 +120,7 @@ def test_oauth_and_patreon_record_the_same_session_id_the_checks_look_up():
     from src.routes.auth_patreon import _session_id_from_login_data
 
     token = _token()
-    login_data = SimpleNamespace(user_id="u-1", session_token=token)  # EnhancedUserLogin has no session_id
+    login_data = SimpleNamespace(user_id="u-1", access_token=token)  # EnhancedUserLogin has no session_id
 
     assert session_id_of(login_data) == "sess-1"
     assert _session_id_from_login_data(login_data) == "sess-1"

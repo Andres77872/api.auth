@@ -144,7 +144,7 @@ The resend routes follow the same steps with the resend cooldown after step 2 an
 
 `POST /auth/email/verify` calls `sp_consume_email_activation_token`. When the token is valid and no
 other account holds the address, the row becomes `activated` (and primary if the user had none,
-updating `users.email`), then `revoke_user_auth_state` signs the user out everywhere.
+updating the `v_users.email` read projection), then `revoke_user_auth_state` signs the user out everywhere.
 
 ### Remove an address or change the primary
 
@@ -157,17 +157,17 @@ the caller's access token.
 
 ### Change a type
 
-- `PUT /user-types/{user_hash}/type`: validate `user_type`; for `admin`, require an existing
-  `assigned_project_id` and look up its admin group with `sp_find_admin_group_for_project` before
+- `PUT /user-types/{user_hash}/type`: validate `user_type`; for `admin`, require existing
+  `assigned_project_ids` and look up every admin group with `sp_find_admin_group_for_project` before
   changing anything (`404`, `NF_4003`, when missing). `update_user_type` then runs
-  `sp_update_user_type` and adds the user to the project's admin group; the user cache is
+  `sp_update_user_type` and adds the user to each requested project's admin group in the same transaction; the user cache is
   invalidated and `user_type_info` is rebuilt.
 - `PATCH /users/{user_hash}/type` and `PUT /users/{user_hash}` with `user_type`: set the type only
   (`sp_update_user_type` or `sp_update_user`) and invalidate the user cache.
 
 When the type actually changes, `revoke_user_auth_state` revokes every access session and refresh
 family of the user, because sessions carry the type (and, for root and admin, the permission set)
-and refresh would carry it forward. A `username` or legacy `email` update only invalidates the cache;
+and refresh would carry it forward. A `username` update only invalidates the cache;
 sessions stay valid.
 
 ### Assign or remove an admin project

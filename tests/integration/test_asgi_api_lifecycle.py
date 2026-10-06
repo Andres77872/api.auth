@@ -57,7 +57,7 @@ class TestAuthFlowLifecycle:
 
     @pytest.mark.asyncio
     async def test_login_returns_token_and_cookie(self, client, e2e_env):
-        """POST /auth/login → 200 + session_token + cookie with security flags."""
+        """POST /auth/login → 200 + access_token + cookie with security flags."""
         user = make_e2e_user(username="e2euser", email="e2e@test.com")
         project = MagicMock()
         project.id = "1"
@@ -87,12 +87,12 @@ class TestAuthFlowLifecycle:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert "session_token" in data
+        assert "access_token" in data
         assert data["user"]["username"] == "e2euser"
 
         # Verify cookie with security flags
         cookies = response.cookies
-        assert "session_token" in cookies
+        assert "access_token" in cookies
         set_cookie = response.headers.get_list("set-cookie")[0].lower()
         assert "httponly" in set_cookie
         assert "secure" in set_cookie
@@ -196,11 +196,10 @@ class TestSecurity:
     @pytest.mark.asyncio
     async def test_empty_bearer_rejected(self, client, e2e_env):
         """Empty Bearer token → 401, not 500."""
-        with patch("src.Util.Seccurity.validate_session", return_value=None):
-            response = await client.get(
-                "/auth/validate",
-                headers={"Authorization": "Bearer ", "User-Agent": "e2e-test-client"},
-            )
+        response = await client.get(
+            "/auth/validate",
+            headers={"Authorization": "Bearer ", "User-Agent": "e2e-test-client"},
+        )
         assert response.status_code == 401
 
     @pytest.mark.asyncio

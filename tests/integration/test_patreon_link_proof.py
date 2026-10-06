@@ -36,7 +36,7 @@ pytestmark = pytest.mark.usefixtures("integration_env")
 FORBIDDEN_SESSION_FIELDS = {
     "access_token",
     "refresh_token",
-    "session_token",
+    "access_token",
     "api_key",
     "token_type",
     "expires_in",
@@ -126,7 +126,7 @@ def _assert_no_session_material(response) -> None:
     keys = {key.lower() for key in _iter_mapping_keys(data)}
     leaked = FORBIDDEN_SESSION_FIELDS.intersection(keys)
     assert not leaked, f"Patreon link/proof response must not expose session/token fields: {sorted(leaked)}"
-    for cookie_name in ("session_token", "refresh_token", "access_token"):
+    for cookie_name in ("access_token", "refresh_token", "access_token"):
         assert cookie_name not in response.cookies, f"Patreon route must not set {cookie_name} cookie"
 
 
@@ -145,7 +145,7 @@ SIGNED_IN_USER = SimpleNamespace(
     username="testuser",
     user_type="consumer",
     session_id="test-session-001",
-    session_token="test-token",
+    access_token="test-token",
 )
 
 

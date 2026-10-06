@@ -23,7 +23,7 @@ from src.Util.Models import (
     ApiKeyInfo, LogoutResponse, SwitchProjectResponse, CheckAvailabilityResponse,
     UserInfo, ProjectInfo, UserGroupInfo, ChangePasswordRequest, ChangePasswordResponse,
 )
-from src.Util.Seccurity import HTTPBearerOrCookie, extract_refresh_token_from_request
+from src.Util.security import HTTPBearerOrCookie, extract_refresh_token_from_request
 from src.Util.decorators import log_and_handle_errors, log_unauthenticated_operation
 from src.Util.log_context_models import LogContext, UnauthenticatedLogContext
 from src.Util.activity_logger import ActivityType
@@ -53,7 +53,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearerOrCookie()
 
 # Cookie settings
-COOKIE_NAME = "session_token"
+COOKIE_NAME = "access_token"
 COOKIE_MAX_AGE = 72 * 60 * 60  # 72 hours (3 days)
 
 # NEW: low-level dependencies for session storage & JWT
@@ -220,7 +220,7 @@ def _login_response_from_rotation(rotation) -> LoginResponse:
         message="Token refreshed successfully",
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
-        session_token=token_pair.session_token,
+
         token_type=token_pair.token_type,
         expires_in=token_pair.expires_in,
         refresh_expires_in=token_pair.refresh_expires_in,
@@ -276,49 +276,10 @@ def _string_attr(value: Any, attr: str) -> Optional[str]:
 
 
 def _registration_token_pair(register_result: Any):
-    """Return or create a project-scoped token pair for registration.
-
-    Real `enhanced_register()` now returns token-pair metadata. Some integration
-    tests patch that function with legacy lightweight objects, so this fallback
-    keeps route behavior aligned with the public contract while the DB helper is
-    still covered through its own real path.
-    """
+    """Return lifecycle credentials already issued by registration."""
     if _string_attr(register_result, "access_token") and _string_attr(register_result, "refresh_token"):
         return register_result
-
-    project_hash = _string_attr(register_result, "project_hash")
-    if not project_hash:
-        return None
-
-    user_id = _string_attr(register_result, "user_id")
-    user_hash = _string_attr(register_result, "user_hash")
-    if not user_id or not user_hash:
-        return None
-
-    project_id = _string_attr(register_result, "project_id")
-    project_name = _string_attr(register_result, "project_name")
-    username = _string_attr(register_result, "username") or user_hash
-    user_type = _string_attr(register_result, "user_type") or "consumer"
-    groups = list(getattr(register_result, "groups", []) or [])
-    group_ids = [str(group_id) for group_id in (getattr(register_result, "user_group_ids", []) or [])]
-    permissions = list(getattr(register_result, "permissions", []) or [])
-
-    return issue_project_token_pair(
-        user={
-            "id": user_id,
-            "user_hash": user_hash,
-            "username": username,
-            "user_type": user_type,
-        },
-        project={
-            "id": project_id,
-            "project_hash": project_hash,
-            "project_name": project_name,
-        },
-        permissions=permissions,
-        groups=groups,
-        group_ids=group_ids,
-    )
+    return None
 
 
 def _safe_prepare_email_idempotency(
@@ -681,9 +642,6 @@ async def verify_email_activation(
                         "type": "string",
                         "description": "Email address or username of the account to reset.",
                     },
-                    "identifier": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
-                    "email": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
-                    "username": {"type": "string", "description": "Alias accepted in place of `email_or_username`."},
                 },
             }
         ),
@@ -703,10 +661,11 @@ async def forgot_password_link(
     **Auth:** public.
 
     **Request:** `application/json`, `application/x-www-form-urlencoded` or
-    `multipart/form-data` with `email_or_username` (aliases: `identifier`, `email`,
-    `username`). Optional `Idempotency-Key` and `X-Public-Base-Url` headers. The
+    `multipart/form-data` with `email_or_username`. Optional `Idempotency-Key` and `X-Public-Base-Url` headers. The
     emailed link points at `/auth/password/reset?token=…` on the public base URL, so
     the frontend must serve that page and POST the token here.
+    A newly issued reset link invalidates all earlier reset links for the account,
+    including links requested by an administrator.
 
     **Responses:**
     - `202` — neutral body whether or not a matching account exists.
@@ -717,9 +676,6 @@ async def forgot_password_link(
     payload = await read_request_payload(request)
     identifier = str(
         payload.get("email_or_username")
-        or payload.get("identifier")
-        or payload.get("email")
-        or payload.get("username")
         or ""
     ).strip()
     if not identifier:
@@ -805,7 +761,6 @@ async def forgot_password_link(
                         "format": "password",
                         "description": "New password; must satisfy the password policy.",
                     },
-                    "password": {"type": "string", "format": "password", "description": "Alias accepted in place of `new_password`."},
                     **_LINK_TOKEN_PROPERTIES,
                 },
             }
@@ -825,9 +780,10 @@ async def reset_password_with_link(
 
     **Auth:** public; possession of the emailed token is the credential. Tokens from
     user-requested and admin-issued reset links are both accepted.
+    Earlier links stop working when a newer link is issued or the password changes.
 
     **Request:** `application/json`, `application/x-www-form-urlencoded` or
-    `multipart/form-data` with `new_password` (alias `password`) and `token` (or
+    `multipart/form-data` with `new_password` and `token` (or
     `lookup_id` + `secret`). Optional `Idempotency-Key` header.
 
     **Responses:**
@@ -840,7 +796,7 @@ async def reset_password_with_link(
     """
 
     payload = await read_request_payload(request)
-    new_password = str(payload.get("new_password") or payload.get("password") or "")
+    new_password = str(payload.get("new_password") or "")
     if not new_password:
         raise ValidationError(
             message="new_password is required",
@@ -957,7 +913,7 @@ async def change_password(
 ) -> ChangePasswordResponse:
     """Change the signed-in user's password after verifying the current one.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie). The current password is the step-up proof; no separate recent
     re-authentication is needed.
 
@@ -1019,7 +975,7 @@ async def change_password(
 
     require_recent_reauthentication(
         user_id=str(log_context.user_id),
-        session_token=credentials.credentials,
+        access_token=credentials.credentials,
         session_id=str(claims.get("session_id") or current_access_jti),
         operation="password_change",
         credential_proof_present=True,
@@ -1081,7 +1037,7 @@ async def login(
     **Responses:**
     - `200` — `LoginResponse` with `access_token`, `refresh_token`, user, project,
       `accessible_projects` (for later `/auth/switch-project`), `user_groups` (empty
-      for root/admin) and `plan` (consumers). Also sets the HttpOnly `session_token`
+      for root/admin) and `plan` (consumers). Also sets the HttpOnly `access_token`
       (access token, path `/`) and `refresh_token` (path `/auth`) cookies.
     - `400` — missing `username`, `password` or `project_hash`.
     - `401` — wrong username/email or password (`AUTH_1001`).
@@ -1173,7 +1129,7 @@ async def login(
             message="Root user login successful",
             access_token=token_pair.access_token,
             refresh_token=token_pair.refresh_token,
-            session_token=token_pair.session_token,
+
             token_type=token_pair.token_type,
             expires_in=token_pair.expires_in,
             refresh_expires_in=token_pair.refresh_expires_in,
@@ -1231,7 +1187,7 @@ async def login(
             message="Login successful",
             access_token=token_pair.access_token,
             refresh_token=token_pair.refresh_token,
-            session_token=token_pair.session_token,
+
             token_type=token_pair.token_type,
             expires_in=token_pair.expires_in,
             refresh_expires_in=token_pair.refresh_expires_in,
@@ -1318,7 +1274,7 @@ async def login(
         message="Login successful",
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
-        session_token=token_pair.session_token,
+
         token_type=token_pair.token_type,
         expires_in=token_pair.expires_in,
         refresh_expires_in=token_pair.refresh_expires_in,
@@ -1362,7 +1318,7 @@ async def platform_login(
 
     **Responses:**
     - `200` — `LoginResponse` with tokens; `project` is null and `accessible_projects`
-      and `user_groups` are empty. Sets the `session_token` and `refresh_token` cookies.
+      and `user_groups` are empty. Sets the `access_token` and `refresh_token` cookies.
     - `400` — missing `username` or `password`.
     - `401` — wrong username/email or password (`AUTH_1001`).
     - `403` — the account is a consumer (`AUTHZ_2002`).
@@ -1422,7 +1378,7 @@ async def platform_login(
         message="Platform login successful",
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
-        session_token=token_pair.session_token,
+
         token_type=token_pair.token_type,
         expires_in=token_pair.expires_in,
         refresh_expires_in=token_pair.refresh_expires_in,
@@ -1452,7 +1408,6 @@ async def register(
         response: Response,
         username: str = Form(..., description="Desired username; must not match any existing username or email."),
         password: str = Form(..., description="Password; must satisfy the password policy."),
-        email: Optional[str] = Form(None, description="Optional email address; must not already be in use."),
         user_group_hash: str = Form(..., description="User group the new consumer account joins."),
         request: Request = None,
         log_context: UnauthenticatedLogContext = None
@@ -1462,16 +1417,17 @@ async def register(
     **Auth:** public; anyone who knows a `user_group_hash` can register into that group.
 
     **Request:** form fields (`application/x-www-form-urlencoded` or
-    `multipart/form-data`): `username`, `password`, `user_group_hash`, optional `email`.
+    `multipart/form-data`): `username`, `password`, `user_group_hash`. Add email
+    addresses after registration through `POST /users/me/emails`.
 
     **Responses:**
     - `200` — `RegisterResponse`. The account is always a consumer. When the group
       reaches an active project, the session is scoped to the first one (by name), the
-      token fields are filled and the `session_token`/`refresh_token` cookies are set;
+      token fields are filled and the `access_token`/`refresh_token` cookies are set;
       otherwise the token fields are null and no cookies are set.
     - `400` — missing field, or password rejected by the policy (`VAL_3007`).
     - `404` — user group not found (`NF_4003`).
-    - `409` — username (`CONF_5001`) or email (`CONF_5002`) already in use.
+    - `409` — username (`CONF_5001`) already in use.
     """
     if not username or not password or not user_group_hash:
         missing_fields = []
@@ -1485,7 +1441,14 @@ async def register(
             details={"missing_fields": missing_fields}
         )
 
-    assert_password_policy(password, username=username, email=email)
+    if request is not None and "email" in await read_request_payload(request):
+        raise ValidationError(
+            message="Add email addresses through /users/me/emails after registration",
+            error_code=ErrorCode.INVALID_INPUT,
+            details={"field": "email"},
+        )
+
+    assert_password_policy(password, username=username)
 
     # Check if username/email is available
     username_available = handle_db_operation(
@@ -1499,18 +1462,6 @@ async def register(
             details={"username": username}
         )
     
-    if email:
-        email_available = handle_db_operation(
-            lambda: check_username_email_available(email),
-            error_context="email availability check"
-        )
-        if not email_available:
-            raise ConflictError(
-                message="Email already exists",
-                error_code=ErrorCode.EMAIL_EXISTS,
-                details={"email": email}
-            )
-
     # Validate user group exists before registration
     user_group = handle_db_operation(
         lambda: get_user_group_by_hash(user_group_hash),
@@ -1525,7 +1476,7 @@ async def register(
     
     # Register user with group assignment
     register_result = handle_db_operation(
-        lambda: enhanced_register(username, password, email, user_group_hash),
+        lambda: enhanced_register(username, password, user_group_hash),
         error_context="user registration"
     )
     
@@ -1548,7 +1499,7 @@ async def register(
     user_info = UserInfo(
         user_hash=register_result.user_hash,
         username=getattr(register_result, 'username') or username,
-        email=getattr(register_result, 'email', email),
+        email=None,
         user_type=getattr(register_result, 'user_type', 'consumer')
     )
 
@@ -1564,7 +1515,7 @@ async def register(
         message="User registered successfully",
         access_token=token_pair.access_token if token_pair else None,
         refresh_token=token_pair.refresh_token if token_pair else None,
-        session_token=token_pair.session_token if token_pair else None,
+
         token_type=token_pair.token_type if token_pair else "Bearer",
         expires_in=token_pair.expires_in if token_pair else None,
         refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
@@ -1591,7 +1542,7 @@ async def validate_user_session(
 ) -> ValidateSessionResponse:
     """Check the caller's access token and return its user, project and session context.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie). API keys are not accepted here; use `POST /auth/validate-api-key`.
 
     **Request:** no parameters or body.
@@ -1603,10 +1554,10 @@ async def validate_user_session(
     - `401` — missing, malformed, expired or revoked access token, or inactive user.
     """
     _t_start = time.monotonic()
-    session_token = credentials.credentials
+    access_token = credentials.credentials
 
     try:
-        if not isinstance(session_token, str) or session_token.count(".") != 2:
+        if not isinstance(access_token, str) or access_token.count(".") != 2:
             raise AuthenticationError(
                 message="Invalid access token",
                 error_code=ErrorCode.SESSION_EXPIRED,
@@ -1614,7 +1565,7 @@ async def validate_user_session(
             )
 
         try:
-            login_data = validate_enhanced_session(session_token)
+            login_data = validate_enhanced_session(access_token)
         except HTTPException as exc:
             raise AuthenticationError(
                 message=str(exc.detail),
@@ -1644,7 +1595,7 @@ async def validate_user_session(
             project_info = None
 
         user_group_names = list(login_data.groups or [])
-        access_claims = JWTTokenHandler.decode_access_token(session_token)
+        access_claims = JWTTokenHandler.decode_access_token(access_token)
         refresh_family = _get_refresh_family(str(access_claims["family_id"])) or {}
         access_expires_at = datetime.fromtimestamp(
             int(access_claims["exp"]),
@@ -1788,7 +1739,7 @@ async def logout(
 ) -> LogoutResponse:
     """End the caller's session: revoke its refresh family and clear the auth cookies.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie). The token must currently be valid; an expired access token is rejected
     with `401`.
 
@@ -1796,7 +1747,7 @@ async def logout(
 
     **Responses:**
     - `200` — `LogoutResponse`. The session's refresh family and access session are
-      revoked (other sessions of the user are untouched) and the `session_token` and
+      revoked (other sessions of the user are untouched) and the `access_token` and
       `refresh_token` cookies are cleared.
     - `401` — missing, invalid, expired or already-revoked access token.
 
@@ -1807,14 +1758,14 @@ async def logout(
     before the handler runs. Integration tests mask this by patching
     ``src.Util.decorators.validate_session``.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
 
     try:
         # Logout is destructive, not authorizing. An access token whose window
         # has closed is still proof of which family to revoke, so an idle tab
         # can log itself out instead of leaving the family alive for the rest
         # of its refresh TTL. Signature/type/claims are still enforced.
-        claims = JWTTokenHandler.decode_access_token_allow_expired(session_token)
+        claims = JWTTokenHandler.decode_access_token_allow_expired(access_token)
         revoke_refresh_family(str(claims["family_id"]), reason="logout")
     except HTTPException as exc:
         raise AuthenticationError(
@@ -1858,7 +1809,7 @@ async def refresh_token(
 
     **Responses:**
     - `200` — `LoginResponse` for the same project (or platform) scope with fresh
-      tokens; new `session_token`/`refresh_token` cookies are set. The presented refresh
+      tokens; new `access_token`/`refresh_token` cookies are set. The presented refresh
       token is single-use.
     - `401` — refresh token missing (`AUTH_1014`), invalid (`AUTH_1013`), expired
       (`AUTH_1019`), cookie/field mismatch (`AUTH_1016`), family revoked (`AUTH_1017`),
@@ -1908,7 +1859,7 @@ async def switch_project(
 ) -> SwitchProjectResponse:
     """Move the current session to another project by rotating it into a new project-scoped token pair.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus the refresh token of the same session (`refresh_token` cookie or form
     field). Requires recent authentication: the session's sign-in, or a provider reauth
     (`/auth/oauth/{connection}/reauth/start`) of this session, within the
@@ -1921,18 +1872,18 @@ async def switch_project(
     `multipart/form-data`): `project_hash`, optional `refresh_token`.
 
     **Responses:**
-    - `200` — `SwitchProjectResponse` with the new tokens; new `session_token` and
+    - `200` — `SwitchProjectResponse` with the new tokens; new `access_token` and
       `refresh_token` cookies are set.
     - `401` — invalid access token, no recent authentication (`AUTH_1008`), or a
       missing, mismatched or already-rotated refresh token.
     - `403` — no access to the project, or the project is inactive/archived.
     - `404` — project not found.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
     try:
-        access_claims = JWTTokenHandler.decode_access_token(session_token)
+        access_claims = JWTTokenHandler.decode_access_token(access_token)
         current_session = validate_access_session(
-            session_token,
+            access_token,
             get_user_by_hash_fn=get_user_by_hash,
             get_project_by_hash_fn=get_project_by_hash,
             get_user_groups_in_project_by_hash_fn=_route_refresh_groups,
@@ -1946,7 +1897,7 @@ async def switch_project(
 
     require_recent_reauthentication(
         user_id=str(current_session.user_id),
-        session_token=session_token,
+        access_token=access_token,
         session_id=str(access_claims.get("session_id") or access_claims.get("jti") or ""),
         operation="switch_project",
     )
@@ -2006,7 +1957,7 @@ async def switch_project(
         message=f"Successfully switched to project: {new_project.project_name}",
         access_token=rotation.token_pair.access_token,
         refresh_token=rotation.token_pair.refresh_token,
-        session_token=rotation.token_pair.session_token,
+
         token_type=rotation.token_pair.token_type,
         expires_in=rotation.token_pair.expires_in,
         refresh_expires_in=rotation.token_pair.refresh_expires_in,

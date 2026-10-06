@@ -26,13 +26,13 @@ from src.Util.Models import (
     RemoveProjectFromGroupResponse,
     ProjectInfo, ProjectGroupInfo, PaginationInfo
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.db import (
     validate_session, get_user_by_hash, get_project_by_hash,
-    create_project_permission_group, get_project_permission_group_by_hash, list_all_project_permission_groups,
-    update_project_permission_group,
-    delete_project_permission_group, assign_project_to_permission_group, remove_project_from_permission_group,
-    get_projects_in_permission_group, count_project_permission_groups
+    create_project_group, get_project_group_by_hash, list_all_project_groups,
+    update_project_group,
+    delete_project_group, assign_project_to_group, remove_project_from_group,
+    get_projects_in_group, count_project_groups
 )
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
@@ -95,7 +95,7 @@ async def list_project_groups(
     """
     List active project groups with their project counts.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles` (every root/admin session has `admin`; consumers only through
     a global role).
 
@@ -106,15 +106,15 @@ async def list_project_groups(
     """
     # Get all project groups
     project_groups = handle_db_operation(
-        lambda: list_all_project_permission_groups(limit, offset, sort_by, sort_order, search),
-        error_context="list project permission groups"
+        lambda: list_all_project_groups(limit, offset, sort_by, sort_order, search),
+        error_context="list project groups"
     )
 
     # Add project counts
     groups_with_counts = []
     for group in project_groups:
         projects = handle_db_operation(
-            lambda g=group: get_projects_in_permission_group(g.id),
+            lambda g=group: get_projects_in_group(g.id),
             error_context=f"get projects in group {mask_uuid(group.group_hash)}",
             default_return=[]
         )
@@ -128,8 +128,8 @@ async def list_project_groups(
         groups_with_counts.append(group_info)
 
     total_count = handle_db_operation(
-        lambda: count_project_permission_groups(search),
-        error_context="count project permission groups"
+        lambda: count_project_groups(search),
+        error_context="count project groups"
     )
 
     has_more = offset + limit < total_count
@@ -160,7 +160,7 @@ async def create_project_group_endpoint(
     Project groups are containers of projects and carry no permissions; users reach projects through
     user → user group → project group → project.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     **Request:** form fields `group_name` (required) and optional `description`.
@@ -185,22 +185,21 @@ async def create_project_group_endpoint(
             details={"field": "group_name"}
         )
 
-    # Create project group (permissions parameter kept for backwards compatibility with DB layer)
+    # Create a project container.
     new_group = handle_db_operation(
-        lambda: create_project_permission_group(
+        lambda: create_project_group(
             create_name,
-            [],  # Empty permissions - project_groups are containers, not permission holders
             create_description,
             created_by=user_data.id
         ),
-        error_context="create project permission group"
+        error_context="create project group"
     )
 
     if not new_group:
         raise InternalError(
             message="Project group creation failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "create_project_permission_group"}
+            details={"operation": "create_project_group"}
         )
 
     group_info = ProjectGroupInfo(
@@ -226,7 +225,7 @@ async def get_project_group_details(
     """
     Get a project group and the projects assigned to it.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     `assigned_projects`, `project_group.project_count` and `statistics.total_projects` include only active,
@@ -237,14 +236,14 @@ async def get_project_group_details(
     """
     # Get project group
     project_group = handle_db_operation(
-        lambda: get_project_permission_group_by_hash(group_hash),
-        error_context="get project permission group by hash",
+        lambda: get_project_group_by_hash(group_hash),
+        error_context="get project group by hash",
         not_found_message=f"Project group not found: {mask_uuid(group_hash)}"
     )
 
     # Get assigned projects
     assigned_projects = handle_db_operation(
-        lambda: get_projects_in_permission_group(project_group.id),
+        lambda: get_projects_in_group(project_group.id),
         error_context="get projects in permission group",
         default_return=[]
     )
@@ -289,7 +288,7 @@ async def update_project_group_endpoint(
     """
     Rename a project group and/or change its description.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     **Request:** form fields `group_name` and/or `description`.
@@ -300,8 +299,8 @@ async def update_project_group_endpoint(
     """
     # Get project group
     project_group = handle_db_operation(
-        lambda: get_project_permission_group_by_hash(group_hash),
-        error_context="get project permission group by hash",
+        lambda: get_project_group_by_hash(group_hash),
+        error_context="get project group by hash",
         not_found_message=f"Project group not found: {mask_uuid(group_hash)}"
     )
 
@@ -310,20 +309,19 @@ async def update_project_group_endpoint(
 
     # Update group (permissions parameter omitted - project_groups are containers)
     updated_group = handle_db_operation(
-        lambda: update_project_permission_group(
+        lambda: update_project_group(
             project_group.id,
             group_name=update_name,
-            group_description=update_description,
-            permissions=None  # Don't update permissions
+            group_description=update_description
         ),
-        error_context="update project permission group"
+        error_context="update project group"
     )
 
     if not updated_group:
         raise InternalError(
             message="Update failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "update_project_permission_group"}
+            details={"operation": "update_project_group"}
         )
 
     group_info = ProjectGroupInfo(
@@ -347,7 +345,7 @@ async def delete_project_group_endpoint(
     """
     Soft-delete a project group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     **Effects:** the group, its project assignments and every user-group grant to it are deactivated (projects
@@ -359,8 +357,8 @@ async def delete_project_group_endpoint(
     """
     # Get project group
     project_group = handle_db_operation(
-        lambda: get_project_permission_group_by_hash(group_hash),
-        error_context="get project permission group by hash",
+        lambda: get_project_group_by_hash(group_hash),
+        error_context="get project group by hash",
         not_found_message=f"Project group not found: {mask_uuid(group_hash)}"
     )
 
@@ -377,7 +375,7 @@ async def delete_project_group_endpoint(
         default_return=[]
     )
     affected_projects = handle_db_operation(
-        lambda: get_projects_in_permission_group(project_group.id),
+        lambda: get_projects_in_group(project_group.id),
         error_context="get projects in permission group before delete",
         default_return=[]
     )
@@ -386,8 +384,8 @@ async def delete_project_group_endpoint(
 
     # Delete group
     success = handle_db_operation(
-        lambda: delete_project_permission_group(project_group.id, deleted_by=user_data.id),
-        error_context="delete project permission group"
+        lambda: delete_project_group(project_group.id, deleted_by=user_data.id),
+        error_context="delete project group"
     )
     
     if success:
@@ -405,7 +403,7 @@ async def delete_project_group_endpoint(
         raise InternalError(
             message="Delete failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "delete_project_permission_group"}
+            details={"operation": "delete_project_group"}
         )
 
 
@@ -420,7 +418,7 @@ async def assign_project_to_group_endpoint(
 
     Members of every user group granted this project group gain access to the project (unless it is archived).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     **Request:** form field `project_hash`. Idempotent: re-adding a current or previously removed project
@@ -433,8 +431,8 @@ async def assign_project_to_group_endpoint(
 
     # Get project group
     project_group = handle_db_operation(
-        lambda: get_project_permission_group_by_hash(group_hash),
-        error_context="get project permission group by hash",
+        lambda: get_project_group_by_hash(group_hash),
+        error_context="get project group by hash",
         not_found_message=f"Project group not found: {mask_uuid(group_hash)}"
     )
 
@@ -454,7 +452,7 @@ async def assign_project_to_group_endpoint(
 
     # Assign project to group
     assignment_result = handle_db_operation(
-        lambda: assign_project_to_permission_group(
+        lambda: assign_project_to_group(
             target_project.id,
             project_group.id,
             assigned_by=current_user.id
@@ -466,7 +464,7 @@ async def assign_project_to_group_endpoint(
         raise InternalError(
             message="Assignment failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "assign_project_to_permission_group"}
+            details={"operation": "assign_project_to_group"}
         )
 
     assignment_info = {
@@ -497,7 +495,7 @@ async def remove_project_from_group_endpoint(
     """
     Remove a project from a project group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); the
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
     session must carry `admin` or `manage_roles`.
 
     Returns 200 even if the project was not in the group. Active sessions scoped to this project are then
@@ -509,8 +507,8 @@ async def remove_project_from_group_endpoint(
     """
     # Get project group
     project_group = handle_db_operation(
-        lambda: get_project_permission_group_by_hash(group_hash),
-        error_context="get project permission group by hash",
+        lambda: get_project_group_by_hash(group_hash),
+        error_context="get project group by hash",
         not_found_message=f"Project group not found: {mask_uuid(group_hash)}"
     )
 
@@ -537,7 +535,7 @@ async def remove_project_from_group_endpoint(
 
     # Remove project from group
     success = handle_db_operation(
-        lambda: remove_project_from_permission_group(project.id, project_group.id, removed_by=current_user.id),
+        lambda: remove_project_from_group(project.id, project_group.id, removed_by=current_user.id),
         error_context="remove project from permission group"
     )
     
@@ -555,5 +553,5 @@ async def remove_project_from_group_endpoint(
         raise InternalError(
             message="Removal failed",
             error_code=ErrorCode.INTERNAL_ERROR,
-            details={"operation": "remove_project_from_permission_group"}
+            details={"operation": "remove_project_from_group"}
         )

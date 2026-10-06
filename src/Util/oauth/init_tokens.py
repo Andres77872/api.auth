@@ -51,7 +51,6 @@ class InitTokenRecord:
     connection_id: str
     binding_id: str
     connection_key: str
-    config_source: str
     purpose: str
     project_hash: str = field(repr=False)
     return_origin: str
@@ -98,7 +97,6 @@ class OAuthInitTokenStore:
             connection_id=str(payload["connection_id"]),
             binding_id=str(payload["binding_id"]),
             connection_key=str(payload["connection_key"]),
-            config_source=str(payload.get("config_source") or ""),
             purpose=str(payload.get("purpose") or "login"),
             project_hash=str(payload["project_hash"]),
             return_origin=str(payload["return_origin"]),

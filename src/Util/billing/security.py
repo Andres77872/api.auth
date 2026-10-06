@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from src.Util.secret_box import (
-    FallbackCipher as _FallbackProviderRefCipher,
     Fernet,
     InvalidToken,
     SecretBoxError,
@@ -97,14 +96,6 @@ def verify_billing_s2s_bearer_token(
     return bool(left_text and right_text and matches)
 
 
-def verify_s2s_bearer_token(**kwargs: Any) -> bool:
-    return verify_billing_s2s_bearer_token(**kwargs)
-
-
-def constant_time_bearer_equals(**kwargs: Any) -> bool:
-    return verify_billing_s2s_bearer_token(**kwargs)
-
-
 def hmac_provider_ref(
     *,
     provider: str,
@@ -125,27 +116,11 @@ def hmac_provider_ref(
     return hmac.digest(_ensure_bytes(secret_value, name="billing HMAC secret"), material, "sha256")
 
 
-def hash_provider_ref(**kwargs: Any) -> bytes:
-    return hmac_provider_ref(**kwargs)
-
-
-def hmac_billing_identifier(**kwargs: Any) -> bytes:
-    return hmac_provider_ref(**kwargs)
-
-
-def hash_billing_provider_identifier(**kwargs: Any) -> bytes:
-    return hmac_provider_ref(**kwargs)
-
-
 def fingerprint_from_digest(digest: bytes | bytearray | memoryview) -> str:
     value = bytes(digest)
     if len(value) < 6:
         raise ValueError("digest must contain at least 6 bytes")
     return value.hex()[:12]
-
-
-def billing_fingerprint_from_digest(*, digest: bytes | bytearray | memoryview) -> str:
-    return fingerprint_from_digest(digest)
 
 
 def provider_ref_fingerprint(*, digest: bytes | bytearray | memoryview | None = None, hmac_digest: bytes | bytearray | memoryview | None = None) -> str:
@@ -170,14 +145,6 @@ def encrypt_provider_ref(
     active_key = key if key is not None else fernet_key
     ciphertext = _provider_ref_cipher(_ensure_bytes(active_key, name="provider ref encryption key")).encrypt(raw_value.encode("utf-8"))
     return EncryptedProviderRef(ciphertext=ciphertext, key_id=validate_key_id(key_id))
-
-
-def encrypt_billing_provider_ref(**kwargs: Any) -> EncryptedProviderRef:
-    return encrypt_provider_ref(**kwargs)
-
-
-def encrypt_operational_provider_ref(**kwargs: Any) -> EncryptedProviderRef:
-    return encrypt_provider_ref(**kwargs)
 
 
 def _encrypted_field(encrypted: Any, name: str) -> Any:
@@ -216,14 +183,6 @@ def decrypt_provider_ref(
         raise BillingProviderRefDecryptError("provider ref decrypt failed") from exc
 
 
-def decrypt_billing_provider_ref(**kwargs: Any) -> str:
-    return decrypt_provider_ref(**kwargs)
-
-
-def decrypt_operational_provider_ref(**kwargs: Any) -> str:
-    return decrypt_provider_ref(**kwargs)
-
-
 def rotate_provider_ref(
     *,
     encrypted_ref: Any = None,
@@ -239,14 +198,6 @@ def rotate_provider_ref(
     key_map = old_keys_by_id if old_keys_by_id is not None else keys_by_id
     raw_ref = decrypt_provider_ref(encrypted_ref=source, keys_by_id=key_map or {})
     return encrypt_provider_ref(raw_ref=raw_ref, key=new_key if new_key is not None else active_key, key_id=new_key_id or active_key_id)  # type: ignore[arg-type]
-
-
-def rotate_billing_provider_ref(**kwargs: Any) -> EncryptedProviderRef:
-    return rotate_provider_ref(**kwargs)
-
-
-def reencrypt_provider_ref(**kwargs: Any) -> EncryptedProviderRef:
-    return rotate_provider_ref(**kwargs)
 
 
 def provider_ref_evidence(raw_id: str | None, *, kind: str, config: Any, provider: str = "stripe") -> dict[str, Any] | None:
@@ -296,30 +247,18 @@ __all__ = [
     "BillingProviderRefDecryptError",
     "BillingSecurityError",
     "EncryptedProviderRef",
-    "billing_fingerprint_from_digest",
-    "constant_time_bearer_equals",
-    "decrypt_billing_provider_ref",
-    "decrypt_operational_provider_ref",
     "decrypt_provider_ref",
-    "encrypt_billing_provider_ref",
-    "encrypt_operational_provider_ref",
     "encrypt_provider_ref",
     "fingerprint_from_digest",
     "fingerprint_provider_ref",
-    "hash_billing_provider_identifier",
-    "hash_provider_ref",
-    "hmac_billing_identifier",
     "hmac_provider_ref",
     "provider_ref_evidence",
     "provider_ref_fingerprint",
     "provider_ref_hmac_or_none",
     "raw_body_sha256",
     "raw_body_sha256_hex",
-    "reencrypt_provider_ref",
-    "rotate_billing_provider_ref",
     "rotate_provider_ref",
     "validate_fernet_key",
     "validate_key_id",
     "verify_billing_s2s_bearer_token",
-    "verify_s2s_bearer_token",
 ]

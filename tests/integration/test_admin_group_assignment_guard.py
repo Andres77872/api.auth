@@ -46,7 +46,7 @@ def _seams():
         "remove_user_from_user_group": MagicMock(return_value=True),
         "grant_user_group_project_group_access": MagicMock(return_value={"granted": True}),
         "revoke_user_group_project_group_access": MagicMock(return_value=True),
-        "get_project_permission_group_by_hash": MagicMock(return_value=project_group),
+        "get_project_group_by_hash": MagicMock(return_value=project_group),
         "create_user_group": MagicMock(side_effect=lambda name, *a, **k: _group(name, "ug-new")),
         "update_user_group": MagicMock(side_effect=lambda group_id, **k: _group(k.get("group_name") or "team", "ug-team")),
         "delete_user_group": MagicMock(return_value=True),

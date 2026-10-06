@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(64) NOT NULL,
     user_hash VARCHAR(255) NOT NULL,
     username VARCHAR(100) NOT NULL,
-    email VARCHAR(255),
     password_hash VARCHAR(255) NOT NULL,
     user_type ENUM('root', 'admin', 'consumer') NOT NULL DEFAULT 'consumer',
     role_id VARCHAR(64) NULL,
@@ -158,23 +157,6 @@ CREATE TABLE IF NOT EXISTS user_group_project_groups (
     UNIQUE KEY uk_usergroup_projectgroup (user_group_id, project_group_id),
     INDEX idx_user_group (user_group_id),
     INDEX idx_project_group (project_group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ===================================================================================
--- SESSION MANAGEMENT
--- ===================================================================================
-
--- =================== USER_SESSIONS TABLE ===================
-CREATE TABLE IF NOT EXISTS user_sessions (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,
-    session_token VARCHAR(255) NOT NULL,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_session_token (session_token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===================================================================================

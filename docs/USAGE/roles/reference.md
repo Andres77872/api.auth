@@ -11,21 +11,21 @@ The contract of the 28 `/roles` routes in `src/routes/global_roles.py`, plus bul
 reserved" = non-root callers get `403` when the change involves a
 [reserved permission name](#reserved-permission-names). "Token" = any valid access token.
 
-Credentials: `Authorization: Bearer <access JWT>` or the `session_token` cookie. API keys are
+Credentials: `Authorization: Bearer <access JWT>` or the `access_token` cookie. API keys are
 rejected (`401`). Every response carries `success: true`; writes add a `message`.
 
 ### Roles
 
 | Path | Method | Guard | Request | Success |
 | --- | --- | --- | --- | --- |
-| `/roles/roles` | POST | Admin | Form: `role_name`, `role_display_name`, `role_description`, `role_priority` | `201`, `role` |
-| `/roles/roles` | GET | Token | Query: `limit`, `offset` | `200`, `roles`, `pagination` |
-| `/roles/roles/{role_hash}` | GET | Token | — | `200`, `role`, `permission_groups` |
-| `/roles/roles/{role_hash}` | PUT | Admin, root if reserved | Form: `role_display_name`, `role_description`, `role_priority` | `200`, `role` |
-| `/roles/roles/{role_hash}` | DELETE | Admin, root if reserved | — | `200` |
-| `/roles/roles/{role_hash}/permission-groups/{group_hash}` | POST | Admin, root if reserved | — | `200` |
-| `/roles/roles/{role_hash}/permission-groups` | GET | Token | — | `200`, `role`, `permission_groups` |
-| `/roles/roles/{role_hash}/permission-groups/{group_hash}` | DELETE | Admin, root if reserved | — | `200` |
+| `/roles` | POST | Admin | Form: `role_name`, `role_display_name`, `role_description`, `role_priority` | `201`, `role` |
+| `/roles` | GET | Token | Query: `limit`, `offset` | `200`, `roles`, `pagination` |
+| `/roles/{role_hash}` | GET | Token | — | `200`, `role`, `permission_groups` |
+| `/roles/{role_hash}` | PUT | Admin, root if reserved | Form: `role_display_name`, `role_description`, `role_priority` | `200`, `role` |
+| `/roles/{role_hash}` | DELETE | Admin, root if reserved | — | `200` |
+| `/roles/{role_hash}/permission-groups/{group_hash}` | POST | Admin, root if reserved | — | `200` |
+| `/roles/{role_hash}/permission-groups` | GET | Token | — | `200`, `role`, `permission_groups` |
+| `/roles/{role_hash}/permission-groups/{group_hash}` | DELETE | Admin, root if reserved | — | `200` |
 
 ### Permission groups
 
@@ -145,8 +145,8 @@ Only a `root` caller (checked live) may:
 | `PUT`, `DELETE /roles/permissions/{permission_hash}` | The permission is reserved |
 | `POST`, `DELETE /roles/permission-groups/{group_hash}/permissions/{permission_hash}` | The permission is reserved |
 | `PUT`, `DELETE /roles/permission-groups/{group_hash}` | The group contains a reserved permission |
-| `POST`, `DELETE /roles/roles/{role_hash}/permission-groups/{group_hash}` | The group contains a reserved permission |
-| `PUT`, `DELETE /roles/roles/{role_hash}` | A group linked to the role contains a reserved permission |
+| `POST`, `DELETE /roles/{role_hash}/permission-groups/{group_hash}` | The group contains a reserved permission |
+| `PUT`, `DELETE /roles/{role_hash}` | A group linked to the role contains a reserved permission |
 | `PUT /roles/users/{user_hash}/role` | The new role **or** the user's current role grants a reserved permission |
 | `DELETE /roles/users/{user_hash}/role` | The user's current role grants a reserved permission |
 | `POST /admin/projects/{project_hash}/bulk-assign-roles` | Any listed role grants a reserved permission, **or** a listed user's current role does |
@@ -176,7 +176,7 @@ Some routes return short forms instead of full objects:
 
 | Route | Short objects |
 | --- | --- |
-| `GET /roles/roles/{role_hash}/permission-groups` | `role`: `role_hash`, `role_name` |
+| `GET /roles/{role_hash}/permission-groups` | `role`: `role_hash`, `role_name` |
 | `GET /roles/permission-groups/{group_hash}/permissions` | `permission_group`: `group_hash`, `group_name` |
 | `PUT /roles/users/{user_hash}/role` | `user`: `user_hash`, `username`; `role`: `role_hash`, `role_name` |
 | `GET` role lookups, `DELETE` role removal | `user`: `user_hash`, `username` |
@@ -186,7 +186,7 @@ Some routes return short forms instead of full objects:
 Lists contain only active rows: active roles, groups, and permissions, and active links between
 them. `role` in a user lookup is `null` when the user has no role or the role is soft-deleted.
 
-`POST /roles/roles`:
+`POST /roles`:
 
 ```json
 {

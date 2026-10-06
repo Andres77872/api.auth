@@ -2,13 +2,9 @@
 
 A user can hold several email addresses. They live in `user_emails`, and only an **activated**
 address can be used to sign in, receive a password-reset link, or become the primary address. The
-`users.email` column is a legacy shadow: the database keeps it equal to the primary activated address,
-and it never grants login on its own.
-
-Email is optional. The `email` accepted by `POST /auth/register`, `PUT /users/profile`,
-`PUT /users/{user_hash}` and `POST /user-types/root|admin` only writes that legacy column; it is not
-an address under this lifecycle. To make an address usable, add it with `POST /users/me/emails` and
-open the activation link.
+primary email in API user summaries is derived from the activated primary row through
+`v_users`. Profile and account CRUD do not write email addresses. Add an address with
+`POST /users/me/emails` and open the activation link before using it as an identity.
 
 Two route groups operate the lifecycle:
 
@@ -37,9 +33,8 @@ Rules the database enforces:
   the activation link is consumed and the row stays `pending`.
 - A user has at most one primary address, and only an `activated` address can be primary. The first
   address a user activates becomes primary automatically.
-- `users.email` follows the primary: it is set on first activation and on a primary change. Removing
-  the primary promotes the earliest-activated remaining address, or clears `users.email` when none is
-  left.
+- Removing the primary promotes the earliest-activated remaining address. User summaries return
+  no email when no activated primary address remains.
 - Suppression clears `is_primary` without promoting another address. Username sign-in keeps working.
 - Password-reset links (self-service and `POST /users/{user_hash}/reset-password`) go to the primary
   activated address, else the earliest-activated one.
@@ -229,7 +224,7 @@ curl -X POST "http://localhost:8000/users/me/emails/$EMAIL_ID/primary" \
 ```
 
 The address must be your own, `activated` and not removed; otherwise the route returns `409`
-(`CONF_5005`) with the database's reason in `error.message`. `users.email` becomes this address.
+(`CONF_5005`) with the database's reason in `error.message`. User summaries report this activated primary address.
 
 ## Admin routes
 

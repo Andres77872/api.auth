@@ -2,8 +2,7 @@
 
 Trace: `.dev/sdd/changes/provider-agnostic-billing-stripe/tasks.md` task 2.2.
 
-Future implementation imports happen inside test bodies so collection remains
-clean while Phase 4 billing modules are still absent.
+Canonical helpers are checked directly against the implemented security contract.
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ def _verify_s2s(module: ModuleType, presented: str | None, expected: str | None)
     return bool(
         _call_named(
             module,
-            ("verify_billing_s2s_bearer_token", "verify_s2s_bearer_token", "constant_time_bearer_equals"),
+            ("verify_billing_s2s_bearer_token",),
             (
                 {"presented": presented, "expected": expected},
                 {"presented_token": presented, "expected_token": expected},
@@ -81,7 +80,7 @@ def _verify_s2s(module: ModuleType, presented: str | None, expected: str | None)
 def _hmac_provider_ref(module: ModuleType, raw_id: str, *, kind: str = "customer") -> bytes:
     return _call_named(
         module,
-        ("hmac_provider_ref", "hash_provider_ref", "hmac_billing_identifier", "hash_billing_provider_identifier"),
+        ("hmac_provider_ref",),
         (
             {"provider": "stripe", "kind": kind, "raw_id": raw_id, "secret": HMAC_SECRET},
             {"provider": "stripe", "ref_type": kind, "raw_ref": raw_id, "secret": HMAC_SECRET},
@@ -94,7 +93,7 @@ def _fingerprint(module: ModuleType, digest: bytes) -> str:
     return str(
         _call_named(
             module,
-            ("fingerprint_from_digest", "billing_fingerprint_from_digest", "provider_ref_fingerprint"),
+            ("fingerprint_from_digest", "provider_ref_fingerprint"),
             ({"digest": digest}, {"hmac_digest": digest}),
         )
     )
@@ -103,7 +102,7 @@ def _fingerprint(module: ModuleType, digest: bytes) -> str:
 def _encrypt_ref(module: ModuleType, raw_id: str) -> Any:
     return _call_named(
         module,
-        ("encrypt_provider_ref", "encrypt_billing_provider_ref", "encrypt_operational_provider_ref"),
+        ("encrypt_provider_ref",),
         (
             {"raw_ref": raw_id, "key": FERNET_KEY, "key_id": KEY_ID},
             {"raw_id": raw_id, "fernet_key": FERNET_KEY, "key_id": KEY_ID},
@@ -118,7 +117,7 @@ def _decrypt_ref(module: ModuleType, encrypted: Any, *, keys: dict[str, str] | N
     return str(
         _call_named(
             module,
-            ("decrypt_provider_ref", "decrypt_billing_provider_ref", "decrypt_operational_provider_ref"),
+            ("decrypt_provider_ref",),
             (
                 {"ciphertext": ciphertext, "key_id": key_id, "keys_by_id": keys or {key_id: FERNET_KEY}},
                 {"encrypted_ref": encrypted, "keys_by_id": keys or {key_id: FERNET_KEY}},
@@ -184,7 +183,7 @@ def test_provider_ref_rotation_preserves_hmac_and_changes_key_id_only():
     raw_charge_id = "ch_test_fixture_credit_001"
     old_encrypted = _call_named(
         module,
-        ("encrypt_provider_ref", "encrypt_billing_provider_ref", "encrypt_operational_provider_ref"),
+        ("encrypt_provider_ref",),
         (
             {"raw_ref": raw_charge_id, "key": OLD_FERNET_KEY, "key_id": OLD_KEY_ID},
             {"raw_id": raw_charge_id, "fernet_key": OLD_FERNET_KEY, "key_id": OLD_KEY_ID},
@@ -192,7 +191,7 @@ def test_provider_ref_rotation_preserves_hmac_and_changes_key_id_only():
     )
     rotated = _call_named(
         module,
-        ("rotate_provider_ref", "rotate_billing_provider_ref", "reencrypt_provider_ref"),
+        ("rotate_provider_ref",),
         (
             {"encrypted_ref": old_encrypted, "old_keys_by_id": {OLD_KEY_ID: OLD_FERNET_KEY}, "new_key": FERNET_KEY, "new_key_id": KEY_ID},
             {"encrypted": old_encrypted, "keys_by_id": {OLD_KEY_ID: OLD_FERNET_KEY}, "active_key": FERNET_KEY, "active_key_id": KEY_ID},

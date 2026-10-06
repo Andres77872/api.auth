@@ -75,14 +75,11 @@ def test_app_exception_with_an_unknown_code_string_still_serialises():
     assert error.to_dict()["error"]["code"] == ErrorCode.INTERNAL_ERROR.value
 
 
-def test_remove_admin_from_unassigned_project_is_a_group_not_found():
-    cursor = make_db_cursor_mock(fetchall=[])
-    with _db_users(cursor), pytest.raises(NotFoundError) as raised:
-        db_users.remove_admin_from_project("u-admin", "prj-B")
-
-    assert raised.value.error_code is ErrorCode.GROUP_NOT_FOUND
-    assert raised.value.status_code == 404
-    assert raised.value.to_dict()["error"]["code"] == "NF_4003"
+def test_remove_admin_from_unassigned_project_returns_false():
+    cursor = make_db_cursor_mock(fetchone=(0,))
+    with _db_users(cursor):
+        assert db_users.remove_admin_from_project("u-admin", "prj-B") is False
+    assert _procedures(cursor) == ["sp_remove_admin_from_project"]
 
 
 def test_add_admin_to_project_for_a_consumer_is_a_validation_error():
@@ -99,7 +96,7 @@ def test_promoting_to_admin_of_a_project_without_admin_group_changes_nothing():
     with _db_users(cursor) as seams, \
          patch(f"{DB_USERS}.get_user_type", return_value="consumer"), \
          pytest.raises(NotFoundError) as raised:
-        db_users.update_user_type("u-1", "admin", project_id="prj-no-admin-group")
+        db_users.update_user_type("u-1", "admin", project_ids=["prj-no-admin-group"])
 
     assert raised.value.error_code is ErrorCode.GROUP_NOT_FOUND
     assert raised.value.details == {"project_id": "prj-no-admin-group"}
@@ -197,7 +194,7 @@ def test_update_user_type_signs_the_user_out():
     with _db_users(cursor) as seams, \
          patch(f"{DB_USERS}.get_user_type", side_effect=["consumer", "admin"]), \
          patch("src.Util.db.db_user_groups.assign_user_to_group", return_value={"id": "m-1"}):
-        assert db_users.update_user_type("u-1", "admin", project_id="prj-A") is True
+        assert db_users.update_user_type("u-1", "admin", project_ids=["prj-A"]) is True
 
     assert "sp_update_user_type" in _procedures(cursor)
     seams.revoke.assert_called_once_with("u-1", reason="user_type_changed")

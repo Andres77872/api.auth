@@ -266,17 +266,17 @@ PROJECT = SimpleNamespace(id="prj-1", project_hash="prj-hash-1", project_name="D
     "method, path, db_results, status, code",
     [
         pytest.param(
-            "DELETE", "/roles/roles/rh-1",
+            "DELETE", "/roles/rh-1",
             {"get_role_by_hash": {**ROLE, "is_system_role": True}},
             403, "AUTHZ_2009", id="system-role-delete",
         ),
         pytest.param(
-            "POST", "/roles/roles/rh-1/permission-groups/pgh-missing",
+            "POST", "/roles/rh-1/permission-groups/pgh-missing",
             {"get_role_by_hash": ROLE, "get_permission_group_by_hash": None},
             404, "NF_4011", id="unknown-permission-group",
         ),
         pytest.param(
-            "DELETE", "/roles/roles/rh-1/permission-groups/pgh-1",
+            "DELETE", "/roles/rh-1/permission-groups/pgh-1",
             {"get_role_by_hash": ROLE, "get_permission_group_by_hash": PERMISSION_GROUP,
              "remove_permission_group_from_role": False},
             404, "NF_4004", id="group-not-linked-to-role",
@@ -410,7 +410,7 @@ async def test_health_reports_database_outage_as_unhealthy(
     with patch("src.routes.system.validate_session", return_value=_session()), \
          patch("src.routes.system.count_users", side_effect=outage), \
          patch("src.routes.system.count_user_groups", side_effect=outage), \
-         patch("src.routes.system.count_project_permission_groups", return_value=3):
+         patch("src.routes.system.count_project_groups", return_value=3):
         response = await client.get("/system/health", headers=BEARER)
 
     assert response.status_code == 200, response.text
@@ -438,7 +438,7 @@ async def test_removing_an_unknown_email_is_404(db):
 @pytest.mark.asyncio
 async def test_revoking_an_inactive_api_key_is_a_4xx(db):
     db.cursor.return_value.callproc.side_effect = _signal("API key is already revoked or does not exist")
-    owner = {"user_id": "usr-1", "session_token": "tok"}
+    owner = {"user_id": "usr-1", "access_token": "tok"}
     key = {"id": "key-1", "public_id": "pk_1", "owner_user_id": "usr-1", "project_id": "prj-1"}
     with patch.object(user_api_keys, "require_recent_reauthentication"), \
          patch.object(user_api_keys, "get_api_key_by_public_id", return_value=key):
@@ -482,6 +482,12 @@ CHECKOUT_BODY = {
 
 @pytest.fixture
 def billing_enabled(monkeypatch):
+    from src.routes import internal_billing
+
+    monkeypatch.setattr(
+        internal_billing, "resolve_user_billing_group",
+        lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-1"},
+    )
     for name in (
         "BILLING_ENABLED", "BILLING_S2S_ENABLED", "BILLING_CHECKOUT_ENABLED", "BILLING_PORTAL_ENABLED",
         "STRIPE_BILLING_ENABLED", "STRIPE_CHECKOUT_ENABLED", "STRIPE_PORTAL_ENABLED",

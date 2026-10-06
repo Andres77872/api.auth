@@ -128,7 +128,7 @@ async def test_audit_middleware_extracts_user_context(
     mock_logger.generate_tags.return_value = []
     mock_logger.filter_sensitive_data = lambda d: d
 
-    session_token = "header.payload.signature"
+    access_token = "header.payload.signature"
     session_data = MagicMock()
     session_data.user_id = "1"
     session_data.user_hash = "usr-audit-001"
@@ -145,7 +145,7 @@ async def test_audit_middleware_extracts_user_context(
         await client.get(
             "/users/profile",
             headers={
-                "Authorization": f"Bearer {session_token}",
+                "Authorization": f"Bearer {access_token}",
                 "User-Agent": "audit-test",
             },
         )

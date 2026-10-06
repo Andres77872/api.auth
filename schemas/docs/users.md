@@ -88,7 +88,6 @@ CREATE TABLE users (
 | Table | Purpose |
 |-------|---------|
 | `user_group_members` | User → User Group membership |
-| `user_sessions` | Active user sessions |
 | `user_emails` | Activated-email authority for login and recovery |
 | `user_email_link_tokens` | Hash-only purpose-scoped link-token verification for activation and password recovery |
 | `user_permission_groups` | Direct permission assignments (exceptions) |
@@ -278,6 +277,10 @@ user_email_link_tokens(
 
 Forgot-password and admin reset-link requests enqueue through the transactional auth-email outbox when the target has an active activated email. Reset-link consume writes a new one-way password hash and creates no session.
 
+Only the latest reset link for a user remains valid, across both self-service and admin purposes and all activated email addresses. Issuance revokes every earlier unconsumed recovery credential in the same transaction as inserting the new token and outbox message. Consumption locks the user before validating the token and revokes all remaining reset siblings after a successful password update.
+
+The stored reset verifier binds the peppered HMAC of the random token to a digest of `users.id` and the current salted `users.password_hash`. Any password-hash change, including authenticated/manual changes or rehashing, invalidates outstanding links. Ordinary profile or last-login updates do not. See the [recovery security design and rollout notes](../../docs/RUNBOOKS/email-activation.md#reset-link-security-design).
+
 ### Authenticated Password Change
 
 ```sql
@@ -295,38 +298,12 @@ CALL sp_change_user_password_if_hash_matches(
 
 ## Session Management
 
-### Sessions Table
+Access sessions and refresh families live in Redis and are validated by
+`src/Util/auth_lifecycle.py`. The `session:{access_jti}` record, refresh-family state,
+and current token generation must all be valid. Redis expiration handles session cleanup.
 
-```sql
-CREATE TABLE user_sessions (
-    id VARCHAR(64) NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    project_id VARCHAR(64) NOT NULL,          -- Session is project-specific
-    session_token VARCHAR(255) NOT NULL,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_session_token (session_token)
-);
-```
-
-### Session Validation Trigger
-
-The `tr_validate_session_expiry` trigger automatically validates:
-1. Session expiry is in the future
-2. User exists and is active
-3. Project exists and is active
-4. User has access to the project (root users bypass, others via groups)
-
-### Session Cleanup
-
-```sql
--- Clean expired sessions
-CALL sp_cleanup_expired_sessions();
-```
-
----
+Use `GET /system/sessions/statistics` to inspect active sessions. SQL stores account data
+and audit history; it does not store access tokens.
 
 ## Common Operations
 

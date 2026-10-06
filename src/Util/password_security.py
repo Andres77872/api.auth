@@ -263,7 +263,7 @@ class PasswordManager:
 password_manager = PasswordManager()
 
 
-# Convenience functions for backward compatibility
+# Public password hashing and verification helpers
 def hash_password(password: str) -> str:
     """
     Hash a password using Argon2id.

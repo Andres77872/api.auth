@@ -18,7 +18,7 @@ from src.Util.Models import (
     UpdateProjectResponse, DeleteProjectResponse, ProjectAccessInfo,
     ProjectInfo, PaginationInfo, ListUserGroupsResponse, UserGroupInfo
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, InternalError, FeatureNotImplementedError, ErrorCode, create_not_found_error
@@ -34,7 +34,7 @@ from src.Util.db import (
     # Group-project management
     get_user_groups_for_project,
     # Project groups for groups-of-groups architecture
-    get_permission_groups_for_project,
+    get_project_groups_for_project,
     get_admin_project_assignments_with_details
 )
 from src.Util.admin_scope import AdminScope, resolve_admin_scope, require_project_in_scope
@@ -118,7 +118,7 @@ async def list_projects(
     """
     List the projects the caller can see, with pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie); any user type.
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); any user type.
     - Root users see all active, non-archived projects, newest first (`user_access_level: "admin"`,
       `access_level: "admin_access"`). With `search`, matches are sorted by name and `offset` is ignored.
     - Admin users see only the active, non-archived projects they are assigned to administer, sorted by name
@@ -134,8 +134,8 @@ async def list_projects(
     **Responses:** 400 whitespace-only `search` (root and admin callers); 401 missing, invalid or expired access
     token; 404 caller's user record not found.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -187,7 +187,7 @@ async def list_projects(
             access_through = "admin_access"
         else:
             # Non-admin users access projects via groups-of-groups chain.
-            # get_user_project_permissions() returns GLOBAL permissions, not
+            # get_user_permissions() returns GLOBAL permissions, not
             # project-scoped ones, so we report honest group-based access.
             access_level = "group_access"
             access_through = "user_group"
@@ -231,7 +231,7 @@ async def create_new_project(
     """
     Create a project and bootstrap its default group chain.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user. Creating a project is a platform operation: admin users (who administer only the projects root
     assigns them) and consumers get 403 whatever permissions their session carries.
 
@@ -246,8 +246,8 @@ async def create_new_project(
     **Responses:** 200 with the new `project.project_hash`; 400 missing or empty `project_name`;
     401 missing, invalid or expired access token; 403 caller is not a root user.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -308,7 +308,7 @@ async def get_project_details(
     """
     Get one project's details, statistics and the project groups it belongs to.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie).
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie).
     Root users can read any active project, archived ones included; admin users can read the active,
     non-archived projects they are assigned to administer. Other callers (including consumers whose global role
     grants the `admin` permission, and admins on projects they are not assigned) need access through their
@@ -325,8 +325,8 @@ async def get_project_details(
     `statistics` reports group-based access counts; `active_sessions` is null because
     the statistics procedure does not measure sessions.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -349,7 +349,7 @@ async def get_project_details(
     # Check if user has access to this project.
     # Admin users always have access. Non-admin users must have group-based
     # access (verified via accessible projects list). We do NOT use
-    # get_user_project_permissions() here because it returns GLOBAL permissions,
+    # get_user_permissions() here because it returns GLOBAL permissions,
     # not project-scoped ones — a consumer with no global permissions but valid
     # group access would be incorrectly denied.
     session_permissions = getattr(session_data, 'permissions', [])
@@ -375,7 +375,7 @@ async def get_project_details(
     user_groups = get_user_groups_for_user(user_data.id)
 
     # Get project_groups this project belongs to (groups-of-groups architecture)
-    project_groups = get_permission_groups_for_project(project.id)
+    project_groups = get_project_groups_for_project(project.id)
     project_groups_info = [
         {
             "group_hash": pg.group_hash,
@@ -418,7 +418,7 @@ async def update_project_details(
     """
     Update a project's name and/or description.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role). Root may update any active project (archived included); admin
     assignments never cover archived projects.
@@ -428,8 +428,8 @@ async def update_project_details(
     **Responses:** 400 nothing to update; 401 missing, invalid or expired access token; 403 caller is not root
     or an admin user, or does not administer this project; 404 unknown or deleted project.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -492,7 +492,7 @@ async def delete_project_endpoint(
     """
     Soft-delete a project.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role).
 
@@ -503,8 +503,8 @@ async def delete_project_endpoint(
     **Responses:** 401 missing, invalid or expired access token; 403 caller is not root or an admin user, or does
     not administer this project; 404 unknown or already deleted project.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -563,7 +563,7 @@ async def list_project_members(
     """
     List the users who can access a project, with pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role).
 
@@ -576,8 +576,8 @@ async def list_project_members(
     **Responses:** 401 missing, invalid or expired access token; 403 caller is not root or an admin user, or does
     not administer this project; 404 unknown or deleted project.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -620,7 +620,7 @@ async def list_project_members(
         granted_by = row["granted_by"]
 
         # Get user groups for consumer users.
-        # We do NOT call get_user_project_permissions() per-member because it
+        # We do NOT call get_user_permissions() per-member because it
         # returns GLOBAL permissions (ignores project_id), making per-member
         # access_level labels misleading and causing N+1 DB round-trips.
         groups = []
@@ -710,7 +710,7 @@ async def get_project_activity(
     """
     Get a project's activity-log feed, newest first, with pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie).
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie).
     Root users can read any active project and admin users the projects they are assigned to administer; other
     callers (including consumers whose global role grants the `admin` permission) need access through their
     user groups (never granted for archived projects).
@@ -721,8 +721,8 @@ async def get_project_activity(
     **Responses:** 401 missing, invalid or expired access token; 403 no access to this project;
     404 unknown or deleted project.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -806,7 +806,7 @@ async def get_detailed_project_stats(
     """
     Get a project's summary and access statistics.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie).
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie).
     Root users can read any active project and admin users the projects they are assigned to administer; other
     callers (including consumers whose global role grants the `admin` permission) need access through their
     user groups (never granted for archived projects).
@@ -819,8 +819,8 @@ async def get_detailed_project_stats(
     `statistics` reports group-based access counts; `active_sessions` is null because
     the statistics procedure does not measure sessions.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -882,7 +882,7 @@ async def transfer_project_ownership(
 
     Ownership is never changed; the route is reserved for a future implementation.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role).
 
@@ -891,8 +891,8 @@ async def transfer_project_ownership(
     **Responses:** 400 missing `new_owner_hash`; 401 missing, invalid or expired access token; 403 caller is not
     root or an admin user, or does not administer this project; 404 unknown project or new owner; otherwise 501 with error code `FEATURE_NOT_IMPLEMENTED`.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -952,7 +952,7 @@ async def archive_unarchive_project(
     excluded from project listings, group-based access, member lists, login project selection and access-token
     validation.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role).
 
@@ -961,8 +961,8 @@ async def archive_unarchive_project(
     **Responses:** 400 missing or non-boolean `archived`; 401 missing, invalid or expired access token; 403
     caller is not root or an admin user, or does not administer this project; 404 unknown project; otherwise 501 with error code `FEATURE_NOT_IMPLEMENTED`.
     """
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -1011,7 +1011,7 @@ async def list_project_user_groups(
     """
     List the user groups that can access a project through its project groups.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie) of a
     root user, or of an admin user assigned to administer the project. Consumers get 403 whatever
     permissions their session carries (including `admin` or `manage_users` from a global role).
 
@@ -1025,8 +1025,8 @@ async def list_project_user_groups(
     """
 
     # Validate session
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
     if not session_data:
         raise AuthenticationError(
             message="Invalid or expired session",

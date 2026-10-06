@@ -18,7 +18,6 @@ from src.Util.Models import (
     ProjectUpdateRequest,
     CreateRootUserRequest,
     CreateAdminUserRequest,
-    UserLogin,
     EnhancedUserLogin,
     User,
     Project,
@@ -59,16 +58,15 @@ class TestRegisterRequest:
         req = RegisterRequest(
             username="john",
             password="secret",
-            email="john@example.com",
             user_group_hash="ug-abc",
         )
         assert req.username == "john"
-        assert req.email == "john@example.com"
+        assert "email" not in RegisterRequest.model_fields
         assert req.user_group_hash == "ug-abc"
 
     def test_missing_required_field_fails(self):
         with pytest.raises(ValidationError):
-            RegisterRequest(username="john", password="secret", email="john@example.com")  # type: ignore
+            RegisterRequest(username="john", password="secret")  # type: ignore
 
 
 # ─── SwitchProjectRequest ───────────────────────────────────────────────────
@@ -93,13 +91,13 @@ class TestCheckAvailabilityRequest:
 
     def test_check_email(self):
         req = CheckAvailabilityRequest(email="john@example.com")
-        assert req.email == "john@example.com"
+        assert "email" not in RegisterRequest.model_fields
         assert req.username is None
 
     def test_both_fields(self):
         req = CheckAvailabilityRequest(username="john", email="john@example.com")
         assert req.username == "john"
-        assert req.email == "john@example.com"
+        assert "email" not in RegisterRequest.model_fields
 
     def test_neither_field_valid(self):
         # Both optional, so empty is valid
@@ -111,16 +109,14 @@ class TestCheckAvailabilityRequest:
 # ─── UserUpdateRequest ──────────────────────────────────────────────────────
 
 class TestUserUpdateRequest:
-    def test_all_fields_optional(self):
-        req = UserUpdateRequest()
-        assert req.username is None
-        assert req.email is None
-        assert req.password is None
+    def test_optional_username(self):
+        assert UserUpdateRequest().username is None
+        assert UserUpdateRequest(username="renamed").username == "renamed"
 
-    def test_partial_update(self):
-        req = UserUpdateRequest(username="new_name")
-        assert req.username == "new_name"
-        assert req.email is None
+    @pytest.mark.parametrize("field", ["email", "password"])
+    def test_sensitive_fields_require_their_dedicated_flow(self, field):
+        with pytest.raises(ValidationError):
+            UserUpdateRequest(**{field: "value"})
 
 
 # ─── ProjectCreateRequest ───────────────────────────────────────────────────
@@ -156,78 +152,24 @@ class TestCreateRootUserRequest:
         req = CreateRootUserRequest(username="root", password="secret")
         assert req.username == "root"
         assert req.password == "secret"
-        assert req.email is None
 
-    def test_with_email(self):
-        req = CreateRootUserRequest(username="root", password="secret", email="root@example.com")
-        assert req.email == "root@example.com"
+    def test_email_requires_the_activation_flow(self):
+        with pytest.raises(ValidationError):
+            CreateRootUserRequest(username="root", password="secret", email="root@example.com")
 
     def test_missing_username_fails(self):
         with pytest.raises(ValidationError):
-            CreateRootUserRequest(password="secret")  # type: ignore
+            CreateRootUserRequest(password="secret")
 
-
-# ─── CreateAdminUserRequest ─────────────────────────────────────────────────
 
 class TestCreateAdminUserRequest:
-    def test_valid_create(self):
-        req = CreateAdminUserRequest(username="admin", password="secret", email="admin@example.com")
-        assert req.username == "admin"
+    def test_multiple_project_assignments(self):
+        req = CreateAdminUserRequest(username="admin", password="secret", assigned_project_ids=["prj-A", "prj-B"])
+        assert req.assigned_project_ids == ["prj-A", "prj-B"]
 
-    def test_missing_email_defaults_to_none(self):
-        req = CreateAdminUserRequest(username="admin", password="secret")
-        assert req.email is None
-
-
-# ─── UserLogin (legacy) ─────────────────────────────────────────────────────
-
-class TestUserLogin:
-    def test_valid_user_login(self):
-        login = UserLogin(
-            user_session="ses-abc",
-            user_session_length=3600,
-            user_hash="USR-123",
-            user_collection="proj-xyz",
-            user_id="usr-123",
-        )
-        assert login.user_session == "ses-abc"
-        assert login.user_session_length == 3600
-        assert login.user_type == "consumer"  # default
-        assert login.project_id is None
-        assert login.groups == []
-
-    def test_with_project(self):
-        login = UserLogin(
-            user_session="ses-abc",
-            user_session_length=3600,
-            user_hash="USR-123",
-            user_collection="proj-xyz",
-            user_id="usr-123",
-            project_id="proj-123",
-            user_type="admin",
-        )
-        assert login.project_id == "proj-123"
-        assert login.user_type == "admin"
-
-    def test_with_groups(self):
-        login = UserLogin(
-            user_session="ses-abc",
-            user_session_length=3600,
-            user_hash="USR-123",
-            user_collection="proj-xyz",
-            user_id="usr-123",
-            groups=["admin_group", "editor_group"],
-        )
-        assert len(login.groups) == 2
-
-    def test_missing_required_field_fails(self):
+    def test_email_requires_the_activation_flow(self):
         with pytest.raises(ValidationError):
-            UserLogin(
-                user_session_length=3600,
-                user_hash="USR-123",
-                user_collection="proj-xyz",
-                user_id="usr-123",
-            )  # type: ignore — missing user_session
+            CreateAdminUserRequest(username="admin", password="secret", email="admin@example.com")
 
 
 # ─── EnhancedUserLogin ──────────────────────────────────────────────────────
@@ -238,7 +180,7 @@ class TestEnhancedUserLogin:
             user_hash="USR-123",
             project_hash="proj-abc",
             project_name="My Project",
-            session_token="tok-xyz",
+            access_token="tok-xyz",
             session_length=3600,
             user_id="usr-123",
         )
@@ -254,7 +196,7 @@ class TestEnhancedUserLogin:
             user_hash="USR-123",
             project_hash="proj-abc",
             project_name="My Project",
-            session_token="tok-xyz",
+            access_token="tok-xyz",
             session_length=3600,
             user_id="usr-123",
             permissions=["read", "write"],
@@ -266,7 +208,7 @@ class TestEnhancedUserLogin:
             user_hash="USR-root",
             project_hash="prj-test-001",
             project_name="Test Project",
-            session_token="tok-root",
+            access_token="tok-root",
             session_length=259200,
             user_id="usr-root",
             project_id="1",
@@ -280,7 +222,7 @@ class TestEnhancedUserLogin:
             EnhancedUserLogin(
                 project_hash="proj-abc",
                 project_name="My Project",
-                session_token="tok-xyz",
+                access_token="tok-xyz",
                 session_length=3600,
                 user_id="usr-123",
             )  # type: ignore — missing user_hash
@@ -311,7 +253,6 @@ class TestUserEntity:
             email="john@example.com",
             password_hash="$argon2id$...",
             user_type="admin",
-            assigned_project_id="proj-123",
             created_at=now,
             is_active=True,
         )

@@ -28,10 +28,7 @@ OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = {
     "/auth/oauth/callback",
     "/auth/oauth/init",
     "/auth/oauth/providers",
-    "/auth/google/start",
-    "/auth/google/callback",
 }
-GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS = OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS
 
 
 class AuthContextMiddleware(BaseHTTPMiddleware):
@@ -79,7 +76,7 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         request_url = getattr(request, "url", None)
         request_path = str(getattr(request_url, "path", "") or "")
 
-        if request_path in GOOGLE_OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS:
+        if request_path in OAUTH_PUBLIC_AUTH_CONTEXT_SKIP_PATHS:
             request.state.auth_method = "oauth"
             request.state.oauth_auth_context_skipped = True
             return await call_next(request)
@@ -123,19 +120,19 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                 # Don't fail the request, just log and fall through to Bearer
                 logger.debug(f"API key context extraction failed: {e}")
 
-        # --- Path 2: Access-token authentication (Bearer/session_token cookie) ---
-        from src.Util.Seccurity import extract_jwt_token_from_request
+        # --- Path 2: Access-token authentication (Bearer/access_token cookie) ---
+        from src.Util.security import extract_jwt_token_from_request
 
-        session_token = extract_jwt_token_from_request(request)
+        access_token = extract_jwt_token_from_request(request)
 
-        if session_token and session_token.count(".") == 2:
+        if access_token and access_token.count(".") == 2:
 
             try:
                 # Validate access-session and get user info. Wrong token types,
                 # revoked families, and inactive users simply leave request.state
                 # unauthenticated; route dependencies still enforce auth.
                 from src.Util.db.db_enhanced import validate_session
-                session_data = validate_session(session_token)
+                session_data = validate_session(access_token)
 
                 if session_data:
                     # Create user object on request.state
@@ -152,7 +149,7 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = session_data.user_id
                     # Audit and error logs persist this value, so it holds the
                     # token's session_id claim, never the token itself.
-                    request.state.session_id = audit_session_id(session_token)
+                    request.state.session_id = audit_session_id(access_token)
                     request.state.project_id = session_data.project_id
                     request.state.project_hash = session_data.project_hash
                     request.state.auth_method = "session"
@@ -163,9 +160,9 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
                 # Don't fail the request, just log the error
                 logger.debug(f"Could not extract auth context: {e}")
 
-        # Default: no auth context found — set auth_method to session for backward compat
+        # No authentication context was resolved.
         if not hasattr(request.state, 'auth_method'):
-            request.state.auth_method = "session"
+            request.state.auth_method = "anonymous"
 
         # Process request
         response = await call_next(request)

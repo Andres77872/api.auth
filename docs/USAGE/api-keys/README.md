@@ -41,7 +41,7 @@ These rules apply to the whole suite. Platform-wide rules (User-Agent, body size
 are in [Platform-wide contracts](../README.md#platform-wide-contracts).
 
 - **Management routes do not accept API keys.** Send an access token (`Authorization: Bearer` or
-  the `session_token` cookie). `X-API-Key` is honoured only by `POST /auth/validate-api-key`.
+  the `access_token` cookie). `X-API-Key` is honoured only by `POST /auth/validate-api-key`.
 - **Writes take form fields** (`application/x-www-form-urlencoded` or `multipart/form-data`), not
   JSON.
 - **Create, update and revoke need recent authentication**: a sign-in or an OAuth reauth of the

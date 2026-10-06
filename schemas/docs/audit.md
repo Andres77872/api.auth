@@ -686,7 +686,6 @@ CALL sp_get_activity_by_code('user_login');
 | `user_group_permission_groups` | INSERT, DELETE | permission_group_assigned, permission_group_revoked |
 | `user_permission_groups` | INSERT, DELETE | permission_group_assigned, permission_group_revoked |
 | `global_permission_group_permissions` | INSERT, DELETE | permission_grant, permission_revoke |
-| `user_sessions` | INSERT, UPDATE | session_created, user_logout |
 | `user_group_project_group_permissions` | INSERT, UPDATE, DELETE | permission_group_assigned, permission_group_revoked |
 | `user_group_project_group_roles` | INSERT, UPDATE, DELETE | role_assigned, role_removed |
 

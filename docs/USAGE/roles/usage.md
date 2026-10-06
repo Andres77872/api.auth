@@ -132,7 +132,7 @@ history, and a deleted group cannot be restored or unlinked through the API. See
 ### Create a role
 
 ```bash
-curl -X POST "http://localhost:8000/roles/roles" \
+curl -X POST "http://localhost:8000/roles" \
   -H "Authorization: Bearer $TOKEN" \
   -d "role_name=content_editor" \
   -d "role_display_name=Content editor" \
@@ -145,9 +145,9 @@ New roles are never system roles.
 ### List and read roles
 
 ```bash
-curl "http://localhost:8000/roles/roles?limit=50&offset=0" \
+curl "http://localhost:8000/roles?limit=50&offset=0" \
   -H "Authorization: Bearer $TOKEN"
-curl "http://localhost:8000/roles/roles/$ROLE_HASH" \
+curl "http://localhost:8000/roles/$ROLE_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -158,17 +158,17 @@ single-role read also returns the linked, active `permission_groups`. A soft-del
 ### Link a permission group to a role
 
 ```bash
-curl -X POST "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$GROUP_HASH" \
+curl -X POST "http://localhost:8000/roles/$ROLE_HASH/permission-groups/$GROUP_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 No body; idempotent. Consumers holding the role get the group's permissions within about 30 seconds,
-without a new login. List a role's groups with `GET /roles/roles/{role_hash}/permission-groups`.
+without a new login. List a role's groups with `GET /roles/{role_hash}/permission-groups`.
 
 ### Unlink a permission group from a role
 
 ```bash
-curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$GROUP_HASH" \
+curl -X DELETE "http://localhost:8000/roles/$ROLE_HASH/permission-groups/$GROUP_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -178,7 +178,7 @@ linked group grants them.
 ### Update a role
 
 ```bash
-curl -X PUT "http://localhost:8000/roles/roles/$ROLE_HASH" \
+curl -X PUT "http://localhost:8000/roles/$ROLE_HASH" \
   -H "Authorization: Bearer $TOKEN" \
   -d "role_display_name=Senior editor" \
   -d "role_priority=70"
@@ -190,7 +190,7 @@ updated.
 ### Delete a role
 
 ```bash
-curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH" \
+curl -X DELETE "http://localhost:8000/roles/$ROLE_HASH" \
   -H "Authorization: Bearer $TOKEN"
 ```
 

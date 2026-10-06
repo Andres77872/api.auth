@@ -13,7 +13,7 @@ import pytest
 
 def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
-                  session_token="test-token"):
+                  access_token="test-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -23,7 +23,7 @@ def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
     s.project_id = project_id
     s.permissions = permissions or ["admin"]
     s.groups = []
-    s.session_token = session_token
+    s.access_token = access_token
     s.session_length = 259200
     s.username = "adminuser"
     return s
@@ -75,17 +75,17 @@ async def test_admin_list_project_groups_returns_200(client, fake_redis, patched
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-list-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     group = _make_project_group()
     project = _make_project()
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.list_all_project_permission_groups", return_value=[group]), \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[project]), \
-         patch("src.routes.admin_project_groups.count_project_permission_groups", return_value=1):
+         patch("src.routes.admin_project_groups.list_all_project_groups", return_value=[group]), \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[project]), \
+         patch("src.routes.admin_project_groups.count_project_groups", return_value=1):
         response = await client.get(
             "/admin/project-groups",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -114,8 +114,8 @@ async def test_admin_list_project_groups_pagination_has_more(client, fake_redis,
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-pagination-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     groups = [_make_project_group(group_id=str(i), group_hash=f"grp-{i:03d}", group_name=f"Group {i}")
               for i in range(10)]
@@ -123,9 +123,9 @@ async def test_admin_list_project_groups_pagination_has_more(client, fake_redis,
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.list_all_project_permission_groups", return_value=groups[:5]), \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[]), \
-         patch("src.routes.admin_project_groups.count_project_permission_groups", return_value=10):
+         patch("src.routes.admin_project_groups.list_all_project_groups", return_value=groups[:5]), \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[]), \
+         patch("src.routes.admin_project_groups.count_project_groups", return_value=10):
         response = await client.get(
             "/admin/project-groups?limit=5&offset=0",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -149,8 +149,8 @@ async def test_admin_create_project_group_returns_201(client, fake_redis, patche
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-create-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     new_group = _make_project_group(group_hash="grp-new-001", group_name="New Group")
@@ -159,7 +159,7 @@ async def test_admin_create_project_group_returns_201(client, fake_redis, patche
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
          patch("src.routes.admin_project_groups.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.admin_project_groups.create_project_permission_group", return_value=new_group):
+         patch("src.routes.admin_project_groups.create_project_group", return_value=new_group):
         response = await client.post(
             "/admin/project-groups",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -183,14 +183,14 @@ async def test_project_group_not_found_returns_404(client, fake_redis, patched_d
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-pg-404-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     project = _make_project()
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.get_project_permission_group_by_hash", return_value=None):
+         patch("src.routes.admin_project_groups.get_project_group_by_hash", return_value=None):
         response = await client.get(
             "/admin/project-groups/grp-nonexistent",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -214,8 +214,8 @@ async def test_admin_update_project_group_returns_200(client, fake_redis, patche
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-update-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     existing_group = _make_project_group(group_hash="grp-existing-001", group_name="Old Name")
     updated_group = _make_project_group(group_hash="grp-existing-001", group_name="Updated Name",
@@ -224,8 +224,8 @@ async def test_admin_update_project_group_returns_200(client, fake_redis, patche
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.get_project_permission_group_by_hash", return_value=existing_group), \
-         patch("src.routes.admin_project_groups.update_project_permission_group", return_value=updated_group):
+         patch("src.routes.admin_project_groups.get_project_group_by_hash", return_value=existing_group), \
+         patch("src.routes.admin_project_groups.update_project_group", return_value=updated_group):
         response = await client.put(
             "/admin/project-groups/grp-existing-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -250,8 +250,8 @@ async def test_admin_delete_project_group_returns_200(client, fake_redis, patche
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-delete-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     admin_user = _make_user()
     group_to_delete = _make_project_group(group_hash="grp-delete-001", group_name="Delete Me")
@@ -259,9 +259,9 @@ async def test_admin_delete_project_group_returns_200(client, fake_redis, patche
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.get_project_permission_group_by_hash", return_value=group_to_delete), \
+         patch("src.routes.admin_project_groups.get_project_group_by_hash", return_value=group_to_delete), \
          patch("src.routes.admin_project_groups.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.admin_project_groups.delete_project_permission_group", return_value=True):
+         patch("src.routes.admin_project_groups.delete_project_group", return_value=True):
         response = await client.delete(
             "/admin/project-groups/grp-delete-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -282,8 +282,8 @@ async def test_admin_get_project_group_details_returns_200(client, fake_redis, p
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-detail-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     group = _make_project_group(group_hash="grp-detail-001", group_name="Detail Group")
     assigned_project = _make_project(project_hash="prj-assigned-001", project_name="Assigned Project")
@@ -291,8 +291,8 @@ async def test_admin_get_project_group_details_returns_200(client, fake_redis, p
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.get_project_permission_group_by_hash", return_value=group), \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[assigned_project]):
+         patch("src.routes.admin_project_groups.get_project_group_by_hash", return_value=group), \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[assigned_project]):
         response = await client.get(
             "/admin/project-groups/grp-detail-001",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -320,8 +320,8 @@ async def test_post_create_project_group_missing_name_returns_422(client, fake_r
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-validation-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     project = _make_project()
 
@@ -364,7 +364,7 @@ async def test_non_admin_cannot_access_project_groups():
     session.project_id = "1"
     session.permissions = []
     session.groups = []
-    session.session_token = "test-consumer-token"
+    session.access_token = "test-consumer-token"
     session.session_length = 259200
     session.username = "consumer"
 
@@ -385,21 +385,21 @@ async def test_admin_list_project_groups_search_passed_to_count(client, fake_red
                                                                   patched_db_error_logger, patched_audit_logger,
                                                                   patched_audit_ids, patched_cache_manager,
                                                                   patched_activity_logger):
-    """When search is supplied, count_project_permission_groups receives the search term."""
+    """When search is supplied, count_project_groups receives the search term."""
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-search-count-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     matching = [_make_project_group(group_id="1", group_hash="grp-match-001", group_name="Search Match")]
     project = _make_project()
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.list_all_project_permission_groups", return_value=matching) as mock_list, \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[]), \
-         patch("src.routes.admin_project_groups.count_project_permission_groups", return_value=1) as mock_count:
+         patch("src.routes.admin_project_groups.list_all_project_groups", return_value=matching) as mock_list, \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[]), \
+         patch("src.routes.admin_project_groups.count_project_groups", return_value=1) as mock_count:
         response = await client.get(
             "/admin/project-groups?search=Match",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -421,8 +421,8 @@ async def test_admin_list_project_groups_search_pagination_consistent(client, fa
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-search-pag-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     matching = [
         _make_project_group(group_id="1", group_hash="grp-a-001", group_name="Alpha Group"),
@@ -432,9 +432,9 @@ async def test_admin_list_project_groups_search_pagination_consistent(client, fa
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.list_all_project_permission_groups", return_value=matching), \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[]), \
-         patch("src.routes.admin_project_groups.count_project_permission_groups", return_value=2):
+         patch("src.routes.admin_project_groups.list_all_project_groups", return_value=matching), \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[]), \
+         patch("src.routes.admin_project_groups.count_project_groups", return_value=2):
         response = await client.get(
             "/admin/project-groups?search=Group",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -456,16 +456,16 @@ async def test_admin_list_project_groups_search_no_results(client, fake_redis, p
     from tests.integration.conftest import make_session_payload, create_test_session
 
     token = "test-admin-pg-search-empty-token"
-    session = _make_session(session_token=token)
-    create_test_session(fake_redis, token, make_session_payload(session_token=token))
+    session = _make_session(access_token=token)
+    create_test_session(fake_redis, token, make_session_payload(access_token=token))
 
     project = _make_project()
 
     with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
          patch("src.routes.admin_project_groups.validate_session", return_value=session), \
-         patch("src.routes.admin_project_groups.list_all_project_permission_groups", return_value=[]), \
-         patch("src.routes.admin_project_groups.get_projects_in_permission_group", return_value=[]), \
-         patch("src.routes.admin_project_groups.count_project_permission_groups", return_value=0):
+         patch("src.routes.admin_project_groups.list_all_project_groups", return_value=[]), \
+         patch("src.routes.admin_project_groups.get_projects_in_group", return_value=[]), \
+         patch("src.routes.admin_project_groups.count_project_groups", return_value=0):
         response = await client.get(
             "/admin/project-groups?search=NonExistentGroup",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

@@ -74,7 +74,6 @@ _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
     "src.Util.cache_manager.redis_client",
     "src.Util.auth_lifecycle.redis_client",
-    "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
     "src.Util.system_metrics.redis_client",
@@ -106,7 +105,7 @@ def _patch_all_infra():
 
 # ─── DB Helper Functions ────────────────────────────────────────────────────
 
-def _create_user_in_test_db(conn, username, email, password, user_type="consumer"):
+def _create_user_in_test_db(conn, username, password, user_type="consumer"):
     """Create a user directly in the test DB and return its data."""
     from src.Util.password_security import hash_password
     user_id = f"usr-{uuid.uuid4()}"
@@ -114,12 +113,12 @@ def _create_user_in_test_db(conn, username, email, password, user_type="consumer
     hashed_pw = hash_password(password)
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO users (id, user_hash, username, email, password_hash, user_type, is_active, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, 1, NOW())""",
-            (user_id, user_hash, username, email, hashed_pw, user_type),
+            """INSERT INTO users (id, user_hash, username, password_hash, user_type, is_active, created_at)
+               VALUES (%s, %s, %s, %s, %s, 1, NOW())""",
+            (user_id, user_hash, username, hashed_pw, user_type),
         )
     conn.commit()
-    return {"id": user_id, "user_hash": user_hash, "username": username, "email": email}
+    return {"id": user_id, "user_hash": user_hash, "username": username, "email": None}
 
 
 def _create_user_group_in_test_db(conn, group_name, description="Test group"):
@@ -200,7 +199,7 @@ def _link_ug_to_pg(conn, ug_id, pg_id):
     conn.commit()
 
 
-def _create_session_in_redis(r, user, project, session_token=None):
+def _create_session_in_redis(r, user, project, access_token=None):
     """Create a lifecycle access session in Redis for the given user/project."""
     with patch("src.Util.auth_lifecycle.redis_client", r):
         pair = issue_project_token_pair(
@@ -248,7 +247,7 @@ async def test_api_key_full_lifecycle(
 
     # Step 1: Set up user + project + group chain in real DB
     with _patch_all_infra():
-        user = _create_user_in_test_db(real_db_conn, f"e2e_key_user_{unique}", f"e2e_key_{unique}@test.com", password)
+        user = _create_user_in_test_db(real_db_conn, f"e2e_key_user_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Key Project {unique}")
         ug = _create_user_group_in_test_db(real_db_conn, f"e2e_key_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_key_pg_{unique}")
@@ -258,7 +257,7 @@ async def test_api_key_full_lifecycle(
         _link_ug_to_pg(real_db_conn, ug["id"], pg["id"])
 
     # Step 2: Create session in live Redis
-    session_token = _create_session_in_redis(live_redis, user, proj)
+    access_token = _create_session_in_redis(live_redis, user, proj)
 
     # Step 3: Create API key via user endpoint
     with _patch_all_infra():
@@ -268,7 +267,7 @@ async def test_api_key_full_lifecycle(
                 "project_hash": proj["project_hash"],
                 "name": f"E2E Test Key {unique}",
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert response.status_code == 200, f"Key creation failed: {response.text}"
@@ -303,7 +302,7 @@ async def test_api_key_full_lifecycle(
     with _patch_all_infra():
         list_resp = await client.get(
             "/users/api-keys",
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     assert list_resp.status_code == 200
     list_data = list_resp.json()
@@ -325,7 +324,7 @@ async def test_api_key_full_lifecycle(
     with _patch_all_infra():
         revoke_resp = await client.delete(
             f"/users/api-keys/{key_public_id}",
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert revoke_resp.status_code == 200, f"Key revocation failed: {revoke_resp.text}"
@@ -376,7 +375,7 @@ async def test_api_key_expired_key_rejected(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        user = _create_user_in_test_db(real_db_conn, f"e2e_exp_user_{unique}", f"e2e_exp_{unique}@test.com", password)
+        user = _create_user_in_test_db(real_db_conn, f"e2e_exp_user_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Expired Project {unique}")
         ug = _create_user_group_in_test_db(real_db_conn, f"e2e_exp_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_exp_pg_{unique}")
@@ -385,7 +384,7 @@ async def test_api_key_expired_key_rejected(
         _link_proj_to_pg(real_db_conn, proj["id"], pg["id"])
         _link_ug_to_pg(real_db_conn, ug["id"], pg["id"])
 
-    session_token = _create_session_in_redis(live_redis, user, proj)
+    access_token = _create_session_in_redis(live_redis, user, proj)
 
     # Create API key with past expiration
     past_expires = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
@@ -397,7 +396,7 @@ async def test_api_key_expired_key_rejected(
                 "name": f"E2E Expired Key {unique}",
                 "expires_at": past_expires,
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     # The endpoint should reject past dates at the validation layer
@@ -418,7 +417,7 @@ async def test_api_key_reactivation(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        user = _create_user_in_test_db(real_db_conn, f"e2e_react_user_{unique}", f"e2e_react_{unique}@test.com", password)
+        user = _create_user_in_test_db(real_db_conn, f"e2e_react_user_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Reactivate Project {unique}")
         ug = _create_user_group_in_test_db(real_db_conn, f"e2e_react_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_react_pg_{unique}")
@@ -427,7 +426,7 @@ async def test_api_key_reactivation(
         _link_proj_to_pg(real_db_conn, proj["id"], pg["id"])
         _link_ug_to_pg(real_db_conn, ug["id"], pg["id"])
 
-    session_token = _create_session_in_redis(live_redis, user, proj)
+    access_token = _create_session_in_redis(live_redis, user, proj)
 
     # Start with a comfortably valid expiration. The test moves it into the past
     # directly instead of depending on scheduling or wall-clock sleeps.
@@ -440,7 +439,7 @@ async def test_api_key_reactivation(
                 "name": f"E2E Reactivate Key {unique}",
                 "expires_at": initial_future,
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert response.status_code == 200, f"Key creation failed: {response.text}"
@@ -509,7 +508,7 @@ async def test_api_key_reactivation(
             data={
                 "expires_at": future_expires,
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert update_resp.status_code == 200, f"Key reactivation failed: {update_resp.text}"
@@ -558,7 +557,7 @@ async def test_api_key_no_secret_leak(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        user = _create_user_in_test_db(real_db_conn, f"e2e_leak_user_{unique}", f"e2e_leak_{unique}@test.com", password)
+        user = _create_user_in_test_db(real_db_conn, f"e2e_leak_user_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Leak Project {unique}")
         ug = _create_user_group_in_test_db(real_db_conn, f"e2e_leak_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_leak_pg_{unique}")
@@ -567,7 +566,7 @@ async def test_api_key_no_secret_leak(
         _link_proj_to_pg(real_db_conn, proj["id"], pg["id"])
         _link_ug_to_pg(real_db_conn, ug["id"], pg["id"])
 
-    session_token = _create_session_in_redis(live_redis, user, proj)
+    access_token = _create_session_in_redis(live_redis, user, proj)
 
     # Create API key
     with _patch_all_infra():
@@ -577,7 +576,7 @@ async def test_api_key_no_secret_leak(
                 "project_hash": proj["project_hash"],
                 "name": f"E2E Leak Test Key {unique}",
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert create_resp.status_code == 200
@@ -593,7 +592,7 @@ async def test_api_key_no_secret_leak(
     with _patch_all_infra():
         list_resp = await client.get(
             "/users/api-keys",
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     assert list_resp.status_code == 200
     list_data = list_resp.json()
@@ -605,7 +604,7 @@ async def test_api_key_no_secret_leak(
     with _patch_all_infra():
         detail_resp = await client.get(
             f"/users/api-keys/{key_public_id}",
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     assert detail_resp.status_code == 200
     detail_data = detail_resp.json()
@@ -632,7 +631,7 @@ async def test_api_key_token_format_and_verification(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        user = _create_user_in_test_db(real_db_conn, f"e2e_fmt_user_{unique}", f"e2e_fmt_{unique}@test.com", password)
+        user = _create_user_in_test_db(real_db_conn, f"e2e_fmt_user_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Format Project {unique}")
         ug = _create_user_group_in_test_db(real_db_conn, f"e2e_fmt_ug_{unique}")
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_fmt_pg_{unique}")
@@ -641,7 +640,7 @@ async def test_api_key_token_format_and_verification(
         _link_proj_to_pg(real_db_conn, proj["id"], pg["id"])
         _link_ug_to_pg(real_db_conn, ug["id"], pg["id"])
 
-    session_token = _create_session_in_redis(live_redis, user, proj)
+    access_token = _create_session_in_redis(live_redis, user, proj)
 
     # Create API key
     with _patch_all_infra():
@@ -651,7 +650,7 @@ async def test_api_key_token_format_and_verification(
                 "project_hash": proj["project_hash"],
                 "name": f"E2E Format Key {unique}",
             },
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     assert create_resp.status_code == 200
     full_token = create_resp.json()["data"]["api_key"]
@@ -683,6 +682,6 @@ async def test_api_key_token_format_and_verification(
     with _patch_all_infra():
         session_resp = await client.get(
             "/users/api-keys",
-            headers={"Authorization": f"Bearer {session_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     assert session_resp.status_code == 200, f"Session auth should still work: {session_resp.text}"

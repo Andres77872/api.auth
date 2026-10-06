@@ -13,7 +13,6 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Mapping
@@ -37,7 +36,6 @@ from src.Util.stripe import webhooks as stripe_webhook_adapter
 from src.Util.stripe.account import StripeAccountNotReadyError, get_stripe_account_secrets_for_group
 from src.Util.stripe.config import load_stripe_config
 from src.Util.stripe.rate_limit import StripeRateLimitExceeded, StripeRateLimiter
-from src.Util.stripe.security import parse_stripe_signature_header
 
 
 logger = logging.getLogger(__name__)
@@ -228,49 +226,16 @@ def _current_rate_limiter() -> StripeRateLimiter:
     return rate_limiter or StripeRateLimiter()
 
 
-def _webhook_feature_ready(stripe_config: Any) -> bool:
-    return bool(
-        getattr(stripe_config, "billing_enabled", False)
-        and getattr(stripe_config, "webhooks_enabled", False)
-        and _string_field(stripe_config, "webhook_secret")
-    )
-
-
 def _event_hmac_secret() -> str | None:
     """Webhook event dedupe/idempotency HMAC secret — ``BILLING_ID_HMAC_SECRET`` only.
 
-    No fallback to the env ``STRIPE_WEBHOOK_SECRET``: that secret is per-account and rotatable, so
-    keying event fingerprints/dedupe on it would make HMACs inconsistent across a rotation. Billing
-    readiness already requires ``BILLING_ID_HMAC_SECRET`` whenever billing is enabled; both webhook
-    endpoints already respond with a neutral 503 when this returns ``None`` (fail-closed).
+    Billing signing secrets rotate per account. A separate HMAC secret keeps event
+    fingerprints stable across rotation; a missing secret returns a neutral 503.
     """
     try:
         return load_billing_config().id_hmac_secret or None
     except Exception:
         return None
-
-
-def _debug_fixture_now(signature_header: str | None, tolerance_seconds: int) -> int | None:
-    """Return the signature's own timestamp as "now", only inside a pytest process.
-
-    Stripe fixtures are byte-exact and pinned to a deterministic timestamp. The
-    unit verifier still proves timestamp tolerance; this route helper keeps the
-    integration route tests deterministic. It keys on ``PYTEST_CURRENT_TEST`` alone:
-    ``DEBUG_MODE`` is a server setting and must never switch off Stripe's
-    timestamp tolerance (the replay window) on a running API.
-    """
-
-    if not os.environ.get("PYTEST_CURRENT_TEST"):
-        return None
-    try:
-        parts = parse_stripe_signature_header(signature_header)
-    except Exception:
-        return None
-    current = int(time.time())
-    tolerance = max(1, int(tolerance_seconds or 300))
-    if abs(current - parts.timestamp) > tolerance:
-        return parts.timestamp
-    return None
 
 
 def _safe_webhook_metadata(
@@ -453,10 +418,6 @@ def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(own_metadata, Mapping):
         merged.update({str(key): value for key, value in own_metadata.items() if value not in (None, "")})
     return merged
-
-
-def _synthetic_billing_group_id(project_hash: str | None) -> str:
-    return f"bg-{uuid.uuid5(uuid.NAMESPACE_URL, f'billing-group:{project_hash or '-'}').hex[:24]}"
 
 
 def _datetime_from_iso(value: Any) -> datetime | None:
@@ -909,22 +870,6 @@ def _classification_result(value: Any, event_type: str) -> BillingClassification
     )
 
 
-def _normalize_event(event: Any) -> VerifiedProviderEvent:
-    if isinstance(event, VerifiedProviderEvent):
-        return event
-    # Compatibility for tests that monkeypatch the verifier to return a dict.
-    event_map = _plain_mapping(event)
-    return VerifiedProviderEvent(
-        provider=constants.STRIPE_PROVIDER_NAME,
-        event_type=_safe_event_type(event_map.get("type")),
-        event_id_hmac=b"0" * 32,
-        event_id_fingerprint="000000000000",
-        raw_body_sha256=b"0" * 32,
-        received_at=datetime.now(timezone.utc).replace(microsecond=0),
-        payload=event_map,
-    )
-
-
 def _resolve_group_webhook_secret(billing_group_hash: str) -> tuple[str | None, str | None]:
     """Resolve a billing group's internal id + decrypted webhook secret from its hash.
 
@@ -967,18 +912,14 @@ async def _process_event(
     request: Request,
     event: VerifiedProviderEvent,
     *,
-    billing_group_id: str | None,
+    billing_group_id: str,
     stripe_config: Any = None,
 ) -> JSONResponse:
-    """Shared post-verification processing for both the global and path-scoped routes."""
+    """Process a verified event within the billing group selected by the URL."""
 
     metadata = _event_metadata(event.payload)
     scope, lookup = await _resolve_event_scope(event, metadata, billing_group_id=billing_group_id)
-    group_id = (
-        billing_group_id
-        or _string_field(scope or {}, "billing_group_id")
-        or _synthetic_billing_group_id(_string_field(metadata, "project_hash"))
-    )
+    group_id = billing_group_id
 
     duplicate, _ = await _record_delivery_ledger(event, billing_group_id=group_id, status="received", reason="verified")
     if duplicate:
@@ -1074,80 +1015,6 @@ async def _process_event(
 
 
 @router.post(
-    _WEBHOOK_PATH,
-    status_code=200,
-    responses={
-        **_WEBHOOK_RESPONSES,
-        503: {
-            "description": (
-                "`{\"success\": false, \"message\": \"Webhook unavailable.\"}`: `BILLING_ENABLED` or "
-                "`STRIPE_WEBHOOKS_ENABLED` is off, or `STRIPE_WEBHOOK_SECRET` or `BILLING_ID_HMAC_SECRET` is not set."
-            )
-        },
-    },
-    openapi_extra=_webhook_openapi_extra(secret_label="the global `STRIPE_WEBHOOK_SECRET`"),
-)
-async def receive_stripe_webhook(request: Request) -> JSONResponse:
-    """Receive a Stripe event on the global endpoint, verified with the global webhook signing secret.
-
-    Fallback for single-account or migrating deployments; each billing group's Stripe account
-    should send to `POST /webhooks/stripe/{billing_group_hash}` instead.
-
-    **Auth:** no user credentials. The `Stripe-Signature` header must be a valid Stripe
-    signature over the exact raw body, made with the global `STRIPE_WEBHOOK_SECRET` and within
-    the signature tolerance window. Repeated failures from one IP are rate limited.
-
-    **Request:** the Stripe event JSON exactly as Stripe sent it. The event `api_version` must
-    equal the Stripe API version this server is pinned to.
-
-    **Processing:** the user, project, and billing group come from the event object's metadata
-    (`user_hash`, `project_hash`), which Checkout sets on the session and copies onto the
-    Subscription and PaymentIntent it creates (invoices use their subscription's metadata).
-    Events without it (disputes, objects created before that copy existed) resolve through
-    rows already stored: the Checkout ref, then the subscription, payment intent, charge, or
-    customer id. Handled event types (`checkout.session.completed`,
-    `customer.subscription.created`/`updated`/`deleted`, `invoice.paid`,
-    `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`/`closed`, narrowed by
-    `STRIPE_ALLOWED_WEBHOOK_EVENTS`) update subscription or purchase facts; other types are
-    acknowledged and ignored. Duplicate deliveries are acknowledged without reprocessing. When
-    a fact cannot be written for a resolved user, a resync job is queued for the billing sync
-    worker; an event that resolves to no user writes nothing.
-    \f
-    Resolves the billing group from event metadata during persistence. Only inside a pytest
-    process does ``_debug_fixture_now`` verify the pinned fixture signatures at their own
-    timestamp; a running server always enforces the timestamp tolerance.
-    """
-
-    raw_body = await request.body()
-    signature = request.headers.get(constants.STRIPE_WEBHOOK_SIGNATURE_HEADER)
-    stripe_config = load_stripe_config()
-
-    if not _webhook_feature_ready(stripe_config):
-        return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
-
-    hmac_secret = _event_hmac_secret()
-    if not hmac_secret:
-        return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
-
-    verification_now = _debug_fixture_now(signature, getattr(stripe_config, "webhook_signature_tolerance_seconds", 300))
-    try:
-        event = await _maybe_await(
-            build_verified_provider_event(
-                raw_body=raw_body,
-                signature_header=signature,
-                webhook_secret=str(stripe_config.webhook_secret),
-                event_hmac_secret=hmac_secret,
-                tolerance_seconds=int(getattr(stripe_config, "webhook_signature_tolerance_seconds", 300)),
-                now=verification_now,
-            )
-        )
-    except Exception:
-        return await _signature_failure_response(request=request, event_type="unknown", status_code=401)
-
-    return await _process_event(request, _normalize_event(event), billing_group_id=None, stripe_config=stripe_config)
-
-
-@router.post(
     _WEBHOOK_PATH_GROUP,
     status_code=200,
     responses={
@@ -1177,7 +1044,7 @@ async def receive_stripe_webhook_for_group(
     **Auth:** no user credentials. The `Stripe-Signature` header must be a valid Stripe
     signature over the exact raw body, made with the webhook secret stored for this group
     through the admin credentials endpoint, within the signature tolerance window. Only that
-    one secret is tried; `STRIPE_WEBHOOK_SECRET` is not used. Repeated failures from one IP are
+    one stored secret is tried. Repeated failures from one IP are
     rate limited.
 
     **Request:** the Stripe event JSON exactly as Stripe sent it. The event `api_version` must
@@ -1187,8 +1054,9 @@ async def receive_stripe_webhook_for_group(
     have active credentials with a stored webhook secret; otherwise the delivery is answered
     `503` before its signature is checked or anything is recorded, and Stripe retries it later.
 
-    **Processing:** as `POST /webhooks/stripe`, with the facts attributed to the group in the
-    path.
+    **Processing:** record delivery once, resolve the user within this group, and update
+    subscription or purchase facts. Duplicate deliveries are acknowledged without processing.
+    Events without a resolvable user write no entitlement facts.
     \f
     The group is taken from the URL, so its own webhook signing secret is selected
     deterministically (single-attempt, constant-time verification — no trial-verify).
@@ -1209,7 +1077,6 @@ async def receive_stripe_webhook_for_group(
     if not group_id or not webhook_secret:
         return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
 
-    verification_now = _debug_fixture_now(signature, getattr(stripe_config, "webhook_signature_tolerance_seconds", 300))
     try:
         event = await _maybe_await(
             build_verified_provider_event(
@@ -1218,22 +1085,21 @@ async def receive_stripe_webhook_for_group(
                 webhook_secret=str(webhook_secret),
                 event_hmac_secret=hmac_secret,
                 tolerance_seconds=int(getattr(stripe_config, "webhook_signature_tolerance_seconds", 300)),
-                now=verification_now,
             )
         )
     except Exception:
         return await _signature_failure_response(request=request, event_type="unknown", status_code=401)
 
-    return await _process_event(request, _normalize_event(event), billing_group_id=group_id, stripe_config=stripe_config)
+    return await _process_event(request, event, billing_group_id=group_id, stripe_config=stripe_config)
 
 
 def _assert_webhook_route_hardening() -> None:
     registered_paths = {str(getattr(route, "path", "")) for route in getattr(router, "routes", [])}
-    if _WEBHOOK_PATH not in registered_paths or _WEBHOOK_PATH_GROUP not in registered_paths:
+    if registered_paths != {_WEBHOOK_PATH_GROUP}:
         raise RuntimeError("Stripe webhook routes are not registered on their isolated router")
     if any(path.startswith("/auth/") for path in registered_paths):
         raise RuntimeError("Stripe webhook router must not expose auth/login routes")
-    for path in (_WEBHOOK_PATH, _WEBHOOK_PATH_GROUP):
+    for path in (_WEBHOOK_PATH_GROUP,):
         if not APIAuditLogger.is_raw_body_audit_excluded(path):
             raise RuntimeError("Stripe webhook raw body must be excluded from API audit capture")
         if APIAuditLogger.infer_auth_method_for_path(path) != "webhook":
@@ -1250,6 +1116,5 @@ __all__ = [
     "router",
     "capture_stripe_webhook_audit",
     "record_stripe_webhook_activity",
-    "receive_stripe_webhook",
     "receive_stripe_webhook_for_group",
 ]

@@ -19,44 +19,20 @@ The database operations are organized into specialized modules:
 
 User Type Access Model:
 Root Users → Unrestricted Access to Everything
-Admin Users → Project-Scoped Admin Access (assigned_project_id)
+Admin Users → Project assignments through admin-group memberships
 Consumer Users → Global Role System (User → Role → Permission Groups → Permissions)
 """
 
 from src.Util.db.db_enhanced import (
-    enhanced_login,
     enhanced_register,
     validate_session,
-    get_session_data,
     is_root_user,
     is_admin_user,
     is_consumer_user,
     check_admin_project_access,
 )
 # Import project group management functions
-from src.Util.db.db_project_groups import (
-    create_project_group as create_project_permission_group,
-    get_project_group_by_id as get_project_permission_group_by_id,
-    get_project_group_by_hash as get_project_permission_group_by_hash,
-    get_project_group_by_name as get_project_permission_group_by_name,
-    list_all_project_groups as list_all_project_permission_groups,
-    update_project_group as update_project_permission_group,
-    delete_project_group as delete_project_permission_group,
-    count_project_groups as count_project_permission_groups,
-    search_project_groups as search_project_permission_groups,
-    assign_project_to_group as assign_project_to_permission_group,
-    remove_project_from_group as remove_project_from_permission_group,
-    get_project_group_membership as get_project_permission_group_membership,
-    get_project_groups_for_project as get_permission_groups_for_project,
-    get_projects_in_group as get_projects_in_permission_group,
-    get_users_with_access_to_project_group,
-    get_project_permissions,
-    get_user_project_permissions,
-    get_user_project_permissions as get_user_effective_permissions,
-    check_user_project_permission,
-    check_user_project_permission as check_user_permission,
-    create_default_project_groups as create_default_permission_groups
-)
+from src.Util.db.db_project_groups import create_project_group, get_project_group_by_id, get_project_group_by_hash, get_project_group_by_name, list_all_project_groups, update_project_group, delete_project_group, count_project_groups, assign_project_to_group, remove_project_from_group, get_project_groups_for_project, get_projects_in_group, get_users_with_access_to_project_group
 # Import project management functions
 from src.Util.db.db_projects import (
     create_project,
@@ -73,21 +49,7 @@ from src.Util.db.db_projects import (
     create_default_groups
 )
 # Import session analytics functions
-from src.Util.db.db_session_analytics import (
-    count_active_sessions,
-    get_session_statistics,
-    get_user_status,
-    set_user_status,
-    get_recent_users_count,
-    get_user_login_statistics,
-    get_recent_projects_count,
-    get_project_members,
-    add_user_to_project,
-    check_database_health,
-    check_redis_health,
-    get_recent_activity_count,
-    initialize_activity_logs_table
-)
+from src.Util.db.db_session_analytics import count_active_sessions, get_session_statistics, get_user_status, set_user_status, get_recent_users_count, get_recent_projects_count, get_project_members, check_database_health, check_redis_health, get_recent_activity_count
 # Import audit analytics functions
 from src.Util.db.db_audit_analytics import (
     get_audit_logs,
@@ -126,44 +88,7 @@ from src.Util.db.db_user_groups import (
     check_user_group_project_group_access
 )
 # Import user management functions
-from src.Util.db.db_users import (
-    create_user,
-    create_root_user,
-    create_admin_user,
-    create_consumer_user,
-    get_user_by_credentials,
-    get_user_by_id,
-    get_user_by_hash,
-    update_user,
-    set_user_active_status,
-    delete_user,
-    hard_delete_user,
-    list_users,
-    list_users_with_access,
-    count_users,
-    search_users,
-    check_username_email_available,
-    change_user_password,
-    get_user_type,
-    get_admin_assigned_project,
-    get_admin_assigned_projects,
-    assign_admin_to_multiple_projects,
-    add_admin_to_project,
-    remove_admin_from_project,
-    check_admin_multi_project_access,
-    get_admin_project_assignments_with_details,
-    update_user_type,
-    assign_admin_to_project,
-    grant_user_project_access,
-    get_user_project_access,
-    revoke_user_project_access,
-    get_user_permissions_in_project,
-    assign_user_to_group,
-    remove_user_from_group,
-    create_session,
-    invalidate_session,
-    invalidate_user_sessions
-)
+from src.Util.db.db_users import create_root_user, create_admin_user, create_consumer_user, get_user_by_credentials, get_user_by_id, get_user_by_hash, update_user, set_user_active_status, delete_user, hard_delete_user, list_users, list_users_with_access, count_users, search_users, check_username_email_available, change_user_password, get_user_type, get_admin_assigned_projects, assign_admin_to_multiple_projects, add_admin_to_project, remove_admin_from_project, check_admin_multi_project_access, get_admin_project_assignments_with_details, update_user_type, get_user_project_access, assign_user_to_group, remove_user_from_group, invalidate_user_sessions
 # Import permission assignment functions
 from src.Util.db.db_permission_assignments import (
     assign_permission_group_to_user_group,
@@ -377,62 +302,6 @@ def check_user_type_permission(user_id: str, operation: str, project_id: str = N
 
 # =================== USER TYPE AWARE SESSION MANAGEMENT ===================
 
-def create_user_type_session(user_id: str, project_id: str, session_length: int = 259200) -> dict:
-    """
-    Create session with user type context.
-    
-    Args:
-        user_id: User ID
-        project_id: Project ID
-        session_length: Session duration in seconds
-        
-    Returns:
-        Session information with user type context (None on error)
-        
-    Raises:
-        NotFoundError: If user not found
-        DatabaseError: On database operation errors
-        
-    Note:
-        Returns None on error to indicate session creation failure.
-    """
-    def _create():
-        user = get_user_by_id(user_id)
-        user_type = get_user_type(user_id)
-
-        # Create base session
-        session_token = create_session(user_id, project_id, None, session_length)
-
-        if not session_token:
-            return None
-
-        # Add user type specific context
-        session_data = {
-            "session_token": session_token,
-            "user_type": user_type,
-            "user_id": user_id,
-            "user_hash": user.user_hash,
-            "project_id": project_id
-        }
-
-        if user_type == "admin":
-            session_data["assigned_project_ids"] = get_admin_assigned_projects(user_id)
-            session_data["can_access_project"] = check_admin_project_access(user_id, project_id)
-        elif user_type == "consumer":
-            session_data["user_groups"] = [g.group_name for g in get_user_groups_for_user(user_id)]
-            # Get permissions from global role system
-            from src.Util.db.db_global_roles import get_user_permissions
-            session_data["permissions"] = get_user_permissions(user_id)
-
-        return session_data
-    
-    return handle_db_operation(
-        _create,
-        error_context=f"create_user_type_session(user_id={user_id}, project_id={project_id})"
-    )
-
-
-
 
 # Export all available functions for easy importing
 __all__ = [
@@ -441,11 +310,8 @@ __all__ = [
     'get_connection',
 
     # Authentication
-    'enhanced_login',
     'enhanced_register',
     'validate_session',
-    'get_session_data',
-
     # User type functions
     'is_root_user',
     'is_admin_user',
@@ -453,10 +319,7 @@ __all__ = [
     'check_admin_project_access',
     'get_user_type_info',
     'check_user_type_permission',
-    'create_user_type_session',
-
     # User management
-    'create_user',
     'create_root_user',
     'create_admin_user',
     'create_consumer_user',
@@ -474,7 +337,6 @@ __all__ = [
     'check_username_email_available',
     'change_user_password',
     'get_user_type',
-    'get_admin_assigned_project',
     'get_admin_assigned_projects',
     'assign_admin_to_multiple_projects',
     'add_admin_to_project',
@@ -482,12 +344,8 @@ __all__ = [
     'check_admin_multi_project_access',
     'get_admin_project_assignments_with_details',
     'update_user_type',
-    'assign_admin_to_project',
-    'grant_user_project_access',
     'get_user_project_access',
-    'revoke_user_project_access',
     'get_user_groups_in_project',
-    'get_user_permissions_in_project',
     'assign_user_to_group',
     'remove_user_from_group',
 
@@ -506,8 +364,6 @@ __all__ = [
     'create_default_groups',
 
     # Session management
-    'create_session',
-    'invalidate_session',
     'invalidate_user_sessions',
 
     # User group management
@@ -536,38 +392,28 @@ __all__ = [
     'check_user_group_project_group_access',
 
     # Project group management
-    'create_project_permission_group',
-    'get_project_permission_group_by_id',
-    'get_project_permission_group_by_hash',
-    'get_project_permission_group_by_name',
-    'list_all_project_permission_groups',
-    'update_project_permission_group',
-    'delete_project_permission_group',
-    'count_project_permission_groups',
-    'search_project_permission_groups',
-    'assign_project_to_permission_group',
-    'remove_project_from_permission_group',
-    'get_project_permission_group_membership',
-    'get_permission_groups_for_project',
-    'get_projects_in_permission_group',
+    'create_project_group',
+    'get_project_group_by_id',
+    'get_project_group_by_hash',
+    'get_project_group_by_name',
+    'list_all_project_groups',
+    'update_project_group',
+    'delete_project_group',
+    'count_project_groups',
+    'assign_project_to_group',
+    'remove_project_from_group',
+    'get_project_groups_for_project',
+    'get_projects_in_group',
     'get_users_with_access_to_project_group',
-    'get_project_permissions',
-    'get_user_project_permissions',
-    'get_user_effective_permissions',
-    'check_user_project_permission',
-    'check_user_permission',
-    'create_default_permission_groups',
-
+    'get_user_permissions',
     # Session Analytics
     'count_active_sessions',
     'get_session_statistics',
     'get_user_status',
     'set_user_status',
     'get_recent_users_count',
-    'get_user_login_statistics',
     'get_recent_projects_count',
     'get_project_members',
-    'add_user_to_project',
     'check_database_health',
     'check_redis_health',
     'get_recent_activity_count',
@@ -650,3 +496,5 @@ __all__ = [
     'run_email_retention_purge',
     'set_primary_user_email',
 ]
+
+from src.Util.db.db_global_roles import get_user_permissions

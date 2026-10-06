@@ -12,7 +12,7 @@ Key features:
 - User type management and validation
 - Enhanced authentication with user type checking
 - Project assignment for admin users
-- Legacy compatibility maintained
+- Current account, group and multi-project contracts
 - Comprehensive error handling with handle_db_operation wrapper
 """
 
@@ -26,7 +26,7 @@ import pymysql
 
 from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.Models import (
-    User, Project, ProjectInfo, UserProject, LegacyUserGroup as UserGroup, EnhancedUserLogin
+    User, Project, ProjectInfo, UserGroup, EnhancedUserLogin
 )
 from src.Util.cache_manager import cache_manager
 from src.Util.db_config import get_connection, redis_client as client
@@ -74,16 +74,6 @@ def generate_user_hash() -> str:
     return f"usr-{uuid.uuid4()}"
 
 
-def generate_user_project_hash() -> str:
-    """
-    Generate a unique user-project hash with UUID4 and 'uprj-' prefix.
-    
-    Returns:
-        User-project hash in format: uprj-{UUID4}
-    """
-    return f"uprj-{uuid.uuid4()}"
-
-
 # =================== USER TYPE MANAGEMENT ===================
 
 def get_user_type(user_id: str) -> Optional[str]:
@@ -127,14 +117,14 @@ def _revoke_auth_state_after_type_change(user_id: str, previous_user_type: Optio
     revoke_user_auth_state(str(user_id), reason="user_type_changed")
 
 
-def update_user_type(user_id: str, new_user_type: str, project_id: str = None, updated_by: str = None) -> bool:
+def update_user_type(user_id: str, new_user_type: str, project_ids: List[str] = None, updated_by: str = None) -> bool:
     """
     Update user type and project assignment.
     
     Args:
         user_id: User ID to update
         new_user_type: New user type (root, admin, consumer)
-        project_id: Project to assign if admin (optional, ignored for root/consumer)
+        project_ids: Projects to assign if admin (ignored for root/consumer)
         updated_by: User ID who performed update
         
     Returns:
@@ -151,27 +141,35 @@ def update_user_type(user_id: str, new_user_type: str, project_id: str = None, u
         with get_connection() as con:
             cur = con.cursor()
 
-            # Check the admin group before touching the user: the nested helpers share
-            # this connection and commit it, so a later failure could not undo the type.
-            if new_user_type == 'admin' and project_id:
-                cur.callproc('sp_find_admin_group_for_project', [project_id])
-                admin_group_result = cur.fetchone()
+            try:
+                con.begin()
+                # Validate every requested admin group before changing the account type.
+                admin_groups = []
+                if new_user_type == 'admin':
+                    for project_id in dict.fromkeys(project_ids or []):
+                        cur.callproc('sp_find_admin_group_for_project', [project_id])
+                        group_row = cur.fetchone()
+                        while cur.nextset():
+                            pass
+                        if not group_row:
+                            raise NotFoundError("No admin group found for project", ErrorCode.GROUP_NOT_FOUND, details={"project_id": project_id})
+                        admin_groups.append(group_row[0])
+
+                cur.callproc('sp_update_user_type', [user_id, new_user_type])
                 while cur.nextset():
                     pass
-                if not admin_group_result:
-                    raise NotFoundError(
-                        message="No admin group found for project",
-                        error_code=ErrorCode.GROUP_NOT_FOUND,
-                        details={"project_id": project_id}
-                    )
 
-            cur.callproc('sp_update_user_type', [user_id, new_user_type])
+                # Assign all validated projects on this transaction
+                for group_id in admin_groups:
+                    cur.callproc('sp_assign_user_to_group', [generate_user_group_member_id(), user_id, group_id, updated_by])
+                    while cur.nextset():
+                        pass
 
-            # Only assign project for admin users
-            if new_user_type == 'admin' and project_id:
-                add_admin_to_project(user_id, project_id, assigned_by=updated_by)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
 
-            con.commit()
             cache_manager.invalidate_user_cache(user_id)
             _revoke_auth_state_after_type_change(user_id, previous_user_type, new_user_type)
             return True
@@ -182,19 +180,15 @@ def update_user_type(user_id: str, new_user_type: str, project_id: str = None, u
     )
 
 
-# Note: assign_admin_to_project is now a wrapper function defined later for multi-project support
-
-
 # =================== USER TYPE-SPECIFIC CREATION ===================
 
-def create_root_user(username: str, password: str, email: str = None, created_by: str = None) -> User:
+def create_root_user(username: str, password: str, created_by: str = None) -> User:
     """
     Create a root (super admin) user.
     
     Args:
         username: Unique username for the root user
         password: Plain text password (will be hashed)
-        email: Optional email address
         created_by: User ID of the creator
         
     Returns:
@@ -212,18 +206,17 @@ def create_root_user(username: str, password: str, email: str = None, created_by
 
         with get_connection() as con:
             cur = con.cursor()
-            # SP params: (p_user_id, p_user_hash, p_username, p_email, p_password_hash, p_created_by)
-            cur.callproc('sp_create_root_user', [user_id, user_hash, username, email, password_hash, created_by])
+            # SP params: (p_user_id, p_user_hash, p_username, p_password_hash, p_created_by)
+            cur.callproc('sp_create_root_user', [user_id, user_hash, username, password_hash, created_by])
             con.commit()
 
             return User(
                 id=user_id,
                 user_hash=user_hash,
                 username=username,
-                email=email,
+                email=None,
                 password_hash=password_hash,
                 user_type='root',
-                assigned_project_id=None,
                 created_at=datetime.now(),
                 last_login=None,  # New user, no login yet
                 is_active=True
@@ -231,21 +224,20 @@ def create_root_user(username: str, password: str, email: str = None, created_by
     
     return handle_db_operation(
         _create,
-        error_context=f"create_root_user(username='{username}', email='{email}')"
+        error_context=f"create_root_user(username='{username}')"
     )
 
 
 # Note: create_admin_user has been moved to the bottom of the file to support multi-project assignments
 
 
-def create_consumer_user(username: str, password: str, email: str = None, created_by: str = None) -> User:
+def create_consumer_user(username: str, password: str, created_by: str = None) -> User:
     """
     Create a consumer (end user) user.
     
     Args:
         username: Unique username for the consumer user
         password: Plain text password (will be hashed)
-        email: Optional email address
         created_by: User ID of the creator
         
     Returns:
@@ -262,17 +254,16 @@ def create_consumer_user(username: str, password: str, email: str = None, create
         user_id = generate_user_id()
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_create_consumer_user', [user_id, user_hash, username, email, password_hash, created_by])
+            cur.callproc('sp_create_consumer_user', [user_id, user_hash, username, password_hash, created_by])
             con.commit()
 
             return User(
                 id=user_id,
                 user_hash=user_hash,
                 username=username,
-                email=email,
+                email=None,
                 password_hash=password_hash,
                 user_type='consumer',
-                assigned_project_id=None,
                 created_at=datetime.now(),
                 last_login=None,  # New user, no login yet
                 is_active=True
@@ -280,23 +271,11 @@ def create_consumer_user(username: str, password: str, email: str = None, create
     
     return handle_db_operation(
         _create,
-        error_context=f"create_consumer_user(username='{username}', email='{email}')"
+        error_context=f"create_consumer_user(username='{username}')"
     )
 
 
 # =================== ENHANCED USER MANAGEMENT ===================
-
-def create_user(username: str, password: str, email: str = None, user_type: str = "consumer",
-                assigned_project_id: str = None) -> User:
-    """Create a user with specified type (enhanced to support all user types)"""
-    if user_type == "root":
-        return create_root_user(username, password, email)
-    elif user_type == "admin":
-        if not assigned_project_id:
-            raise ValueError("Admin users must have an assigned project")
-        return create_admin_user(username, password, email, assigned_project_id)
-    else:  # consumer (default)
-        return create_consumer_user(username, password, email)
 
 
 def get_user_by_credentials(username: str, password: str) -> Optional[User]:
@@ -333,7 +312,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 _verify_dummy_login_password(password)
                 return None
 
-            # Map result to variables (assigned_project_id was removed in new schema)
+            # Map the authoritative user projection
             (
                 user_id,
                 user_hash,
@@ -351,7 +330,7 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 _verify_dummy_login_password(password)
                 return None
 
-            # Verify password (handles legacy & new Argon2 hashes)
+            # Verify the Argon2id password hash
             if not verify_password(password, stored_password_hash):
                 return None
 
@@ -384,7 +363,6 @@ def get_user_by_credentials(username: str, password: str) -> Optional[User]:
                 email=db_email,
                 password_hash=result[4] if isinstance(result, list) else stored_password_hash,
                 user_type=user_type,
-                assigned_project_id=None,
                 created_at=created_at,
                 last_login=None,  # Field doesn't exist in DB yet
                 is_active=bool(is_active_flag)
@@ -427,7 +405,6 @@ def get_user_by_id(user_id: str) -> Optional[User]:
                     email=result[3],
                     password_hash=result[4],
                     user_type=result[5],
-                    assigned_project_id=None,
                     created_at=result[7],
                     updated_at=result[9],
                     last_login=result[8],
@@ -474,7 +451,6 @@ def get_user_by_hash(user_hash: str, include_inactive: bool = False) -> Optional
                     email=result[3],
                     password_hash=result[4],
                     user_type=result[5],
-                    assigned_project_id=None,
                     created_at=result[7],
                     updated_at=result[9],
                     last_login=result[8],
@@ -513,18 +489,14 @@ def check_username_email_available(username_or_email: str) -> bool:
     )
 
 
-def update_user(user_id: str, username: str = None, email: str = None, password: str = None, user_type: str = None,
-                assigned_project_id: str = None) -> Optional[User]:
+def update_user(user_id: str, username: str = None, user_type: str = None) -> Optional[User]:
     """
     Update user information (enhanced with user type support).
     
     Args:
         user_id: ID of user to update
         username: New username (optional)
-        email: New email (optional)
-        password: New password (optional, will be hashed)
         user_type: New user type (optional)
-        assigned_project_id: Project assignment for admin users (optional)
         
     Returns:
         Updated User object, or None if no fields to update
@@ -536,7 +508,7 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
         NotFoundError: If user not found
     """
     # Validation: at least one field must be provided
-    if not any([username, email, password, user_type]):
+    if not any([username, user_type]):
         raise ValidationError(
             message="At least one field must be provided to update",
             error_code=ErrorCode.INVALID_INPUT,
@@ -549,17 +521,8 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
         with get_connection() as con:
             cur = con.cursor()
 
-            # If caller provided a project assignment for an admin user, ensure the
-            # bridge table reflects it. The users table itself no longer stores
-            # project assignments.
-            if user_type == 'admin' and assigned_project_id:
-                add_admin_to_project(user_id, assigned_project_id, assigned_by=None)
-
-            # Hash password if provided
-            password_hash_value = hash_password(password) if password else None
-
             # Use stored procedure for update (sp_update_user uses COALESCE for NULL params)
-            cur.callproc('sp_update_user', [user_id, username, email, password_hash_value, user_type])
+            cur.callproc('sp_update_user', [user_id, username, user_type])
 
             # Get the result
             result = cur.fetchone()
@@ -582,7 +545,7 @@ def update_user(user_id: str, username: str = None, email: str = None, password:
     
     return handle_db_operation(
         _update,
-        error_context=f"update_user(user_id={user_id}, username={username}, email={email}, user_type={user_type})"
+        error_context=f"update_user(user_id={user_id}, username={username}, user_type={user_type})"
     )
 
 
@@ -792,24 +755,8 @@ def list_users(
         user_type_filter: Optional[str] = None,
         group_filter: Optional[str] = None,
         project_filter: Optional[str] = None,
-        include_inactive: bool = False,
-        # legacy parameters retained for backwards-compatibility
-        user_type: str = None,
-        project_id: str = None) -> List[User]:
-    """List users leveraging *sp_list_users_with_access* stored procedure.
-
-    The signature has been expanded to match the filtering options available in
-    the /users/list endpoint. The previous *user_type* / *project_id* arguments
-    are still accepted; they are internally mapped to their newer equivalents
-    to avoid breaking legacy callers (e.g. user_types_auth routes).
-    """
-
-    # Map legacy arguments -----------------------------------------------------
-    if user_type_filter is None and user_type is not None:
-        user_type_filter = user_type
-    if project_filter is None and project_id is not None:
-        project_filter = str(project_id)
-
+        include_inactive: bool = False) -> List[User]:
+    """List accounts with current group and project filters."""
     raw_rows = _retrieve_users_with_access_rows(
         limit=limit,
         offset=offset,
@@ -832,7 +779,6 @@ def list_users(
                 email=row[3],
                 password_hash="",  # not provided by the SP – not needed here
                 user_type=row[4],
-                assigned_project_id=None,
                 created_at=row[5],
                 last_login=row[6],
                 is_active=bool(row[7])
@@ -897,7 +843,6 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
                     email=row[3],
                     password_hash="",  # Not returned by stored procedure
                     user_type=row[4],
-                    assigned_project_id=None,
                     created_at=row[6],
                     last_login=row[7],
                     is_active=bool(row[8])
@@ -914,48 +859,6 @@ def search_users(search_term: str, user_type: str = None, limit: int = 50) -> Li
 # =================== USER-PROJECT ACCESS MANAGEMENT (Via User Groups) ===================
 # Note: In the new schema, users access projects through user_groups → user_group_projects
 # The old user_projects table no longer exists
-
-def grant_user_project_access(user_id: str, project_id: str, granted_by: str = None) -> bool:
-    """
-    Grant a user access to a project through a user group.
-    
-    Args:
-        user_id: User ID to grant access
-        project_id: Project ID to grant access to
-        granted_by: User ID of grantor
-        
-    Returns:
-        True if access granted successfully
-        
-    Raises:
-        NotFoundError: If user, project, or default user group not found
-        DatabaseError: On database operation errors
-    """
-    def _grant():
-        from src.Util.db.db_user_groups import assign_user_to_group
-        from src.Util.error_handler import NotFoundError
-        
-        with get_connection() as con:
-            cur = con.cursor()
-            
-            # Find a default user group for this project
-            cur.callproc('sp_find_default_user_group_for_project', [project_id])
-            group_result = cur.fetchone()
-            if not group_result:
-                raise NotFoundError(
-                    message=f"No default user group found for project",
-                    error_code=ErrorCode.GROUP_NOT_FOUND
-                )
-            
-            user_group_id = group_result[0]
-            # Add user to this group
-            result = assign_user_to_group(user_id, user_group_id, granted_by)
-            return result is not None
-    
-    return handle_db_operation(
-        _grant,
-        error_context=f"grant_user_project_access(user_id={user_id}, project_id={project_id})"
-    )
 
 
 def get_user_project_access(user_id: str, project_id: str) -> Optional[bool]:
@@ -985,44 +888,6 @@ def get_user_project_access(user_id: str, project_id: str) -> Optional[bool]:
     )
 
 
-def revoke_user_project_access(user_id: str, project_id: str, revoked_by: str = None) -> bool:
-    """
-    Revoke user's access to a project by removing them from all groups with access.
-    
-    Args:
-        user_id: User ID to revoke access from
-        project_id: Project ID to revoke access to
-        revoked_by: User ID of revoker
-        
-    Returns:
-        True if access was revoked from at least one group
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _revoke():
-        from src.Util.db.db_user_groups import remove_user_from_group
-        
-        with get_connection() as con:
-            cur = con.cursor()
-            
-            # Find all user groups that give access to this project
-            cur.callproc('sp_find_user_groups_for_project_access', [user_id, project_id])
-            groups = cur.fetchall()
-            success = False
-            
-            for (group_id,) in groups:
-                if remove_user_from_group(user_id, group_id, revoked_by):
-                    success = True
-            
-            return success
-    
-    return handle_db_operation(
-        _revoke,
-        error_context=f"revoke_user_project_access(user_id={user_id}, project_id={project_id})"
-    )
-
-
 # =================== USER GROUP MANAGEMENT (Updated for New Schema) ===================
 
 def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]:
@@ -1030,30 +895,6 @@ def get_user_groups_in_project(user_id: str, project_id: str) -> List[UserGroup]
     # Use the new function from db_user_groups module
     from src.Util.db.db_user_groups import get_user_groups_in_project as get_groups
     return get_groups(user_id, project_id)
-
-
-def get_user_permissions_in_project(user_id: str, project_id: str) -> List[str]:
-    """
-    Get all permissions a user has (global role system - project_id kept for compatibility).
-    
-    Args:
-        user_id: User ID to query
-        project_id: Project ID (kept for compatibility, not used)
-        
-    Returns:
-        List of permission names (empty list on error)
-        
-    Raises:
-        DatabaseError: On database operation errors
-    """
-    def _get():
-        from src.Util.db.db_global_roles import get_user_permissions
-        return get_user_permissions(user_id)
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_user_permissions_in_project(user_id={user_id}, project_id={project_id})"
-    )
 
 
 def assign_user_to_group(user_id: str, group_id: str, assigned_by: str = None) -> bool:
@@ -1070,120 +911,6 @@ def remove_user_from_group(user_id: str, group_id: str, removed_by: str = None) 
 
 
 # =================== USER SESSION MANAGEMENT WITH USER TYPES ===================
-
-def get_session_data(session_token: str) -> Optional[dict]:
-    """
-    Get session data from Redis.
-    
-    Args:
-        session_token: Session token to retrieve
-        
-    Returns:
-        Session data dictionary or None if not found
-        
-    Raises:
-        DatabaseError: On Redis operation errors
-    """
-    def _get():
-        session_data = client.get(f"session:{session_token}")
-        if session_data:
-            return json.loads(session_data)
-        return None
-    
-    return handle_db_operation(
-        _get,
-        error_context=f"get_session_data(session_token='***')"
-    )
-
-
-def create_session(user_id: str, project_id: str, user_project_id: str = None,
-                   session_length: int = 259200) -> str | None:
-    """
-    Create a new session and store in Redis with user type context.
-    
-    Args:
-        user_id: User ID
-        project_id: Project ID
-        user_project_id: Deprecated parameter (kept for compatibility)
-        session_length: Session duration in seconds
-        
-    Returns:
-        Session token or None if user/project not found
-        
-    Raises:
-        DatabaseError: On database/Redis operation errors
-    """
-    def _create():
-        session_id = secrets.randbelow(2 ** 31)
-
-        user = get_user_by_id(user_id)
-        if not user:
-            return None
-
-        from src.Util.db.db_projects import get_project_by_id
-        project = get_project_by_id(project_id)
-        if not project:
-            return None
-
-        session_token = JWTTokenHandler.create_access_token(
-            session_id=session_id,
-            user_hash=user.user_hash,
-            collection=project.project_hash,
-        )
-
-        session_data = {
-            'session_id': session_id,
-            'user_id': user.id,
-            'user_hash': user.user_hash,
-            'project_id': project.id,
-            'project_hash': project.project_hash,
-            'user_type': user.user_type
-        }
-
-        if user.user_type == 'root':
-            session_data['permissions'] = ['admin', 'global_admin', 'unrestricted_access']
-            session_data['groups'] = ['root_users']
-        elif user.user_type == 'admin':
-            session_data['permissions'] = ['admin', 'project_admin', 'manage_users', 'manage_groups']
-            session_data['groups'] = ['project_admins']
-        elif user.user_type == 'consumer':
-            groups = get_user_groups_in_project(user_id, project_id)
-            permissions = get_user_permissions_in_project(user_id, project_id)
-            session_data['groups'] = [g.group_name for g in groups]
-            session_data['permissions'] = permissions
-
-        client.set(f"session:{session_token}", json.dumps(session_data), ex=session_length)
-
-        return session_token
-    
-    return handle_db_operation(
-        _create,
-        error_context=f"create_session(user_id={user_id}, project_id={project_id})"
-    )
-
-
-def invalidate_session(session_token: str) -> bool:
-    """
-    Invalidate a session by removing it from Redis.
-    
-    Args:
-        session_token: Session token to invalidate
-        
-    Returns:
-        True if session was found and deleted, False otherwise
-        
-    Raises:
-        DatabaseError: On Redis operation errors
-    """
-    def _invalidate():
-        result = client.delete(f"session:{session_token}")
-        client.delete(f"session_full:{session_token}")  # Phase 2.1c: also invalidate full-session cache
-        return result > 0
-    
-    return handle_db_operation(
-        _invalidate,
-        error_context=f"invalidate_session(session_token='***')"
-    )
 
 
 def invalidate_user_sessions(user_id: str) -> bool:
@@ -1365,52 +1092,6 @@ def add_admin_to_project(user_id: str, project_id: str, assigned_by: str = None)
     )
 
 
-def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = None) -> bool:
-    """
-    Remove admin user from a specific project through user groups.
-    
-    Args:
-        user_id: User ID to remove
-        project_id: Project ID to remove from
-        removed_by: User ID of remover
-        
-    Returns:
-        True if admin removed from at least one admin group successfully
-        
-    Raises:
-        NotFoundError: If user is not in any admin group for project
-        DatabaseError: On database operation errors
-    """
-    def _remove():
-        from src.Util.db.db_user_groups import remove_user_from_group
-        from src.Util.error_handler import NotFoundError
-        
-        with get_connection() as con:
-            cur = con.cursor()
-            
-            # Find admin groups for this project that the user is a member of
-            cur.callproc('sp_find_admin_groups_for_user_in_project', [project_id, user_id])
-            admin_groups = cur.fetchall()
-            if not admin_groups:
-                raise NotFoundError(
-                    message=f"User is not in any admin group for project",
-                    error_code=ErrorCode.GROUP_NOT_FOUND
-                )
-            
-            success = False
-            for (admin_group_id,) in admin_groups:
-                # Remove user from each admin group for this project
-                if remove_user_from_group(user_id, admin_group_id, removed_by):
-                    success = True
-            
-            return success
-    
-    return handle_db_operation(
-        _remove,
-        error_context=f"remove_admin_from_project(user_id={user_id}, project_id={project_id})"
-    )
-
-
 def check_admin_multi_project_access(user_id: str, project_id: str) -> bool:
     """
     Check if admin user has access to specific project (supports multiple projects).
@@ -1486,30 +1167,12 @@ def get_admin_project_assignments_with_details(user_id: str) -> List[dict]:
     )
 
 
-# =================== UPDATED LEGACY COMPATIBILITY FUNCTIONS ===================
-
-def get_admin_assigned_project(user_id: str) -> Optional[str]:
-    """
-    Get assigned project for admin user (backwards compatibility)
-    Returns the first assigned project for legacy compatibility
-    """
-    assigned_projects = get_admin_assigned_projects(user_id)
-    return assigned_projects[0] if assigned_projects else None
-
-
-def check_admin_project_access(user_id: str, project_id: str) -> bool:
-    """Check if admin user has access to specific project (updated for multi-project)"""
-    return check_admin_multi_project_access(user_id, project_id)
-
-
-def assign_admin_to_project(user_id: str, project_id: str, assigned_by: str = None) -> bool:
-    """Assign admin user to a project (updated to preserve existing assignments)"""
-    return add_admin_to_project(user_id, project_id, assigned_by)
+# =================== USER TYPE-SPECIFIC CREATION ===================
 
 
 # =================== UPDATED USER TYPE-SPECIFIC CREATION ===================
 
-def create_admin_user(username: str, password: str, email: str, assigned_project_id: str = None,
+def create_admin_user(username: str, password: str,
                       assigned_project_ids: List[str] = None, created_by: str = None) -> User:
     """
     Create an admin user assigned to one or multiple projects through user groups.
@@ -1517,8 +1180,6 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
     Args:
         username: Unique username
         password: Plain text password (will be hashed)
-        email: Email address
-        assigned_project_id: Single project ID (for backward compatibility)
         assigned_project_ids: List of project IDs to assign
         created_by: User ID of creator
         
@@ -1534,46 +1195,41 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
         user_hash = generate_user_hash()
         user_id = generate_user_id()
 
-        # Determine project assignments
-        if assigned_project_id and not assigned_project_ids:
-            assigned_project_ids_list = [assigned_project_id]
-            assigned_project_id_value = assigned_project_id
-        elif assigned_project_ids:
-            assigned_project_ids_list = assigned_project_ids
-            assigned_project_id_value = assigned_project_ids[0] if assigned_project_ids else None
-        else:
-            assigned_project_ids_list = []
-            assigned_project_id_value = None
+        assigned_project_ids_list = list(dict.fromkeys(assigned_project_ids or []))
 
         with get_connection() as con:
             cur = con.cursor()
 
             con.begin()
 
-            # SP params: (p_user_id, p_user_hash, p_username, p_email, p_password_hash, p_created_by)
-            cur.callproc('sp_create_admin_user', [user_id, user_hash, username, email, password_hash, created_by])
-
-            if assigned_project_ids_list:
-                from src.Util.db.db_user_groups import assign_user_to_group
-
+            # SP params: (p_user_id, p_user_hash, p_username, p_password_hash, p_created_by)
+            try:
+                cur.callproc('sp_create_admin_user', [user_id, user_hash, username, password_hash, created_by])
+                while cur.nextset():
+                    pass
                 for project_id in assigned_project_ids_list:
                     cur.callproc('sp_find_admin_group_for_project', [project_id])
-
                     admin_group_result = cur.fetchone()
+                    while cur.nextset():
+                        pass
                     if admin_group_result:
-                        admin_group_id = admin_group_result[0]
-                        assign_user_to_group(user_id, admin_group_id, created_by)
-
-            con.commit()
+                        cur.callproc('sp_assign_user_to_group', [
+                            generate_user_group_member_id(), user_id, admin_group_result[0], created_by,
+                        ])
+                        while cur.nextset():
+                            pass
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
 
             return User(
                 id=user_id,
                 user_hash=user_hash,
                 username=username,
-                email=email,
+                email=None,
                 password_hash=password_hash,
                 user_type='admin',
-                assigned_project_id=assigned_project_id_value,
                 created_at=datetime.now(),
                 last_login=None,
                 is_active=True
@@ -1581,7 +1237,7 @@ def create_admin_user(username: str, password: str, email: str, assigned_project
     
     return handle_db_operation(
         _create,
-        error_context=f"create_admin_user(username='{username}', email='{email}')"
+        error_context=f"create_admin_user(username='{username}')"
     )
 
 
@@ -1715,3 +1371,24 @@ def _clean_optional_str(value: Optional[str]) -> Optional[str]:
         return None
     cleaned = value.strip()
     return cleaned if cleaned else None
+
+
+def remove_admin_from_project(user_id: str, project_id: str, removed_by: str = None) -> bool:
+    """Deactivate the user's admin memberships for this project atomically."""
+    def _remove():
+        with get_connection() as con:
+            cur = con.cursor()
+            try:
+                cur.callproc('sp_remove_admin_from_project', [user_id, project_id, removed_by])
+                result = cur.fetchone()
+                while cur.nextset():
+                    pass
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+        removed = bool(result and result[0])
+        if removed:
+            cache_manager.invalidate_user_cache(user_id)
+        return removed
+    return handle_db_operation(_remove, error_context=f"remove_admin_from_project(user_id={user_id}, project_id={project_id})")

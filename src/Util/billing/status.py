@@ -403,7 +403,7 @@ def safe_status_from_row(
     if not row:
         return free_default_billing_status(provider=provider)
     status = apply_subscription_freshness(
-        row.get("status") or row.get("billing_status") or row.get("normalized_status"),
+        row.get("status"),
         stale_after=row.get("stale_after"),
         now=now,
     )
@@ -436,7 +436,7 @@ def safe_purchase_from_row(
 ) -> SafePurchaseStatus | None:
     if not row:
         return None
-    status = apply_purchase_freshness(row.get("status") or row.get("purchase_status"), stale_after=row.get("stale_after"), now=now)
+    status = apply_purchase_freshness(row.get("status"), stale_after=row.get("stale_after"), now=now)
     return SafePurchaseStatus(
         provider=_clean_optional_text(row.get("provider")) or provider,
         purchase_ref=_clean_optional_text(row.get("purchase_ref")),

@@ -17,7 +17,7 @@ from src.Util.email.templates import (
     TEMPLATES,
     TransactionalEmailTemplate,
     allowed_variables,
-    render_email_template,
+    render_transactional_template,
     render_template_parts,
     render_transactional_template,
     resolve_template,
@@ -58,7 +58,7 @@ def _catalog_row(code: str, **overrides):
 # Engine: rendering, best-practice markup, token extractability
 # --------------------------------------------------------------------------- #
 def test_activation_renders_with_best_practice_markup():
-    rendered = render_email_template("email_activation", {"activation_link": ACTIVATION_LINK})
+    rendered = render_transactional_template("email_activation", {"activation_link": ACTIVATION_LINK})
     assert "Activate" in rendered.subject
     assert "<!DOCTYPE html>" in rendered.html
     assert 'role="presentation"' in rendered.html
@@ -71,7 +71,7 @@ def test_activation_renders_with_best_practice_markup():
 
 @pytest.mark.parametrize("code", sorted(TEMPLATES))
 def test_every_template_renders_with_sample_data(code):
-    rendered = render_email_template(code, sample_variables(code))
+    rendered = render_transactional_template(code, sample_variables(code))
     assert rendered.subject
     assert "<!DOCTYPE html>" in rendered.html
     assert rendered.text
@@ -80,7 +80,7 @@ def test_every_template_renders_with_sample_data(code):
 def test_activation_link_is_extractable_like_e2e():
     # The mailpit e2e gate extracts the token from rendered HTML/text; the new
     # engine + upgraded HTML must keep it matchable.
-    rendered = render_email_template("email_activation", {"activation_link": ACTIVATION_LINK})
+    rendered = render_transactional_template("email_activation", {"activation_link": ACTIVATION_LINK})
     for part in (rendered.html, rendered.text):
         assert mailpit.TOKEN_RE.search(part) or mailpit.BARE_SPLIT_TOKEN_RE.search(part)
 
@@ -131,7 +131,7 @@ def test_unknown_placeholder_rejected():
 
 def test_missing_required_variable_raises():
     with pytest.raises(EmailTemplateError):
-        render_email_template("email_activation", {})  # no activation_link
+        render_transactional_template("email_activation", {})  # no activation_link
 
 
 # --------------------------------------------------------------------------- #
@@ -176,7 +176,7 @@ def test_resolver_falls_back_on_db_error(monkeypatch):
     # Must NOT raise into the render path — delivery cannot depend on the table.
     resolved = resolve_template("email_activation")
     assert resolved.source == "code"
-    rendered = render_email_template("email_activation", {"activation_link": ACTIVATION_LINK})
+    rendered = render_transactional_template("email_activation", {"activation_link": ACTIVATION_LINK})
     assert "Activate" in rendered.subject
 
 
@@ -222,7 +222,7 @@ def test_dynamic_enabled_template_resolves_and_renders(monkeypatch):
     }
     monkeypatch.setattr(db_email_templates, "get_active_template", lambda code: row)
 
-    rendered = render_email_template(
+    rendered = render_transactional_template(
         "ops_notice",
         {"notice": "Template update"},
         fail_closed_on_db_error=True,

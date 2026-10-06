@@ -178,7 +178,7 @@ async def test_unknown_headers_and_oversized_reads_rejected(boundary, tool_app):
 @pytest.mark.asyncio
 async def test_session_provider_can_refresh_and_revocation_fails_closed(boundary, tool_app):
     executor, _, auth, _ = boundary
-    executor.session_token = lambda: "fresh.root.token"
+    executor.access_token = lambda: "fresh.root.token"
     await executor.execute("users__list_all_users")
     auth.assert_awaited_once_with("fresh.root.token", "root-id")
     auth.side_effect = PermissionError("Session revoked")
@@ -273,7 +273,7 @@ async def test_selected_real_read_routes_through_asgi_and_form_preview(monkeypat
     monkeypatch.setattr(system, "count_users", lambda: 12)
     monkeypatch.setattr(system, "count_projects", lambda: 3)
     monkeypatch.setattr(system, "count_user_groups", lambda: 2)
-    monkeypatch.setattr(system, "count_project_permission_groups", lambda: 1)
+    monkeypatch.setattr(system, "count_project_groups", lambda: 1)
     monkeypatch.setattr(admin_oauth, "validate_session", lambda token: root_session)
     monkeypatch.setattr(admin_oauth, "is_root_user", lambda user_id: True)
     monkeypatch.setattr(admin_oauth.db_oauth_connections, "list_provider_catalog", lambda: [])

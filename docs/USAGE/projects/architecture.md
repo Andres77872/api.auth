@@ -80,7 +80,7 @@ makes a demotion or unassignment effective on the next request instead of at tok
 ## Soft delete
 
 `sp_delete_project` sets `projects.is_active = 0`, deactivates the project's
-`project_group_members` rows and sets `is_active = 0` on its `user_sessions` rows. Redis sessions
+`project_group_members` rows. Redis sessions
 are not touched directly: the next validation of an access token scoped to the project cannot find
 the project, revokes the refresh family and returns `401`. The default groups and any other groups
 that contained the project stay as they are.

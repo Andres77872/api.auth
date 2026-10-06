@@ -48,7 +48,7 @@ from src.Util.auth_constants import (
     OAUTH_PURPOSE_LINK,
     OAUTH_PURPOSE_REAUTH,
 )
-from src.Util.auth_flow import resolve_provider_init_bound_project
+from src.Util.auth_flow import resolve_oauth_bound_project
 from src.Util.error_handler import (
     ErrorCategory,
     ErrorCode,
@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 FORBIDDEN_BROWSER_STRICT_FIELDS = {"project_hash", "user_group_hash"}
 
-# Events -> activity types. Alias routes keep the historical google_oauth_* codes.
+# Events mapped to provider-independent activity types.
 EVENT_STARTED = "started"
 EVENT_INIT_REJECTED = "init_rejected"
 EVENT_CALLBACK_RECEIVED = "callback_received"
@@ -120,20 +120,6 @@ _GENERIC_ACTIVITY = {
     EVENT_REAUTH_SUCCEEDED: ActivityType.OAUTH_REAUTH_SUCCEEDED,
     EVENT_USER_CANCELLED: ActivityType.OAUTH_USER_CANCELLED,
 }
-_LEGACY_GOOGLE_ACTIVITY = {
-    **_GENERIC_ACTIVITY,
-    EVENT_STARTED: ActivityType.GOOGLE_OAUTH_STARTED,
-    EVENT_INIT_REJECTED: ActivityType.GOOGLE_OAUTH_PROVIDER_INIT_REJECTED,
-    EVENT_CALLBACK_RECEIVED: ActivityType.GOOGLE_OAUTH_CALLBACK_RECEIVED,
-    EVENT_STATE_REJECTED: ActivityType.GOOGLE_OAUTH_STATE_REJECTED,
-    EVENT_NONCE_REJECTED: ActivityType.GOOGLE_OAUTH_NONCE_REJECTED,
-    EVENT_TOKEN_EXCHANGE_FAILED: ActivityType.GOOGLE_OAUTH_TOKEN_EXCHANGE_FAILED,
-    EVENT_IDENTITY_REJECTED: ActivityType.GOOGLE_OAUTH_ID_TOKEN_REJECTED,
-    EVENT_LOGIN_SUCCEEDED: ActivityType.GOOGLE_OAUTH_LOGIN_SUCCEEDED,
-    EVENT_LOGIN_DENIED: ActivityType.GOOGLE_OAUTH_LOGIN_DENIED,
-    EVENT_LINKED: ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_LINKED,
-    EVENT_UNLINKED: ActivityType.GOOGLE_OAUTH_EXTERNAL_ACCOUNT_UNLINKED,
-}
 
 _FAILURE_TO_ERROR = {
     OAuthFailure.NONCE_MISMATCH: ErrorCode.OAUTH_NONCE_MISMATCH,
@@ -155,7 +141,7 @@ _SAFE_DETAIL_KEYS = {
     "correlation_id",
     "provider",
     "provider_email_hash_prefix",
-    "provider_init_fingerprint",
+    "init_token_fingerprint",
     "provider_sub_fingerprint",
     "purpose",
     "reason",
@@ -311,7 +297,6 @@ class PipelineDeps:
     adapter_for: Callable[[ResolvedConnection], OAuthProviderAdapter] | None = None
     issue_token_pair: Callable[..., Any] | None = None
     set_cookies: Callable[[Response, Any], None] | None = None
-    legacy_google_activity: bool = False
     cookie_path: str = "/auth/oauth"
     settings: OAuthDeploymentSettings | None = None
 
@@ -319,7 +304,7 @@ class PipelineDeps:
         return self.adapter_for(resolved) if self.adapter_for else resolved.adapter
 
     async def emit(self, event: str, *, resolved: ResolvedConnection | None = None, **kwargs: Any) -> None:
-        mapping = _LEGACY_GOOGLE_ACTIVITY if self.legacy_google_activity else _GENERIC_ACTIVITY
+        mapping = _GENERIC_ACTIVITY
         details = dict(kwargs.pop("details", None) or {})
         if resolved is not None:
             details.setdefault("provider", resolved.config.provider_type)
@@ -336,7 +321,6 @@ class AuthorizationStart:
     project_hash: str = field(repr=False)
     redirect_uri: str
     return_origin: str | None
-    user_group_hash: str | None = field(default=None, repr=False)
     remember_me: bool = False
     init_fingerprint: str | None = None
     scope_fingerprint: str | None = None
@@ -394,18 +378,16 @@ class OAuthPipeline:
             "purpose": start.purpose,
             "connection_id": resolved.config.connection_id,
             "binding_id": resolved.binding.binding_id,
-            "config_source": resolved.source_name,
             "expected_issuer": issuers[0] if issuers else None,
             "delivery_mode": resolved.binding.delivery_mode,
             "project_hash": start.project_hash,
-            "user_group_hash": start.user_group_hash,
             "return_origin": start.return_origin,
             "redirect_uri": start.redirect_uri,
             "prompt": start.prompt,
             "remember_me": bool(start.remember_me),
             "user_id": start.user_id,
             "session_id": start.session_id,
-            "provider_init_fingerprint": start.init_fingerprint,
+            "init_token_fingerprint": start.init_fingerprint,
             "scope_fingerprint": start.scope_fingerprint,
             # Diagnostic only. Behind a BFF both are the backend's, so they are recorded
             # for operators and deliberately not enforced at the callback.
@@ -414,7 +396,7 @@ class OAuthPipeline:
         }
         ceiling = self._settings().max_state_ttl_seconds
         ttl = min(int(resolved.binding.state_ttl_seconds or ceiling), ceiling)
-        created: OAuthStateCreated = self.deps.state_store().create_state(provider_init_binding=binding, ttl_seconds=ttl)
+        created: OAuthStateCreated = self.deps.state_store().create_state(oauth_binding=binding, ttl_seconds=ttl)
         tx = OAuthTransaction(
             state=created.state,
             nonce=created.nonce,
@@ -432,7 +414,7 @@ class OAuthPipeline:
                 "reason": "authorization_started",
                 "purpose": start.purpose,
                 "state_fingerprint": created.state_fingerprint,
-                "provider_init_fingerprint": start.init_fingerprint,
+                "init_token_fingerprint": start.init_fingerprint,
             },
             request=request,
             user_id=start.user_id,
@@ -596,12 +578,9 @@ class OAuthPipeline:
         )
 
     def _resolve_for_record(self, record: OAuthStateRecord) -> ResolvedConnection:
-        from src.Util.oauth.connections import ENV_BINDING_ID, ENV_CONNECTION_ID
-
-        # Version-1 records predate connections; they can only be the environment Google client.
-        connection_id = record.connection_id or ENV_CONNECTION_ID
-        binding_id = record.binding_id or ENV_BINDING_ID
-        return self.deps.connection_source().get_by_ids(connection_id=connection_id, binding_id=binding_id)
+        if not record.connection_id or not record.binding_id:
+            raise OAuthConnectionUnavailable("not_configured", "missing_state_connection_binding")
+        return self.deps.connection_source().get_by_ids(connection_id=record.connection_id, binding_id=record.binding_id)
 
     # -------------------------------------------------------------------- login
     async def _complete_login(
@@ -633,9 +612,9 @@ class OAuthPipeline:
             accessible = self._accessible_projects(user_id)
 
         try:
-            target_project = resolve_provider_init_bound_project(
+            target_project = resolve_oauth_bound_project(
                 accessible_projects=accessible,
-                provider_init_binding=record.provider_init_binding,
+                oauth_binding=record.oauth_binding,
                 get_project_by_hash_fn=db.get_project_by_hash,
                 handle_db_operation_fn=db.handle_db_operation,
             )
@@ -821,15 +800,6 @@ class OAuthPipeline:
         binding = resolved.binding
         if binding.default_user_group_id:
             return binding.default_user_group_id, None
-        # Only the environment-sourced legacy binding accepts the group the companion
-        # backend asserted. Database bindings always use their own validated group.
-        if binding.trusts_caller_scope and record.user_group_hash:
-            try:
-                group = self.deps.db.get_user_group_by_hash(record.user_group_hash)
-            except Exception:
-                group = None
-            group_id = text_of(group, "id")
-            return (group_id, None) if group_id else (None, "user_group_not_found")
         return None, "no_bound_user_group"
 
     # --------------------------------------------------------------------- link
@@ -922,7 +892,7 @@ class OAuthPipeline:
         return {"success": True, "message": "Reauthentication succeeded", "reauthenticated": True}
 
     # ------------------------------------------------------------------- unlink
-    async def unlink(self, request: Request, *, resolved: ResolvedConnection, login_data: Any, session_token: str) -> Any:
+    async def unlink(self, request: Request, *, resolved: ResolvedConnection, login_data: Any, access_token: str) -> Any:
         from src.Util.auth_flow import require_recent_reauthentication
         from src.Util.auth_lifecycle import revoke_user_auth_state
         from src.Util.error_handler import AuthenticationError
@@ -933,7 +903,7 @@ class OAuthPipeline:
         try:
             require_recent_reauthentication(
                 user_id=user_id,
-                session_token=session_token,
+                access_token=access_token,
                 session_id=session_id_of(login_data),
                 operation="oauth_unlink",
             )
@@ -984,8 +954,8 @@ def session_id_of(login_data: Any) -> str | None:
     """
     from src.Util.auth_flow import access_token_session_id
 
-    session_token = text_of(login_data, "session_token")
-    return text_of(login_data, "session_id") or access_token_session_id(session_token) or session_token
+    access_token = text_of(login_data, "access_token")
+    return text_of(login_data, "session_id") or access_token_session_id(access_token) or access_token
 
 
 def has_usable_fallback_auth(user: Any) -> bool:
@@ -999,24 +969,16 @@ def _is_active_consumer(user: Any) -> bool:
     return bool(field_of(user, "is_active", True)) and (text_of(user, "user_type", "consumer") == "consumer")
 
 
-def _namespace_for(resolved: ResolvedConnection, namespace: str) -> str | None:
-    """Namespace handed to the persistence layer, or ``None`` for the provider-keyed path.
-
-    The environment source only ever serves Google, whose namespace equals its provider
-    name, so there the historical provider-keyed procedures are functionally identical.
-    Using them keeps ``OAUTH_CONFIG_SOURCE=env`` free of any dependency on the new schema:
-    deploying this code before running the schema catch-up cannot break Google sign-in.
-    """
-
-    return None if resolved.source_name == "env" else namespace
+def _namespace_for(resolved: ResolvedConnection, namespace: str) -> str:
+    return namespace
 
 
-def _db_connection_id(resolved: ResolvedConnection) -> str | None:
-    return None if resolved.source_name == "env" else resolved.config.connection_id
+def _db_connection_id(resolved: ResolvedConnection) -> str:
+    return resolved.config.connection_id
 
 
-def _db_binding_id(resolved: ResolvedConnection) -> str | None:
-    return None if resolved.source_name == "env" else resolved.binding.binding_id
+def _db_binding_id(resolved: ResolvedConnection) -> str:
+    return resolved.binding.binding_id
 
 
 def _user_dict(user: Any) -> dict[str, Any]:
@@ -1059,7 +1021,7 @@ def _login_response(*, token_pair: Any, user: Any, project: Any, accessible_proj
         message="Login successful",
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
-        session_token=token_pair.session_token,
+
         token_type=token_pair.token_type,
         expires_in=token_pair.expires_in,
         refresh_expires_in=token_pair.refresh_expires_in,

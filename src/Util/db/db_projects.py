@@ -12,7 +12,7 @@ import secrets
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
 
-from src.Util.Models import Project, LegacyUserGroup as UserGroup
+from src.Util.Models import Project, UserGroup
 from src.Util.db_config import get_connection
 from src.Util.uuid_generator import generate_project_id, generate_user_group_id, generate_project_group_id, generate_project_group_member_id
 from src.Util.db_error_wrapper import handle_db_operation
@@ -351,8 +351,8 @@ def search_projects(search_term: str, limit: int = 50) -> List[Project]:
 def get_project_stats(project_id: str) -> dict:
     """Read canonical project-info, access-count and group-distribution result sets.
 
-    The procedure reports group-based access, not active session counts. Keep the
-    legacy active_sessions field null instead of inventing a measurement.
+    The procedure reports access counts and group distribution. Session counts
+    come from the Redis session analytics endpoint.
     """
     def _get_stats():
         with get_connection() as con:
@@ -371,7 +371,6 @@ def get_project_stats(project_id: str) -> dict:
                 pass
             return {
                 "total_users": int(access[0]),
-                "active_sessions": None,
                 "total_groups": int(access[1]),
                 "total_project_groups": int(access[2]),
                 "group_distribution": distribution,

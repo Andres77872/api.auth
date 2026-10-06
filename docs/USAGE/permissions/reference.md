@@ -31,7 +31,7 @@ token. All routes answer `200` on success.
 | `/permissions/permissions/groups/{pg_hash}/users` | GET | Admin | — | `permission_group`, `users_with_direct_assignment`, `count` |
 
 Every write response also has a `message` string. No response from this router has a `success`
-field. Credentials: `Authorization: Bearer <access JWT>` or the `session_token` cookie; API keys are
+field. Credentials: `Authorization: Bearer <access JWT>` or the `access_token` cookie; API keys are
 rejected (`401`).
 
 ## Path parameters

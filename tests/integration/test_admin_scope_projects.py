@@ -30,7 +30,7 @@ def _project_seams(**overrides):
         "delete_project": MagicMock(return_value=True),
         "get_project_stats": MagicMock(return_value={}),
         "get_user_groups_for_user": MagicMock(return_value=[]),
-        "get_permission_groups_for_project": MagicMock(return_value=[]),
+        "get_project_groups_for_project": MagicMock(return_value=[]),
         "get_project_members_page": MagicMock(return_value=([], 0)),
         "get_user_groups_for_project": MagicMock(return_value=[]),
         "get_recent_activity": MagicMock(return_value=[]),

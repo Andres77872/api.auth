@@ -20,7 +20,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Form, Path, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
 from src.Util.api_key_security import generate_api_key_token
 from src.Util.db import (
@@ -34,7 +34,7 @@ from src.Util.db import (
     get_project_by_hash,
     is_root_user,
     get_user_type,
-    get_user_effective_permissions,
+    get_user_permissions,
 )
 from src.Util.db_error_wrapper import handle_db_operation
 from src.Util.decorators import log_and_handle_errors
@@ -162,7 +162,7 @@ def _assert_manage_users_or_self(
         return  # Self-service allowed
 
     # Check manage_users permission
-    permissions = get_user_effective_permissions(current_user_id, project_id)
+    permissions = get_user_permissions(current_user_id)
     if not permissions or "manage_users" not in permissions:
         raise AuthorizationError(
             message="Access denied: manage_users permission required to create keys for other users",
@@ -205,8 +205,8 @@ def _parse_expires_at(expires_at_str: Optional[str]) -> Optional[datetime]:
 def _require_recent_reauth_for_admin_api_key_mutation(current_user: dict, operation: str) -> None:
     require_recent_reauthentication(
         user_id=str(current_user.get("user_id") or ""),
-        session_token=current_user.get("session_token"),
-        session_id=access_token_session_id(current_user.get("session_token")),
+        access_token=current_user.get("access_token"),
+        session_id=access_token_session_id(current_user.get("access_token")),
         operation=operation,
     )
 
@@ -286,7 +286,7 @@ async def admin_create_api_key(
     """Create an API key owned by a given user and scoped to one project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user, plus recent authentication
+    `access_token` cookie) of a root or admin user, plus recent authentication
     (a sign-in, or an OAuth reauth of this session, within the
     recent-auth window, 5 minutes by default; refreshing the session does not renew it).
     Root: any user and project. Admin: only projects they administer, and a key
@@ -394,7 +394,7 @@ async def admin_list_api_keys(
     """List API keys (metadata only) by user or project within the caller's scope.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user. Consumers get `403`, even
+    `access_token` cookie) of a root or admin user. Consumers get `403`, even
     when their global role grants the `admin` permission.
 
     **Behavior:**
@@ -533,7 +533,7 @@ async def admin_get_api_key(
     """Get metadata for any API key in the caller's scope (never the secret or its hash).
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user. Admins must administer the
+    `access_token` cookie) of a root or admin user. Admins must administer the
     key's project.
 
     **Responses:** `200` with key metadata in `data`, including project and
@@ -588,7 +588,7 @@ async def admin_update_api_key(
     """Update the name, description, or expiry of any API key in the caller's scope.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user, plus recent authentication
+    `access_token` cookie) of a root or admin user, plus recent authentication
     (a sign-in, or an OAuth reauth of this session, within the
     recent-auth window, 5 minutes by default; refreshing the session does not renew it).
     Admins must administer the key's project; no `manage_users` check applies.
@@ -687,7 +687,7 @@ async def admin_revoke_api_key(
     """Revoke any API key in the caller's scope.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user, plus recent authentication
+    `access_token` cookie) of a root or admin user, plus recent authentication
     (a sign-in, or an OAuth reauth of this session, within the
     recent-auth window, 5 minutes by default; refreshing the session does not renew it).
     Admins must administer the key's project.
@@ -765,7 +765,7 @@ async def admin_list_user_api_keys(
     """List the API keys (metadata only) owned by one user.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403` even
+    `access_token` cookie) of a root or admin user; consumers get `403` even
     when their global role grants the `admin` permission. Admins need the user
     to reach at least one project they administer, and only see keys scoped to
     projects they administer.
@@ -824,7 +824,7 @@ async def admin_list_project_api_keys(
     """List the API keys (metadata only) scoped to one project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user. Admins must administer the
+    `access_token` cookie) of a root or admin user. Admins must administer the
     project.
 
     **Responses:** `200` with `data.project_hash`, `data.project_name`,

@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util.activity_logger import get_recent_activity, count_activity_logs, ActivityType, get_activity_by_id
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
 from src.Util.error_handler import AuthorizationError, ErrorCode, NotFoundError, ValidationError
@@ -48,7 +48,7 @@ async def get_dashboard_stats(
     """
     Return headline counts for the admin dashboard.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `totals` (users, projects, user groups, project groups,
@@ -155,7 +155,7 @@ async def get_activity_feed(
     """
     List activity-log entries, newest first, with filters and offset pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Request:** the activity-type filter is the `activity_type_filter` query parameter;
@@ -262,7 +262,7 @@ async def get_activity_types(
     """
     List every activity type the service defines, for building activity filters.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `activity_types`: all values of the server's activity-type
@@ -301,7 +301,7 @@ async def get_activity_detail(
     """
     Return one activity-log entry with all stored and enriched fields.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `activity` (type, details, severity, user/project/target
@@ -390,7 +390,7 @@ async def get_system_health(
     """
     Check database and Redis health and return a simple score for the admin dashboard.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `components` (database, redis), `metrics` (total users,
@@ -462,7 +462,7 @@ async def get_user_statistics(
     """
     Return active-user counts by type plus new and active users over the last `days` days.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `statistics`: `total_users` and `user_types` (active users
@@ -503,7 +503,7 @@ async def get_project_statistics(
     """
     Return active-project counts, new and activity-bearing projects over the last `days` days, and average membership.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `statistics`: `total_projects` (active only), `new_projects`,
@@ -543,7 +543,7 @@ async def get_system_overview(
     """
     Return host resource usage, database/Redis health, application metrics, and Patreon and billing status.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `system_overview`: `health_score` and `status` (`healthy` at

@@ -9,8 +9,8 @@ Global Role System API Endpoints (router prefix ``/roles``)
   carry fixed built-in permission lists, so a role does not change them.
 - Catalog endpoints are METADATA ONLY (UI suggestions); they are never used for
   authorization.
-- Role CRUD paths are declared as ``/roles...`` under the ``/roles`` prefix, so
-  they are served at ``/roles/roles...``. Kept as-is for compatibility.
+- Role CRUD uses the ``/roles`` collection and ``/roles/{role_hash}`` detail paths.
+  Static permission catalogs are registered before the dynamic role detail route.
 - Reserved permission names (``admin_scope.RESERVED_PERMISSION_NAMES``: ``admin``,
   ``manage_users``, ``manage_roles``, ...) are trusted by other routers in session
   permissions, so only root may create them or move them into a role -- directly
@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.db import validate_session, get_user_by_hash, get_project_by_hash, is_root_user
 from src.Util.admin_scope import (
     RESERVED_PERMISSION_NAMES,
@@ -171,7 +171,7 @@ def _require_not_own_role(session_data, user) -> None:
 # ROLE MANAGEMENT ENDPOINTS
 # =============================================================================
 
-@router.post("/roles", status_code=201, responses={
+@router.post("", status_code=201, responses={
     **_R401, **_R403_ADMIN,
     409: {"description": "`role_name` is already taken (names of soft-deleted roles stay reserved)."},
 })
@@ -188,7 +188,7 @@ async def create_role(
     """
     Create a global role.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
 
@@ -224,7 +224,7 @@ async def create_role(
     }
 
 
-@router.get("/roles", responses={**_R401})
+@router.get("", responses={**_R401})
 async def list_roles(
     limit: int = Query(50, ge=1, le=100, description="Maximum number of roles to return (1-100)."),
     offset: int = Query(0, ge=0, description="Number of roles to skip."),
@@ -233,7 +233,7 @@ async def list_roles(
     """
     List active global roles, ordered by `role_priority` (highest first), then `role_name`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -248,40 +248,7 @@ async def list_roles(
     }
 
 
-@router.get("/roles/{role_hash}", responses={**_R401, **_R404_ROLE})
-async def get_role(
-    role_hash: str = Path(..., description="Role hash."),
-    session_data=Depends(require_valid_session)
-):
-    """
-    Get an active role and the active permission groups linked to it.
-
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
-    cookie). Any authenticated user; no role or permission check.
-
-    **Responses:**
-    - `200`: `role` and `permission_groups`.
-    - `404`: role not found or soft-deleted.
-    """
-    role = global_roles.get_role_by_hash(role_hash)
-    if not role:
-        raise NotFoundError(
-            message="Role not found",
-            error_code=ErrorCode.ROLE_NOT_FOUND,
-            details={"role_hash": role_hash}
-        )
-    
-    # Get permission groups for this role
-    permission_groups = global_roles.get_role_permission_groups(role['id'])
-    
-    return {
-        "success": True,
-        "role": role,
-        "permission_groups": permission_groups
-    }
-
-
-@router.put("/roles/{role_hash}", responses={**_R401, **_R403_ADMIN, **_R404_ROLE})
+@router.put("/{role_hash}", responses={**_R401, **_R403_ADMIN, **_R404_ROLE})
 async def update_role(
     role_hash: str = Path(..., description="Role hash."),
     role_display_name: Optional[str] = Form(None, description="New display name. Omit to keep the current value."),
@@ -294,7 +261,7 @@ async def update_role(
     """
     Update a role's display name, description, and/or priority.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may edit a role whose groups contain a reserved permission name (see
@@ -339,7 +306,7 @@ async def update_role(
     }
 
 
-@router.delete("/roles/{role_hash}", responses={**_R401, **_R403_ADMIN, **_R404_ROLE})
+@router.delete("/{role_hash}", responses={**_R401, **_R403_ADMIN, **_R404_ROLE})
 async def delete_role(
     role_hash: str = Path(..., description="Role hash."),
     session_data=Depends(require_admin)
@@ -350,7 +317,7 @@ async def delete_role(
     Users assigned to the role keep the reference, but an inactive role grants no auth-time
     permissions and role lookups return `null` for it.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may delete a role whose groups contain a reserved permission name (see
@@ -392,7 +359,7 @@ async def delete_role(
 # ROLE-PERMISSION GROUP MANAGEMENT
 # =============================================================================
 
-@router.post("/roles/{role_hash}/permission-groups/{group_hash}", responses={
+@router.post("/{role_hash}/permission-groups/{group_hash}", responses={
     **_R401, **_R403_ADMIN, **_R404_ROLE,
 })
 async def assign_permission_group_to_role(
@@ -407,7 +374,7 @@ async def assign_permission_group_to_role(
     Consumers holding the role get the group's permissions in their auth-time permission set on
     subsequent requests (subject to a short session-validation cache).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may link a group containing a reserved permission name (see
@@ -464,7 +431,7 @@ async def assign_permission_group_to_role(
     }
 
 
-@router.get("/roles/{role_hash}/permission-groups", responses={**_R401, **_R404_ROLE})
+@router.get("/{role_hash}/permission-groups", responses={**_R401, **_R404_ROLE})
 async def get_role_permission_groups(
     role_hash: str = Path(..., description="Role hash."),
     session_data=Depends(require_valid_session)
@@ -472,7 +439,7 @@ async def get_role_permission_groups(
     """
     List the active permission groups linked to a role.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -495,7 +462,7 @@ async def get_role_permission_groups(
     }
 
 
-@router.delete("/roles/{role_hash}/permission-groups/{group_hash}", responses={
+@router.delete("/{role_hash}/permission-groups/{group_hash}", responses={
     **_R401, **_R403_ADMIN, **_R404_ROLE,
 })
 async def remove_permission_group_from_role(
@@ -509,7 +476,7 @@ async def remove_permission_group_from_role(
     Role holders lose the group's permissions on subsequent requests (subject to a short
     session-validation cache) unless another group linked to the role also grants them.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may unlink a group containing a reserved permission name (see
@@ -577,7 +544,7 @@ async def create_permission_group(
     """
     Create a global permission group (a named bundle of permissions).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
 
@@ -630,7 +597,7 @@ async def list_permission_groups(
     """
     List active permission groups, ordered by `group_name`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -654,7 +621,7 @@ async def get_permission_group(
     """
     Get an active permission group and the active permissions it contains.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -691,7 +658,7 @@ async def update_permission_group(
     """
     Update a permission group's display name, description, and/or category.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may edit a group containing a reserved permission name (see
@@ -749,7 +716,7 @@ async def delete_permission_group(
     longer count. Its role links, assignments and permission memberships are left in place
     as history; the group cannot be restored through the API.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may delete a group containing a reserved permission name (see
@@ -801,7 +768,7 @@ async def assign_permission_to_group(
     membership. Consumers whose role links this group get the permission on subsequent requests
     (subject to a short session-validation cache).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may add a permission with a reserved permission name (see
@@ -866,7 +833,7 @@ async def get_permission_group_permissions(
     """
     List the active permissions in a permission group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -900,7 +867,7 @@ async def remove_permission_from_group(
     """
     Remove a permission from a permission group (soft-removes the membership).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may remove a permission with a reserved permission name (see
@@ -968,7 +935,7 @@ async def create_permission(
     """
     Create a global permission.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
 
@@ -1027,7 +994,7 @@ async def list_permissions(
     """
     List active permissions, ordered by `permission_name`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -1051,7 +1018,7 @@ async def get_permission(
     """
     Get an active permission by hash.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -1082,7 +1049,7 @@ async def update_permission(
     """
     Update a permission's display name, description, and/or category.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may edit a permission with a reserved permission name (see
@@ -1139,7 +1106,7 @@ async def delete_permission(
     auth-time permission set, on subsequent requests (subject to a short session-validation
     cache).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may delete a permission with a reserved permission name (see
@@ -1177,12 +1144,46 @@ async def delete_permission(
 # NOTE: /users/me/* routes MUST come BEFORE /users/{user_hash}/* routes
 # =============================================================================
 
+# Register the single-segment role detail after the static catalog lists.
+@router.get("/{role_hash}", responses={**_R401, **_R404_ROLE})
+async def get_role(
+    role_hash: str = Path(..., description="Role hash."),
+    session_data=Depends(require_valid_session)
+):
+    """
+    Get an active role and the active permission groups linked to it.
+
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
+    cookie). Any authenticated user; no role or permission check.
+
+    **Responses:**
+    - `200`: `role` and `permission_groups`.
+    - `404`: role not found or soft-deleted.
+    """
+    role = global_roles.get_role_by_hash(role_hash)
+    if not role:
+        raise NotFoundError(
+            message="Role not found",
+            error_code=ErrorCode.ROLE_NOT_FOUND,
+            details={"role_hash": role_hash}
+        )
+
+    # Get permission groups for this role
+    permission_groups = global_roles.get_role_permission_groups(role['id'])
+
+    return {
+        "success": True,
+        "role": role,
+        "permission_groups": permission_groups
+    }
+
+
 @router.get("/users/me/role", responses={**_R401})
 async def get_my_role(session_data=Depends(require_valid_session)):
     """
     Get the caller's own global role.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; always returns the caller's own role.
 
     **Responses:**
@@ -1245,7 +1246,7 @@ async def assign_role_to_user(
     what they can do. Any active user and any active role may be chosen, subject to the
     reserved-name and own-role rules below.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may assign a role whose groups contain a reserved permission name (see
@@ -1319,7 +1320,7 @@ async def get_user_role(
     """
     Get any user's global role.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user may look up any user; no role or permission check.
 
     **Responses:**
@@ -1371,7 +1372,7 @@ async def remove_role_from_user(
     For a `consumer` this empties the role-derived auth-time permission set on subsequent
     requests (subject to a short session-validation cache).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
     Only root may remove a role whose groups contain a reserved permission name (see
@@ -1449,7 +1450,7 @@ async def add_role_to_project_catalog(
     not used for authorization. Idempotent: re-adding re-activates the entry, and omitted
     `catalog_purpose`/`notes` keep their previous values. Not limited to the caller's projects.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
 
@@ -1529,7 +1530,7 @@ async def get_project_cataloged_roles(
     The catalog does not restrict which roles can be assigned. Any authenticated user can read any
     project's catalog; there is no project-membership check.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -1572,7 +1573,7 @@ async def remove_role_from_project_catalog(
 
     Only the catalog entry is removed; no user's role assignment changes.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` whose global role grants
     `manage_roles` (user-group and direct assignments do not count).
 

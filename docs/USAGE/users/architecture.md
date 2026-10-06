@@ -23,13 +23,13 @@ consumer  -> USER -> USER_GROUP                   -> PROJECT_GROUP -> PROJECT
   groups, managed by the [roles](../roles/README.md) and [permissions](../permissions/README.md)
   suites. The `capabilities` list in type info is descriptive only.
 - **Email identity** is separate from the account: `user_emails` holds any number of addresses with
-  their own lifecycle; `users.email` is a legacy shadow of the primary one.
+  their own lifecycle; the activated primary address is exposed through `v_users`.
 
 ## Where the data lives
 
 | Table | Holds |
 | --- | --- |
-| `users` | Account: `user_hash`, `username` (unique), legacy `email`, `password_hash`, `user_type`, `role_id`, `is_active` |
+| `users` | Account: `user_hash`, `username` (unique), `password_hash`, `user_type`, `role_id`, `is_active` |
 | `user_group_members` | User to user group memberships (`is_active`, `assigned_at`, `removed_at`) |
 | `user_group_project_groups` | User group to project group grants |
 | `project_group_members` | Project group to project links |
@@ -91,7 +91,7 @@ The database enforces them:
 - Triggers on `user_emails` normalize the address, reject primary flags on non-activated or removed
   rows, and cap each user at 5 `pending` + `activated` rows.
 - `sp_user_login` resolves a username first, then an activated, non-removed address, so an
-  email-shaped username cannot be shadowed and `users.email` never grants login.
+  email-shaped username cannot be shadowed. The `v_users.email` projection exposes the primary activated address.
 - Only hashes of link tokens are stored; tokens, links and message payloads never appear in API
   responses.
 
@@ -111,7 +111,7 @@ use even when nothing revoked them.
 | Type change (any route) | `revoke_user_auth_state` when the type actually changes |
 | Email activation, password reset through a link | `revoke_user_auth_state` |
 | Password change, email removal, primary change | `revoke_user_auth_state_except_current`: all but the caller's session and family |
-| Username or legacy email update (own profile or by an admin) | None; sessions stay valid |
+| Username update (own profile or by an admin) | None; sessions stay valid |
 | Admin project removed | Nothing immediately; a session on that project is revoked on its next use |
 
 `src/Util/cache_manager.py` caches user data (`USER_INFO_TTL`, `3600` seconds) and access and

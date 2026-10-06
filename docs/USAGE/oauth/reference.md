@@ -1,8 +1,7 @@
 # OAuth reference
 
 The contract for `/auth/oauth/*` and `/admin/oauth/*`. Concepts are in the
-[README](README.md), step-by-step behavior in [request-flow.md](request-flow.md). The
-deprecated `/auth/google/*` aliases are in the [Google OAuth reference](../google-oauth/reference.md).
+[README](README.md), step-by-step behavior in [request-flow.md](request-flow.md).
 
 ## Sign-in endpoints
 
@@ -18,7 +17,7 @@ deprecated `/auth/google/*` aliases are in the [Google OAuth reference](../googl
 | `/auth/oauth/{connection}/link` | DELETE | Access token plus recent authentication | — | `200` unlink result; all sessions revoked |
 | `/auth/oauth/links` | GET | Access token | — | `200` the caller's linked identities, masked |
 
-"Access token" means `Authorization: Bearer <access JWT>` or the `session_token` cookie.
+"Access token" means `Authorization: Bearer <access JWT>` or the `access_token` cookie.
 "Recent authentication" means a sign-in, or an OAuth reauth of the same session, within
 `OAUTH_RECENT_REAUTH_SECONDS` (default `300`); refreshing the session does not renew it.
 `{connection}` is a binding's `connection_key` in the caller's session project,
@@ -89,7 +88,7 @@ They always answer JSON and never redirect.
 
 | Purpose | Body | Side effects |
 | --- | --- | --- |
-| `login` | `LoginResponse`, the same shape as `POST /auth/login` | `session_token` and `refresh_token` cookies set for the project fixed at init |
+| `login` | `LoginResponse`, the same shape as `POST /auth/login` | `access_token` and `refresh_token` cookies set for the project fixed at init |
 | `link` | `ExternalIdentityLinkResponse` | Identity linked to the user who started the link; the session is marked recently authenticated |
 | `reauth` | `{"success": true, "message": "Reauthentication succeeded", "reauthenticated": true}` | The session that started the reauth is marked recently authenticated |
 
@@ -234,7 +233,6 @@ timestamps. Every write records an activity event naming the changed fields, nev
 | `/admin/oauth/projects/{project_hash}/bindings/{connection_key}` | DELETE | Project | Remove the binding and its URLs; the connection is kept |
 | `/admin/oauth/projects/{project_hash}/bindings/{connection_key}/urls` | POST | Project | Add one redirect URI or return origin |
 | `/admin/oauth/projects/{project_hash}/bindings/{connection_key}/urls/{url_id}` | DELETE | Project | Remove one allow-list row |
-| `/admin/oauth/projects/{project_hash}/bindings/{connection_key}/legacy-redeem` | PUT | Root | Store the provider-init redeem bridge and set `init_mode: legacy_redeem` |
 
 Guards:
 
@@ -320,8 +318,7 @@ The response (`binding`, also used by the list routes) carries `connection_key`,
 `connection_hash`, `provider_type`, `connection_display_name`, `connection_status`,
 `credential_status`, `project_hash`, `project_name`, `enabled`, `login_enabled`,
 `link_enabled`, `provisioning_mode`, `default_user_group_hash`,
-`default_user_group_name`, `existing_user_policy`, `init_mode` (`api` or
-`legacy_redeem`), `has_legacy_redeem`, `delivery_mode`, `state_ttl_seconds`, `urls[]`
+`default_user_group_name`, `existing_user_policy`, `delivery_mode`, `state_ttl_seconds`, `urls[]`
 (`id`, `kind`, `url`, `created_at`), `ready` and `readiness[]` (`check`, `ok`, `message`).
 
 ### Allow-list fields
@@ -337,15 +334,6 @@ The response (`binding`, also used by the list routes) carries `connection_key`,
 Outside production (`APP_ENV` not `prod`/`production`) `http://` is also accepted for
 `localhost`, `127.0.0.1` and `[::1]`. Adding a URL that is already listed returns the
 existing row. Removing an unknown `url_id` is `404`.
-
-### Legacy redeem bridge
-
-`PUT .../legacy-redeem` — JSON `redeem_url` and `redeem_token`, both required and stored
-encrypted. `redeem_url` must be `https://` (plain `http://` only to `localhost`,
-`127.0.0.1` or `::1`) without credentials; private hosts are allowed. The binding switches
-to `init_mode: legacy_redeem`, which serves the deprecated `POST /auth/google/start`
-handshake. No route switches a binding back to `init_mode: api`. The handshake itself is
-described in the [Google OAuth reference](../google-oauth/reference.md).
 
 ## Readiness checks
 
@@ -368,8 +356,7 @@ reported, in this order; a failing one carries a readable `message`.
 | `default_group_does_not_reach_project` | `auto_create` or `both`, and the default group does not reach the project. |
 
 `ready` ignores the per-purpose `login_enabled` and `link_enabled` flags. Readiness
-evaluates the database configuration, which serves requests only while
-`OAUTH_CONFIG_SOURCE=db`.
+evaluates the database configuration used by every OAuth request.
 
 ## Provider types
 
@@ -403,47 +390,36 @@ A connection's namespace-defining fields are frozen once identities are linked t
 
 ## Deployment settings
 
-Only deployment-wide values live in the environment. Each `OAUTH_*` name falls back to
-the `GOOGLE_OAUTH_*` name shown. A value outside its range, or two different values for a
-pepper under both names, makes the settings loader raise instead of choosing: `init` and
-`start` then answer `403` `EXT_8011`, other OAuth requests fail, and readiness reports
-`oauth_globally_disabled`.
+Only deployment-wide values live in the environment. Provider credentials, project
+bindings and URL allow-lists live in MySQL. Invalid bounded settings fail closed.
 
-| Variable | Fallback | Default | Purpose |
-| --- | --- | --- | --- |
-| `OAUTH_CONFIG_SOURCE` | — | `env` | `env` or `db`. |
-| `OAUTH_ENABLED` | `GOOGLE_OAUTH_ENABLED` | `false` | Gates `init`, `start` and `providers`. Link and reauth starts, callbacks and `/auth/google/start` do not check it. |
-| `OAUTH_STATE_PEPPER` | `GOOGLE_OAUTH_STATE_PEPPER` | — | HMAC key for state, init-token and reauth Redis keys. Required. |
-| `OAUTH_PROVIDER_SUB_PEPPER` | `GOOGLE_OAUTH_PROVIDER_SUB_PEPPER` | — | HMAC key of the identity key. Never change it. |
-| `OAUTH_EMAIL_HASH_PEPPER` | `GOOGLE_OAUTH_EMAIL_HASH_PEPPER` | — | HMAC key of the stored e-mail snapshot. |
-| `OAUTH_MAX_STATE_TTL_SECONDS` | `GOOGLE_OAUTH_STATE_TTL_SECONDS` | `600` | State TTL ceiling, 1–600. A binding may only lower it. |
-| `OAUTH_RECENT_REAUTH_SECONDS` | `GOOGLE_OAUTH_RECENT_REAUTH_SECONDS` | `300` | Recent-authentication window and reauth-marker lifetime. |
-| `OAUTH_JWKS_CACHE_TTL_SECONDS` | `GOOGLE_OAUTH_JWKS_CACHE_TTL_SECONDS` | `3600` | JWKS cache cap, 1–3600. |
-| `OAUTH_LEEWAY_SECONDS` | `GOOGLE_OAUTH_LEEWAY_SECONDS` | `30` | Clock leeway for `exp`/`iat`, 0–30. |
-| `OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | `GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | `true` | When `false`, rate limits are skipped on a Redis error. State and init tokens always fail closed. |
-| `OAUTH_TRUSTED_PROXY_CIDRS` | — | empty | `X-Forwarded-For` is honored only from peers in these networks; empty ignores the header. |
-| `OAUTH_ALLOW_PRIVATE_IDP_HOSTS` | — | `false` | Development only: lets configuration-supplied endpoints resolve to private hosts. |
-| `OAUTH_SECRET_ENCRYPTION_KEY` | — | — | Active Fernet key for connection secrets and the redeem bridge. Required to store secrets. |
-| `OAUTH_SECRET_ENCRYPTION_KEY_ID` | — | — | Id recorded with each ciphertext. |
-| `OAUTH_SECRET_DECRYPTION_KEYS_JSON` | — | — | JSON object `{key_id: key}` of previous keys, for rotation. |
-| `OAUTH_SECRET_HMAC_KEY` | — | — | Row-binding HMAC stored beside each ciphertext. |
-
-The OAuth key set is separate from the billing one. With `OAUTH_CONFIG_SOURCE=env` the
-Google client, allow-lists and provisioning mode come from the `GOOGLE_OAUTH_*`
-variables listed in the [Google OAuth reference](../google-oauth/reference.md#configuration-keys);
-with `db` those are ignored.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OAUTH_ENABLED` | `false` | Deployment-wide OAuth enablement gate. |
+| `OAUTH_STATE_PEPPER` | — | HMAC key for state, init-token and reauth Redis keys. Required. |
+| `OAUTH_PROVIDER_SUB_PEPPER` | — | HMAC key of the identity key. Never change it. |
+| `OAUTH_EMAIL_HASH_PEPPER` | — | HMAC key of the stored e-mail snapshot. |
+| `OAUTH_MAX_STATE_TTL_SECONDS` | `600` | State TTL ceiling, 1–600. A binding may only lower it. |
+| `OAUTH_RECENT_REAUTH_SECONDS` | `300` | Recent-authentication window and reauth-marker lifetime. |
+| `OAUTH_JWKS_CACHE_TTL_SECONDS` | `3600` | JWKS cache cap, 1–3600. |
+| `OAUTH_LEEWAY_SECONDS` | `30` | Clock leeway for `exp`/`iat`, 0–30. |
+| `OAUTH_FAIL_CLOSED_ON_REDIS_ERROR` | `true` | When `false`, rate limits are skipped on a Redis error. State and init tokens always fail closed. |
+| `OAUTH_TRUSTED_PROXY_CIDRS` | empty | `X-Forwarded-For` is honored only from peers in these networks; empty ignores the header. |
+| `OAUTH_ALLOW_PRIVATE_IDP_HOSTS` | `false` | Development only: lets configuration-supplied endpoints resolve to private hosts. |
+| `OAUTH_SECRET_ENCRYPTION_KEY` | — | Active Fernet key for connection secrets . Required to store secrets. |
+| `OAUTH_SECRET_ENCRYPTION_KEY_ID` | — | Id recorded with each ciphertext. |
+| `OAUTH_SECRET_DECRYPTION_KEYS_JSON` | — | JSON object `{key_id: key}` of previous keys, for rotation. |
+| `OAUTH_SECRET_HMAC_KEY` | — | Row-binding HMAC stored beside each ciphertext. |
 
 ### Rate limits
 
-Fixed windows in Redis, shared by every provider and by the `/auth/google/*` aliases. The
-`OAUTH_*` name wins; the `GOOGLE_OAUTH_*` name is the fallback.
+Fixed windows in Redis, shared by every provider.
 
 | Bucket | Limit / window variables | Default | Keyed on |
 | --- | --- | --- | --- |
 | Start | `OAUTH_START_RATE_LIMIT`, `OAUTH_START_RATE_WINDOW_SECONDS` | `20` per `60` s | Client IP and init-token fingerprint |
 | Callback | `OAUTH_CALLBACK_RATE_LIMIT`, `OAUTH_CALLBACK_RATE_WINDOW_SECONDS` | `30` per `60` s | Client IP and state fingerprint |
 | State consume | `OAUTH_STATE_CONSUME_RATE_LIMIT`, `OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS` | `60` per `60` s | Client IP and state fingerprint |
-| Provider-init redeem | `OAUTH_PROVIDER_INIT_RATE_LIMIT`, `OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS` | `20` per `60` s | Client IP, token fingerprint, project and connection (legacy start only) |
 | Subject collision | `OAUTH_SUB_COLLISION_RATE_LIMIT`, `OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS` | `10` per `300` s | Subject fingerprint and client IP (link to a taken identity) |
 | Unlink | `OAUTH_UNLINK_RATE_LIMIT`, `OAUTH_UNLINK_RATE_WINDOW_SECONDS` | `10` per `300` s | User and client IP |
 
@@ -460,18 +436,14 @@ address.
 | `oauth_state:` | State record: connection, binding, purpose, project, redirect URI, nonce, PKCE verifier, user and session for link/reauth | State TTL |
 | `oauth_state_consumed:` | Replay tombstone for a consumed state | `600` s |
 | `oauth_reauth:` | Recent-reauthentication marker for one user and session | `OAUTH_RECENT_REAUTH_SECONDS` |
-| `google_oauth_rate:` | Rate-limit counters for every provider, one sub-prefix per bucket | Bucket window |
+| `oauth_rate:` | Rate-limit counters for every provider, one sub-prefix per bucket | Bucket window |
 
 Key suffixes are HMACs or SHA-256 digests; raw state, tokens, user ids and IPs never
-appear in key names. `google_oauth_state:`, `google_oauth_state_consumed:` and
-`google_oauth_reauth:` are still read, so transactions started before the prefix rename
-complete, but nothing new is written under them.
+appear in key names.
 
 ## Activity codes
 
-Routes under `/auth/oauth/*` and `/admin/oauth/*` record these activity types; the
-`/auth/google/*` aliases record `act-cat-064..074` instead (see the
-[Google OAuth reference](../google-oauth/reference.md#activity-catalog-act-cat-064074)).
+Routes under `/auth/oauth/*` and `/admin/oauth/*` record these activity types.
 Details carry only fingerprints, reason codes and the changed field names.
 
 | ID | Activity type | Recorded when |
@@ -492,39 +464,27 @@ Details carry only fingerprints, reason codes and the changed field names.
 | `act-cat-120` | `oauth_connection_updated` | Admin updated a connection. |
 | `act-cat-121` | `oauth_connection_credentials_set` | Admin stored credentials. |
 | `act-cat-122` | `oauth_connection_status_changed` | Admin activated, disabled, deleted or archived a connection. |
-| `act-cat-123` | `oauth_binding_updated` | Admin created or changed a binding, or its redeem bridge. |
+| `act-cat-123` | `oauth_binding_updated` | Admin created or changed a binding, . |
 | `act-cat-124` | `oauth_binding_removed` | Admin removed a binding. |
 | `act-cat-125` | `oauth_binding_url_added` | Admin added an allow-list row. |
 | `act-cat-126` | `oauth_binding_url_removed` | Admin removed an allow-list row. |
 | `act-cat-127` | `oauth_provider_catalog_updated` | Root changed the provider catalog. |
 
 The API audit log tags every OAuth route with `auth_method='oauth'` and the tags
-`authentication`, `oauth` and `external_idp` (plus `google_oauth` on the aliases);
+`authentication`, `oauth` and `external_idp`;
 responses of `400` and above are security events. It redacts these fields wherever they
 appear, in addition to the Patreon ones: `provider_init_token`, `init_token`,
 `authorization_code`, `oauth_code`, `code`, `state`, `oauth_state`, `nonce`,
 `code_verifier`, `pkce_verifier`, `id_token`, `google_id_token`, `google_id_token_claims`,
 `access_token`, `refresh_token`, `google_access_token`, `google_refresh_token`,
 `google_sub`, `provider_sub`, `google_email`, `google_hd`, `provider_email`,
-`oauth_link_token`, `client_secret`, `signing_key`, `redeem_token`, `redeem_url`,
-`legacy_redeem_token`, `project_hash`, `user_group_hash`.
+`oauth_link_token`, `client_secret`, `signing_key`, `project_hash`, `user_group_hash`.
 
-## Migrating from environment configuration
+## Provisioning a Google connection
 
-```bash
-python scripts/schema_sync.py --env-file .env --dry-run
-python scripts/schema_sync.py --env-file .env --apply
-# set OAUTH_SECRET_ENCRYPTION_KEY, OAUTH_SECRET_ENCRYPTION_KEY_ID, OAUTH_SECRET_HMAC_KEY
-python scripts/migrations/oauth_env_import.py --env-file .env \
-    --project-hash "$PROJECT_HASH" --default-user-group-hash "$GROUP_HASH" --dry-run
-python scripts/migrations/oauth_env_import.py --env-file .env \
-    --project-hash "$PROJECT_HASH" --default-user-group-hash "$GROUP_HASH" --apply
-# then OAUTH_CONFIG_SOURCE=db    (rollback: OAUTH_CONFIG_SOURCE=env)
-```
-
-The import writes one active `google` connection with the secret encrypted and one
-enabled binding for the named project carrying the environment's provisioning mode,
-redirect URIs, return origins and, when `PROVIDER_INIT_REDEEM_URL` is set, the legacy
-redeem bridge. The project and group must be the ones the companion backend sends:
-database bindings reject a redeemed scope that differs from their own. The full procedure
-is in the [OAuth runbook](../../RUNBOOKS/oauth.md).
+Use the root `/admin/oauth/*` endpoints to create the connection, store its credentials,
+and bind it to a project with exact redirect URI and return-origin allow-lists. The
+operator helper `scripts/provision_google_oauth.py` accepts `SETUP_GOOGLE_OAUTH_*`
+inputs and is a dry run by default. Run with `--apply` only against the intended database.
+It stores encrypted credentials and the binding; runtime requests read those database rows.
+See the [OAuth runbook](../../RUNBOOKS/oauth.md).

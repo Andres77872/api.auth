@@ -135,7 +135,7 @@ BEGIN
         u.username, u.user_hash,
         p.project_name, p.project_hash
     FROM api_audit_log a
-    LEFT JOIN users u ON a.user_id = u.id
+    LEFT JOIN v_users u ON a.user_id = u.id
     LEFT JOIN projects p ON a.project_id = p.id
     WHERE a.request_timestamp >= DATE_SUB(NOW(), INTERVAL IFNULL(p_days, 30) DAY)
       AND (p_user_id IS NULL OR a.user_id = p_user_id)
@@ -245,7 +245,7 @@ BEGIN
         a.tags, a.metadata,
         u.username, u.user_hash
     FROM api_audit_log a
-    LEFT JOIN users u ON a.user_id = u.id
+    LEFT JOIN v_users u ON a.user_id = u.id
     WHERE a.security_event = TRUE
       AND a.request_timestamp >= DATE_SUB(NOW(), INTERVAL IFNULL(p_days, 30) DAY)
     ORDER BY a.request_timestamp DESC
@@ -269,7 +269,7 @@ BEGIN
         a.request_timestamp, a.duration_ms,
         u.username
     FROM api_audit_log a
-    LEFT JOIN users u ON a.user_id = u.id
+    LEFT JOIN v_users u ON a.user_id = u.id
     WHERE a.is_success = FALSE
       AND a.request_timestamp >= DATE_SUB(NOW(), INTERVAL IFNULL(p_days, 7) DAY)
     ORDER BY a.request_timestamp DESC

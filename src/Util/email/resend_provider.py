@@ -9,27 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
-try:  # pragma: no cover - dependency exists in normal/test installs.
-    import resend  # type: ignore
-except Exception:  # pragma: no cover - keeps pure unit imports deterministic if deps are missing.
-    class _FallbackEmails:
-        @staticmethod
-        def send(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            raise RuntimeError("resend package is not installed")
-
-    class _FallbackResend:
-        api_key: str | None = None
-        Emails = _FallbackEmails
-
-    resend = _FallbackResend()  # type: ignore
-
-try:  # pragma: no cover - dependency exists in normal/test installs.
-    from svix.webhooks import Webhook, WebhookVerificationError as SvixWebhookVerificationError
-except Exception:  # pragma: no cover
-    Webhook = None  # type: ignore
-
-    class SvixWebhookVerificationError(Exception):
-        pass
+import resend
+from svix.webhooks import Webhook, WebhookVerificationError as SvixWebhookVerificationError
 
 from src.Util.email.config import EmailConfig, EmailConfigError, load_email_config, validate_email_readiness
 from src.Util.email.provider import EmailProviderError, EmailSendRequest, EmailSendResult, WebhookVerificationError
@@ -127,8 +108,6 @@ class ResendProvider:
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, str]) -> list[dict[str, Any]]:
         if not self.webhook_secret:
             raise WebhookVerificationError("missing Resend webhook secret")
-        if Webhook is None:
-            raise WebhookVerificationError("svix package is not installed")
         try:
             verified = Webhook(self.webhook_secret).verify(raw_body, headers)
         except SvixWebhookVerificationError as exc:

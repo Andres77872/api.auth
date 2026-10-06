@@ -51,13 +51,13 @@ def rpc(ws, method, params=None):
 
 
 def headers(token="root-a"):
-    return {"origin": "http://dashboard.test", "cookie": f"session_token={token}"}
+    return {"origin": "http://dashboard.test", "cookie": f"access_token={token}"}
 
 
 def test_websocket_denies_nonroot_and_cross_origin(environment):
     app, _, service = environment
     with TestClient(app) as client:
-        for request_headers in ({"origin": "https://attacker.test", "cookie": "session_token=root-a"}, headers("admin"), headers("consumer"), {"cookie": "session_token=root-a"}):
+        for request_headers in ({"origin": "https://attacker.test", "cookie": "access_token=root-a"}, headers("admin"), headers("consumer"), {"cookie": "access_token=root-a"}):
             with pytest.raises(WebSocketDisconnect):
                 with client.websocket_connect("/admin/assistant/ws", headers=request_headers) as ws:
                     ws.receive_json()

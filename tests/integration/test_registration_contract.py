@@ -42,7 +42,7 @@ def _make_project(project_id="1", project_hash="prj-contract-001",
 
 def _make_register_result(user_hash="usr-new-001", username="newuser",
                           email="new@example.com", user_type="consumer",
-                          session_token="contract-session-token",
+                          access_token="contract-session-token",
                           project_hash="prj-contract-001", project_name="Contract Project",
                           user_id="99"):
     r = MagicMock()
@@ -50,10 +50,22 @@ def _make_register_result(user_hash="usr-new-001", username="newuser",
     r.username = username
     r.email = email
     r.user_type = user_type
-    r.session_token = session_token
+    r.access_token = access_token
     r.project_hash = project_hash
     r.project_name = project_name
     r.user_id = user_id
+    if project_hash:
+        from src.Util.auth_lifecycle import issue_project_token_pair
+        pair = issue_project_token_pair(
+            user={"id": user_id, "user_hash": user_hash, "username": username or user_hash, "user_type": user_type},
+            project={"id": "1", "project_hash": project_hash, "project_name": project_name},
+            permissions=[], groups=[],
+        )
+        for field in ("access_token", "refresh_token", "token_type", "expires_in", "refresh_expires_in", "expires_at", "refresh_expires_at", "remember_me", "cookie_metadata"):
+            setattr(r, field, getattr(pair, field))
+    else:
+        r.access_token = ""
+        r.refresh_token = None
     return r
 
 
@@ -79,7 +91,6 @@ async def test_registration_valid_response_shape(
             data={
                 "username": "newuser",
                 "password": "SecureP@ss123",
-                "email": "new@example.com",
                 "user_group_hash": "grp-contract-001",
             },
             headers={"User-Agent": "test"},
@@ -96,7 +107,6 @@ async def test_registration_valid_response_shape(
     assert "project" in data
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
     assert data["expires_in"]
     assert data["refresh_expires_in"]
 
@@ -124,7 +134,7 @@ async def test_registration_sets_cookie(
     """Valid registration must set access and refresh cookies."""
     group = _make_user_group()
     project = _make_project()
-    result = _make_register_result(session_token="cookie-test-token")
+    result = _make_register_result(access_token="cookie-test-token")
 
     with patch("src.routes.auth.check_username_email_available", return_value=True), \
          patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
@@ -141,10 +151,10 @@ async def test_registration_sets_cookie(
         )
 
     assert response.status_code == 200
-    assert "session_token" in response.cookies
+    assert "access_token" in response.cookies
     assert "refresh_token" in response.cookies
     data = response.json()
-    assert response.cookies["session_token"] == data["access_token"]
+    assert response.cookies["access_token"] == data["access_token"]
     assert response.cookies["refresh_token"] == data["refresh_token"]
 
 
@@ -177,7 +187,7 @@ async def test_registration_cookie_flags(
     set_cookie_headers = response.headers.get_list("set-cookie")
     assert len(set_cookie_headers) >= 2
     cookie_headers = [value.lower() for value in set_cookie_headers]
-    for expected_name in ("session_token", "refresh_token"):
+    for expected_name in ("access_token", "refresh_token"):
         cookie_header = next((value for value in cookie_headers if f"{expected_name}=" in value), None)
         assert cookie_header is not None
         assert "httponly" in cookie_header
@@ -210,38 +220,6 @@ async def test_registration_duplicate_username_409(
     assert data["status"] == "error"
     assert "error" in data
     assert "message" in data["error"]
-
-
-@pytest.mark.asyncio
-async def test_registration_duplicate_email_409(
-    client, fake_redis, patched_cache_manager, patched_activity_logger,
-    patched_audit_logger, patched_audit_ids, patched_db_connection,
-    patched_db_error_logger,
-):
-    """Duplicate email returns 409 with structured error."""
-    group = _make_user_group()
-    project = _make_project()
-
-    def mock_check(val):
-        return val != "taken@example.com"
-
-    with patch("src.routes.auth.check_username_email_available", side_effect=mock_check), \
-         patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
-         patch("src.routes.auth.get_projects_for_user_group", return_value=[project]):
-        response = await client.post(
-            "/auth/register",
-            data={
-                "username": "newuser",
-                "password": "SecureP@ss123",
-                "email": "taken@example.com",
-                "user_group_hash": "grp-contract-001",
-            },
-            headers={"User-Agent": "test"},
-        )
-
-    assert response.status_code == 409
-    data = response.json()
-    assert data["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -331,3 +309,15 @@ async def test_registration_without_email_succeeds(
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_registration_rejects_retired_email_input(client, integration_env):
+    with patch("src.routes.auth.enhanced_register") as create:
+        response = await client.post("/auth/register", data={
+            "username": "new-user", "password": "vX9#qLm2$Tr8!pZw-long",
+            "user_group_hash": "group-hash", "email": "person@example.com",
+        })
+    assert response.status_code == 400
+    assert "/users/me/emails" in response.text
+    create.assert_not_called()

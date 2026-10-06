@@ -14,7 +14,7 @@ enabling a provider needs no deployment and no restart.
 | Provider type | A kind of provider: adapter code in the service plus a row in the provider catalog, whose `status` is the run-time kill switch. Built in: `google`, `github`, `discord`, `microsoft`, `oidc` (seeded `disabled`). `patreon` is listed as link-only and is configured by the [Patreon integration](../patreon-link/README.md), not here. | Root |
 | Connection | One OAuth client registration at one provider: client id, scopes, restrictions, endpoints (generic OIDC only) and an encrypted, write-only client secret. Identified by `connection_hash`. One connection can serve many projects. | Root |
 | Project binding | One project using one connection under a project-local `connection_key` (for example `google`): `enabled`, `login_enabled`, `link_enabled`, provisioning mode, default user group, existing-user policy, optional state TTL, and exact-match redirect URI and return origin allow-lists. | Root, or an admin of the project |
-| Configuration source | `OAUTH_CONFIG_SOURCE=env` (default) serves one Google connection built from the `GOOGLE_OAUTH_*` variables; `db` serves connections and bindings from the database. | Deployment |
+| Configuration | Connections, encrypted credentials and project bindings are stored in MySQL. | Root administration |
 | Identity key | An external account is stored as `(identity_namespace, HMAC-SHA256(provider-sub pepper, subject))`. Never the e-mail and never the raw subject. | Automatic |
 
 A binding can be used only when every layer allows it: the catalog status, the
@@ -53,9 +53,8 @@ JSON; it never redirects the browser back to the return origin.
 | --- | --- | --- |
 | Server-to-server | `POST /auth/oauth/init`, `GET /auth/oauth/providers` | Project backend, user API key in `X-API-Key` |
 | Public round trip | `POST /auth/oauth/start`, `GET` and `POST /auth/oauth/callback` | Anyone holding a valid init token or state; rate limited |
-| Signed-in user | `POST /auth/oauth/{connection}/link/start`, `POST /auth/oauth/{connection}/reauth/start`, `DELETE /auth/oauth/{connection}/link`, `GET /auth/oauth/links` | Access token (`Authorization: Bearer` or the `session_token` cookie); link and unlink also need recent authentication |
+| Signed-in user | `POST /auth/oauth/{connection}/link/start`, `POST /auth/oauth/{connection}/reauth/start`, `DELETE /auth/oauth/{connection}/link`, `GET /auth/oauth/links` | Access token (`Authorization: Bearer` or the `access_token` cookie); link and unlink also need recent authentication |
 | Administration | `/admin/oauth/*` (20 routes) | Root or admin user whose session has the `admin` permission; writes that touch secrets, connections or the catalog are root-only |
-| Deprecated aliases | `/auth/google/*` (5 routes) | See the [Google OAuth suite](../google-oauth/README.md) |
 
 ## Rules and caveats
 
@@ -82,10 +81,7 @@ JSON; it never redirects the browser back to the return origin.
   identity namespace (for example one Google account).
 - **Unlink signs the user out everywhere** and is refused unless the account has a usable
   password to fall back on.
-- **Environment source limits.** With `OAUTH_CONFIG_SOURCE=env` only the `google`
-  connection exists, and its binding has no default user group: `/auth/oauth/init` then
-  signs in and links existing users but cannot auto-create new ones. Use
-  `OAUTH_CONFIG_SOURCE=db` for per-project provisioning.
+
 - **Neutral errors.** Public messages never say which check failed. Branch on
   `error.code`; operators read the `sub_reason` in the activity log.
 
@@ -101,11 +97,9 @@ JSON; it never redirects the browser back to the return origin.
 
 ## Related
 
-- [Google OAuth (deprecated aliases)](../google-oauth/README.md) — `/auth/google/*`, the
-  legacy provider-init handshake and the `GOOGLE_OAUTH_*` configuration.
+
 - [Patreon account linking](../patreon-link/README.md) — entitlement linking, never sign-in.
 - [API keys](../api-keys/README.md) — the credential a project backend uses for `init`.
 - [OAuth runbook](../../RUNBOOKS/oauth.md) — migration to the database source, key and
   secret rotation, emergency switches.
 - [Error reference](../errors.md#oauth--external-identity-ext_80xx) — the `EXT_80xx` catalog.
-- [Design record](../../agnostic_oauth/README.md) — why the feature is shaped this way.

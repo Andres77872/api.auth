@@ -13,7 +13,7 @@ request
   -> AuthContextMiddleware
        X-API-Key present (and path is not /auth/validate or /auth/validate-api-key)?
          validate the key -> request.state.user, session_id = key ID, auth_method = "api_key"
-       else Bearer token or session_token cookie?
+       else Bearer token or access_token cookie?
          validate_session -> request.state.user, session_id = the token's session_id claim, auth_method = "session"
        never rejects the request
   -> APIAuditMiddleware

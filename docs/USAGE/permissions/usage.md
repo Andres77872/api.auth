@@ -167,7 +167,7 @@ curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/users" \
 
 Admin. Returns `users_with_direct_assignment` (including `email`, `user_type`, and `notes`). Users
 who get the group through a role or user group are not listed. No endpoint lists the roles that link
-a group; walk `GET /roles/roles` and `GET /roles/roles/{role_hash}/permission-groups` instead.
+a group; walk `GET /roles` and `GET /roles/{role_hash}/permission-groups` instead.
 
 ## Catalog permission groups for a project
 

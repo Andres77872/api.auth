@@ -4,8 +4,7 @@ Trace: `.dev/sdd/changes/patreon-account-link/tasks.md` task 1.4 and
 spec/design requirements for HMAC identity authority, hash-only proof tokens,
 constant-time S2S auth, and HMAC-MD5 verification over exact raw webhook bytes.
 
-Future implementation imports happen inside test bodies so collection stays
-green while Phase 3 production modules are still missing.
+Canonical helpers are checked against the implemented security contract.
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ def _field(value: Any, name: str) -> Any:
 def _hash_identifier(module: ModuleType, raw_id: str, *, kind: str = "user") -> bytes:
     return _call_named(
         module,
-        ("hash_patreon_identifier", "hash_patreon_id", "hash_provider_identifier"),
+        ("hash_patreon_identifier",),
         (
             {"raw_id": raw_id, "kind": kind, "pepper": ID_PEPPER},
             {"identifier": raw_id, "kind": kind, "pepper": ID_PEPPER},
@@ -85,7 +84,7 @@ def _hash_identifier(module: ModuleType, raw_id: str, *, kind: str = "user") -> 
 def _fingerprint_identifier(module: ModuleType, raw_id: str, *, kind: str = "user") -> str:
     return _call_named(
         module,
-        ("fingerprint_patreon_identifier", "fingerprint_patreon_id", "fingerprint_provider_identifier"),
+        ("fingerprint_patreon_identifier",),
         (
             {"raw_id": raw_id, "kind": kind, "pepper": ID_PEPPER},
             {"raw_id": raw_id, "kind": kind},
@@ -100,7 +99,7 @@ def _fingerprint_identifier(module: ModuleType, raw_id: str, *, kind: str = "use
 def _hash_email(module: ModuleType, email: str) -> bytes:
     return _call_named(
         module,
-        ("hash_patreon_email", "hash_provider_email"),
+        ("hash_patreon_email",),
         (
             {"email": email, "pepper": EMAIL_PEPPER},
             {"raw_email": email, "pepper": EMAIL_PEPPER},
@@ -112,7 +111,7 @@ def _hash_email(module: ModuleType, email: str) -> bytes:
 def _generate_proof_token(module: ModuleType, *, now: datetime | None = None) -> Any:
     return _call_named(
         module,
-        ("generate_patreon_proof_token", "generate_proof_token", "generate_link_proof_token"),
+        ("generate_patreon_proof_token",),
         (
             {"purpose": PROOF_PURPOSE, "ttl_seconds": 900, "pepper": PROOF_PEPPER, "now": now},
             {"ttl_seconds": 900, "pepper": PROOF_PEPPER, "now": now},
@@ -123,7 +122,7 @@ def _generate_proof_token(module: ModuleType, *, now: datetime | None = None) ->
 def _hash_proof_token(module: ModuleType, *, lookup_id: str, secret: str) -> bytes:
     return _call_named(
         module,
-        ("hash_patreon_proof_token", "hash_proof_token", "hash_link_proof_token"),
+        ("hash_patreon_proof_token",),
         (
             {"purpose": PROOF_PURPOSE, "lookup_id": lookup_id, "secret": secret, "pepper": PROOF_PEPPER},
             {"lookup_id": lookup_id, "secret": secret, "pepper": PROOF_PEPPER},
@@ -135,7 +134,7 @@ def _verify_s2s_token(module: ModuleType, presented: str | None, expected: str |
     return bool(
         _call_named(
             module,
-            ("verify_s2s_bearer_token", "constant_time_s2s_token_equals", "verify_internal_bearer_token"),
+            ("verify_s2s_bearer_token",),
             ({"presented": presented, "expected": expected}, {"presented_token": presented, "expected_token": expected}),
         )
     )
@@ -145,7 +144,7 @@ def _compute_webhook_signature(module: ModuleType, raw_body: bytes, secret: str)
     return str(
         _call_named(
             module,
-            ("compute_patreon_webhook_signature", "compute_webhook_signature"),
+            ("compute_patreon_webhook_signature",),
             ({"raw_body": raw_body, "secret": secret}, {"body": raw_body, "secret": secret}),
         )
     )
@@ -155,7 +154,7 @@ def _verify_webhook_signature(module: ModuleType, raw_body: bytes, signature: st
     return bool(
         _call_named(
             module,
-            ("verify_patreon_webhook_signature", "verify_webhook_signature"),
+            ("verify_patreon_webhook_signature",),
             (
                 {"raw_body": raw_body, "signature": signature, "secret": secret},
                 {"body": raw_body, "signature": signature, "secret": secret},

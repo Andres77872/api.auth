@@ -336,18 +336,6 @@ def classify_patreon_entitlement(
     )
 
 
-def classify_entitlement(**kwargs: Any) -> PatreonClassificationResult:
-    """Compatibility alias for tests and future callers."""
-
-    return classify_patreon_entitlement(**kwargs)
-
-
-def classify_member_entitlement(**kwargs: Any) -> PatreonClassificationResult:
-    """Compatibility alias for tests and future callers."""
-
-    return classify_patreon_entitlement(**kwargs)
-
-
 def to_safe_entitlement(classification: PatreonClassificationResult | Mapping[str, Any]) -> dict[str, Any]:
     """Serialize classification using an explicit safe-field allow-list only."""
 
@@ -355,18 +343,6 @@ def to_safe_entitlement(classification: PatreonClassificationResult | Mapping[st
         return classification.to_safe_dict()
     plain = _plain_mapping(classification)
     return {field_name: plain.get(field_name) for field_name in SAFE_ENTITLEMENT_FIELDS}
-
-
-def serialize_safe_entitlement(classification: PatreonClassificationResult | Mapping[str, Any]) -> dict[str, Any]:
-    """Compatibility alias for allow-list safe entitlement serialization."""
-
-    return to_safe_entitlement(classification)
-
-
-def build_safe_entitlement_dto(classification: PatreonClassificationResult | Mapping[str, Any]) -> dict[str, Any]:
-    """Compatibility alias for allow-list safe entitlement serialization."""
-
-    return to_safe_entitlement(classification)
 
 
 def _coerce_datetime(value: datetime | str | None) -> datetime:
@@ -1053,9 +1029,5 @@ __all__ = (
     "PatreonClassificationResult",
     "assert_classifier_safe_entitlement_allow_list",
     "classify_patreon_entitlement",
-    "classify_entitlement",
-    "classify_member_entitlement",
     "to_safe_entitlement",
-    "serialize_safe_entitlement",
-    "build_safe_entitlement_dto",
 )

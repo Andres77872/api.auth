@@ -148,7 +148,7 @@ Secret fields and credential-like values are redacted before results reach the
 model. Output sizes, pagination, run concurrency and command sizes are bounded.
 API errors remain failures; the model must not claim unsupported actions work.
 
-The Patreon tier-map endpoint has a backwards-compatible `refresh_catalog`
+The Patreon tier-map endpoint has a `refresh_catalog`
 query parameter. Normal clients retain its existing `true` default. The
 assistant's read tool pins it to `false`; catalog refresh is a separate write
 tool requiring activation and approval.

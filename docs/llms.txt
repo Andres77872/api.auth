@@ -14,7 +14,7 @@ Before calling the API:
 
 ## Credentials
 
-- **Access token** (JWT, 15 minutes by default): send `Authorization: Bearer <access_token>`, or rely on the HttpOnly `session_token` cookie. Every user and admin route accepts it.
+- **Access token** (JWT, 15 minutes by default): send `Authorization: Bearer <access_token>`, or rely on the HttpOnly `access_token` cookie. Every user and admin route accepts it.
 - **Refresh token** (JWT): accepted only by `POST /auth/refresh`, and by `POST /auth/switch-project` together with the access token. Send it as the `refresh_token` form field or cookie. It is single-use: each refresh returns a new pair. It lasts 72 hours, sliding, by default, or 30 days, absolute, when the sign-in sent `remember_me=true`.
 - **API key** `sk_{public_id}.{secret}`: send it in `X-API-Key`. It belongs to one user and one project. Backends use it with `POST /auth/validate-api-key`, `GET /auth/oauth/providers`, and `POST /auth/oauth/init`.
 - **Service-to-service bearers**: `BILLING_S2S_BEARER_TOKEN` for `/internal/.../billing...` routes and `PATREON_S2S_BEARER_TOKEN` for `/internal/users/{user_hash}/entitlements...`. User tokens and API keys are never accepted in their place.
@@ -249,7 +249,6 @@ jq '.components.schemas.LoginResponse' openapi.json          # one schema
 ## Optional
 
 - [Admin usage cases]({{BASE_URL}}/documentation/USAGE/admin-usage-cases.md?format=raw): dashboard, bulk operations, and cache management walkthroughs.
-- [Google OAuth (deprecated aliases)]({{BASE_URL}}/documentation/USAGE/google-oauth/README.md?format=raw): the legacy `/auth/google/*` routes and `GOOGLE_OAUTH_*` settings.
 - [OAuth runbook]({{BASE_URL}}/documentation/RUNBOOKS/oauth.md?format=raw): operator procedures for OAuth incidents.
 - [Stripe billing runbook]({{BASE_URL}}/documentation/RUNBOOKS/stripe-billing.md?format=raw): operator procedures for billing incidents.
 - [Patreon link runbook]({{BASE_URL}}/documentation/RUNBOOKS/patreon-link.md?format=raw): operator procedures for Patreon incidents.

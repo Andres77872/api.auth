@@ -19,7 +19,7 @@ from tests.integration.conftest import (
 # Only patch DB functions that are actually needed
 MINIMAL_API_KEY_PATCHES = [
     "validate_api_key_lookup", "get_project_by_id", "get_user_by_id",
-    "get_user_groups_in_project_by_hash", "get_user_effective_permissions",
+    "get_user_groups_in_project_by_hash", "get_user_permissions",
 ]
 
 
@@ -52,13 +52,13 @@ class TestVerifyApiKeyAuthFlow:
         patched_db_error_logger,
     ):
         """Malformed X-API-Key → middleware falls through → Bearer auth works."""
-        session_token = "test-session-token-001"
+        access_token = "test-session-token-001"
         session_data = make_session_payload(
             user_hash="usr-test-hash-001", user_id="1",
             user_type="consumer", project_hash="prj-test-hash-001",
             project_id="1",
         )
-        create_test_session(fake_redis, session_token, session_data)
+        create_test_session(fake_redis, access_token, session_data)
 
         # Patch at the routes level where the endpoint imports these functions
         with patch("src.routes.users.get_user_by_hash", return_value=_make_mock_user(
@@ -71,7 +71,7 @@ class TestVerifyApiKeyAuthFlow:
                 "/users/profile",
                 headers={
                     "X-API-Key": "malformed-no-sk-prefix",
-                    "Authorization": f"Bearer {session_token}",
+                    "Authorization": f"Bearer {access_token}",
                 },
             )
         # Middleware tries API key (fails), falls through to Bearer (succeeds)
@@ -95,13 +95,13 @@ class TestApiKeyAuthEndToEnd:
     ):
         """Both X-API-Key and Bearer present → middleware processes API key first."""
         # Create a valid session
-        session_token = "test-session-token-002"
+        access_token = "test-session-token-002"
         session_data = make_session_payload(
             user_hash="usr-test-hash-001", user_id="1",
             user_type="consumer", project_hash="prj-test-hash-001",
             project_id="1",
         )
-        create_test_session(fake_redis, session_token, session_data)
+        create_test_session(fake_redis, access_token, session_data)
 
         # Mock middleware's API key validation to return None (invalid)
         # This causes middleware to fall through to Bearer auth
@@ -118,7 +118,7 @@ class TestApiKeyAuthEndToEnd:
                 "/users/profile",
                 headers={
                     "X-API-Key": valid_token["token"],
-                    "Authorization": f"Bearer {session_token}",
+                    "Authorization": f"Bearer {access_token}",
                 },
             )
         # API key validation fails (mock returns None), falls through to Bearer → 200
@@ -253,13 +253,13 @@ class TestAuditAuthMethodAttribution:
         patched_db_error_logger,
     ):
         """Bearer auth → middleware sets request.state.auth_method = 'session'."""
-        session_token = "test-session-token-audit"
+        access_token = "test.payload.signature"
         session_data = make_session_payload(
             user_hash="usr-test-hash-audit", user_id="usr-2",
             user_type="consumer", project_hash="prj-test-hash-audit",
             project_id="proj-2",
         )
-        create_test_session(fake_redis, session_token, session_data)
+        create_test_session(fake_redis, access_token, session_data)
 
         # Patch at the routes level where the endpoint imports these functions
         with patch("src.routes.users.get_user_by_hash", return_value=_make_mock_user(
@@ -270,7 +270,7 @@ class TestAuditAuthMethodAttribution:
              patch("src.routes.users.get_user_accessible_projects", return_value=[]):
             response = await client.get(
                 "/users/profile",
-                headers={"Authorization": f"Bearer {session_token}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
 
         # Response should succeed (Bearer auth + proper mocks)

@@ -10,7 +10,7 @@ This script seeds a dev-only tenant into whatever database the dev env file poin
   * its default project group, membership and the admin/user/readonly user groups, which
     is what makes the provisioning group actually *reach* the project;
   * the Google OAuth connection and a project binding carrying the dev URLs and the dev
-    provider-init redeem bridge, delegated to ``oauth_env_import`` so the encryption and
+    database binding, delegated to ``provision_google_oauth`` so the encryption and
     binding rules stay in exactly one place.
 
 It refuses to touch anything that does not look like a development target: the database
@@ -22,8 +22,8 @@ Usage:
   python scripts/dev_env_setup.py --env-file .env.dev [--dry-run | --apply | --check-db]
       [--project-name "MagicWorlds Dev"] [--allow-remote-host]
 
-Config (env, never printed): DB_*, GOOGLE_OAUTH_CLIENT_ID / _CLIENT_SECRET / _SCOPES /
-  _REDIRECT_URIS / _RETURN_ORIGINS / _PROVISIONING_MODE, PROVIDER_INIT_REDEEM_URL / _TOKEN,
+Config (env, never printed): DB_*, SETUP_GOOGLE_OAUTH_CLIENT_ID / _CLIENT_SECRET / _SCOPES /
+  _REDIRECT_URIS / _RETURN_ORIGINS / _PROVISIONING_MODE,
   OAUTH_SECRET_ENCRYPTION_KEY / _KEY_ID, OAUTH_SECRET_HMAC_KEY.
 """
 
@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.migrations import oauth_env_import as oauth_import  # noqa: E402
+from scripts import provision_google_oauth as oauth_import  # noqa: E402
 
 # The root user the schema seeds in tables/05_initialize_data.sql; a project needs a real
 # owner because projects.created_by and .owner_id are foreign keys into users.
@@ -80,9 +80,9 @@ def _load_env_file(path: Path) -> None:
 
 
 def _connect():
-    password = os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD")
+    password = os.getenv("DB_MYSQL_PASSWORD")
     if not password:
-        raise DevSetupError("Missing DB_MYSQL_PASSWORD or DB_PASSWORD")
+        raise DevSetupError("Missing DB_MYSQL_PASSWORD")
     return pymysql.connect(
         host=os.getenv("DB_HOST", "localhost"),
         port=int(os.getenv("DB_PORT", "3306")),
@@ -107,7 +107,7 @@ def _non_local_urls() -> list[str]:
     """
 
     offenders: list[str] = []
-    for name in ("GOOGLE_OAUTH_REDIRECT_URIS", "GOOGLE_OAUTH_RETURN_ORIGINS", "PROVIDER_INIT_REDEEM_URL"):
+    for name in ("SETUP_GOOGLE_OAUTH_REDIRECT_URIS", "SETUP_GOOGLE_OAUTH_RETURN_ORIGINS"):
         for url in (u.strip() for u in (os.getenv(name) or "").split(",")):
             if url and not _is_local(urlsplit(url).hostname or ""):
                 offenders.append(f"{name}={url}")
@@ -243,7 +243,6 @@ def main() -> int:
             "project": args.project_name,
             "redirect_uris": oauth_plan["redirect_uris"],
             "return_origins": oauth_plan["return_origins"],
-            "legacy_redeem_bridge": oauth_plan["legacy_redeem_bridge"],
             "problems": problems,
         }
 
@@ -280,7 +279,7 @@ def main() -> int:
         print("\nDevelopment tenant ready. Wire the consumer to:")
         print(f"  PROJECT_HASH={project_hash}")
         print(f"  DEFAULT_USER_GROUP_HASH={group_hash}")
-        print("\nSet OAUTH_CONFIG_SOURCE=db in the dev env file; URLs now live in the database.")
+        print("\nOAuth URLs and policy are stored in the database.")
         return 0
     except (DevSetupError, oauth_import.ImportError_) as exc:
         print(f"dev-env-setup: {exc}", file=sys.stderr)

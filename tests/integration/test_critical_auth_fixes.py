@@ -28,7 +28,6 @@ def mock_fakeredis():
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.auth_lifecycle.redis_client", fake), \
          patch("src.routes.auth.redis_client", fake), \
-         patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake):
         # Also patch the cache_manager's redis reference directly
         from src.Util.cache_manager import cache_manager
@@ -41,145 +40,13 @@ def mock_fakeredis():
 
 
 # =============================================================================
-# G5 — Old Redis session (no 'groups' key) still returns valid EnhancedUserLogin
+# Current JWT sessions and authorization context
 # =============================================================================
-
-def test_old_session_without_groups_key_still_valid(mock_fakeredis):
-    """
-    G5: Old Redis session WITHOUT 'groups' key must still return a valid
-    EnhancedUserLogin with correct hardcoded defaults.
-
-    Should PASS before AND after Fix 1 (backward compat is pre-existing behavior).
-    """
-    from src.Util.db.db_enhanced import validate_session
-    from src.Util.db_config import redis_client
-
-    mock_project = MagicMock()
-    mock_project.id = "1"
-    mock_project.project_hash = "prj-test-001"
-    mock_project.project_name = "Test Project"
-
-    # ---- Test admin user ----
-    admin_session = {
-        "session_id": 12345,
-        "user_id": "42",
-        "user_hash": "usr-test-042",
-        "user_type": "admin",
-        "project_id": "1",
-        "project_hash": "prj-test-001",
-        "project_name": "Test Project",
-        "user_group_ids": ["10", "20"],
-        "user_group_names": ["project_admins", "devops"],
-        # Deliberately NO 'groups' key — pre-fix format
-    }
-    redis_client.set("session:admin-token", json.dumps(admin_session))
-
-    # is_admin_user() calls get_user_type via the import in db_enhanced's namespace
-    # check_admin_project_access dynamically imports check_admin_multi_project_access
-    with patch("src.Util.db.db_enhanced.get_user_type", return_value="admin"), \
-         patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=mock_project), \
-         patch("src.Util.db.db_users.check_admin_multi_project_access",
-               return_value=True), \
-         patch("src.Util.db.db_enhanced.get_user_accessible_projects",
-               return_value=[]):
-
-        result = validate_session("admin-token")
-
-        assert result is not None, (
-            "G5 FAIL: validate_session returned None for old admin session"
-        )
-        # Admin default hardcoded in validate_session line 451
-        assert result.groups == ["project_admins"], (
-            f"G5 FAIL: admin groups should default to ['project_admins'], "
-            f"got {result.groups}"
-        )
-        assert result.user_id == "42"
-        assert result.user_type == "admin"
-
-    # ---- Test root user ----
-    # Root path through validate_session (line 439-441):
-    #   groups = session_data.get('groups', ['root_users'])
-    # Root does NOT call check_admin_project_access, only get_project_by_hash
-    root_session = dict(admin_session)
-    root_session["user_type"] = "root"
-    root_session["session_id"] = 54321  # Different ID to avoid cache collision
-    redis_client.set("session:root-token", json.dumps(root_session))
-
-    with patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=mock_project):
-        result_root = validate_session("root-token")
-
-        assert result_root is not None, (
-            "G5 FAIL: validate_session returned None for old root session"
-        )
-        assert result_root.groups == ["root_users"], (
-            f"G5 FAIL: root groups should default to ['root_users'], "
-            f"got {result_root.groups}"
-        )
-        assert result_root.user_type == "root"
-
-
 
 
 # =============================================================================
 # G7 — Consumer user session: groups resolved fresh from DB (not hardcoded)
 # =============================================================================
-
-def test_consumer_session_groups_fresh_from_db(mock_fakeredis):
-    """
-    G7: Consumer user via issue_project_token_pair() → validate_session() returns
-    correct groups resolved fresh from DB (NOT from session_data.get('groups')).
-
-    Should PASS before AND after Fix 1 (consumer path unaffected by additive change).
-    """
-    from src.Util.auth_lifecycle import issue_project_token_pair
-    from src.Util.db.db_enhanced import validate_session
-
-    user = MagicMock()
-    user.id = "99"
-    user.user_hash = "usr-test-099"
-    user.username = "consumer1"
-    user.user_type = "consumer"
-
-    mock_group = MagicMock()
-    mock_group.id = "10"
-    mock_group.group_name = "developers"
-
-    project = MagicMock()
-    project.id = "1"
-    project.project_hash = "prj-test-001"
-    project.project_name = "Test Project"
-
-    token_pair = issue_project_token_pair(
-        user=user,
-        project=project,
-        permissions=[],
-        groups=[mock_group.group_name],
-        group_ids=[str(mock_group.id)],
-    )
-    token = token_pair.access_token
-
-    # validate_session consumer path (line 458-478):
-    #   461: groups_objs = get_user_groups_in_project_by_hash(user_id, project_hash)
-    #   466: groups = [g.group_name for g in groups_objs]
-    #   472: permissions = get_user_permissions(user_id)  [lazy import from db_global_roles]
-    #   478: available_projects = get_user_accessible_projects(user_id)
-    with patch("src.Util.db.db_enhanced.get_user_by_hash", return_value=user), \
-         patch("src.Util.db.db_enhanced.get_user_groups_in_project_by_hash",
-               return_value=[mock_group]), \
-         patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
-         patch("src.Util.db.db_global_roles.get_user_permissions",
-               return_value=[]), \
-         patch("src.Util.db.db_enhanced.get_user_accessible_projects",
-               return_value=[]):
-
-        result = validate_session(token)
-
-        assert result is not None, "G7 FAIL: validate_session returned None for consumer"
-        assert result.user_type == "consumer"
-        assert "developers" in result.groups, (
-            f"G7 FAIL: Consumer groups should contain 'developers' from DB, "
-            f"got {result.groups}"
-        )
 
 
 # =============================================================================
@@ -446,55 +313,6 @@ async def test_db_failure_propagates_500_via_admin_checker():
 # G4 — enhanced_login admin path DB failure returns 500 (NOT 401)
 # =============================================================================
 
-@pytest.mark.asyncio
-async def test_enhanced_login_admin_db_failure_returns_500():
-    """
-    G4 (RED → GREEN): When check_admin_multi_project_access() raises
-    DatabaseError inside enhanced_login() admin path, the exception MUST
-    propagate (not silently return False → 401).
-
-    Before Fix 3: bare except in check_admin_project_access() catches
-    DatabaseError → returns False → enhanced_login returns None → 401.
-    After Fix 3: except Exception raises → propagates through
-    enhanced_login() → caller sees 500.
-    """
-    from src.Util.db.db_enhanced import enhanced_login
-    from src.Util.error_handler import DatabaseError
-
-    # Build mock user
-    user = MagicMock()
-    user.id = "42"
-    user.user_hash = "usr-admin-042"
-    user.username = "admin1"
-    user.user_type = "admin"
-
-    project = MagicMock()
-    project.id = "1"
-    project.project_hash = "prj-test-001"
-    project.project_name = "Test Project"
-
-    # Patch the chain: get_user_by_credentials → user, get_user_type → "admin",
-    # get_project_by_hash → project, then check_admin_multi_project_access → raise
-    with patch("src.Util.db.db_enhanced.get_user_by_credentials",
-               return_value=user), \
-         patch("src.Util.db.db_enhanced.get_user_type",
-               return_value="admin"), \
-         patch("src.Util.db.db_enhanced.get_project_by_hash",
-               return_value=project), \
-         patch("src.Util.db.db_users.check_admin_multi_project_access",
-               side_effect=DatabaseError("Global roles DB connection failed")):
-
-        with pytest.raises((DatabaseError, Exception)) as exc_info:
-            enhanced_login("admin1", "password123", "prj-test-001")
-
-        # Verify it's a system failure exception (NOT None / 401 behavior)
-        # Before Fix 3: enhanced_login() returns None silently
-        # After Fix 3: exception propagates
-        assert "DB" in str(exc_info.value) or "connection" in str(exc_info.value).lower() or "DatabaseError" in type(exc_info.value).__name__, (
-            f"G4 FAIL: Expected DatabaseError to propagate, "
-            f"got {type(exc_info.value).__name__}: {exc_info.value}"
-        )
-
 
 # =============================================================================
 # G11 — auth_context.py logs on consumer permission failure (with exc_info=True)
@@ -610,78 +428,36 @@ def test_init_py_inner_try_except_removed():
 
 
 # =============================================================================
-# G13 — validate_session() consumer permission failure logs exc_info=True
+# Consumer permission failures
 # =============================================================================
 
-def test_validate_session_consumer_permission_failure_logs_exc_info(mock_fakeredis):
-    """
-    G13 (RED → GREEN): When get_user_permissions() raises DatabaseError in
-    validate_session() consumer permission resolution (db_enhanced.py:478-479),
-    logger.warning MUST be called with exc_info=True AND the returned
-    EnhancedUserLogin must have permissions = [] (graceful degradation preserved).
 
-    Before fix: logger.warning called WITHOUT exc_info=True.
-    After fix: exc_info=True added, graceful degradation preserved.
-    """
+@pytest.mark.parametrize("user_type", ["root", "admin", "consumer"])
+def test_opaque_cached_sessions_cannot_authorize_any_user_type(mock_fakeredis, user_type):
+    from fastapi import HTTPException
     from src.Util.db.db_enhanced import validate_session
-    from src.Util.db_config import redis_client
-    import json
+    mock_fakeredis.set("session:opaque-token", json.dumps({
+        "user_id": "42", "user_hash": "usr-42", "user_type": user_type,
+        "project_hash": "prj-42", "permissions": ["admin"],
+    }))
+    with pytest.raises(HTTPException) as raised:
+        validate_session("opaque-token")
+    assert raised.value.status_code == 401
 
-    # Create session in Redis with consumer user data (including groups key)
-    session_data = {
-        "session_id": 99999,
-        "user_id": "99",
-        "user_hash": "usr-consumer-099",
-        "user_type": "consumer",
-        "project_id": "1",
-        "project_hash": "prj-test-001",
-        "project_name": "Test Project",
-        "user_group_ids": ["10"],
-        "user_group_names": ["developers"],
-        "groups": ["developers"],
-    }
-    redis_client.set("session:g13-token", json.dumps(session_data))
 
-    mock_group = MagicMock()
-    mock_group.group_name = "developers"
-
-    project = MagicMock()
-    project.id = "1"
-    project.project_hash = "prj-test-001"
-    project.project_name = "Test Project"
-
-    # Patch chain: groups resolve, permissions fail
-    with patch("src.Util.db.db_enhanced.get_user_groups_in_project_by_hash",
-               return_value=[mock_group]), \
-         patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project), \
-         patch("src.Util.db.db_global_roles.get_user_permissions",
-               side_effect=DatabaseError("Global roles DB connection failed")), \
-         patch("src.Util.db.db_enhanced.get_user_accessible_projects",
-               return_value=[]), \
-         patch("src.Util.db.db_enhanced.logger") as mock_logger:
-
-        result = validate_session("g13-token")
-
-        # Must return valid EnhancedUserLogin (graceful degradation)
-        assert result is not None, (
-            "G13 FAIL: validate_session returned None on consumer permission failure"
-        )
-        assert result.user_type == "consumer", (
-            f"G13 FAIL: Expected consumer user_type, got {result.user_type}"
-        )
-
-        # permissions must be gracefully degraded (empty list)
-        # EnhancedUserLogin stores permissions as list — check attribute
-        perms = getattr(result, "permissions", "NO_PERMS_ATTR")
-        assert perms == [] or perms is None, (
-            f"G13 FAIL: Expected empty permissions on DB failure, "
-            f"got {perms}"
-        )
-
-        # Logger.warning MUST have been called
-        mock_logger.warning.assert_called_once()
-        _, log_kwargs = mock_logger.warning.call_args
-        assert log_kwargs.get("exc_info") is True, (
-            "G13 FAIL: logger.warning must be called with exc_info=True, "
-            f"got exc_info={log_kwargs.get('exc_info')}"
-        )
+def test_consumer_permission_failure_cannot_restore_cached_permissions(mock_fakeredis):
+    from src.Util.auth_lifecycle import issue_project_token_pair
+    from src.Util.db.db_enhanced import validate_session
+    from types import SimpleNamespace
+    user = SimpleNamespace(id="42", user_hash="usr-42", username="consumer", user_type="consumer", is_active=True)
+    project = SimpleNamespace(id="prj-42", project_hash="hash-42", project_name="Project", is_active=True, is_archived=False)
+    pair = issue_project_token_pair(user=user, project=project, permissions=[], groups=["Consumers"])
+    with (
+        patch("src.Util.db.db_enhanced.get_user_by_hash", return_value=user),
+        patch("src.Util.db.db_enhanced.get_project_by_hash", return_value=project),
+        patch("src.Util.db.db_enhanced.get_user_groups_in_project_by_hash", return_value=[SimpleNamespace(group_name="Consumers")]),
+        patch("src.Util.db.db_global_roles.get_user_permissions", side_effect=DatabaseError("permission database unavailable")),
+        patch("src.Util.db.db_enhanced.get_user_accessible_projects", return_value=[]),
+    ):
+        result = validate_session(pair.access_token)
+    assert result.permissions == []

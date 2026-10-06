@@ -175,7 +175,7 @@ CREATE PROCEDURE sp_get_users_in_group(IN p_user_group_id VARCHAR(64))
 BEGIN
     SELECT u.id, u.user_hash, u.username, u.email, u.user_type, u.role_id, u.created_at, u.updated_at, u.is_active,
            ugm.assigned_at, ugm.assigned_by
-    FROM users u
+    FROM v_users u
     INNER JOIN user_group_members ugm ON u.id = ugm.user_id
     WHERE ugm.user_group_id = p_user_group_id AND u.is_active = 1 AND ugm.is_active = 1
     ORDER BY u.username ASC;
@@ -300,7 +300,7 @@ DROP PROCEDURE IF EXISTS sp_get_user_accessible_projects$$
 CREATE PROCEDURE sp_get_user_accessible_projects(IN p_user_id VARCHAR(64))
 BEGIN
     DECLARE v_user_type VARCHAR(20);
-    SELECT user_type INTO v_user_type FROM users WHERE id = p_user_id AND is_active = 1;
+    SELECT user_type INTO v_user_type FROM v_users WHERE id = p_user_id AND is_active = 1;
 
     IF v_user_type = 'root' THEN
         SELECT p.id, p.project_hash, p.project_name, p.project_description,
@@ -335,7 +335,7 @@ BEGIN
     DECLARE v_user_type VARCHAR(20);
     DECLARE v_has_access BOOLEAN DEFAULT FALSE;
     
-    SELECT user_type INTO v_user_type FROM users WHERE id = p_user_id AND is_active = 1;
+    SELECT user_type INTO v_user_type FROM v_users WHERE id = p_user_id AND is_active = 1;
     
     IF v_user_type = 'root' THEN
         SELECT COUNT(*) > 0 INTO v_has_access

@@ -8,7 +8,7 @@ is checked again on every later authenticated request.
 ```text
 request
   -> platform middleware (CORS, request validation, API audit, auth context)
-  -> HTTPBearerOrCookie: Authorization bearer or session_token cookie        (401 if absent)
+  -> HTTPBearerOrCookie: Authorization bearer or access_token cookie        (401 if absent)
   -> require_admin -> validate_session -> validate_access_session           (401 if invalid)
   -> permission check: admin | manage_users  or  admin | manage_roles        (403 AUTHZ_2002)
   -> handler: resolve hashes (active rows only)                              (404)
@@ -18,7 +18,7 @@ request
   -> Pydantic response model
 ```
 
-1. `HTTPBearerOrCookie` takes the token from `Authorization: Bearer` or the `session_token` cookie.
+1. `HTTPBearerOrCookie` takes the token from `Authorization: Bearer` or the `access_token` cookie.
 2. `require_admin` calls `validate_session()`, which for a JWT runs `validate_access_session()`:
    signature and claims, the Redis session `session:{access_jti}`, the refresh family, then a live
    rebuild of the auth context (see [access re-check](#access-re-check-on-every-request)).

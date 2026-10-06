@@ -151,7 +151,7 @@ async def resolve_email_identity(
 ) -> dict[str, Any]:
     """Map an email address to the active user who owns it as an activated email.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; intended for trusted companion services.
 
     **Request:** JSON `{"email": "..."}`.
@@ -201,7 +201,7 @@ async def send_template_email(
 ) -> dict[str, Any]:
     """Queue one transactional email, rendered from an internal-purpose template, in the outbox.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; intended for trusted companion services.
 
     **Request:** JSON body; only templates with purpose `delivery_operation` or
@@ -299,7 +299,7 @@ async def email_message_status(
 ) -> dict[str, Any]:
     """Return the redacted delivery state of one outbox email message.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON `{"email_message_id": "..."}`.

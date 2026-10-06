@@ -305,17 +305,17 @@ class TestAuditExport:
         ):
             response = await client.post(
                 "/admin/audit/export",
-                json={"source": "audit", "format": "json", "limit": 25},
+                json={"source": "api_audit", "format": "json", "limit": 25},
                 headers=_admin_headers(),
             )
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
         assert response.headers["content-disposition"].startswith(
-            "attachment; filename=audit_export_audit_"
+            "attachment; filename=audit_export_api_audit_"
         )
         assert response.json() == [{"id": "audit-1"}]
-        stream.assert_called_once_with("audit", {}, 25)
+        stream.assert_called_once_with("api_audit", {}, 25)
 
     @pytest.mark.asyncio
     async def test_csv_export(self, client, integration_env):
@@ -346,7 +346,7 @@ class TestAuditExport:
     @pytest.mark.asyncio
     async def test_limit_exceeds_hard_limit(self, client, integration_env):
         with _patch_audit(count_audit_logs=MagicMock(return_value=15000)):
-            response = await client.post("/admin/audit/export", json={"source": "audit", "format": "json", "limit": 15000}, headers=_admin_headers())
+            response = await client.post("/admin/audit/export", json={"source": "api_audit", "format": "json", "limit": 15000}, headers=_admin_headers())
             assert response.status_code == 400
 
     @pytest.mark.asyncio
@@ -358,7 +358,7 @@ class TestAuditExport:
     @pytest.mark.asyncio
     async def test_invalid_format(self, client, integration_env):
         with _patch_audit():
-            response = await client.post("/admin/audit/export", json={"source": "audit", "format": "xml"}, headers=_admin_headers())
+            response = await client.post("/admin/audit/export", json={"source": "api_audit", "format": "xml"}, headers=_admin_headers())
             assert response.status_code == 400
 
     @pytest.mark.asyncio

@@ -498,7 +498,7 @@ class PatreonSyncWorker:
             )
         except AttributeError:
             jobs = await _maybe_await(
-                self.db.claim_sync_jobs(
+                self.db.claim_patreon_sync_jobs(
                     worker_id=self.worker_id,
                     limit=max(1, int(limit or self._worker_batch_size())),
                     lease_seconds=max(1, self._worker_lease_seconds()),
@@ -642,7 +642,7 @@ class PatreonSyncWorker:
         }
 
     async def _run_retention_backend(self, *, now: datetime | None, windows: Mapping[str, int]) -> Mapping[str, Any]:
-        method = getattr(self.db, "run_patreon_retention_purge", None) or getattr(self.db, "run_retention_purge", None)
+        method = getattr(self.db, "run_patreon_retention_purge", None)
         if callable(method):
             try:
                 result = await _maybe_await(
@@ -707,11 +707,7 @@ class PatreonSyncWorker:
 
         if not _bool_field(self.config, "raw_payload_capture_enabled", False):
             return
-        method = getattr(self.db, "quarantine_patreon_raw_payload", None) or getattr(
-            self.db,
-            "capture_patreon_raw_payload_quarantine",
-            None,
-        )
+        method = getattr(self.db, "quarantine_patreon_raw_payload", None)
         if not callable(method):
             return
         try:
@@ -1049,11 +1045,7 @@ class PatreonSyncWorker:
             provider_hash = hash_patreon_identifier(raw_id=raw_user_id, kind="user", pepper=provider_secret)
         except Exception:
             return None
-        resolver = getattr(self.db, "resolve_patreon_link_by_provider_hash", None) or getattr(
-            self.db,
-            "get_patreon_link_by_provider_sub_hash",
-            None,
-        )
+        resolver = getattr(self.db, "get_patreon_link_by_provider_sub_hash", None)
         if not callable(resolver):
             return None
         try:
@@ -1399,7 +1391,7 @@ class PatreonSyncWorker:
     ) -> None:
         if not job_id:
             return
-        method = getattr(self.db, "complete_sync_job", None) or getattr(self.db, "complete_patreon_sync_job", None)
+        method = getattr(self.db, "complete_patreon_sync_job", None)
         if not callable(method):
             return
         kwargs = {

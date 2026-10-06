@@ -31,7 +31,7 @@ def _make_project(project_id="1", project_hash="prj-test-001",
 
 def _make_register_result(user_hash="usr-new-001", username="newuser",
                           email="new@example.com", user_type="consumer",
-                          session_token="test-session-token",
+                          access_token="test-session-token",
                           project_hash="prj-test-001", project_name="Test Project",
                           user_id="99"):
     r = MagicMock()
@@ -39,10 +39,22 @@ def _make_register_result(user_hash="usr-new-001", username="newuser",
     r.username = username
     r.email = email
     r.user_type = user_type
-    r.session_token = session_token
+    r.access_token = access_token
     r.project_hash = project_hash
     r.project_name = project_name
     r.user_id = user_id
+    if project_hash:
+        from src.Util.auth_lifecycle import issue_project_token_pair
+        pair = issue_project_token_pair(
+            user={"id": user_id, "user_hash": user_hash, "username": username or user_hash, "user_type": user_type},
+            project={"id": "1", "project_hash": project_hash, "project_name": project_name},
+            permissions=[], groups=[],
+        )
+        for field in ("access_token", "refresh_token", "token_type", "expires_in", "refresh_expires_in", "expires_at", "refresh_expires_at", "remember_me", "cookie_metadata"):
+            setattr(r, field, getattr(pair, field))
+    else:
+        r.access_token = ""
+        r.refresh_token = None
     return r
 
 
@@ -66,7 +78,6 @@ async def test_register_valid(
             data={
                 "username": "newuser",
                 "password": "SecureP@ss123",
-                "email": "new@example.com",
                 "user_group_hash": "grp-test-001",
             },
             headers={"User-Agent": "test"},
@@ -78,11 +89,10 @@ async def test_register_valid(
     assert data["user"]["username"] == "newuser"
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
     assert data["expires_in"]
     assert data["refresh_expires_in"]
 
-    assert "session_token" in response.cookies
+    assert "access_token" in response.cookies
     assert "refresh_token" in response.cookies
 
 
@@ -166,40 +176,6 @@ async def test_register_group_no_projects(
 
 
 @pytest.mark.asyncio
-async def test_register_duplicate_email(
-    client, fake_redis, patched_cache_manager, patched_activity_logger,
-    patched_audit_logger, patched_audit_ids, patched_db_connection,
-    patched_db_error_logger,
-):
-    """Duplicate email returns 409 conflict."""
-    group = _make_user_group()
-    project = _make_project()
-
-    def mock_check(val):
-        if val == "newuser":
-            return True
-        return False  # email taken
-
-    with patch("src.routes.auth.check_username_email_available", side_effect=mock_check), \
-         patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
-         patch("src.routes.auth.get_projects_for_user_group", return_value=[project]):
-        response = await client.post(
-            "/auth/register",
-            data={
-                "username": "newuser",
-                "password": "SecureP@ss123",
-                "email": "taken@example.com",
-                "user_group_hash": "grp-test-001",
-            },
-            headers={"User-Agent": "test"},
-        )
-
-    assert response.status_code == 409
-    data = response.json()
-    assert data["status"] == "error"
-
-
-@pytest.mark.asyncio
 async def test_register_without_email(
     client, fake_redis, patched_cache_manager, patched_activity_logger,
     patched_audit_logger, patched_audit_ids, patched_db_connection,
@@ -210,25 +186,7 @@ async def test_register_without_email(
     project = _make_project()
 
     def make_result_no_email(*args, **kwargs):
-        from src.Util.Models import EnhancedUserLogin
-        r = EnhancedUserLogin(
-            user_hash="usr-noemail-001",
-            username=kwargs.get("username", "bob"),
-            project_hash="prj-test-001",
-            project_name="Test Project",
-            session_token="tok-noemail",
-            session_length=86400,
-            user_id="101",
-            project_id="1",
-            user_project_id=None,
-            user_project_hash="",
-            groups=[],
-            permissions=[],
-            available_projects=[],
-            user_type="consumer",
-            assigned_project_id=None,
-        )
-        return r
+        return _make_register_result(user_hash="usr-noemail-001", username=args[0], email=None, user_id="101")
 
     with patch("src.routes.auth.check_username_email_available", return_value=True), \
          patch("src.routes.auth.get_user_group_by_hash", return_value=group), \
@@ -250,7 +208,6 @@ async def test_register_without_email(
     assert data["user"]["email"] is None
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio
@@ -267,7 +224,7 @@ async def test_register_username_none_in_result_does_not_crash(
     result.username = None
     result.email = None
     result.user_type = "consumer"
-    result.session_token = "tok-none"
+    result.access_token = "tok-none"
     result.project_hash = "prj-test-001"
     result.project_name = "Test Project"
     result.user_id = "102"

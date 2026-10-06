@@ -128,7 +128,7 @@ def _assert_webhook_route_exists(response) -> None:
 
 
 def _assert_no_session_or_raw_provider_leaks(response, *, context: str) -> None:
-    for cookie_name in ("session_token", "refresh_token", "access_token"):
+    for cookie_name in ("access_token", "refresh_token", "access_token"):
         assert cookie_name not in response.cookies, f"webhook must not set local auth cookie {cookie_name}"
 
     leaked = sorted(value for value in RAW_PROVIDER_SENTINELS if value in response.text)
@@ -161,15 +161,13 @@ class WebhookCapture:
         self.current_updates = []
 
         self.db = MagicMock(name="fake_db_patreon_webhooks")
-        self.db.record_webhook_delivery.side_effect = self._record_delivery
         self.db.record_patreon_webhook_delivery.side_effect = self._record_delivery
-        self.db.resolve_patreon_link_by_provider_hash.side_effect = self._resolve_link
         self.db.get_patreon_link_by_provider_sub_hash.side_effect = self._resolve_link
         self.db.get_entitlement_by_user_hash.side_effect = self._current_snapshot
         self.db.observe_patreon_membership.side_effect = self._observe_membership
         self.db.upsert_patreon_entitlement_snapshot.side_effect = self._update_current
         self.db.mark_webhook_delivery_processed.return_value = {"status": "processed"}
-        self.db.enqueue_sync_job.side_effect = self._enqueue_resync
+        self.db.enqueue_patreon_sync_job.side_effect = self._enqueue_resync
         self.db.enqueue_resync.side_effect = self._enqueue_resync
         self.db.upsert_entitlement_snapshot.side_effect = self._update_current
         self.db.update_current_entitlement.side_effect = self._update_current

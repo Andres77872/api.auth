@@ -6,14 +6,7 @@ import re
 
 import pytest
 
-from src.Util.auth_constants import (
-    GOOGLE_OAUTH_CALLBACK_RATE_PREFIX,
-    GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX,
-    GOOGLE_OAUTH_START_RATE_PREFIX,
-    GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX,
-    GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX,
-    GOOGLE_OAUTH_UNLINK_RATE_PREFIX,
-)
+from src.Util.auth_constants import OAUTH_CALLBACK_RATE_PREFIX, OAUTH_START_RATE_PREFIX, OAUTH_STATE_CONSUME_RATE_PREFIX, OAUTH_SUB_COLLISION_RATE_PREFIX, OAUTH_UNLINK_RATE_PREFIX
 from src.Util.oauth_rate_limit import (
     OAuthRateLimitExceeded,
     OAuthRateLimitPolicy,
@@ -63,44 +56,37 @@ class RecordingRedis:
     [
         (
             "check_start",
-            {"ip_address": RAW_IP, "provider_init_fingerprint": RAW_PROVIDER_INIT},
+            {"ip_address": RAW_IP, "init_token_fingerprint": RAW_PROVIDER_INIT},
             "start",
-            GOOGLE_OAUTH_START_RATE_PREFIX,
+            OAUTH_START_RATE_PREFIX,
             (RAW_IP, RAW_PROVIDER_INIT),
         ),
         (
             "check_callback",
             {"ip_address": RAW_IP, "state_fingerprint": RAW_STATE},
             "callback",
-            GOOGLE_OAUTH_CALLBACK_RATE_PREFIX,
+            OAUTH_CALLBACK_RATE_PREFIX,
             (RAW_IP, RAW_STATE),
-        ),
-        (
-            "check_provider_init_redeem",
-            {"ip_address": RAW_IP, "provider_init_fingerprint": RAW_PROVIDER_INIT},
-            "provider_init",
-            GOOGLE_OAUTH_PROVIDER_INIT_RATE_PREFIX,
-            (RAW_IP, RAW_PROVIDER_INIT),
         ),
         (
             "check_state_consumption",
             {"ip_address": RAW_IP, "state_fingerprint": RAW_STATE},
             "state_consume",
-            GOOGLE_OAUTH_STATE_CONSUME_RATE_PREFIX,
+            OAUTH_STATE_CONSUME_RATE_PREFIX,
             (RAW_IP, RAW_STATE),
         ),
         (
             "check_provider_sub_collision",
             {"provider_sub_fingerprint": RAW_PROVIDER_SUB, "ip_address": RAW_IP},
             "sub_collision",
-            GOOGLE_OAUTH_SUB_COLLISION_RATE_PREFIX,
+            OAUTH_SUB_COLLISION_RATE_PREFIX,
             (RAW_PROVIDER_SUB, RAW_IP),
         ),
         (
             "check_unlink_attempt",
             {"user_id": RAW_USER_ID, "ip_address": RAW_IP},
             "unlink",
-            GOOGLE_OAUTH_UNLINK_RATE_PREFIX,
+            OAUTH_UNLINK_RATE_PREFIX,
             (RAW_USER_ID, RAW_IP),
         ),
     ],
@@ -134,8 +120,8 @@ def test_bucket_exhaustion_reports_live_ttl_and_hashed_key():
         policy=OAuthRateLimitPolicy(start_limit=2, start_window_seconds=37),
     )
 
-    first = limiter.check_start(ip_address=RAW_IP, provider_init_fingerprint=RAW_PROVIDER_INIT)
-    second = limiter.check_start(ip_address=RAW_IP, provider_init_fingerprint=RAW_PROVIDER_INIT)
+    first = limiter.check_start(ip_address=RAW_IP, init_token_fingerprint=RAW_PROVIDER_INIT)
+    second = limiter.check_start(ip_address=RAW_IP, init_token_fingerprint=RAW_PROVIDER_INIT)
 
     assert first.remaining == 1
     assert second.remaining == 0
@@ -144,13 +130,13 @@ def test_bucket_exhaustion_reports_live_ttl_and_hashed_key():
     redis.ttls[key] = 19
 
     with pytest.raises(OAuthRateLimitExceeded) as exc:
-        limiter.check_start(ip_address=RAW_IP, provider_init_fingerprint=RAW_PROVIDER_INIT)
+        limiter.check_start(ip_address=RAW_IP, init_token_fingerprint=RAW_PROVIDER_INIT)
 
     assert exc.value.bucket == "start"
     assert exc.value.limit == 2
     assert exc.value.retry_after == 19
     assert exc.value.key == key
-    assert re.fullmatch(rf"{re.escape(GOOGLE_OAUTH_START_RATE_PREFIX)}[0-9a-f]{{24}}", exc.value.key)
+    assert re.fullmatch(rf"{re.escape(OAUTH_START_RATE_PREFIX)}[0-9a-f]{{24}}", exc.value.key)
     for secret in (RAW_IP, RAW_PROVIDER_INIT):
         assert secret not in exc.value.key
         assert secret not in str(exc.value)
@@ -202,13 +188,13 @@ def test_configured_fail_open_returns_explicit_degraded_decision(fail_operation)
         policy=OAuthRateLimitPolicy(fail_closed_on_redis_error=False),
     )
 
-    decision = limiter.check_provider_init_redeem(
+    decision = limiter.check_start(
         ip_address=RAW_IP,
-        provider_init_fingerprint=RAW_PROVIDER_INIT,
+        init_token_fingerprint=RAW_PROVIDER_INIT,
     )
 
     assert decision.allowed is True
-    assert decision.bucket == "provider_init"
+    assert decision.bucket == "start"
     assert decision.degraded is True
     assert decision.remaining is None
 
@@ -217,20 +203,18 @@ def test_policy_loader_applies_bucket_values_and_redis_failure_policy():
     policy = load_oauth_rate_limit_policy(
         env={
             "APP_ENV": "test",
-            "GOOGLE_OAUTH_SCOPES": "openid email",
-            "GOOGLE_OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "false",
-            "GOOGLE_OAUTH_START_RATE_LIMIT": "3",
-            "GOOGLE_OAUTH_START_RATE_WINDOW_SECONDS": "17",
-            "GOOGLE_OAUTH_CALLBACK_RATE_LIMIT": "4",
-            "GOOGLE_OAUTH_CALLBACK_RATE_WINDOW_SECONDS": "19",
-            "GOOGLE_OAUTH_PROVIDER_INIT_RATE_LIMIT": "5",
-            "GOOGLE_OAUTH_PROVIDER_INIT_RATE_WINDOW_SECONDS": "23",
-            "GOOGLE_OAUTH_STATE_CONSUME_RATE_LIMIT": "6",
-            "GOOGLE_OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS": "29",
-            "GOOGLE_OAUTH_SUB_COLLISION_RATE_LIMIT": "7",
-            "GOOGLE_OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS": "31",
-            "GOOGLE_OAUTH_UNLINK_RATE_LIMIT": "10",
-            "GOOGLE_OAUTH_UNLINK_RATE_WINDOW_SECONDS": "43",
+            "OAUTH_SCOPES": "openid email",
+            "OAUTH_FAIL_CLOSED_ON_REDIS_ERROR": "false",
+            "OAUTH_START_RATE_LIMIT": "3",
+            "OAUTH_START_RATE_WINDOW_SECONDS": "17",
+            "OAUTH_CALLBACK_RATE_LIMIT": "4",
+            "OAUTH_CALLBACK_RATE_WINDOW_SECONDS": "19",
+            "OAUTH_STATE_CONSUME_RATE_LIMIT": "6",
+            "OAUTH_STATE_CONSUME_RATE_WINDOW_SECONDS": "29",
+            "OAUTH_SUB_COLLISION_RATE_LIMIT": "7",
+            "OAUTH_SUB_COLLISION_RATE_WINDOW_SECONDS": "31",
+            "OAUTH_UNLINK_RATE_LIMIT": "10",
+            "OAUTH_UNLINK_RATE_WINDOW_SECONDS": "43",
         }
     )
 
@@ -239,8 +223,6 @@ def test_policy_loader_applies_bucket_values_and_redis_failure_policy():
         start_window_seconds=17,
         callback_limit=4,
         callback_window_seconds=19,
-        provider_init_limit=5,
-        provider_init_window_seconds=23,
         state_consume_limit=6,
         state_consume_window_seconds=29,
         sub_collision_limit=7,
@@ -249,15 +231,6 @@ def test_policy_loader_applies_bucket_values_and_redis_failure_policy():
         unlink_window_seconds=43,
         fail_closed_on_redis_error=False,
     )
-
-
-def test_neutral_oauth_rate_limit_names_win_and_google_names_still_work():
-    from src.Util.oauth_rate_limit import load_oauth_rate_limit_policy
-
-    legacy = load_oauth_rate_limit_policy(env={"GOOGLE_OAUTH_START_RATE_LIMIT": "7"})
-    neutral = load_oauth_rate_limit_policy(env={"OAUTH_START_RATE_LIMIT": "9", "GOOGLE_OAUTH_START_RATE_LIMIT": "7"})
-    assert legacy.start_limit == 7
-    assert neutral.start_limit == 9
 
 
 def test_scope_dimension_separates_tenants_without_changing_unscoped_keys():
@@ -269,3 +242,8 @@ def test_scope_dimension_separates_tenants_without_changing_unscoped_keys():
     assert _bucket_key("p:", "start", "ip", "fp", scope=None) == unscoped
     assert len({unscoped, _bucket_key("p:", "start", "ip", "fp", scope=scope_a), _bucket_key("p:", "start", "ip", "fp", scope=scope_b)}) == 3
     assert "project-a" not in scope_a, "the raw project hash never appears in a Redis key"
+
+
+def test_removed_google_rate_settings_have_no_effect():
+    assert load_oauth_rate_limit_policy(env={"GOOGLE_OAUTH_START_RATE_LIMIT": "7"}).start_limit == 20
+    assert load_oauth_rate_limit_policy(env={"OAUTH_START_RATE_LIMIT": "9"}).start_limit == 9

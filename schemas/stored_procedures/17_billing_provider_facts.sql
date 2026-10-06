@@ -145,7 +145,7 @@ BEGIN
            bpe.last_synced_at,
            bpe.stale_after
     FROM billing_purchase_events bpe
-    JOIN users u ON bpe.user_id = u.id
+    JOIN v_users u ON bpe.user_id = u.id
     JOIN projects p ON bpe.project_id = p.id
     WHERE bpe.purchase_ref = p_purchase_ref
       AND u.user_hash = p_user_hash

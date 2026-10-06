@@ -33,8 +33,6 @@ from src.Util.secret_box import ENCRYPTION_ALGORITHM, SecretBoxError, build_ciph
 HASH_VERSION = "v1"
 KIND_CLIENT_SECRET = "client_secret"
 KIND_SIGNING_KEY = "signing_key"
-KIND_LEGACY_REDEEM_URL = "legacy_redeem_url"
-KIND_LEGACY_REDEEM_TOKEN = "legacy_redeem_token"
 _KEY_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
@@ -145,8 +143,6 @@ def reencrypt_secret(
 __all__ = [
     "EncryptedSecret",
     "KIND_CLIENT_SECRET",
-    "KIND_LEGACY_REDEEM_TOKEN",
-    "KIND_LEGACY_REDEEM_URL",
     "KIND_SIGNING_KEY",
     "OAuthSecretError",
     "OAuthSecretsNotReady",

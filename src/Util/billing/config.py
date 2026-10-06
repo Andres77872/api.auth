@@ -31,7 +31,6 @@ BILLING_RAW_PAYLOAD_RETENTION_DAYS_ENV = "BILLING_RAW_PAYLOAD_RETENTION_DAYS"
 BILLING_S2S_RATE_LIMIT_ENV = "BILLING_S2S_RATE_LIMIT"
 BILLING_S2S_RATE_WINDOW_SECONDS_ENV = "BILLING_S2S_RATE_WINDOW_SECONDS"
 BILLING_RETURN_URL_ALLOWLIST_ENV = "BILLING_RETURN_URL_ALLOWLIST"
-BILLING_ALLOWED_RETURN_ORIGINS_ENV = "BILLING_ALLOWED_RETURN_ORIGINS"
 
 DEFAULT_BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
 MAX_BILLING_WEBHOOK_DELIVERY_RETENTION_DAYS = 90
@@ -209,7 +208,7 @@ def is_return_url_allowed(url: str, allowlist: Sequence[str]) -> bool:
 
 def load_billing_config(*, env: Mapping[str, str] | None = None) -> BillingConfig:
     values = _env(env)
-    return_urls = _get(values, BILLING_RETURN_URL_ALLOWLIST_ENV) or _get(values, BILLING_ALLOWED_RETURN_ORIGINS_ENV)
+    return_urls = _get(values, BILLING_RETURN_URL_ALLOWLIST_ENV)
     return BillingConfig(
         billing_enabled=_bool(_get(values, BILLING_ENABLED_ENV), default=False),
         s2s_enabled=_bool(_get(values, BILLING_S2S_ENABLED_ENV), default=False),
@@ -328,7 +327,6 @@ def is_billing_feature_enabled(config: BillingConfig, feature: str) -> bool:
 
 
 __all__ = [
-    "BILLING_ALLOWED_RETURN_ORIGINS_ENV",
     "BILLING_CHECKOUT_ENABLED_ENV",
     "BILLING_ENABLED_ENV",
     "BILLING_ID_HMAC_SECRET_ENV",

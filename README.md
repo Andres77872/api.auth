@@ -30,7 +30,7 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 - True access/refresh JWT model with Redis-backed revocation authority.
 - Short-lived access tokens for protected requests and `/auth/validate`.
 - 72-hour sliding refresh-token families by default, or 30-day absolute refresh families when `remember_me=true`.
-- HttpOnly, Secure, `SameSite=Strict` cookies for both `session_token` (access alias, path `/`) and `refresh_token` (path `/auth`).
+- HttpOnly, Secure, `SameSite=Strict` cookies for both `access_token` (path `/`) and `refresh_token` (path `/auth`).
 - Multi-project login, project switching, root/admin platform login, strict refresh rotation, logout, and deactivation revocation.
 - Self-service password recovery, email verification/activation, multi-email management, and username/email availability checks.
 - API-key validation through `POST /auth/validate-api-key` with the `X-API-Key` header.
@@ -41,7 +41,6 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 - A project backend lists its enabled providers and mints a single-use init token with its project API key; the project and provisioning group always come from server-side configuration, never from the request.
 - Signed-in users can link, re-authenticate with, list, and unlink external identities.
 - `GET /admin/oauth/projects/{project_hash}/readiness` explains why a provider is unavailable for a project.
-- `/auth/google/*` remains as deprecated aliases onto the same pipeline. See [OAuth docs](docs/USAGE/oauth/README.md) and [Google OAuth docs](docs/USAGE/google-oauth/README.md).
 
 ### 👥 Groups, Roles, Permissions, and Projects
 - User groups, project groups, and groups-of-groups access control.
@@ -108,7 +107,7 @@ curl -H "User-Agent: local-smoke/1.0" http://localhost:8000/system/ping
 
 `src/__init__.py` loads the project `.env` before runtime imports; variables already exported in the environment take precedence. Use `scripts/recreate_database.py` only when you intentionally want to drop and rebuild `magic_auth`; it is destructive and asks for confirmation.
 
-To bring an existing database up to the canonical schema without dropping anything, review and then apply the additive catch-up:
+To bring an existing database up to the canonical schema, review and then apply the cleanup. It removes retired SQL session storage, the `users.email` shadow column, and OAuth redeem-bridge columns and procedures:
 
 ```bash
 python scripts/schema_sync.py --env-file .env --dry-run
@@ -117,22 +116,19 @@ python scripts/schema_sync.py --env-file .env --apply
 
 For an isolated development tenant, copy `.env.dev.example` to `.env.dev` and run `python scripts/dev_env_setup.py --env-file .env.dev --dry-run`, then `--apply`. It seeds a local project, its default groups, and a Google OAuth connection and binding, and it refuses to run unless the database host is a loopback address and every configured URL is local.
 
-The canonical database scripts currently seed a legacy root row whose SHA-256
-password hash is incompatible with the active Argon2id-only verifier. Their
-completion message also prints a different password. Before trying to log in,
-follow the
-[first-root repair step](docs/USAGE/getting-started.md#first-root-bootstrap-and-current-seed-caveat);
-neither printed/seeded default is a valid current login.
+The database scripts create the first root account with an operator-supplied password,
+validated by the password policy and stored as Argon2id. Set `BOOTSTRAP_ROOT_PASSWORD`
+or answer the secure prompt. SQL includes no default root credential. See
+[first-root bootstrap](docs/USAGE/getting-started.md#first-root-bootstrap).
 
 ## 📡 API Surface
 
-The app currently registers **246 route-module endpoint methods across 28 `src/routes/*.py` modules** for API version `2.2.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
+The app currently registers **239 route-module endpoint methods across 27 `src/routes/*.py` modules** for API version `3.0.0`. This count treats each method/path pair as one endpoint and excludes FastAPI's built-in routes plus every route declared directly in `src/main.py`.
 
 | Surface | Prefix | Module | Count | Contract |
 |---------|--------|--------|-------|----------|
 | Authentication | `/auth` | `auth.py` | 13 | Session, refresh token, API-key validation |
 | OAuth | `/auth/oauth` | `auth_oauth.py` | 9 | Provider-agnostic OAuth: init token, start, callback, link, reauth, unlink |
-| Google OAuth (deprecated aliases) | `/auth/google` | `auth_google.py` | 5 | Aliases onto the OAuth pipeline with connection `google` |
 | Patreon Link | `/auth/patreon` | `auth_patreon.py` | 4 | Existing local session + recent reauth |
 | Users | `/users` | `users.py` | 19 | Profile, admin user management, email management |
 | User API Keys | `/users/api-keys` | `user_api_keys.py` | 5 | Self-service API-key lifecycle |
@@ -144,10 +140,10 @@ The app currently registers **246 route-module endpoint methods across 28 `src/r
 | Roles | `/roles` | `global_roles.py` | 28 | Roles, permission groups, permissions, role catalogs |
 | Permission Assignments | `/permissions` | `permission_assignments.py` | 17 | Permission-group assignment and lookup |
 | Admin Billing | `/admin/billing` | `admin_billing.py` | 22 | Billing groups, credentials, capabilities, catalog, metrics |
-| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Provider catalog, connections, write-only credentials, project bindings, URL allow-lists, readiness |
+| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 19 | Provider catalog, connections, write-only credentials, project bindings, URL allow-lists, readiness |
 | Root assistant | `/admin/assistant/ws` | `assistant.py` | 0 | One root-only WebSocket endpoint; excluded from HTTP operation counts |
 | Billing Internal | `/internal/.../billing` | `internal_billing.py` | 6 | S2S billing facts, catalog, Checkout, Portal, resync |
-| Stripe Webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Raw Stripe webhook intake |
+| Stripe Webhooks | `/webhooks/stripe/{billing_group_hash}` | `stripe_webhooks.py` | 1 | Raw Stripe webhook intake |
 | Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 8 | ROOT-only Patreon status and operations |
 | Patreon Internal | `/internal/users/{user_hash}/entitlements` | `internal_patreon.py` | 2 | S2S entitlement read and resync |
 | Patreon Webhooks | `/webhooks/patreon` | `patreon_webhooks.py` | 1 | Raw Patreon webhook intake |
@@ -171,7 +167,7 @@ The OpenAPI document is generated from the code. Its description is [src/README.
 
 | Scheme | Credential | Used by |
 |--------|------------|---------|
-| `HTTPBearerOrCookie` | Access JWT as `Authorization: Bearer ...` or the `session_token` cookie | Authenticated user and admin routes |
+| `HTTPBearerOrCookie` | Access JWT as `Authorization: Bearer ...` or the `access_token` cookie | Authenticated user and admin routes |
 | `ProjectApiKey` | `X-API-Key: sk_{public_id}.{secret}` | `POST /auth/validate-api-key` (OAuth init/providers declare the same header as a parameter) |
 | `BillingS2SBearer` | Dedicated `BILLING_S2S_BEARER_TOKEN` | Billing internal routes |
 | `PatreonS2SBearer` | Dedicated `PATREON_S2S_BEARER_TOKEN` | Patreon internal routes |
@@ -186,9 +182,8 @@ This release uses a **two-token model**:
 
 - `access_token`: short-lived JWT used for protected API requests, `/auth/validate`, `/auth/logout`, and `/auth/switch-project`.
 - `refresh_token`: 72-hour sliding JWT by default, or a 30-day absolute JWT when `remember_me=true`; it is used by `/auth/refresh` (and required alongside the access token by `/auth/switch-project`) and returned in the JSON body and as an HttpOnly Secure `refresh_token` cookie scoped to `/auth`.
-- `session_token`: deprecated compatibility alias for `access_token` in response bodies and the access cookie.
 
-`POST /auth/refresh` rejects legacy access/session tokens. Do not send `Authorization: Bearer <access_token>` to refresh; send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
+`POST /auth/refresh` rejects access tokens. Do not send `Authorization: Bearer <access_token>` to refresh; send the refresh token through the `refresh_token` cookie or explicit `refresh_token` form/body field.
 
 Access JWT signature, `exp`, `type`, `jti`, `session_id`, `family_id`, and server-side Redis session/family state are enforced before a request is trusted.
 
@@ -281,7 +276,6 @@ Request-validation failures return `400` with code `VAL_3001` and `error.details
 | [Authentication](docs/USAGE/authentication-usage-cases.md) | Login, sessions, project switching |
 | [Client Authentication Guide](docs/USAGE/client-authentication-guide.md) | Browser, mobile, and service integration patterns |
 | [OAuth Sign-in](docs/USAGE/oauth/README.md) | Provider-agnostic sign-in: connections, project bindings, readiness, admin API |
-| [Google OAuth/OIDC](docs/USAGE/google-oauth/README.md) | Deprecated `/auth/google/*` aliases and the `GOOGLE_OAUTH_*` environment configuration |
 | [Patreon Link](docs/USAGE/patreon-link/README.md) | Entitlement-only Patreon link/proof, S2S read, webhooks, sync |
 | [Stripe Billing](docs/USAGE/stripe-billing/README.md) | Billing groups, catalog, credentials, S2S checkout/portal/status, webhooks |
 | [Users](docs/USAGE/users/README.md) | Profile, admin operations, bulk ops, multi-email management |
@@ -300,7 +294,6 @@ Request-validation failures return `400` with code `VAL_3001` and `error.details
 - [Database Schema](schemas/docs/README.md)
 - [External Accounts Schema](schemas/docs/external-accounts.md)
 - [OAuth Runbook](docs/RUNBOOKS/oauth.md)
-- [Google OAuth Runbook](docs/RUNBOOKS/google-oauth.md)
 - [Email Activation Runbook](docs/RUNBOOKS/email-activation.md)
 - [Patreon Link Runbook](docs/RUNBOOKS/patreon-link.md)
 - [Stripe Billing Runbook](docs/RUNBOOKS/stripe-billing.md)
@@ -396,7 +389,7 @@ state, and merges attempted while another test workflow holds the shared lock.
 
 ## 🔧 Configuration
 
-See [.env.example](.env.example) for the full documented environment template, including disabled-by-default provider flags, test-only settings, Docker-only settings, and deprecated variables.
+See [.env.example](.env.example) for the full documented environment template, including disabled-by-default provider flags, test-only settings, Docker-only settings, and operator setup inputs.
 
 Minimum local runtime values:
 
@@ -429,28 +422,26 @@ email-link origin validation share the built-in `DEFAULT_ALLOWED_ORIGINS` list i
 localhost/LAN development origins plus the hosted auth UI origin
 `https://auth-ui.arz.ai`, so set the variable explicitly in every deployment.
 
-OAuth configuration has two sources, selected by `OAUTH_CONFIG_SOURCE`:
-
-- `env` (default): the historical single Google connection configured by the `GOOGLE_OAUTH_*` and `PROVIDER_INIT_*` variables.
-- `db`: connections, project bindings, and URL allow-lists live in the database and are managed through `/admin/oauth/*`. Connection secrets are encrypted at rest, so `OAUTH_SECRET_ENCRYPTION_KEY`, `OAUTH_SECRET_ENCRYPTION_KEY_ID`, and `OAUTH_SECRET_HMAC_KEY` become required. Move an existing deployment with `scripts/schema_sync.py` and `scripts/migrations/oauth_env_import.py`, as described in the [OAuth runbook](docs/RUNBOOKS/oauth.md).
-
-Never change the OAuth peppers (`OAUTH_*_PEPPER` or their `GOOGLE_OAUTH_*_PEPPER` predecessors) on a live deployment: they key every linked identity.
+OAuth connections, project bindings, and URL allow-lists live in the database and are
+managed through `/admin/oauth/*`. Connection secrets require `OAUTH_SECRET_ENCRYPTION_KEY`,
+`OAUTH_SECRET_ENCRYPTION_KEY_ID`, and `OAUTH_SECRET_HMAC_KEY`. Provision Google through
+`scripts/provision_google_oauth.py`; see the [OAuth runbook](docs/RUNBOOKS/oauth.md).
+Keep the `OAUTH_*_PEPPER` values stable because they key linked identities.
 
 Provider-specific setup is intentionally documented outside this top-level README:
 - OAuth sign-in: [docs/USAGE/oauth/reference.md](docs/USAGE/oauth/reference.md) and [docs/RUNBOOKS/oauth.md](docs/RUNBOOKS/oauth.md)
-- Google OAuth (deprecated aliases, `env` source): [docs/USAGE/google-oauth/reference.md](docs/USAGE/google-oauth/reference.md) and [docs/RUNBOOKS/google-oauth.md](docs/RUNBOOKS/google-oauth.md)
 - Patreon: [docs/USAGE/patreon-link/reference.md](docs/USAGE/patreon-link/reference.md) and [docs/RUNBOOKS/patreon-link.md](docs/RUNBOOKS/patreon-link.md)
 - Stripe billing: [docs/USAGE/stripe-billing/reference.md](docs/USAGE/stripe-billing/reference.md) and [docs/RUNBOOKS/stripe-billing.md](docs/RUNBOOKS/stripe-billing.md)
 - Email: [docs/USAGE/email/README.md](docs/USAGE/email/README.md) and [docs/RUNBOOKS/email-activation.md](docs/RUNBOOKS/email-activation.md)
 
-Do not place real Google, Patreon, Stripe, Resend, provider-init, S2S bearer, encryption, HMAC, JWT, or API-key secrets in README examples.
+Do not place real Google, Patreon, Stripe, Resend, OAuth init, S2S bearer, encryption, HMAC, JWT, or API-key secrets in README examples.
 
 ## 🆘 Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | Access token expired | Call `/auth/refresh` with the refresh token; if refresh fails, re-authenticate via `/auth/login` |
-| Legacy client cannot refresh | Update the client to store/use `refresh_token`; old access/session tokens are not refresh credentials |
+| Refresh rejected | Send the issued `refresh_token`; sign in again if its family is expired or revoked |
 | Missing JWT secret | Set `JWT_SECRET_KEY`; non-test runtime fails fast without it |
 | API key import/startup error | Set `API_KEY_PEPPER` before importing API-key routes |
 | Access denied | Check user group membership, project group access, and project archive state |
@@ -479,13 +470,13 @@ python -c "from src.Util.db_config import redis_client; redis_client.ping(); pri
 
 ## 🚚 Migration and Rollback Notes
 
-This is a breaking auth-contract deployment:
+API `3.0.0` and `magic-auth-client` `1.0.0` use the current authentication and schema contracts:
 
-- Old access/session tokens cannot be used on `/auth/refresh` and may require users to log in again.
+- Access sessions use JWTs and separate rotating refresh tokens. Store both values from the token response.
+- Apply the canonical schema cleanup before deploying this API. Email identities live in `user_emails`; OAuth connections and project bindings live in MySQL.
 - Deployments must set `JWT_SECRET_KEY`; there is no non-test random fallback.
 - Refresh/session Redis namespaces include `session:{access_jti}`, `session_full:{access_jti}`, `refresh_family:{family_id}`, `refresh_token:{refresh_jti}`, `refresh_used:{family_id}`, `revoked_family:{family_id}`, `user_sessions:{user_id}`, and `user_refresh_families:{user_id}`.
-- Rollback means redeploying the previous release. If needed, clear or let expire the refresh-family Redis namespaces; tokens issued by this true-refresh release are not compatible with the older session-rotation contract.
-- Do not re-enable legacy access-token refresh silently unless a separate approved spec changes the auth contract.
+- A rollback requires matching API, client, and database contracts. Redeploying an earlier API alone cannot restore columns and procedures retired by the schema cleanup.
 
 ## 👨‍💻 Author
 

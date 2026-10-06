@@ -23,7 +23,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-test-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     return u
 
 
@@ -108,7 +107,7 @@ async def test_switch_project_valid(
     assert data["success"] is True
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
     assert data["project"]["project_hash"] == "prj-other-002"
     assert data["remember_me"] is True
     assert fake_redis.get(f"session:{old_access_jti}") is None

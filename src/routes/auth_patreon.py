@@ -33,7 +33,7 @@ from src.Util.Models import (
     PatreonUnlinkResponse,
     assert_patreon_response_model_allow_lists,
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
 from src.Util.api_audit_logger import APIAuditLogger
 from src.Util.auth_flow import access_token_session_id, require_recent_reauthentication
@@ -560,8 +560,8 @@ def _rate_limited_public_response(surface: str, exc: PatreonRateLimitExceeded) -
 
 def _session_id_from_login_data(login_data: Any) -> str | None:
     """The session id OAuth reauth markers are keyed by: the access token's ``session_id`` claim."""
-    session_token = _string_field(login_data, "session_token")
-    return _string_field(login_data, "session_id") or access_token_session_id(session_token) or session_token
+    access_token = _string_field(login_data, "access_token")
+    return _string_field(login_data, "session_id") or access_token_session_id(access_token) or access_token
 
 
 def _load_current_session(credentials: HTTPAuthorizationCredentials) -> Any:
@@ -755,14 +755,6 @@ def _plain_status_mapping(value: Any) -> dict[str, Any] | None:
             dumped = None
         if isinstance(dumped, Mapping):
             return {str(key): item for key, item in dumped.items()}
-    legacy_dict = getattr(value, "dict", None)
-    if callable(legacy_dict):
-        try:
-            dumped = legacy_dict()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, Mapping):
-            return {str(key): item for key, item in dumped.items()}
     return None
 
 
@@ -853,48 +845,10 @@ def _safe_unlink_entitlement_from_row(row: Any) -> tuple[str, PatreonSafeEntitle
     return link_status, entitlement
 
 
-async def _try_db_status_call(method: Any, attempts: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...]) -> Any:
-    for args, kwargs in attempts:
-        try:
-            result = await _maybe_await(method(*args, **kwargs))
-        except TypeError:
-            continue
-        if result is None or _plain_status_mapping(result) is not None:
-            return result
-    return None
-
-
-async def _call_db_get_link_status(*, user_id: str, user_hash: str | None) -> Any:
-    for method_name in ("get_link_status", "get_patreon_link_status"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            result = await _try_db_status_call(
-                method,
-                (
-                    ((), {"user_id": user_id}),
-                    ((), {"user_id": user_id, "user_hash": user_hash}),
-                    ((user_id,), {}),
-                ),
-            )
-            if result is not None or _plain_status_mapping(result) is not None:
-                return result
-
+async def _call_db_get_link_status(*, user_hash: str | None) -> Any:
     if not user_hash:
         return None
-
-    for method_name in ("get_patreon_entitlement_by_user_hash", "get_entitlement_by_user_hash"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            result = await _try_db_status_call(
-                method,
-                (
-                    ((), {"user_hash": user_hash}),
-                    ((user_hash,), {}),
-                ),
-            )
-            if result is not None or _plain_status_mapping(result) is not None:
-                return result
-    return None
+    return await _maybe_await(db_patreon.get_entitlement_by_user_hash(user_hash))
 
 
 def _configured_campaign_ids(config: Any) -> tuple[str, ...]:
@@ -1270,13 +1224,7 @@ def _hash_matches(candidate: bytes | None, expected: bytes | None) -> bool:
 
 
 async def _fetch_campaign_payload(provider_client: Any, campaign_id: str) -> Any:
-    if hasattr(provider_client, "fetch_campaign_members"):
-        return await _maybe_await(provider_client.fetch_campaign_members(campaign_id))
-    if hasattr(provider_client, "get_campaign_members"):
-        return await _maybe_await(provider_client.get_campaign_members(campaign_id))
-    if hasattr(provider_client, "list_campaign_members"):
-        return await _maybe_await(provider_client.list_campaign_members(campaign_id))
-    return None
+    return await _maybe_await(provider_client.fetch_campaign_members(campaign_id))
 
 
 async def _member_payload_for_consumed_proof(
@@ -1622,7 +1570,7 @@ async def request_patreon_link(
     Patreon linking only proves membership for entitlements; it never signs anyone in
     or issues local tokens or cookies.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus recent authentication: a sign-in, or an OAuth reauth of this session,
     within the recent-reauthentication window (refreshing the session does not renew
     it); otherwise `401` (`AUTH_1008`).
@@ -1650,7 +1598,7 @@ async def request_patreon_link(
     try:
         require_recent_reauthentication(
             user_id=user_id,
-            session_token=credentials.credentials,
+            access_token=credentials.credentials,
             session_id=_session_id_from_login_data(login_data),
             operation="patreon_link_request",
         )
@@ -1826,7 +1774,7 @@ async def confirm_patreon_link(
 
     This is not a login or OAuth callback and issues no local tokens or cookies.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
     session, within the recent-reauthentication window; refreshing the session does not renew it); otherwise `401`
     (`AUTH_1008`). The proof must have been requested by the same user.
@@ -1852,7 +1800,7 @@ async def confirm_patreon_link(
     try:
         require_recent_reauthentication(
             user_id=user_id,
-            session_token=credentials.credentials,
+            access_token=credentials.credentials,
             session_id=_session_id_from_login_data(login_data),
             operation="patreon_link_confirm",
         )
@@ -2034,7 +1982,7 @@ async def get_patreon_link_status(
 ) -> JSONResponse:
     """Return the signed-in user's Patreon link status and safe entitlement summary.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie); no recent authentication needed. Only the caller's own state is readable.
 
     **Responses:**
@@ -2058,7 +2006,6 @@ async def get_patreon_link_status(
 
     try:
         row = await _call_db_get_link_status(
-            user_id=user_id,
             user_hash=_string_field(login_data, "user_hash"),
         )
         link_status, entitlement = _status_components_from_row(row)
@@ -2103,7 +2050,7 @@ async def unlink_patreon_link(
 
     Local sessions, tokens, cookies and API keys are not affected.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
     session, within the recent-reauthentication window; refreshing the session does not renew it); otherwise `401`
     (`AUTH_1008`). Only the caller's own link can be removed.
@@ -2123,7 +2070,7 @@ async def unlink_patreon_link(
     try:
         require_recent_reauthentication(
             user_id=user_id,
-            session_token=credentials.credentials,
+            access_token=credentials.credentials,
             session_id=_session_id_from_login_data(login_data),
             operation="patreon_unlink",
         )

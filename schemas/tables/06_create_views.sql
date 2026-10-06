@@ -27,7 +27,7 @@ SELECT
     p.project_hash,
     MIN(ugpg.granted_at) as access_granted_at,
     'group_access' as access_type
-FROM users u
+FROM v_users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
 JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1
@@ -56,7 +56,7 @@ SELECT
     p.project_hash,
     p.project_created as access_granted_at,
     'root_access' as access_type
-FROM users u
+FROM v_users u
 CROSS JOIN projects p
 WHERE u.user_type = 'root'
   AND u.is_active = 1
@@ -74,37 +74,12 @@ SELECT
     COUNT(DISTINCT vupa.project_id) as accessible_projects,
     COUNT(DISTINCT ugm.user_group_id) as member_of_groups,
     GROUP_CONCAT(DISTINCT ug.group_name ORDER BY ug.group_name) as user_groups
-FROM users u
+FROM v_users u
 LEFT JOIN v_user_project_access vupa ON u.id = vupa.user_id
 LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
 LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
 WHERE u.is_active = 1
 GROUP BY u.id, u.username, u.user_type;
-
--- ===================================================================================
--- ACTIVE USER SESSIONS VIEW
--- ===================================================================================
-CREATE OR REPLACE VIEW v_active_user_sessions AS
-SELECT 
-    u.id as user_id,
-    u.username,
-    u.user_type,
-    us.session_token,
-    us.expires_at,
-    us.project_id,
-    p.project_name,
-    GROUP_CONCAT(DISTINCT ug.group_name ORDER BY ug.group_name) as user_groups
-FROM users u
-JOIN user_sessions us ON u.id = us.user_id
-JOIN projects p ON us.project_id = p.id
-LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
-LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
-WHERE u.is_active = 1 
-  AND us.is_active = 1 
-  AND us.expires_at > NOW()
-  AND p.is_active = 1
-  AND (p.archived = FALSE OR p.archived IS NULL)
-GROUP BY u.id, u.username, u.user_type, us.session_token, us.expires_at, us.project_id, p.project_name;
 
 -- ===================================================================================
 -- USER SUMMARY VIEW
@@ -122,7 +97,7 @@ SELECT
     COUNT(DISTINCT vupa.project_id) as total_projects,
     MAX(al.request_timestamp) as last_activity,
     GROUP_CONCAT(DISTINCT ug.group_name ORDER BY ug.group_name) as group_memberships
-FROM users u
+FROM v_users u
 LEFT JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
 LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
 LEFT JOIN v_user_project_access vupa ON u.id = vupa.user_id
@@ -299,7 +274,7 @@ SELECT
     r.role_name as permission_source,
     'grant' as permission_type,
     100 as priority
-FROM users u
+FROM v_users u
 JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
 JOIN role_permission_groups rpg ON r.id = rpg.role_id AND rpg.is_active = TRUE
 JOIN global_permission_group_permissions pgp ON rpg.permission_group_id = pgp.permission_group_id AND pgp.is_active = TRUE
@@ -320,7 +295,7 @@ SELECT
     CONCAT('user_group:', ug.group_name) as permission_source,
     'grant' as permission_type,
     50 as priority
-FROM users u
+FROM v_users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = TRUE
 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = TRUE
 JOIN user_group_permission_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = TRUE
@@ -342,7 +317,7 @@ SELECT
     CONCAT('user_group:', ug.group_name, ' -> project_group:', pg.group_name) as permission_source,
     ugpgp.permission_type as permission_type,
     ugpgp.priority as priority
-FROM users u
+FROM v_users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = TRUE
 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = TRUE
 JOIN user_group_project_group_permissions ugpgp ON ug.id = ugpgp.user_group_id AND ugpgp.is_active = TRUE
@@ -369,7 +344,7 @@ SELECT
     r.role_priority,
     ugpgr.assigned_at,
     'scoped' as role_scope
-FROM users u
+FROM v_users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = TRUE
 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = TRUE
 JOIN user_group_project_group_roles ugpgr ON ug.id = ugpgr.user_group_id AND ugpgr.is_active = TRUE
@@ -394,7 +369,7 @@ SELECT
     r.role_priority,
     u.created_at as assigned_at,
     'global' as role_scope
-FROM users u
+FROM v_users u
 JOIN roles r ON u.role_id = r.id AND r.is_active = TRUE
 WHERE u.is_active = TRUE;
 
@@ -414,7 +389,7 @@ SELECT
     p.id as project_id,
     p.project_name,
     CONCAT(u.username, ' -> ', ug.group_name, ' -> ', pg.group_name, ' -> ', p.project_name) as access_path
-FROM users u
+FROM v_users u
 JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = TRUE
 JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = TRUE
 JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = TRUE

@@ -100,8 +100,6 @@ async def client(app):
 _OAUTH_REDIS_PATCH_LOCATIONS = (
     "src.Util.oauth_state.redis_client",
     "src.Util.oauth_rate_limit.redis_client",
-    "src.Util.provider_init.redis_client",
-    "src.routes.auth_google.redis_client",
 )
 
 
@@ -135,7 +133,7 @@ def fake_redis():
     session_mock.project_id = "1"
     session_mock.permissions = []
     session_mock.groups = []
-    session_mock.session_token = "test-token"
+    session_mock.access_token = "test-token"
     session_mock.session_length = 259200
     session_mock.username = "testuser"
 
@@ -154,7 +152,6 @@ def fake_redis():
          patch("src.Util.cache_manager.redis_client", fake), \
          patch("src.Util.auth_lifecycle.redis_client", fake), \
          patch("src.Util.email.route_support.redis_client", fake), \
-         patch("src.Util.db.db_enhanced.client", fake), \
          patch("src.Util.db.db_users.client", fake), \
          patch("src.Util.db.db_session_analytics.redis_client", fake), \
          patch("src.Util.system_metrics.redis_client", fake), \
@@ -249,7 +246,6 @@ def patched_audit_logger():
         return False
 
     raw_body_excluded_paths = tuple(real_logger_cls.RAW_BODY_AUDIT_EXCLUDED_PATHS)
-    mock_cls.is_google_oauth_path.side_effect = real_logger_cls.is_google_oauth_path
     mock_cls.is_oauth_path.side_effect = real_logger_cls.is_oauth_path
     mock_cls.is_patreon_webhook_path.side_effect = lambda path: is_route_family(path, PATREON_WEBHOOK_ROUTE)
     mock_cls.is_raw_body_audit_excluded.side_effect = lambda path: any(
@@ -301,7 +297,6 @@ def patched_cache_manager():
     mock.set_session_full = MagicMock(return_value=True)
     mock.delete_session = MagicMock()
     with patch("src.Util.cache_manager.cache_manager", mock), \
-         patch("src.Util.db.db_enhanced.cache_manager", mock), \
          patch("src.routes.system.cache_manager", mock):
         yield mock
 
@@ -420,16 +415,16 @@ def make_session_payload(
     user_hash: str = "usr-test-hash-001", user_id: str = "1",
     user_type: str = "consumer", project_hash: str = "prj-test-hash-001",
     project_name: str = "Test Project", project_id: str = "1",
-    permissions: list = None, groups: list = None, session_token: str = None,
+    permissions: list = None, groups: list = None, access_token: str = None,
 ):
-    if session_token is None:
-        session_token = f"test-token-{uuid.uuid4().hex[:16]}"
+    if access_token is None:
+        access_token = f"test-token-{uuid.uuid4().hex[:16]}"
     return {
         "session_id": 12345, "user_hash": user_hash, "user_id": user_id,
         "user_type": user_type, "project_hash": project_hash,
         "project_name": project_name, "project_id": project_id,
         "permissions": permissions or [], "groups": groups or [],
-        "session_token": session_token, "session_length": 259200,
+        "access_token": access_token, "session_length": 259200,
     }
 
 
@@ -457,15 +452,15 @@ class DBPatcher:
         "check_username_email_available", "get_user_group_by_hash",
         "get_projects_for_user_group", "enhanced_register",
         "count_users", "count_projects", "count_user_groups",
-        "count_project_permission_groups", "list_all_projects",
-        "search_projects", "get_user_project_permissions",
+        "count_project_groups", "list_all_projects",
+        "search_projects", "get_user_permissions",
         "get_user_type_info", "get_user_group_membership",
-        "get_user_effective_permissions", "update_user", "delete_user",
+        "get_user_permissions", "update_user", "delete_user",
         "list_users_with_access", "get_user_type",
         "invalidate_user_sessions", "create_project",
         "update_project", "delete_project", "get_project_members_page",
         "get_project_stats",
-        "get_user_groups_for_project", "get_permission_groups_for_project",
+        "get_user_groups_for_project", "get_project_groups_for_project",
         "get_user_groups_in_project", "get_user_groups_in_project_by_hash",
         "check_user_has_permission_extended", "get_user_all_permissions",
         "get_user_permission_sources",
@@ -509,7 +504,6 @@ def db_patcher():
 
 # ─── Google OAuth RED Harness Helpers ────────────────────────────────────────
 
-_DEFAULT_PROVIDER_INIT_TOKEN = "fake-provider-init-token-not-real"
 _DEFAULT_PROJECT_HASH = "test-project-hash-server-side-only"
 _DEFAULT_USER_GROUP_HASH = "test-user-group-hash-server-side-only"
 
@@ -533,7 +527,6 @@ _OAUTH_REDACTED_KEYS = {
 }
 
 _DEFAULT_FORBIDDEN_OAUTH_SENTINELS = {
-    "provider_init_token": _DEFAULT_PROVIDER_INIT_TOKEN,
     "project_hash": _DEFAULT_PROJECT_HASH,
     "user_group_hash": _DEFAULT_USER_GROUP_HASH,
     "authorization_code": "fake-google-auth-code-not-real",
@@ -549,10 +542,6 @@ class RedactedOAuthMapping(dict):
         return repr(_redact_oauth_value(dict(self)))
 
     __str__ = __repr__
-
-
-class FakeProviderInitRedeemError(RuntimeError):
-    pass
 
 
 def _oauth_test_fingerprint(value: Any) -> Optional[str]:
@@ -578,68 +567,6 @@ def _redact_oauth_value(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_redact_oauth_value(item) for item in value]
     return value
-
-
-def make_fake_provider_init_payload(
-    *,
-    provider: str = "google",
-    purpose: str = "login",
-    project_hash: str = _DEFAULT_PROJECT_HASH,
-    user_group_hash: Optional[str] = _DEFAULT_USER_GROUP_HASH,
-    return_origin: str = "http://localhost:3000",
-    expires_in: int = 600,
-) -> RedactedOAuthMapping:
-    payload = RedactedOAuthMapping({
-        "provider": provider,
-        "purpose": purpose,
-        "project_hash": project_hash,
-        "return_origin": return_origin,
-        "issuer": "magic-worlds-api",
-        "audience": "api.auth",
-        "expires_in": expires_in,
-        "scope_fingerprint": "test-scope-fingerprint",
-        "provider_init_fingerprint": "test-provider-init-fingerprint",
-    })
-    if user_group_hash is not None:
-        payload["user_group_hash"] = user_group_hash
-    return payload
-
-
-class FakeProviderInitRedeemer:
-    """Server-side provider-init redemption fake; call records are redacted."""
-
-    def __init__(self, default_payload: Optional[Mapping[str, Any]] = None):
-        self.default_payload = RedactedOAuthMapping(default_payload or make_fake_provider_init_payload())
-        self.tokens = {_DEFAULT_PROVIDER_INIT_TOKEN: self.default_payload}
-        self.failures = {}
-        self.redeemed = set()
-        self.calls = []
-
-    def add_token(self, token: str, payload: Optional[Mapping[str, Any]] = None):
-        self.tokens[token] = RedactedOAuthMapping(payload or self.default_payload)
-        return token
-
-    def reject_token(self, token: str, reason: str = "invalid_provider_init"):
-        self.failures[token] = reason
-        return token
-
-    async def redeem_provider_init_token(self, provider_init_token: str, **kwargs):
-        self.calls.append({
-            "token_fingerprint": _oauth_test_fingerprint(provider_init_token),
-            "kwargs": _redact_oauth_value(kwargs),
-        })
-        if provider_init_token in self.failures:
-            raise FakeProviderInitRedeemError(self.failures[provider_init_token])
-        if provider_init_token in self.redeemed:
-            raise FakeProviderInitRedeemError("provider_init_replay")
-        payload = self.tokens.get(provider_init_token)
-        if payload is None:
-            raise FakeProviderInitRedeemError("provider_init_not_found")
-        self.redeemed.add(provider_init_token)
-        return copy.deepcopy(payload)
-
-    async def __call__(self, provider_init_token: str, **kwargs):
-        return await self.redeem_provider_init_token(provider_init_token, **kwargs)
 
 
 class FakeGoogleTokenExchange:
@@ -758,11 +685,6 @@ def assert_no_oauth_sensitive_leaks(
 
 
 @pytest.fixture
-def fake_provider_init_redeemer():
-    return FakeProviderInitRedeemer()
-
-
-@pytest.fixture
 def fake_google_token_exchange(fake_google_token_response):
     return FakeGoogleTokenExchange(fake_google_token_response)
 
@@ -781,7 +703,6 @@ def fake_google_verifier(fake_google_claims):
     return FakeGoogleIDTokenVerifier(sanitized_claims)
 
 
-
 @pytest.fixture
 def oauth_state_factory(fake_redis):
     """Issue a genuine OAuth state through the production state store.
@@ -791,7 +712,6 @@ def oauth_state_factory(fake_redis):
     record, exactly as ``/start`` would have written it.
     """
 
-    from src.Util.oauth.connections import ENV_BINDING_ID, ENV_CONNECTION_ID
     from src.Util.oauth_state import OAuthStateStore
 
     def _issue(
@@ -800,24 +720,22 @@ def oauth_state_factory(fake_redis):
         project_hash: str = "project-hash-redacted-by-contract",
         user_group_hash: Optional[str] = "group-hash-redacted-by-contract",
         return_origin: str = "http://localhost:3000",
-        redirect_uri: str = "http://localhost:8000/auth/google/callback",
+        redirect_uri: str = "http://localhost:8000/auth/oauth/callback",
         **extra: Any,
     ) -> str:
         binding = {
             "provider": "google",
             "purpose": purpose,
-            "connection_id": ENV_CONNECTION_ID,
-            "binding_id": ENV_BINDING_ID,
-            "config_source": "env",
+            "connection_id": "oac-test-google",
+            "binding_id": "pob-test-google",
             "project_hash": project_hash,
-            "user_group_hash": user_group_hash,
             "return_origin": return_origin,
             "redirect_uri": redirect_uri,
-            "provider_init_fingerprint": "test-provider-init-fingerprint",
+            "init_token_fingerprint": "test-provider-init-fingerprint",
             "scope_fingerprint": "test-scope-fingerprint",
             **extra,
         }
-        return OAuthStateStore(redis_client=fake_redis).create_state(provider_init_binding=binding).state
+        return OAuthStateStore(redis_client=fake_redis).create_state(oauth_binding=binding).state
 
     return _issue
 
@@ -964,29 +882,28 @@ class RealDBFactory:
         self._created_project_groups = []
         self._created_memberships = []
 
-    def create_user(self, username: str = None, email: str = None,
-                    user_type: str = "consumer", password_hash: str = None) -> dict:
+    def create_user(self, username: str = None, user_type: str = "consumer",
+                    password_hash: str = None) -> dict:
         """Create a user and return its data."""
         user_id = _gen_id("usr")
         user_hash = _gen_hash("uh")
         # Always append UUID suffix to avoid UNIQUE constraint conflicts on username
         # (soft-delete doesn't release the UNIQUE key)
         username = f"{username or 'testuser'}_{uuid.uuid4().hex[:8]}"
-        email = email or f"{username}@test.com"
         password_hash = password_hash or f"$argon2id$fake_hash_{secrets.token_hex(8)}"
 
         with self.conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO users (id, user_hash, username, email, password_hash,
+                """INSERT INTO users (id, user_hash, username, password_hash,
                    user_type, created_at, is_active)
-                   VALUES (%s, %s, %s, %s, %s, %s, NOW(), 1)""",
-                (user_id, user_hash, username, email, password_hash, user_type),
+                   VALUES (%s, %s, %s, %s, %s, NOW(), 1)""",
+                (user_id, user_hash, username, password_hash, user_type),
             )
         self.conn.commit()
         self._created_users.append(user_id)
         return {
             "id": user_id, "user_hash": user_hash, "username": username,
-            "email": email, "user_type": user_type,
+            "email": None, "user_type": user_type,
         }
 
     def create_user_group(self, group_name: str = None,
@@ -1142,3 +1059,49 @@ def real_factory(real_db_conn):
         yield factory
     finally:
         factory.cleanup()
+
+
+@pytest.fixture
+def oauth_google_source(fake_google_token_exchange, fake_google_verifier):
+    """A database-shaped connection with provider network calls replaced by test doubles."""
+    from src.Util.oauth.adapters.google import GoogleAdapter
+    from src.Util.oauth.connections import ProjectBinding, ResolvedConnection, OAuthConnectionUnavailable
+    from src.Util.oauth.provider import ConnectionConfig, ConnectionSecrets, TokenResponse
+
+    class Adapter(GoogleAdapter):
+        async def exchange_code(self, connection, secrets, tx, callback):
+            return TokenResponse(await fake_google_token_exchange.exchange_authorization_code(
+                code=callback.code, redirect_uri=tx.redirect_uri, code_verifier=tx.code_verifier))
+
+        def verify_id_token(self, connection, tx, id_token):
+            return fake_google_verifier.verify(id_token, expected_nonce=tx.nonce)
+
+    class Source:
+        name = "db"
+        resolved = ResolvedConnection(
+            config=ConnectionConfig(connection_id="oac-test-google", provider_type="google",
+                client_id="test-google-client-id.apps.googleusercontent.com", scopes="openid email", identity_namespace="google"),
+            binding=ProjectBinding(binding_id="pob-test-google", connection_key="google",
+                project_id="prj-test-google", project_hash="project-hash-redacted-by-contract", enabled=True,
+                provisioning_mode="both", default_user_group_id="grp-test-google",
+                redirect_uris=("http://localhost:8000/auth/oauth/callback",),
+                return_origins=("http://localhost:3000", "http://localhost:5173")),
+            adapter=Adapter())
+
+        def get_binding(self, *, project_hash, connection_key):
+            if project_hash != self.resolved.binding.project_hash or connection_key != "google":
+                raise OAuthConnectionUnavailable("not_configured", "binding_not_found")
+            return self.resolved
+
+        def get_by_ids(self, *, connection_id, binding_id):
+            if connection_id != self.resolved.config.connection_id or binding_id != self.resolved.binding.binding_id:
+                raise OAuthConnectionUnavailable("not_configured", "binding_not_found")
+            return self.resolved
+
+        def load_secrets(self, resolved):
+            return ConnectionSecrets(client_secret="test-client-secret")
+
+        def list_project_bindings(self, *, project_hash):
+            return [self.resolved] if project_hash == self.resolved.binding.project_hash else []
+
+    return Source()

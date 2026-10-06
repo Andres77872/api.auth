@@ -114,13 +114,6 @@ TOPICS: dict[str, tuple[str, str, str, str, str | None]] = {
         "Provider-agnostic sign-in: connections, project bindings, readiness and the admin API.",
         None,
     ),
-    "google-oauth": (
-        "Google OAuth",
-        "badge-check",
-        "Sign-in & billing",
-        "Deprecated /auth/google/* aliases onto the OAuth pipeline and GOOGLE_OAUTH_* configuration.",
-        "Deprecated",
-    ),
     "patreon-link": (
         "Patreon link",
         "link-2",

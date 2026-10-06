@@ -5,13 +5,13 @@ project scoping, internal IDs, lookback window) are in [README.md](README.md#rul
 
 ## Endpoints
 
-All routes take an access token (`Authorization: Bearer` or the `session_token` cookie) of a root
+All routes take an access token (`Authorization: Bearer` or the `access_token` cookie) of a root
 or admin user.
 
 | Path | Method | Source file | Purpose |
 | --- | --- | --- | --- |
 | `/admin/activity` | GET | `src/routes/admin_dashboard.py` | Paged activity-log feed |
-| `/admin/activity/types` | GET | `src/routes/admin_dashboard.py` | The 112 `ActivityType` values |
+| `/admin/activity/types` | GET | `src/routes/admin_dashboard.py` | The 101 `ActivityType` values |
 | `/admin/activity/{activity_id}` | GET | `src/routes/admin_dashboard.py` | One activity-log entry with catalog details |
 | `/admin/audit/logs` | GET | `src/routes/audit_logs.py` | Paged per-request API audit records |
 | `/admin/audit/security-events` | GET | `src/routes/audit_logs.py` | Security events from both logs, merged |
@@ -207,7 +207,7 @@ Rows are ordered by `created_at`, newest first.
 
 | Field | Required | Values | Notes |
 | --- | --- | --- | --- |
-| `source` | Yes | `activity`, `api_audit`, `audit` | `audit` is an alias of `api_audit` |
+| `source` | Yes | `activity`, `api_audit` | Select an activity or API audit export |
 | `format` | Yes | `csv`, `json` | |
 | `limit` | No | 1–10000 | Default `1000`; rows returned, newest first |
 | `filters` | No | Object | Unknown keys are ignored |
@@ -229,13 +229,13 @@ The response is an attachment named `audit_export_{source}_{YYYYMMDD_HHMMSS}.{fo
 
 ## Activity types
 
-`GET /admin/activity/types` returns the 112 members of `ActivityType` in
+`GET /admin/activity/types` returns the 101 members of `ActivityType` in
 `src/Util/activity_logger.py`. That list is not the full set of stored types: database triggers
 write types that are not enum members, such as `user_deleted`, `session_created`, `role_assigned`,
 `permission_group_assigned`, `project_group_creation` and the `api_key_*` types.
 `activity_type_filter` accepts any stored value.
 
-`schemas/tables/08_activity_logging_tables.sql` seeds 111 `activity_catalog` rows. The catalog
+`schemas/tables/08_activity_logging_tables.sql` seeds 100 `activity_catalog` rows. The catalog
 gives each type a name, category and `severity_level`; `sp_log_activity` copies that severity onto
 the row, and uncatalogued types get `info`.
 
@@ -244,7 +244,6 @@ the row, and uncatalogued types get `info`.
 | `act-cat-001` … `act-cat-040` | Core authentication, user, project, group, permission, bulk, admin and system events |
 | `act-cat-041` … `act-cat-045` | `api_key_created`, `api_key_revoked`, `api_key_reactivated`, `api_key_expired`, `api_key_updated` |
 | `act-cat-046` … `act-cat-063` | Email identity, password recovery and email delivery (below) |
-| `act-cat-064` … `act-cat-074` | `google_oauth_*` ([Google OAuth reference](../google-oauth/reference.md#activity-catalog-act-cat-064074)) |
 | `act-cat-075` … `act-cat-090` | `patreon_*` |
 | `act-cat-091` … `act-cat-106` | Billing: reserved in runtime code, not seeded |
 | `act-cat-107` … `act-cat-127` | Provider-neutral `oauth_*` sign-in and connection events |
@@ -288,7 +287,7 @@ in the API process) deactivates a key past `expires_at`.
 
 - status `403`;
 - status `401` on a path containing `/auth/`;
-- status ≥ `400` on OAuth sign-in paths (`/auth/oauth/*`, `/auth/google/*`), Stripe or Patreon
+- status ≥ `400` on OAuth sign-in paths (`/auth/oauth/*`), Stripe or Patreon
   webhooks, or internal billing and Patreon S2S routes;
 - a `/auth/patreon*` request that fails or uses `POST` or `DELETE`;
 - a path containing `/admin/` requested by a root or admin user;

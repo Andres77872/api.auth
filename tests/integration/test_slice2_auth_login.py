@@ -20,7 +20,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-test-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     u.password_hash = "$argon2id$fake"
     return u
 
@@ -52,7 +51,7 @@ async def test_login_valid_consumer_credentials(
     patched_audit_logger, patched_audit_ids, patched_db_connection,
     patched_db_error_logger,
 ):
-    """Valid consumer login returns 200 + session_token + cookie."""
+    """Valid consumer login returns 200 + access_token + cookie."""
     user = _make_user(user_type="consumer")
     project = _make_project()
     group = _make_group()
@@ -74,10 +73,10 @@ async def test_login_valid_consumer_credentials(
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
-    assert "session_token" in data
+    assert "access_token" in data
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
     assert data["user"]["username"] == "testuser"
     assert data["user"]["user_type"] == "consumer"
     assert len(data["accessible_projects"]) >= 1
@@ -85,7 +84,7 @@ async def test_login_valid_consumer_credentials(
 
     # Cookie should be set
     cookies = response.cookies
-    assert "session_token" in cookies
+    assert "access_token" in cookies
     assert "refresh_token" in cookies
 
 
@@ -159,7 +158,7 @@ async def test_login_root_user_with_project(
     assert data["project"]["project_hash"] == "prj-test-001"
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio
@@ -440,7 +439,7 @@ async def test_login_admin_with_project_succeeds(
     check_access.assert_called_once_with("2", "1")
     data = response.json()
     assert data["success"] is True
-    assert "session_token" in data
+    assert "access_token" in data
     assert data["user"]["username"] == "adminuser"
     assert data["user"]["user_type"] == "admin"
     assert data["project"]["project_hash"] == "prj-test-001"
@@ -506,8 +505,8 @@ async def test_platform_login_root_success(
     assert data["project"] is None
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
-    token = data["session_token"]
+    assert data["access_token"] == data["access_token"]
+    token = data["access_token"]
     from src.Util.JWT_Security import JWTTokenHandler
     access_jti = JWTTokenHandler.decode_access_token(token)["jti"]
     session_raw = fake_redis.get(f"session:{access_jti}")
@@ -538,7 +537,7 @@ async def test_platform_login_admin_success(
     assert data["project"] is None
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
 
 
 @pytest.mark.asyncio

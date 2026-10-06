@@ -71,7 +71,6 @@ _REDIS_PATCH_LOCATIONS = [
     "src.Util.db_config.redis_client",
     "src.Util.cache_manager.redis_client",
     "src.Util.auth_lifecycle.redis_client",
-    "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
     "src.Util.system_metrics.redis_client",
@@ -97,7 +96,7 @@ def _patch_all_infra():
 
 # ─── DB Helper Functions ────────────────────────────────────────────────────
 
-def _create_user_in_test_db(conn, username, email, password, user_type="consumer"):
+def _create_user_in_test_db(conn, username, password, user_type="consumer"):
     """Create a user directly in the test DB."""
     from src.Util.password_security import hash_password
     user_id = f"usr-{uuid.uuid4()}"
@@ -105,9 +104,9 @@ def _create_user_in_test_db(conn, username, email, password, user_type="consumer
     hashed_pw = hash_password(password)
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO users (id, user_hash, username, email, password_hash, user_type, is_active, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, 1, NOW())""",
-            (user_id, user_hash, username, email, hashed_pw, user_type),
+            """INSERT INTO users (id, user_hash, username, password_hash, user_type, is_active, created_at)
+               VALUES (%s, %s, %s, %s, %s, 1, NOW())""",
+            (user_id, user_hash, username, hashed_pw, user_type),
         )
     conn.commit()
     return {"id": user_id, "user_hash": user_hash, "username": username, "user_type": user_type}
@@ -280,7 +279,7 @@ def _setup_admin_permissions(conn, user_id, permission_names=["manage_users"]):
     return role_id
 
 
-def _create_session_in_redis(r, user, project, session_token=None, user_type="consumer", available_projects=None):
+def _create_session_in_redis(r, user, project, access_token=None, user_type="consumer", available_projects=None):
     """Create a lifecycle access session in Redis for the given user/project."""
     permissions = []
     groups = []
@@ -324,8 +323,8 @@ async def test_root_creates_key_for_any_user_project(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        root_user = _create_user_in_test_db(real_db_conn, f"e2e_root_{unique}", f"e2e_root_{unique}@test.com", password, user_type="root")
-        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target_{unique}", f"e2e_target_{unique}@test.com", password)
+        root_user = _create_user_in_test_db(real_db_conn, f"e2e_root_{unique}", password, user_type="root")
+        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Root Project {unique}")
 
     root_token = _create_session_in_redis(live_redis, root_user, proj, user_type="root")
@@ -360,8 +359,8 @@ async def test_admin_creates_key_within_scope(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin_{unique}", f"e2e_admin_{unique}@test.com", password, user_type="admin")
-        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target2_{unique}", f"e2e_target2_{unique}@test.com", password)
+        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin_{unique}", password, user_type="admin")
+        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target2_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin Project {unique}")
         admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         target_ug = _create_user_group_in_test_db(real_db_conn, f"e2e_target_ug_{unique}")
@@ -407,7 +406,7 @@ async def test_admin_cannot_create_key_outside_scope(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin2_{unique}", f"e2e_admin2_{unique}@test.com", password, user_type="admin")
+        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin2_{unique}", password, user_type="admin")
         proj_a = _create_project_in_test_db(real_db_conn, f"E2E Admin A {unique}")
         proj_b = _create_project_in_test_db(real_db_conn, f"E2E Admin B {unique}")
         admin_ug = _create_admin_group_in_test_db(real_db_conn, proj_a)
@@ -445,8 +444,8 @@ async def test_admin_cannot_create_key_for_user_without_project_access(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin3_{unique}", f"e2e_admin3_{unique}@test.com", password, user_type="admin")
-        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target3_{unique}", f"e2e_target3_{unique}@test.com", password)
+        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin3_{unique}", password, user_type="admin")
+        target_user = _create_user_in_test_db(real_db_conn, f"e2e_target3_{unique}", password)
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin Target Project {unique}")
         admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg3_{unique}")
@@ -483,7 +482,7 @@ async def test_admin_list_keys_within_scope(
     password = "E2EP@ss123!"
 
     with _patch_all_infra():
-        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin4_{unique}", f"e2e_admin4_{unique}@test.com", password, user_type="admin")
+        admin_user = _create_user_in_test_db(real_db_conn, f"e2e_admin4_{unique}", password, user_type="admin")
         proj = _create_project_in_test_db(real_db_conn, f"E2E Admin List Project {unique}")
         admin_ug = _create_admin_group_in_test_db(real_db_conn, proj)
         pg = _create_project_group_in_test_db(real_db_conn, f"e2e_admin_pg4_{unique}")

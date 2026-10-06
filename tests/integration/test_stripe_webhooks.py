@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEBHOOK_ROOT = ROOT / "tests" / "fixtures" / "stripe" / "webhooks"
 SIGNATURE_HEADERS = WEBHOOK_ROOT / "signature_headers.json"
 ROUTE_MODULE = "src.routes.stripe_webhooks"
-WEBHOOK_PATH = "/webhooks/stripe"
+WEBHOOK_PATH = "/webhooks/stripe/test-group"
 
 RAW_STRIPE_SENTINELS = (
     "cus_test",
@@ -47,6 +47,14 @@ def _future_route_module():
             pytest.fail(f"missing future route module: {ROUTE_MODULE}; Phase 7.2 must provide /webhooks/stripe", pytrace=False)
         pytest.fail(f"{ROUTE_MODULE} import failed due to missing dependency: {exc.name}", pytrace=False)
 
+@pytest.fixture(autouse=True)
+def stored_group_credentials(monkeypatch):
+    from types import SimpleNamespace
+    module = importlib.import_module("src.routes.stripe_webhooks")
+    manifest = json.loads((WEBHOOK_ROOT / "signature_headers.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(module, "get_billing_group_by_hash", lambda **_: {"id": "bg-1", "status": "active", "webhooks_enabled": True})
+    monkeypatch.setattr(module, "get_stripe_account_secrets_for_group", lambda **_: SimpleNamespace(webhook_secret=manifest["fixture_secret"]))
+
 
 @asynccontextmanager
 async def _webhook_client():
@@ -69,12 +77,22 @@ def _fixture_meta(filename: str) -> dict[str, Any]:
     return _signature_manifest()["headers"][filename]
 
 
+def _fresh_signature(filename: str) -> str:
+    import time
+    from src.Util.stripe.security import compute_stripe_webhook_signature
+    if filename == "tampered_body.json":
+        return _fixture_meta(filename)["stripe_signature"]
+    timestamp = int(time.time())
+    digest = compute_stripe_webhook_signature(raw_body=_raw_fixture(filename), timestamp=timestamp, webhook_secret=_signature_manifest()["fixture_secret"])
+    return f"t={timestamp},v1={digest}"
+
+
 def _headers(filename: str, *, signature: str | None = None) -> dict[str, str]:
     meta = _fixture_meta(filename)
     return {
         "Content-Type": "application/json",
         "User-Agent": "stripe-webhook-red-contract-test",
-        "Stripe-Signature": signature if signature is not None else meta["stripe_signature"],
+        "Stripe-Signature": signature if signature is not None else _fresh_signature(filename),
     }
 
 
@@ -86,7 +104,7 @@ def _assert_fixture_bytes_match_manifest(filename: str) -> None:
 
 
 def _assert_no_session_or_raw_provider_leaks(response: httpx.Response, *, context: str) -> None:
-    for cookie_name in ("session_token", "refresh_token", "access_token"):
+    for cookie_name in ("access_token", "refresh_token"):
         assert cookie_name not in response.cookies, f"webhook must not set local auth cookie {cookie_name}"
     body = response.text.lower()
     leaked = [sentinel for sentinel in RAW_STRIPE_SENTINELS if sentinel in body]
@@ -177,6 +195,9 @@ async def test_resync_required_webhook_persists_refs_and_enqueues_typed_subscrip
     monkeypatch.setenv("STRIPE_WEBHOOKS_ENABLED", "true")
     monkeypatch.setenv("BILLING_ENABLED", "true")
     route_module = _future_route_module()
+    monkeypatch.setenv("BILLING_ID_HMAC_SECRET", "fixture-only-billing-hmac-key")
+    monkeypatch.setenv("BILLING_PROVIDER_REF_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    monkeypatch.setenv("BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID", "fixture-v1")
     captured: dict[str, Any] = {"observe": {}, "job": {}}
 
     monkeypatch.setattr(route_module, "resolve_user_billing_group", lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-1"})
@@ -229,15 +250,14 @@ def _stale_signature(route_module, raw_body: bytes, *, age_seconds: int = 3600) 
     from src.Util.stripe.security import compute_stripe_webhook_signature
 
     timestamp = int(time.time()) - age_seconds
-    secret = str(route_module.load_stripe_config().webhook_secret)
+    secret = str(_signature_manifest()["fixture_secret"])
     signature = compute_stripe_webhook_signature(raw_body=raw_body, timestamp=timestamp, webhook_secret=secret)
     return f"t={timestamp},v1={signature}"
 
 
 @pytest.mark.asyncio
 async def test_debug_mode_alone_does_not_disable_the_signature_timestamp_check(monkeypatch):
-    """A replayed delivery signed an hour ago is outside Stripe's tolerance. Only the pytest process
-    may verify signatures at their own timestamp; ``DEBUG_MODE`` on a running server must not."""
+    """A replayed delivery signed an hour ago is outside Stripe's tolerance. Timestamp tolerance applies in every process, including pytest and debug servers."""
 
     monkeypatch.setenv("STRIPE_WEBHOOKS_ENABLED", "true")
     monkeypatch.setenv("BILLING_ENABLED", "true")
@@ -252,14 +272,6 @@ async def test_debug_mode_alone_does_not_disable_the_signature_timestamp_check(m
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         debug_server = await client.post(WEBHOOK_PATH, content=raw, headers=headers)
 
-    assert under_pytest.status_code == 200, "control: the signature itself is valid"
+    assert under_pytest.status_code == 401, "stale signatures must fail inside test processes too"
     assert debug_server.status_code == 401, "a stale signature must be rejected when only DEBUG_MODE is set"
     _assert_no_session_or_raw_provider_leaks(debug_server, context="stale signature under DEBUG_MODE")
-
-
-def test_debug_fixture_clock_is_pytest_only(monkeypatch):
-    route_module = _future_route_module()
-    header = _fixture_meta("unsupported_customer_updated.json")["stripe_signature"]
-    monkeypatch.setenv("DEBUG_MODE", "true")
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    assert route_module._debug_fixture_now(header, 300) is None

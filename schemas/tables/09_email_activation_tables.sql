@@ -5,7 +5,7 @@
 -- outbox messages, delivery attempts, suppressions, idempotency, and transactional
 -- auth templates.
 --
--- Source of truth: user_emails. users.email remains a deprecated compatibility shadow.
+-- Source of truth: user_emails. Account summaries derive the activated primary address.
 -- Token posture: split-token lookup_id.secret in URLs; only BINARY(32) HMAC hashes are
 -- persisted in user_email_link_tokens.
 -- ===================================================================================
@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS user_emails (
 
 -- =================== USER_EMAIL_LINK_TOKENS TABLE ===================
 -- Hash-only split tokens for email activation and password reset links.
+-- Reset token_hash values additionally bind the application HMAC to a digest of
+-- users.id/password_hash (password-reset:v2); activation verifiers remain unbound.
 CREATE TABLE IF NOT EXISTS user_email_link_tokens (
     id VARCHAR(64) NOT NULL,
     user_id VARCHAR(64) NOT NULL,
@@ -331,3 +333,15 @@ INSERT INTO email_templates (
 -- ===================================================================================
 SELECT 'Email activation tables created successfully!' AS status,
        '8 tables created: user_emails, user_email_link_tokens, email_messages, email_delivery_attempts, email_suppressions, email_idempotency_keys, email_template_catalog, email_templates; catalog-backed latest-template delivery supported' AS details;
+
+
+-- Account read model: the email summary comes only from an activated primary identity.
+CREATE OR REPLACE VIEW v_users AS
+SELECT u.id, u.user_hash, u.username,
+       (SELECT ue.email_normalized FROM user_emails ue
+        WHERE ue.user_id = u.id AND ue.status = 'activated'
+          AND ue.removed_at IS NULL AND ue.is_primary = TRUE
+        LIMIT 1) AS email,
+       u.password_hash, u.user_type, u.role_id, u.created_at, u.last_login,
+       u.updated_at, u.created_by, u.is_active
+FROM users u;

@@ -107,9 +107,6 @@ class FakePatreonSyncStore:
                 break
         return claimed
 
-    def claim_sync_jobs(self, **kwargs) -> list[dict[str, Any]]:
-        return self.claim_patreon_sync_jobs(**kwargs)
-
     def record_member_observation(self, **kwargs) -> dict[str, Any]:
         self.observations.append(dict(kwargs))
         return {"status": "observed", **kwargs}
@@ -132,7 +129,7 @@ class FakePatreonSyncStore:
     def record_activity(self, **kwargs) -> dict[str, Any]:
         return self.record_patreon_activity(**kwargs)
 
-    def complete_sync_job(self, **kwargs) -> dict[str, Any]:
+    def complete_patreon_sync_job(self, **kwargs) -> dict[str, Any]:
         self.completed_jobs.append(dict(kwargs))
         return {"status": kwargs.get("status", "completed"), **kwargs}
 

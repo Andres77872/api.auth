@@ -55,7 +55,6 @@ REDIS_PATCH_LOCATIONS: Sequence[str] = (
     "src.Util.cache_manager.redis_client",
     "src.Util.auth_lifecycle.redis_client",
     "src.Util.email.route_support.redis_client",
-    "src.Util.db.db_enhanced.client",
     "src.Util.db.db_users.client",
     "src.Util.db.db_session_analytics.redis_client",
     "src.Util.system_metrics.redis_client",
@@ -66,8 +65,6 @@ REDIS_PATCH_LOCATIONS: Sequence[str] = (
 OPTIONAL_REDIS_PATCH_LOCATIONS: Sequence[str] = (
     "src.Util.oauth_state.redis_client",
     "src.Util.oauth_rate_limit.redis_client",
-    "src.Util.provider_init.redis_client",
-    "src.routes.auth_google.redis_client",
 )
 
 

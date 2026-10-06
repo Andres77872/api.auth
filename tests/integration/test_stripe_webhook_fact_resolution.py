@@ -30,7 +30,7 @@ from src.Util.stripe.security import compute_stripe_webhook_signature
 
 ROOT = Path(__file__).resolve().parents[2]
 WEBHOOK_ROOT = ROOT / "tests" / "fixtures" / "stripe" / "webhooks"
-WEBHOOK_PATH = "/webhooks/stripe"
+WEBHOOK_PATH = "/webhooks/stripe/test-group"
 
 USER_HASH = "usr-5b8c7c1e-7f3a-4d2b-9c61-0a1b2c3d4e5f"
 PROJECT_HASH = "7CCC926F2F5FEB07C973606EB2DF02BC3607C9C5B80A104DF5AAC9A1991F6173"
@@ -45,6 +45,14 @@ SCOPE = {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-1", 
 def _route_module():
     return importlib.import_module("src.routes.stripe_webhooks")
 
+@pytest.fixture(autouse=True)
+def stored_group_credentials(monkeypatch):
+    from types import SimpleNamespace
+    module = importlib.import_module("src.routes.stripe_webhooks")
+    manifest = json.loads((WEBHOOK_ROOT / "signature_headers.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(module, "get_billing_group_by_hash", lambda **_: {"id": "bg-1", "status": "active", "webhooks_enabled": True})
+    monkeypatch.setattr(module, "get_stripe_account_secrets_for_group", lambda **_: SimpleNamespace(webhook_secret=manifest["fixture_secret"]))
+
 
 @asynccontextmanager
 async def _client():
@@ -56,7 +64,10 @@ async def _client():
 
 def _fixture(filename: str) -> tuple[bytes, str]:
     manifest = json.loads((WEBHOOK_ROOT / "signature_headers.json").read_text(encoding="utf-8"))
-    return (WEBHOOK_ROOT / filename).read_bytes(), manifest["headers"][filename]["stripe_signature"]
+    raw = (WEBHOOK_ROOT / filename).read_bytes()
+    timestamp = int(time.time())
+    digest = compute_stripe_webhook_signature(raw_body=raw, timestamp=timestamp, webhook_secret=manifest["fixture_secret"])
+    return raw, f"t={timestamp},v1={digest}"
 
 
 def _signed(payload: dict[str, Any]) -> tuple[bytes, str]:
@@ -64,7 +75,7 @@ def _signed(payload: dict[str, Any]) -> tuple[bytes, str]:
 
     raw = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
     timestamp = int(time.time())
-    secret = str(_route_module().load_stripe_config().webhook_secret)
+    secret = str(json.loads((WEBHOOK_ROOT / "signature_headers.json").read_text())["fixture_secret"])
     return raw, f"t={timestamp},v1={compute_stripe_webhook_signature(raw_body=raw, timestamp=timestamp, webhook_secret=secret)}"
 
 

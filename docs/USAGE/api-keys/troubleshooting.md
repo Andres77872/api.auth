@@ -15,7 +15,7 @@ recent authentication.
 ### `401` when a management route gets only `X-API-Key`
 
 **Cause:** `/users/api-keys` and `/api-keys` accept only an access token (`Authorization: Bearer`
-or the `session_token` cookie). An API key cannot manage keys.
+or the `access_token` cookie). An API key cannot manage keys.
 
 **Fix:** call these routes with a user session.
 

@@ -24,7 +24,7 @@ Billing never creates sessions or login credentials, and everything is off by de
 | --- | --- | --- | --- |
 | Admin | 22 under `/admin/billing` | Root or admin user with `admin` or `manage_billing`; credential writes root only | Form for groups, projects, and catalog items; JSON for capabilities, credentials, and import |
 | Billing S2S | 6 under `/internal/users/{user_hash}/billing` and `/internal/projects/{project_hash}/billing/catalog` | Backend service with `Authorization: Bearer <BILLING_S2S_BEARER_TOKEN>` | JSON |
-| Stripe webhooks | `POST /webhooks/stripe/{billing_group_hash}` and the fallback `POST /webhooks/stripe` | Stripe, verified by `Stripe-Signature` | Raw signed bytes |
+| Stripe webhooks | `POST /webhooks/stripe/{billing_group_hash}` | Stripe, verified by `Stripe-Signature` | Raw signed bytes |
 
 Full tables: [reference](reference.md#endpoints).
 

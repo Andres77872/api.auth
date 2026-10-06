@@ -1,10 +1,4 @@
-"""Link and re-authentication complete inside the callback (docs/agnostic_oauth G-01, G-02).
-
-Before the refactor ``link/start`` wrote its record under a prefix the callback never
-read, ``link/finish`` expected claims nothing ever stored, and ``reauth/start`` sent
-the user through Google without ever recording the result. These tests drive both
-flows end to end through the deprecated Google aliases AND the generic routes.
-"""
+"""OAuth identity linking and recent reauthentication through database bindings."""
 
 from __future__ import annotations
 
@@ -27,20 +21,17 @@ AUTH = {"Authorization": "Bearer session-token-not-real"}
 
 
 @pytest.fixture(autouse=True)
-def _enabled(monkeypatch):
-    monkeypatch.setenv("GOOGLE_OAUTH_ENABLED", "true")
-    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "both")
+def _enabled(monkeypatch, oauth_google_source):
+    monkeypatch.setenv("OAUTH_ENABLED", "true")
+    monkeypatch.setattr("src.routes.auth_oauth.get_connection_source", lambda **_: oauth_google_source)
 
 
 @contextmanager
 def _session_and_seams(fake_google_token_exchange, fake_google_verifier, *, recent_reauth=True):
     with ExitStack() as stack:
-        for module in ("src.routes.auth_oauth", "src.routes.auth_google"):
-            stack.enter_context(patch(f"{module}.validate_access_session", return_value=SESSION))
+        stack.enter_context(patch("src.routes.auth_oauth.validate_access_session", return_value=SESSION))
         if recent_reauth:
             stack.enter_context(patch("src.routes.auth_oauth.require_recent_reauthentication", return_value=True))
-        stack.enter_context(patch("src.routes.auth_google.oauth_client", fake_google_token_exchange))
-        stack.enter_context(patch("src.routes.auth_google.verify_google_id_token", fake_google_verifier))
         yield
 
 
@@ -50,7 +41,7 @@ def _state_from(response) -> str:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("start_path", ["/auth/google/link/start", "/auth/oauth/google/link/start"])
+@pytest.mark.parametrize("start_path", ["/auth/oauth/google/link/start"])
 async def test_link_completes_in_the_callback_and_links_to_the_session_user(
     client, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
 ):
@@ -59,19 +50,18 @@ async def test_link_completes_in_the_callback_and_links_to_the_session_user(
         db["link_external_account"].return_value = {"status": "linked"}
         start = await client.post(start_path, headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
         state = _state_from(start)
-        callback = await client.get("/auth/google/callback", params={"code": "fake-google-auth-code-not-real", "state": state})
+        callback = await client.get("/auth/oauth/callback", params={"code": "fake-google-auth-code-not-real", "state": state})
 
     assert callback.status_code == 200, callback.text
     body = callback.json()
     assert body["success"] is True and body["external_identity"]["provider"] == "google"
-    assert "access_token" not in body and "session_token" not in callback.cookies, "linking must not mint a new session"
+    assert "access_token" not in body and "access_token" not in callback.cookies, "linking must not mint a new session"
 
     kwargs = db["link_external_account"].call_args.kwargs
     assert kwargs["user_id"] == SESSION.user_id, "the identity is linked to the user who STARTED the flow"
     assert kwargs["provider"] == "google"
-    # Environment mode keys on the provider (Google's namespace equals its provider name), so it
-    # never depends on the namespace-aware schema; database mode passes the namespace.
-    assert kwargs["identity_namespace"] is None and kwargs["connection_id"] is None
+    assert kwargs["identity_namespace"] == "google"
+    assert kwargs["connection_id"] == "oac-test-google"
     assert len(kwargs["provider_sub_hash"]) == 32
     assert not db["create_consumer_user_from_external_account"].called
 
@@ -83,8 +73,8 @@ async def test_link_is_refused_when_the_identity_already_belongs_to_another_user
     other_user = SimpleNamespace(id="usr-someone-else", user_type="consumer", is_active=True)
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = other_user
-        state = _state_from(await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
-        callback = await client.get("/auth/google/callback", params={"code": "c", "state": state})
+        state = _state_from(await client.post("/auth/oauth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
+        callback = await client.get("/auth/oauth/callback", params={"code": "c", "state": state})
 
     assert callback.status_code == 409
     assert callback.json()["error"]["code"] == "EXT_8027"
@@ -94,20 +84,22 @@ async def test_link_is_refused_when_the_identity_already_belongs_to_another_user
 
 @pytest.mark.asyncio
 async def test_link_start_requires_recent_reauthentication_and_a_link_capable_binding(
-    client, fake_google_token_exchange, fake_google_verifier, db_patcher, monkeypatch
+    client, fake_google_token_exchange, fake_google_verifier, db_patcher, monkeypatch, oauth_google_source
 ):
     with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier, recent_reauth=False):
-        stale = await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
+        stale = await client.post("/auth/oauth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
     assert stale.status_code == 401, "a session without recent proof may not start a link"
 
-    monkeypatch.setenv("GOOGLE_OAUTH_PROVISIONING_MODE", "auto_create")  # linking not permitted
+    from dataclasses import replace
+    oauth_google_source.resolved = replace(oauth_google_source.resolved,
+        binding=replace(oauth_google_source.resolved.binding, provisioning_mode="auto_create"))
     with db_patcher(), _session_and_seams(fake_google_token_exchange, fake_google_verifier):
-        denied = await client.post("/auth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
+        denied = await client.post("/auth/oauth/google/link/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
     assert denied.status_code == 401
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("start_path", ["/auth/google/reauth/start", "/auth/oauth/google/reauth/start"])
+@pytest.mark.parametrize("start_path", ["/auth/oauth/google/reauth/start"])
 async def test_reauth_records_the_marker_that_sensitive_operations_check(
     client, fake_redis, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
 ):
@@ -119,16 +111,16 @@ async def test_reauth_records_the_marker_that_sensitive_operations_check(
         db["get_user_by_external_account"].return_value = linked_user
         start = await client.post(start_path, headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False)
         assert parse_qs(urlparse(start.headers["location"]).query)["prompt"] == ["login"]
-        callback = await client.get("/auth/google/callback", params={"code": "c", "state": _state_from(start)})
+        callback = await client.get("/auth/oauth/callback", params={"code": "c", "state": _state_from(start)})
 
     assert callback.status_code == 200 and callback.json()["reauthenticated"] is True
-    assert "session_token" not in callback.cookies
+    assert "access_token" not in callback.cookies
     assert store.has_recent_reauth(user_id=SESSION.user_id, session_id=SESSION.session_id)
 
     from src.Util.auth_flow import require_recent_reauthentication
 
     assert require_recent_reauthentication(
-        user_id=SESSION.user_id, session_token=None, session_id=SESSION.session_id, reauth_store=store
+        user_id=SESSION.user_id, access_token=None, session_id=SESSION.session_id, reauth_store=store
     ) is True
 
 
@@ -139,8 +131,8 @@ async def test_reauth_with_someone_elses_google_account_does_not_count(
     stranger = SimpleNamespace(id="usr-stranger", user_type="consumer", is_active=True)
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = stranger
-        state = _state_from(await client.post("/auth/google/reauth/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
-        callback = await client.get("/auth/google/callback", params={"code": "c", "state": state})
+        state = _state_from(await client.post("/auth/oauth/google/reauth/start", headers=AUTH, json={"return_origin": "http://localhost:3000"}, follow_redirects=False))
+        callback = await client.get("/auth/oauth/callback", params={"code": "c", "state": state})
 
     assert callback.status_code == 401
     assert not OAuthStateStore(redis_client=fake_redis).has_recent_reauth(user_id=SESSION.user_id, session_id=SESSION.session_id)
@@ -155,14 +147,14 @@ async def test_a_login_state_can_never_be_completed_as_a_link_and_vice_versa(
         db["get_user_by_external_account"].return_value = None
         login_state = oauth_state_factory(purpose="login")
         response = await client.get(
-            "/auth/google/callback", params={"code": "c", "state": login_state, "purpose": "link", "user_id": "usr-victim"}
+            "/auth/oauth/callback", params={"code": "c", "state": login_state, "purpose": "link", "user_id": "usr-victim"}
         )
     assert not db["link_external_account"].called
     assert response.status_code in {401, 403, 409}
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("start_path", ["/auth/google/link/start", "/auth/oauth/google/link/start"])
+@pytest.mark.parametrize("start_path", ["/auth/oauth/google/link/start"])
 async def test_link_start_refuses_to_guess_among_several_return_origins(
     client, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
 ):
@@ -175,7 +167,7 @@ async def test_link_start_refuses_to_guess_among_several_return_origins(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("start_path", ["/auth/google/link/start", "/auth/oauth/google/link/start"])
+@pytest.mark.parametrize("start_path", ["/auth/oauth/google/link/start"])
 async def test_link_start_refuses_a_return_origin_the_binding_does_not_allow(
     client, start_path, fake_google_token_exchange, fake_google_verifier, db_patcher
 ):
@@ -188,14 +180,15 @@ async def test_link_start_refuses_a_return_origin_the_binding_does_not_allow(
 
 @pytest.mark.asyncio
 async def test_link_start_uses_the_sole_return_origin_without_the_caller_naming_it(
-    client, monkeypatch, fake_google_token_exchange, fake_google_verifier, db_patcher
+    client, monkeypatch, fake_google_token_exchange, fake_google_verifier, db_patcher, oauth_google_source
 ):
     """A correctly scoped binding lists exactly one origin, so nothing is ambiguous and
     existing callers that send no body keep working."""
-    monkeypatch.setenv("GOOGLE_OAUTH_RETURN_ORIGINS", "http://localhost:3000")
-    monkeypatch.setenv("PROVIDER_INIT_RETURN_ORIGINS", "http://localhost:3000")
+    from dataclasses import replace
+    oauth_google_source.resolved = replace(oauth_google_source.resolved,
+        binding=replace(oauth_google_source.resolved.binding, return_origins=("http://localhost:3000",)))
     with db_patcher() as db, _session_and_seams(fake_google_token_exchange, fake_google_verifier):
         db["get_user_by_external_account"].return_value = None
-        response = await client.post("/auth/google/link/start", headers=AUTH, follow_redirects=False)
+        response = await client.post("/auth/oauth/google/link/start", headers=AUTH, follow_redirects=False)
     assert response.status_code == 303
     assert "response_type=code" in response.headers["location"]

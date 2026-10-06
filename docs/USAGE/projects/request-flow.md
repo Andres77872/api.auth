@@ -8,7 +8,7 @@ scoped to it.
 ```text
 request
   -> platform middleware (CORS, request validation, API audit, auth context)
-  -> HTTPBearerOrCookie: bearer header or session_token cookie        (401 if absent)
+  -> HTTPBearerOrCookie: bearer header or access_token cookie        (401 if absent)
   -> FastAPI query/form validation                                     (400 VAL_3001)
   -> handler: validate_session()                                       (401)
   -> admin routes: caller must be a root or admin user                 (403 AUTHZ_2002)
@@ -78,7 +78,7 @@ Each row is labelled `admin_access` (root and admin users) or `group_access`.
 5. Run the operation:
    - `PUT`: `sp_update_project` (`COALESCE` keeps omitted fields).
    - `DELETE`: `sp_delete_project` deactivates the project, its `project_group_members` rows and
-     its `user_sessions` rows.
+     its project-group memberships.
    - `/members`: `sp_get_project_members_paginated` over `v_user_project_access`, then each
      consumer's user groups.
    - `/groups`: `sp_get_user_groups_for_project`, sliced in Python.

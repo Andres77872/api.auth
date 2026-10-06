@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends, Form, Path
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.auth_lifecycle import revoke_user_auth_state
 from src.Util.bulk_operations import (
@@ -69,7 +69,7 @@ async def bulk_update_users_endpoint(
     """
     Apply the same `is_active` and/or `user_type` change to up to 100 users.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user whose session permissions include `admin` or
     `manage_users`; otherwise 403. Root and admin sessions carry these permissions by
     default. Changing `user_type` additionally requires a root user.
@@ -87,9 +87,9 @@ async def bulk_update_users_endpoint(
     `errors`. 400 for an empty or oversized list, no update field, an invalid
     `user_type`, or `force_password_reset`.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
     session_data = handle_db_operation(
-        lambda: validate_session(session_token),
+        lambda: validate_session(access_token),
         error_context="session validation for bulk update"
     )
 
@@ -220,7 +220,7 @@ async def bulk_delete_users_endpoint(
     """
     Delete up to 50 users in one request.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user whose session permissions include `admin` or
     `manage_users`; otherwise 403. Root and admin sessions carry these permissions by
     default.
@@ -239,9 +239,9 @@ async def bulk_delete_users_endpoint(
     `warnings` (a user was deleted but their session revocation failed), even when some
     deletions fail. 400 without confirmation or for an empty or oversized list.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
     session_data = handle_db_operation(
-        lambda: validate_session(session_token),
+        lambda: validate_session(access_token),
         error_context="session validation for bulk delete"
     )
 
@@ -334,7 +334,7 @@ async def bulk_assign_roles_to_project_users(
     """
     Grant the listed roles, by name, to each listed user, recorded against a project.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) whose session permissions include `admin`; otherwise 403. Root and
     admin sessions carry this permission by default.
 
@@ -355,9 +355,9 @@ async def bulk_assign_roles_to_project_users(
     any role name is unknown (`NF_4007`, `details.role_names`), in which case nothing is
     assigned.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
     session_data = handle_db_operation(
-        lambda: validate_session(session_token),
+        lambda: validate_session(access_token),
         error_context="session validation for bulk role assignment"
     )
 
@@ -506,7 +506,7 @@ async def bulk_assign_users_to_groups(
     """
     Add every listed user to every listed user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) whose session permissions include `admin`; otherwise 403. Root and
     admin sessions carry this permission by default.
 
@@ -518,9 +518,9 @@ async def bulk_assign_users_to_groups(
     group name is unknown or inactive (`NF_4003`, `details.group_names`), in which case
     nothing is assigned.
     """
-    session_token = credentials.credentials
+    access_token = credentials.credentials
     session_data = handle_db_operation(
-        lambda: validate_session(session_token),
+        lambda: validate_session(access_token),
         error_context="session validation for bulk group assignment"
     )
 

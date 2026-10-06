@@ -5,8 +5,6 @@ browser: at start it comes from the init token, at callback from the state
 record. Authenticated routes (link, reauth, unlink) take a connection *key* that
 is resolved against the session's own project.
 
-``/auth/google/*`` (see ``src/routes/auth_google.py``) are deprecated aliases onto
-the same pipeline.
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from src.Util import db
 from src.Util.Models import LoginResponse
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.auth_constants import OAUTH_PURPOSE_LINK, OAUTH_PURPOSE_LOGIN, OAUTH_PURPOSE_REAUTH
 from src.Util.auth_flow import require_recent_reauthentication
 from src.Util.auth_lifecycle import validate_access_session
@@ -196,16 +194,16 @@ async def oauth_init(
     project_hash = str(context.get("project_hash") or "")
     body = await read_json_object(request)
     if body is None or not project_hash:
-        return oauth_error_response(ErrorCode.OAUTH_PROVIDER_INIT_INVALID, status_code=400)
+        return oauth_error_response(ErrorCode.OAUTH_INIT_INVALID, status_code=400)
     if {"project_hash", "user_group_hash", "project", "user_group"}.intersection(body):
         return oauth_error_response(
-            ErrorCode.OAUTH_PROVIDER_INIT_INVALID, status_code=400, message="Project and group are derived from the credential."
+            ErrorCode.OAUTH_INIT_INVALID, status_code=400, message="Project and group are derived from the credential."
         )
     connection_key = str(body.get("connection") or "").strip().lower()
     purpose = str(body.get("purpose") or OAUTH_PURPOSE_LOGIN).strip().lower()
     return_origin = str(body.get("return_origin") or "").strip()
     if not connection_key or purpose != OAUTH_PURPOSE_LOGIN or not return_origin:
-        return oauth_error_response(ErrorCode.OAUTH_PROVIDER_INIT_INVALID, status_code=400)
+        return oauth_error_response(ErrorCode.OAUTH_INIT_INVALID, status_code=400)
 
     try:
         resolved = get_connection_source().get_binding(project_hash=project_hash, connection_key=connection_key)
@@ -224,7 +222,6 @@ async def oauth_init(
             "connection_id": resolved.config.connection_id,
             "binding_id": resolved.binding.binding_id,
             "connection_key": resolved.binding.connection_key,
-            "config_source": resolved.source_name,
             "purpose": purpose,
             "project_hash": project_hash,
             "return_origin": return_origin,
@@ -365,7 +362,7 @@ async def oauth_callback(
     the return origin.
 
     **Result by purpose (`200`):**
-    - login — `LoginResponse` for the project fixed at start, plus the `session_token`
+    - login — `LoginResponse` for the project fixed at start, plus the `access_token`
       and `refresh_token` cookies. Only active consumer accounts can sign in this way;
       unknown identities are provisioned only when the binding allows auto-creation, and
       nothing is merged by email.
@@ -450,16 +447,14 @@ async def start_session_round_trip(
         try:
             require_recent_reauthentication(
                 user_id=user_id,
-                session_token=credentials.credentials,
+                access_token=credentials.credentials,
                 session_id=session_id_of(login_data),
                 operation="oauth_link",
             )
         except Exception:
             return oauth_error_response(ErrorCode.OAUTH_PROVISIONING_DENIED, status_code=401)
 
-    redirect_uri = resolved.binding.sole_redirect_uri() or (
-        resolved.binding.redirect_uris[0] if resolved.binding.trusts_caller_scope and resolved.binding.redirect_uris else None
-    )
+    redirect_uri = resolved.binding.sole_redirect_uri()
     if not redirect_uri:
         return oauth_error_response(ErrorCode.OAUTH_REDIRECT_URI_NOT_ALLOWED, status_code=400)
     # The caller may name its return origin; it is validated against the binding exactly
@@ -497,7 +492,7 @@ async def start_session_round_trip(
 async def oauth_link_start(connection: ConnectionKeyPath, request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Response:
     """Start linking an external identity from `connection` to the signed-in user; redirects to the provider.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus recent authentication: a sign-in, or an OAuth reauth of this session,
     within the recent-reauthentication window (refreshing the session does not renew
     it). The project's binding for `connection` must allow linking.
@@ -531,7 +526,7 @@ async def oauth_reauth_start(connection: ConnectionKeyPath, request: Request, cr
     session is marked as recently authenticated, which satisfies the recent-auth check
     of `/auth/switch-project`, OAuth link/unlink and the Patreon link routes.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie). No recent authentication is required to start.
 
     **Request:** optional `application/json` body `{return_origin}`.
@@ -554,7 +549,7 @@ async def oauth_reauth_start(connection: ConnectionKeyPath, request: Request, cr
 async def oauth_unlink(connection: ConnectionKeyPath, request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Any:
     """Unlink the signed-in user's external identity for `connection` and sign the user out everywhere.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie) plus recent authentication (a sign-in, or an OAuth reauth of this
     session, within the recent-reauthentication window; refreshing the session does not renew it). The account must
     keep a usable password to fall back on.
@@ -576,14 +571,14 @@ async def oauth_unlink(connection: ConnectionKeyPath, request: Request, credenti
         return oauth_error_response(ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED, status_code=404)
     except Exception:
         return oauth_error_response(ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED, status_code=401)
-    return await build_pipeline().unlink(request, resolved=resolved, login_data=login_data, session_token=credentials.credentials)
+    return await build_pipeline().unlink(request, resolved=resolved, login_data=login_data, access_token=credentials.credentials)
 
 
 @router.get("/links")
 async def oauth_links(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Any:
     """List the signed-in user's linked external identities, masked.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
     cookie).
 
     **Responses:**

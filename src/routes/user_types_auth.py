@@ -41,13 +41,8 @@ from src.Util.Models import (
     UserInfo, UserTypeInfo, PaginationInfo, AdminProjectInfo, AdminProjectsResponse,
     UpdateAdminProjectsResponse, AddAdminToProjectResponse, RemoveAdminFromProjectResponse
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
-from src.Util.db import (
-    validate_session, get_user_by_hash, create_root_user, create_admin_user, get_user_type,
-    get_admin_assigned_project, get_admin_project_assignments_with_details,
-    update_user_type, is_root_user, is_admin_user, get_user_type_info, list_users, count_users,
-    get_project_by_id, add_admin_to_project, remove_admin_from_project
-)
+from src.Util.security import HTTPBearerOrCookie
+from src.Util.db import validate_session, get_user_by_hash, create_root_user, create_admin_user, get_user_type, get_admin_project_assignments_with_details, update_user_type, is_root_user, is_admin_user, get_user_type_info, list_users, count_users, get_project_by_id, add_admin_to_project, remove_admin_from_project
 from src.Util.admin_scope import resolve_admin_scope, user_in_scope
 from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
@@ -69,19 +64,6 @@ _ADMIN_HASH_DESCRIPTION = "Hash of the target user; must currently be an `admin`
 _PROJECT_ID_DESCRIPTION = "Internal project ID (the project's `id`, e.g. `proj-...`), not its hash."
 
 
-def _normalize_optional_email(value: Optional[str]) -> Optional[str]:
-    if value is None or not str(value).strip():
-        return None
-    normalized = str(value).strip()
-    if not _EMAIL_FORMAT_RE.match(normalized):
-        raise ValidationError(
-            message="Invalid email format",
-            error_code=ErrorCode.INVALID_INPUT,
-            details={"field": "email"},
-        )
-    return normalized
-
-
 def _user_type_info_model(target_user, default_user_type: str = "consumer") -> UserTypeInfo:
     """A user's type info; admin targets also get their project assignments (first = primary)."""
     info = get_user_type_info(target_user.id) or {}
@@ -97,7 +79,6 @@ def _user_type_info_model(target_user, default_user_type: str = "consumer") -> U
         username=info.get("username", target_user.username),
         user_type=user_type,
         capabilities=info.get("capabilities", []),
-        assigned_project_id=str(assigned_projects[0]["project_id"]) if assigned_projects else None,
         assigned_projects=assigned_projects,
         total_assigned_projects=len(assigned_projects) if assigned_projects is not None else None,
     )
@@ -109,8 +90,8 @@ def _user_type_info_model(target_user, default_user_type: str = "consumer") -> U
 
 def require_root_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Middleware to ensure only root users can access certain endpoints"""
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -131,8 +112,8 @@ def require_root_user(credentials: HTTPAuthorizationCredentials = Depends(securi
 
 def require_root_or_admin_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Middleware to ensure only root or admin users can access certain endpoints"""
-    session_token = credentials.credentials
-    session_data = validate_session(session_token)
+    access_token = credentials.credentials
+    session_data = validate_session(access_token)
 
     if not session_data:
         raise AuthenticationError(
@@ -167,17 +148,13 @@ def require_root_or_admin_user(credentials: HTTPAuthorizationCredentials = Depen
 async def create_root_user_endpoint(
         username: str = Form(..., description="Unique username for the new root user."),
         password: str = Form(..., description="Initial password; must satisfy the password policy."),
-        email: Optional[str] = Form(
-            None,
-            description="Optional email address (format-checked only; not verified and no activation email is sent).",
-        ),
         current_user=Depends(require_root_user)
 ) -> CreateRootUserResponse:
     """
     Create a new root (super-admin) user.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** form fields (`application/x-www-form-urlencoded` or
@@ -185,7 +162,7 @@ async def create_root_user_endpoint(
 
     **Responses:**
     - `200` — the created user (`user.user_type` is `root`).
-    - `400` — missing field, malformed `email`, or weak password (`VAL_3007`
+    - `400` — missing field or weak password (`VAL_3007`
       with `reason_codes`).
     - `409` — username already exists.
     """
@@ -197,14 +174,12 @@ async def create_root_user_endpoint(
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
             details={"required_fields": ["username", "password"]}
         )
-    email = _normalize_optional_email(email)
-    assert_password_policy(password, username=username, email=email)
+    assert_password_policy(password, username=username)
 
     # Create root user - db layer converts IntegrityError to ConflictError automatically
     new_root_user = create_root_user(
         username=username,
         password=password,
-        email=email,
         created_by=current_user.id
     )
 
@@ -233,17 +208,9 @@ async def create_root_user_endpoint(
 async def create_admin_user_endpoint(
         username: str = Form(..., description="Unique username for the new admin user."),
         password: str = Form(..., description="Initial password; must satisfy the password policy."),
-        email: Optional[str] = Form(
-            None,
-            description="Optional email address (format-checked only; not verified and no activation email is sent).",
-        ),
-        assigned_project_id: Optional[str] = Form(
-            None,
-            description="Single internal project ID to administer. Ignored when `assigned_project_ids` is sent.",
-        ),
         assigned_project_ids: Optional[List[str]] = Form(
             None,
-            description="Internal project IDs to administer (repeat the field once per project). The first is the primary project.",
+            description="Internal project IDs to administer (repeat the field once per project).",
         ),
         current_user=Depends(require_root_user)
 ) -> CreateAdminUserResponse:
@@ -251,20 +218,18 @@ async def create_admin_user_endpoint(
     Create a new admin user who administers one or more projects.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** form fields (`application/x-www-form-urlencoded` or
-    `multipart/form-data`). At least one of `assigned_project_id` /
-    `assigned_project_ids` is required; values are internal project IDs, not
+    `multipart/form-data`). `assigned_project_ids` is required; values are internal project IDs, not
     project hashes. The admin joins each project's admin group; a project
     without an admin group is skipped and reported in `skipped_projects`.
 
     **Responses:**
     - `200` — the created admin with the projects actually assigned
-      (`assigned_project_ids`, `assigned_projects`, `primary_project_id`, which
-      is `null` when every project was skipped) and `skipped_projects`.
-    - `400` — missing field or project, malformed `email`, or weak password
+      (`assigned_project_ids`, `assigned_projects`) and `skipped_projects`.
+    - `400` — missing field or project, or weak password
       (`VAL_3007`).
     - `404` — a project ID does not exist (`NF_4002`).
     - `409` — username already exists.
@@ -277,21 +242,11 @@ async def create_admin_user_endpoint(
             error_code=ErrorCode.MISSING_REQUIRED_FIELD,
             details={"required_fields": ["username", "password"]}
         )
-    email = _normalize_optional_email(email)
-    assert_password_policy(password, username=username, email=email)
+    assert_password_policy(password, username=username)
 
-    # Handle both single and multiple project assignments
-    project_ids = []
-    if assigned_project_ids:
-        project_ids = assigned_project_ids
-    elif assigned_project_id:
-        project_ids = [assigned_project_id]
-    else:
-        raise ValidationError(
-            message="At least one project assignment is required",
-            error_code=ErrorCode.MISSING_REQUIRED_FIELD,
-            details={"required_fields": ["assigned_project_id", "assigned_project_ids"]}
-        )
+    project_ids = list(dict.fromkeys(assigned_project_ids or []))
+    if not project_ids:
+        raise ValidationError("At least one project assignment is required", ErrorCode.MISSING_REQUIRED_FIELD)
 
     # Verify all projects exist
     projects = []
@@ -309,8 +264,6 @@ async def create_admin_user_endpoint(
     new_admin_user = create_admin_user(
         username=username,
         password=password,
-        email=email,
-        assigned_project_id=project_ids[0],  # Primary project for backwards compatibility
         assigned_project_ids=project_ids,  # All assigned projects
         created_by=current_user.id
     )
@@ -353,7 +306,6 @@ async def create_admin_user_endpoint(
                 "reason": "no_admin_group"
             } for p in skipped
         ],
-        "primary_project_id": str(assigned[0].id) if assigned else None,  # For backwards compatibility
         "created_at": new_admin_user.created_at,
         "created_by": current_user.username
     }
@@ -374,14 +326,13 @@ async def get_user_type_information(
     Get a user's type, capabilities, and (for admins) assigned projects.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`
+    `access_token` cookie) of a root or admin user; consumers get `403`
     (`AUTHZ_2002`). Root may read any user. Admins may read themselves and
     admin or consumer users who reach at least one of the projects the admin is
     assigned to administer; root users are outside every admin's scope.
 
     **Responses:** `200` with `user_type_info` (`user_type`, `capabilities`,
-    and for admin targets `assigned_projects`, `total_assigned_projects` and
-    the primary `assigned_project_id`); `403` outside the admin's scope
+    and for admin targets `assigned_projects` and `total_assigned_projects`); `403` outside the admin's scope
     (`AUTHZ_2001`); `404` for an unknown or inactive `user_hash`.
     """
     target_user = get_user_by_hash(user_hash)
@@ -411,7 +362,7 @@ async def get_user_type_information(
 async def update_user_type_endpoint(
         user_hash: Annotated[str, Path(description=_USER_HASH_DESCRIPTION)],
         user_type: str = Form(..., description="New user type: `root`, `admin`, or `consumer`."),
-        assigned_project_id: Optional[str] = Form(
+        assigned_project_ids: Optional[List[str]] = Form(
             None,
             description="Internal project ID to administer; required when `user_type` is `admin`.",
         ),
@@ -421,7 +372,7 @@ async def update_user_type_endpoint(
     Change a user's type (promote or demote), optionally assigning an admin project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** form fields (`application/x-www-form-urlencoded` or
@@ -433,7 +384,7 @@ async def update_user_type_endpoint(
 
     **Responses:**
     - `200` — the updated `user_type_info`.
-    - `400` — invalid `user_type`, or `admin` without `assigned_project_id`.
+    - `400` — invalid `user_type`, or `admin` without `assigned_project_ids`.
     - `404` — unknown or inactive `user_hash`, unknown project ID (`NF_4002`),
       or a project without an admin group (`NF_4003`); nothing is changed.
     """
@@ -446,7 +397,7 @@ async def update_user_type_endpoint(
         )
 
     new_user_type = user_type
-    new_assigned_project_id = assigned_project_id
+    new_assigned_project_ids = list(dict.fromkeys(assigned_project_ids or []))
 
     if not new_user_type:
         raise ValidationError(
@@ -465,26 +416,22 @@ async def update_user_type_endpoint(
 
     # Validate project assignment for admin users
     if new_user_type == 'admin':
-        if not new_assigned_project_id:
+        if not new_assigned_project_ids:
             raise ValidationError(
                 message="Admin users must have an assigned project",
                 error_code=ErrorCode.MISSING_REQUIRED_FIELD,
-                details={"field": "assigned_project_id"}
+                details={"field": "assigned_project_ids"}
             )
 
-        project = get_project_by_id(new_assigned_project_id)
-        if not project:
-            raise NotFoundError(
-                message="Assigned project not found",
-                error_code=ErrorCode.PROJECT_NOT_FOUND,
-                details={"project_id": new_assigned_project_id}
-            )
+        for project_id in new_assigned_project_ids:
+            if not get_project_by_id(project_id):
+                raise NotFoundError("Assigned project not found", ErrorCode.PROJECT_NOT_FOUND)
 
     # Update user type
     success = update_user_type(
         user_id=target_user.id,
         new_user_type=new_user_type,
-        project_id=new_assigned_project_id,
+        project_ids=new_assigned_project_ids,
         updated_by=current_user.id
     )
 
@@ -513,7 +460,7 @@ def _users_of_type_in_projects(user_type: str, project_hashes: List[str]) -> lis
     for project_hash in project_hashes:
         offset = 0
         while True:
-            page = list_users(limit=page_size, offset=offset, user_type=user_type, project_filter=project_hash)
+            page = list_users(limit=page_size, offset=offset, user_type_filter=user_type, project_filter=project_hash)
             for user in page:
                 found.setdefault(user.user_hash, user)
             if len(page) < page_size:
@@ -533,7 +480,7 @@ async def list_users_by_type(
     List active users of one user type, with pagination.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`
+    `access_token` cookie) of a root or admin user; consumers get `403`
     (`AUTHZ_2002`). Root sees every user of the type. Admins get `403` for
     `root`; for `admin`/`consumer` they only see users who reach one of the
     projects they are assigned to administer (an admin with no assignment sees
@@ -544,7 +491,7 @@ async def list_users_by_type(
     restricted to (`null` for root), and `pagination.total` / `has_more` use the
     restricted count; for root they use the global count for the type. Admin
     results are sorted by username. Admin users with at least one project
-    assignment carry `assigned_project` (their first assignment). `400` for an
+    assignment carry `assigned_projects` (all assignments). `400` for an
     unknown `user_type` (`VAL_3012`).
     """
     # Validate user type
@@ -580,7 +527,7 @@ async def list_users_by_type(
         users = scoped_users[offset:offset + limit]
         total_count = len(scoped_users)
     else:
-        users = list_users(limit=limit, offset=offset, user_type=user_type)
+        users = list_users(limit=limit, offset=offset, user_type_filter=user_type)
         total_count = count_users(user_type=user_type)
 
     # Build response data
@@ -595,17 +542,16 @@ async def list_users_by_type(
             "is_active": user.is_active
         }
 
-        # Add the primary (first) assigned project for admin users. Assignments are
-        # admin-group memberships; list rows never carry them.
         if user.user_type == 'admin':
             assignments = get_admin_project_assignments_with_details(user.id) or []
-            if assignments:
-                primary = assignments[0]
-                user_info["assigned_project"] = {
-                    "project_id": str(primary["project_id"]),
-                    "project_hash": primary["project_hash"],
-                    "project_name": primary["project_name"]
+            user_info["assigned_projects"] = [
+                {
+                    "project_id": str(assignment["project_id"]),
+                    "project_hash": assignment["project_hash"],
+                    "project_name": assignment["project_name"],
                 }
+                for assignment in assignments
+            ]
 
         user_list.append(user_info)
 
@@ -637,7 +583,7 @@ async def get_user_type_statistics(
     Get counts and percentages of active users per user type.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root or admin user; consumers get `403`
+    `access_token` cookie) of a root or admin user; consumers get `403`
     (`AUTHZ_2002`).
 
     **Responses:** `200` with `statistics`: `total_users`, per-type `count`
@@ -681,13 +627,8 @@ async def get_user_type_statistics(
 
     # Add project scope info for admin users
     if not is_root_user(current_user.id) and is_admin_user(current_user.id):
-        project_id = get_admin_assigned_project(current_user.id)
-        project = get_project_by_id(project_id) if project_id else None
-        stats["scope"] = {
-            "type": "project_admin",
-            "project_id": project_id,
-            "project_name": project.project_name if project else None
-        }
+        assignments = get_admin_project_assignments_with_details(current_user.id)
+        stats["scope"] = {"type": "project_admin", "assigned_projects": assignments}
     else:
         stats["scope"] = {
             "type": "global_root",
@@ -711,7 +652,7 @@ async def get_admin_projects(
     List the projects an admin user administers.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Responses:** `200` with `assigned_projects` (ID, hash, name,
@@ -770,7 +711,7 @@ async def update_admin_projects(
     Replace the full set of projects an admin user administers.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** form fields; projects missing from `assigned_project_ids`
@@ -885,7 +826,7 @@ async def add_admin_to_project_endpoint(
     Make an admin user an administrator of one more project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** form field `project_id` (internal project ID).
@@ -957,7 +898,7 @@ async def remove_admin_from_project_endpoint(
     Stop an admin user from administering a project.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the
-    `session_token` cookie) of a root user; other users get `403`
+    `access_token` cookie) of a root user; other users get `403`
     (`AUTHZ_2002`).
 
     **Request:** no body.

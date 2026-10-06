@@ -26,7 +26,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-login-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     u.password_hash = "$argon2id$fake"
     return u
 
@@ -166,7 +165,7 @@ async def test_login_stores_user_groups_in_redis_session(
 
     assert response.status_code == 200
     data = response.json()
-    token = data["session_token"]
+    token = data["access_token"]
     access_jti = JWTTokenHandler.decode_access_token(token)["jti"]
 
     # Verify session was stored in Redis with group data

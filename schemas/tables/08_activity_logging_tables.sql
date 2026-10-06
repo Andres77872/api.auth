@@ -188,36 +188,14 @@ ON DUPLICATE KEY UPDATE
     requires_audit = VALUES(requires_audit),
     is_active = VALUES(is_active);
 
--- Google OAuth Activities
-INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
-('act-cat-064', 'google_oauth_started', 'Google OAuth Started', 'Google OAuth authorization start created after provider-init redemption', 'authentication', 'info', TRUE, TRUE),
-('act-cat-065', 'google_oauth_provider_init_rejected', 'Google OAuth Provider-Init Rejected', 'Google OAuth provider-init redemption was rejected', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-066', 'google_oauth_callback_received', 'Google OAuth Callback Received', 'Google OAuth callback entered after basic query parsing', 'authentication', 'info', TRUE, TRUE),
-('act-cat-067', 'google_oauth_state_rejected', 'Google OAuth State Rejected', 'Google OAuth state was missing, expired, replayed, or mismatched', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-068', 'google_oauth_nonce_rejected', 'Google OAuth Nonce Rejected', 'Google OAuth ID-token nonce mismatch was rejected', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-069', 'google_oauth_token_exchange_failed', 'Google OAuth Token Exchange Failed', 'Google OAuth token endpoint exchange failed', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-070', 'google_oauth_id_token_rejected', 'Google OAuth ID Token Rejected', 'Google OAuth ID-token validation failed', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-071', 'google_oauth_login_succeeded', 'Google OAuth Login Succeeded', 'Google OAuth local session issuance succeeded', 'authentication', 'info', TRUE, TRUE),
-('act-cat-072', 'google_oauth_login_denied', 'Google OAuth Login Denied', 'Google OAuth login denied by provisioning, project access, consumer policy, or collision checks', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-073', 'google_oauth_external_account_linked', 'Google OAuth External Account Linked', 'Google external account linked to a local consumer', 'authentication', 'warning', TRUE, TRUE),
-('act-cat-074', 'google_oauth_external_account_unlinked', 'Google OAuth External Account Unlinked', 'Google external account unlinked from a local consumer', 'authentication', 'warning', TRUE, TRUE)
-ON DUPLICATE KEY UPDATE
-    activity_code = VALUES(activity_code),
-    activity_name = VALUES(activity_name),
-    activity_description = VALUES(activity_description),
-    activity_category = VALUES(activity_category),
-    severity_level = VALUES(severity_level),
-    requires_audit = VALUES(requires_audit),
-    is_active = VALUES(is_active);
-
--- Provider-agnostic OAuth Activities (act-cat-107..127, docs/agnostic_oauth)
+-- Provider-agnostic OAuth Activities (act-cat-107..127)
 -- Emitted by the shared OAuth pipeline and the OAuth admin API with provider_type and a
--- connection fingerprint in details. The google_oauth_* rows above are kept for history.
+-- connection fingerprint in details.
 -- Details must never contain client secrets, provider tokens, codes, state, nonce, PKCE
 -- verifiers, raw provider subjects/emails, or strict project/group hashes.
 INSERT INTO activity_catalog (id, activity_code, activity_name, activity_description, activity_category, severity_level, requires_audit, is_active) VALUES
 ('act-cat-107', 'oauth_started', 'OAuth Started', 'OAuth authorization start created for a project binding', 'authentication', 'info', TRUE, TRUE),
-('act-cat-108', 'oauth_init_rejected', 'OAuth Init Rejected', 'OAuth init token or provider-init redemption was rejected', 'authentication', 'warning', TRUE, TRUE),
+('act-cat-108', 'oauth_init_rejected', 'OAuth Init Rejected', 'OAuth init token was rejected', 'authentication', 'warning', TRUE, TRUE),
 ('act-cat-109', 'oauth_callback_received', 'OAuth Callback Received', 'OAuth callback entered after basic parameter parsing', 'authentication', 'info', TRUE, TRUE),
 ('act-cat-110', 'oauth_state_rejected', 'OAuth State Rejected', 'OAuth state was missing, expired, replayed, or mismatched', 'authentication', 'warning', TRUE, TRUE),
 ('act-cat-111', 'oauth_token_exchange_failed', 'OAuth Token Exchange Failed', 'OAuth authorization-code exchange failed at the provider', 'authentication', 'warning', TRUE, TRUE),

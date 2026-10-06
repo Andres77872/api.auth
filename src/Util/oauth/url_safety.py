@@ -10,10 +10,7 @@ Two distinct jobs:
   Rejects non-HTTPS and hosts that resolve to private, loopback, link-local or
   metadata ranges, so a tenant-supplied URL cannot be pointed at internal
   services.
-* ``validate_redeem_url`` -- the legacy provider-init redeem endpoint, which
-  receives a bearer token. HTTPS is required (plain http only on localhost), but
-  private hosts are allowed: the root-managed companion backend is usually an
-  internal service.
+
 """
 
 from __future__ import annotations
@@ -77,23 +74,6 @@ def validate_origin(origin: str, *, allow_http_localhost: bool = False) -> str:
         raise UnsafeURLError("Origin must be scheme://host[:port] only")
     if text.endswith("/"):
         raise UnsafeURLError("Origin must not end with a slash")
-    return text
-
-
-def validate_redeem_url(url: str) -> str:
-    """Validate the legacy provider-init redeem URL and return it unchanged.
-
-    The redeem call carries the companion bearer token, so it must not travel in clear text:
-    HTTPS is required, except plain http to ``localhost``/``127.0.0.1``/``::1``, which never
-    leaves the host. Credentials in the URL are refused. Internal and private hosts are
-    allowed on purpose (root-managed, typically an internal service), unlike provider URLs.
-    """
-
-    text = str(url or "").strip()
-    parts = _split(text)
-    _require_scheme(parts, allow_http_localhost=True)
-    if parts.username or parts.password:
-        raise UnsafeURLError("Redeem URL must not contain credentials")
     return text
 
 
@@ -167,6 +147,5 @@ __all__ = [
     "UnsafeURLError",
     "assert_safe_outbound_url",
     "validate_origin",
-    "validate_redeem_url",
     "validate_redirect_uri",
 ]

@@ -144,7 +144,7 @@ def _db_config() -> dict[str, Any]:
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", "3306")),
         "user": os.getenv("DB_USER", "root"),
-        "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
+        "password": os.getenv("DB_MYSQL_PASSWORD"),
         "database": os.getenv("DB_NAME", "magic_auth"),
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
@@ -155,7 +155,7 @@ def _db_config() -> dict[str, Any]:
 def _connect():
     config = _db_config()
     if not config["password"]:
-        raise BootstrapError("Missing DB_MYSQL_PASSWORD or DB_PASSWORD for --apply/--check-db")
+        raise BootstrapError("Missing DB_MYSQL_PASSWORD for --apply/--check-db")
     return pymysql.connect(**config)
 
 

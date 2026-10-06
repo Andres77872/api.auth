@@ -11,9 +11,9 @@ API (or a future ``--provision-stripe``) performs real Product/Price provisionin
 Mirrors ``billing_provider_bootstrap.py`` (dry-run default, ``--apply``, ``--check-db``).
 
 Config (env, never printed):
-  PROJECT_HASH / BILLING_PROJECT_HASH   the consuming project to attach (required for --apply)
+  BILLING_PROJECT_HASH   the consuming project to attach (required for --apply)
   BILLING_GROUP_NAME                    display name (default "Magic Worlds")
-  STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PORTAL_CONFIGURATION_ID  (optional creds)
+  SETUP_STRIPE_SECRET_KEY, SETUP_STRIPE_WEBHOOK_SECRET, SETUP_STRIPE_PORTAL_CONFIGURATION_ID  (optional creds)
   BILLING_PROVIDER_REF_ENCRYPTION_KEY / _ID, BILLING_ID_HMAC_SECRET         (to store creds)
   BILLING_GROUP_SEED_JSON / BILLING_GROUP_SEED_FILE                          (override catalog)
 """
@@ -99,7 +99,7 @@ def _db_config() -> dict[str, Any]:
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", "3306")),
         "user": os.getenv("DB_USER", "root"),
-        "password": os.getenv("DB_MYSQL_PASSWORD") or os.getenv("DB_PASSWORD"),
+        "password": os.getenv("DB_MYSQL_PASSWORD"),
         "database": os.getenv("DB_NAME", "magic_auth"),
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
@@ -110,7 +110,7 @@ def _db_config() -> dict[str, Any]:
 def _connect():
     config = _db_config()
     if not config["password"]:
-        raise BootstrapError("Missing DB_MYSQL_PASSWORD or DB_PASSWORD for --apply/--check-db")
+        raise BootstrapError("Missing DB_MYSQL_PASSWORD for --apply/--check-db")
     return pymysql.connect(**config)
 
 
@@ -133,7 +133,7 @@ def _load_seed() -> dict[str, Any]:
 
 
 def _project_hash() -> str:
-    return (os.getenv("BILLING_PROJECT_HASH") or os.getenv("PROJECT_HASH") or "").strip()
+    return (os.getenv("BILLING_PROJECT_HASH") or "").strip()
 
 
 def _validate_sql_files() -> None:
@@ -187,7 +187,7 @@ def _deterministic_hash(*parts: str) -> str:
 
 def _encrypt_credentials(summary: dict[str, Any]) -> dict[str, Any] | None:
     """Encrypt operator-supplied Stripe creds. Returns proc args or None when unavailable."""
-    secret_key = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
+    secret_key = (os.getenv("SETUP_STRIPE_SECRET_KEY") or "").strip()
     if not secret_key:
         return None
     enc_key = (os.getenv("BILLING_PROVIDER_REF_ENCRYPTION_KEY") or "").strip()
@@ -205,11 +205,11 @@ def _encrypt_credentials(summary: dict[str, Any]) -> dict[str, Any] | None:
         return ct, digest, provider_ref_fingerprint(digest=digest)
 
     secret_ct, secret_hmac, secret_fp = enc(secret_key, "account_secret_key")
-    webhook_secret = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
+    webhook_secret = (os.getenv("SETUP_STRIPE_WEBHOOK_SECRET") or "").strip()
     webhook_ct = webhook_hmac = webhook_fp = None
     if webhook_secret:
         webhook_ct, webhook_hmac, webhook_fp = enc(webhook_secret, "account_webhook_secret")
-    portal_id = (os.getenv("STRIPE_PORTAL_CONFIGURATION_ID") or "").strip()
+    portal_id = (os.getenv("SETUP_STRIPE_PORTAL_CONFIGURATION_ID") or "").strip()
     portal_ct = encrypt_provider_ref(raw_ref=portal_id, key=enc_key, key_id=enc_key_id, provider=PROVIDER).ciphertext if portal_id else None
 
     summary["credentials"] = {"secret_key_fingerprint": secret_fp, "webhook_secret_fingerprint": webhook_fp}
@@ -235,7 +235,7 @@ def _apply(seed: dict[str, Any], project_hash: str) -> dict[str, Any]:
             cursor.execute("SELECT id FROM projects WHERE project_hash = %s LIMIT 1", (project_hash,))
             project_row = cursor.fetchone()
             if not project_row:
-                raise BootstrapError("Project not found for the configured PROJECT_HASH/BILLING_PROJECT_HASH")
+                raise BootstrapError("Project not found for the configured BILLING_PROJECT_HASH")
             project_id = project_row["id"]
 
             # Create (or reuse) the billing group.
@@ -324,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.apply:
         if not project_hash:
-            raise BootstrapError("--apply requires PROJECT_HASH or BILLING_PROJECT_HASH")
+            raise BootstrapError("--apply requires BILLING_PROJECT_HASH")
         summary = _apply(seed, project_hash)
         print(
             "Billing group bootstrap applied: "

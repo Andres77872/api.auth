@@ -38,14 +38,13 @@ curl -X PUT "http://localhost:8000/users/profile" \
   --data-urlencode "username=new_username"
 ```
 
-Send `username`, `email` or both. `email` here only overwrites the legacy `users.email` column; it is
-not verified and cannot be used to sign in. To add a real address, see
+Send `username` to edit the profile. Email fields are rejected; add and activate addresses through
 [User email management](email-management.md). Password fields are rejected with `400`; change a
 password with `POST /auth/password/change` ([Authentication usage](../authentication-usage-cases.md)).
 
 Your sessions stay valid, including the one you used. Sessions keep the username they were issued
 with, so `/auth/validate` shows a new username after your next sign-in. The same holds for the target
-user when an admin updates their username or email.
+user when an admin updates their username.
 
 ## Find users
 
@@ -72,7 +71,7 @@ curl "http://localhost:8000/users/search/query?q=jane&user_type_filter=consumer&
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Matches active users by username or legacy email substring. `limit` is capped at `100`. Admins only
+Matches active users by username or activated primary email substring. `limit` is capped at `100`. Admins only
 get non-root users in their assigned projects (and themselves), and that filter runs after `limit`.
 
 ### Inspect a user
@@ -88,7 +87,7 @@ project with them, otherwise `403`. The account is in `user`, with per-project `
 
 ## Change a user
 
-### Update a username or legacy email
+### Update a username
 
 ```bash
 curl -X PUT "http://localhost:8000/users/$USER_HASH" \
@@ -96,7 +95,7 @@ curl -X PUT "http://localhost:8000/users/$USER_HASH" \
   --data-urlencode "username=jane.doe"
 ```
 
-Root, or an admin sharing a project with a non-root user. Send at least one of `username`, `email`,
+Root, or an admin sharing a project with a non-root user. Send at least one of `username`,
 `user_type`; only root may send `user_type` (see [User types](user-types.md#change-a-users-type)).
 A taken username returns `409` (`CONF_5004`). The user's sessions stay valid unless `user_type`
 changes, which signs them out everywhere.

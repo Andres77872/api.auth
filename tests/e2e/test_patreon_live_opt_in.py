@@ -27,7 +27,7 @@ REQUIRED_LIVE_ENV = (
 FORBIDDEN_LIVE_FIELDS = {
     "access_token",
     "refresh_token",
-    "session_token",
+    "access_token",
     "api_key",
     "patreon_user_id",
     "patreon_member_id",
@@ -74,7 +74,7 @@ def _assert_no_live_secret_or_provider_leak(response, *, context: str) -> None:
     for field in FORBIDDEN_LIVE_FIELDS:
         assert field not in serialized, f"{context}: forbidden field `{field}` leaked in live smoke response"
     assert os.environ.get("PATREON_CREATOR_ACCESS_TOKEN", "").lower() not in serialized
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
 
 

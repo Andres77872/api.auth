@@ -79,13 +79,13 @@ async def test_403_forbidden_standardized_shape(client, fake_redis, patched_db_c
     session.project_id = "1"
     session.permissions = []
     session.groups = []
-    session.session_token = token
+    session.access_token = token
     session.session_length = 259200
     session.username = "consumer"
 
     from tests.integration.conftest import make_session_payload, create_test_session
     create_test_session(fake_redis, token, make_session_payload(
-        user_type="consumer", session_token=token))
+        user_type="consumer", access_token=token))
 
     user = MagicMock()
     user.id = "1"
@@ -95,13 +95,14 @@ async def test_403_forbidden_standardized_shape(client, fake_redis, patched_db_c
     user.user_type = "consumer"
     user.is_active = True
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.is_root_user", return_value=False), \
-         patch("src.routes.users.get_user_type", return_value="consumer"):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=user),
+        patch("src.routes.users.get_user_by_hash", return_value=user),
+        patch("src.routes.users.is_root_user", return_value=False),
+        patch("src.routes.users.get_user_type", return_value="consumer"),
+    ):
         response = await client.get(
             "/users/list",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -148,13 +149,13 @@ async def test_not_found_returns_standardized_shape(client, fake_redis, patched_
     session.project_id = "1"
     session.permissions = ["admin"]
     session.groups = []
-    session.session_token = token
+    session.access_token = token
     session.session_length = 259200
     session.username = "admin"
 
     from tests.integration.conftest import make_session_payload, create_test_session
     create_test_session(fake_redis, token, make_session_payload(
-        user_type="admin", session_token=token, permissions=["admin"]))
+        user_type="admin", access_token=token, permissions=["admin"]))
 
     admin_user = MagicMock()
     admin_user.id = "1"
@@ -164,11 +165,12 @@ async def test_not_found_returns_standardized_shape(client, fake_redis, patched_
     admin_user.user_type = "admin"
     admin_user.is_active = True
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.projects.validate_session", return_value=session), \
-         patch("src.routes.projects.get_user_by_hash", return_value=admin_user), \
-         patch("src.routes.projects.get_project_by_hash", return_value=None):
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.projects.validate_session", return_value=session),
+        patch("src.routes.projects.get_user_by_hash", return_value=admin_user),
+        patch("src.routes.projects.get_project_by_hash", return_value=None),
+    ):
         response = await client.get(
             "/projects/prj-nonexistent",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

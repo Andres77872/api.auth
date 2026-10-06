@@ -279,9 +279,7 @@ def _patched_entitlement_result(result: dict[str, Any] | None) -> Iterator[Magic
     with _optional_patch_targets(
         (
             "src.routes.internal_patreon.get_entitlement_by_user_hash",
-            "src.routes.internal_patreon.get_patreon_entitlement_by_user_hash",
             "src.Util.db.db_patreon.get_entitlement_by_user_hash",
-            "src.Util.db.db_patreon.get_patreon_entitlement_by_user_hash",
         ),
         mock,
     ):
@@ -302,7 +300,7 @@ async def test_s2s_entitlement_requires_dedicated_bearer_and_rejects_cookie_only
 
     cookie_only = await client.get(
         path,
-        cookies={"session_token": "local-session-cookie-must-not-authorize-s2s"},
+        cookies={"access_token": "local-session-cookie-must-not-authorize-s2s"},
         headers={"User-Agent": "patreon-s2s-red-contract-test"},
     )
     assert cookie_only.status_code in {401, 403}, "browser cookies must never authorize the internal S2S endpoint"
@@ -357,7 +355,7 @@ async def test_authorized_s2s_read_returns_only_normalized_contract_fixtures(cli
     _assert_no_raw_provider_internals(payload, context=f"{fixture_name} S2S response")
     assert payload["user_hash"] == expected["user_hash"]
     assert payload["entitlement"] == expected["entitlement"]
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
     assert patched_lookup.called, "the endpoint must read entitlement from the Patreon entitlement boundary, not auth/session state"
 

@@ -28,7 +28,7 @@ services:
       - ./schemas/tables/06_create_views.sql:/docker-entrypoint-initdb.d/06_create_views.sql
       - ./schemas/tables/07_error_logs.sql:/docker-entrypoint-initdb.d/07_error_logs.sql
       - ./schemas/tables/08_activity_logging_tables.sql:/docker-entrypoint-initdb.d/08_activity_logging_tables.sql
-      - ./schemas/tables/09_email_activation_tables.sql:/docker-entrypoint-initdb.d/09_email_activation_tables.sql
+      - ./schemas/tables/09_email_activation_tables.sql:/docker-entrypoint-initdb.d/05b_email_activation_tables.sql
       - ./schemas/tables/10_external_accounts.sql:/docker-entrypoint-initdb.d/10_external_accounts.sql
       - ./schemas/tables/11_patreon_entitlements.sql:/docker-entrypoint-initdb.d/10_patreon_entitlements.sql
       - ./schemas/stored_procedures/01_user_management.sql:/docker-entrypoint-initdb.d/10_sp_01_user_management.sql
@@ -60,6 +60,7 @@ services:
       - ./schemas/tables/13_oauth_connections.sql:/docker-entrypoint-initdb.d/50_tb_13_oauth_connections.sql
       - ./schemas/stored_procedures/19_oauth_connections.sql:/docker-entrypoint-initdb.d/51_sp_19_oauth_connections.sql
       - ./schemas/triggers/08_oauth_connections_triggers.sql:/docker-entrypoint-initdb.d/52_tr_08_oauth_connections.sql
+      - ./schemas/tables/14_assistant.sql:/docker-entrypoint-initdb.d/53_tb_14_assistant.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s
@@ -164,8 +165,6 @@ services:
       STRIPE_CHECKOUT_ENABLED: "false"
       STRIPE_PORTAL_ENABLED: "false"
       STRIPE_SYNC_ENABLED: "false"
-      STRIPE_SECRET_KEY: ""
-      STRIPE_WEBHOOK_SECRET: ""
       RUN_STRIPE_E2E: "false"
     working_dir: /workspace
     volumes:

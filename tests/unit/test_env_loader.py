@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import pytest
 
 from src.Util.env_loader import load_env_file
 
@@ -34,7 +35,7 @@ def test_load_env_file_returns_false_when_missing(tmp_path):
     assert load_env_file(tmp_path / "missing.env") is False
 
 
-def test_db_config_accepts_legacy_db_password_fallback(monkeypatch):
+def test_db_config_requires_the_canonical_password_variable(monkeypatch):
     module_name = "src.Util.db_config"
     original_module = sys.modules.pop(module_name, None)
 
@@ -49,8 +50,8 @@ def test_db_config_accepts_legacy_db_password_fallback(monkeypatch):
     monkeypatch.setenv("REDIS_DB", "0")
 
     try:
-        db_config = importlib.import_module(module_name)
-        assert db_config.CONNECTION_CONFIG["password"] == "legacy-password"
+        with pytest.raises(RuntimeError, match="DB_MYSQL_PASSWORD"):
+            importlib.import_module(module_name)
     finally:
         sys.modules.pop(module_name, None)
         if original_module is not None:

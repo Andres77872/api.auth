@@ -232,34 +232,6 @@ BEGIN
 END//
 
 -- ===================================================================================
--- USER_SESSIONS TABLE TRIGGERS (Login/Logout tracking)
--- ===================================================================================
-
-DROP TRIGGER IF EXISTS trg_after_session_insert//
-CREATE TRIGGER trg_after_session_insert AFTER INSERT ON user_sessions FOR EACH ROW
-BEGIN
-    INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, project_id, metadata, severity_level, created_at)
-    SELECT CONCAT('act-log-', UUID()), NEW.user_id, 'session_created', ac.id,
-           'User session created', NEW.project_id,
-           JSON_OBJECT('session_id', NEW.id, 'project_id', NEW.project_id, 'expires_at', NEW.expires_at),
-           ac.severity_level, NOW()
-    FROM activity_catalog ac WHERE ac.activity_code = 'session_created' AND ac.is_active = TRUE LIMIT 1;
-END//
-
-DROP TRIGGER IF EXISTS trg_after_session_update//
-CREATE TRIGGER trg_after_session_update AFTER UPDATE ON user_sessions FOR EACH ROW
-BEGIN
-    IF NEW.is_active = FALSE AND OLD.is_active = TRUE THEN
-        INSERT INTO activity_logs (id, user_id, activity_type, activity_catalog_id, details, project_id, metadata, severity_level, created_at)
-        SELECT CONCAT('act-log-', UUID()), NEW.user_id, 'user_logout', ac.id,
-               'User session ended', NEW.project_id,
-               JSON_OBJECT('session_id', NEW.id, 'project_id', NEW.project_id),
-               ac.severity_level, NOW()
-        FROM activity_catalog ac WHERE ac.activity_code = 'user_logout' AND ac.is_active = TRUE LIMIT 1;
-    END IF;
-END//
-
--- ===================================================================================
 -- USER_GROUP_PROJECT_GROUP_PERMISSIONS TABLE TRIGGERS (Scoped permissions with grant/deny)
 -- ===================================================================================
 

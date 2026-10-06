@@ -36,7 +36,7 @@ PROJECTS_BY_ID = {project.id: project for project in (PROJECT_A, PROJECT_B)}
 def _user(user_id: str, user_type: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id, user_hash=f"uh-{user_id}", username=user_id, email=f"{user_id}@example.com",
-        user_type=user_type, is_active=True, assigned_project_id=None, created_at=None,
+        user_type=user_type, is_active=True, created_at=None,
         last_login=None, updated_at=None, password_hash="$argon2id$fake",
     )
 
@@ -71,7 +71,7 @@ def session_for(user: SimpleNamespace, *, project: SimpleNamespace = PROJECT_A) 
         user_id=user.id, user_hash=user.user_hash, username=user.username, user_type=user.user_type,
         permissions=list(PERMISSIONS.get(user.id, [])), groups=[], scope="project",
         project_id=project.id, project_hash=project.project_hash, project_name=project.project_name,
-        session_token="scope.test.token", session_length=259200,
+        access_token="scope.test.token", session_length=259200,
     )
 
 

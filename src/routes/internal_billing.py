@@ -36,7 +36,6 @@ from src.Util.Models import (
     EnhancedUserLogin,
     PublicCatalogItem,
     PublicCatalogResponse,
-    UserLogin,
     ValidateSessionResponse,
     assert_billing_response_model_allow_lists,
 )
@@ -55,7 +54,7 @@ from src.Util.billing.security import encrypt_provider_ref, hmac_provider_ref, p
 from src.Util.billing import sync as billing_sync
 from src.Util.db import db_billing
 from src.Util.email.route_support import client_ip, user_agent
-from src.Util.error_handler import rate_limit_headers
+from src.Util.error_handler import ErrorCode, NotFoundError, rate_limit_headers
 from src.Util.stripe import checkout as stripe_checkout
 from src.Util.stripe import portal as stripe_portal
 from src.Util.stripe.account import (
@@ -165,14 +164,6 @@ def _plain_mapping(value: Any) -> dict[str, Any]:
     if callable(model_dump):
         try:
             dumped = model_dump()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, Mapping):
-            return {str(key): item for key, item in dumped.items()}
-    legacy_dict = getattr(value, "dict", None)
-    if callable(legacy_dict):
-        try:
-            dumped = legacy_dict()
         except Exception:
             dumped = None
         if isinstance(dumped, Mapping):
@@ -384,16 +375,10 @@ async def _resolve_scope(user_hash: str, project_hash: str) -> dict[str, Any]:
             return base_item
     if item and item.get("user_id") and item.get("project_id"):
         return item
-    # Safe local fallback for disabled/offline route contract tests. The values
-    # never leave server-side orchestration and do not grant product benefits.
-    return {
-        "user_id": f"usr-{hashlib.sha256(user_hash.encode('utf-8')).hexdigest()[:24]}",
-        "project_id": f"prj-{hashlib.sha256(project_hash.encode('utf-8')).hexdigest()[:24]}",
-        "billing_group_id": f"bg-{hashlib.sha256((project_hash + ':billing-group').encode('utf-8')).hexdigest()[:24]}",
-        "user_hash": user_hash,
-        "project_hash": project_hash,
-        "synthetic_scope": True,
-    }
+    raise NotFoundError(
+        message="User has no access to the requested project",
+        error_code=ErrorCode.PROJECT_NOT_FOUND,
+    )
 
 
 def _safe_billing_model_from_row(row: Mapping[str, Any] | None) -> BillingSafeStatus:
@@ -607,7 +592,7 @@ def _provider_ref_evidence_or_none(raw_id: str | None, *, kind: str, config: Bil
 
 async def _billing_group_operational_row(scope: Mapping[str, Any]) -> dict[str, Any]:
     billing_group_id = _string_field(scope, "billing_group_id")
-    if not billing_group_id or _bool_field(scope, "synthetic_scope", False):
+    if not billing_group_id:
         return {}
     try:
         row = await _maybe_await(db_billing.get_billing_group_operational_credentials(id=billing_group_id))
@@ -1465,7 +1450,7 @@ def _route_path(route: Any) -> str:
 
 
 def _assert_identity_contract_unchanged() -> None:
-    for model_cls in (ValidateSessionResponse, UserLogin, EnhancedUserLogin):
+    for model_cls in (ValidateSessionResponse, EnhancedUserLogin):
         fields = {str(field).lower() for field in getattr(model_cls, "model_fields", {})}
         offenders = sorted(field for field in fields if any(fragment in field for fragment in _AUTH_BILLING_DRIFT_FRAGMENTS))
         if offenders:

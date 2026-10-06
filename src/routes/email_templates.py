@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, Path
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import is_root_user
 from src.Util.db import db_email_templates
@@ -309,7 +309,7 @@ async def list_email_templates(
 ) -> Dict[str, Any]:
     """List every template code, built-in and dynamic, with its active version and state.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Responses:** 200 with `templates` sorted by code. Each entry has `source` (`db` for a
@@ -339,7 +339,7 @@ async def create_email_template(
 ) -> Dict[str, Any]:
     """Create a dynamic (non-built-in) template code and activate its version 1.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Request:** flat JSON `TemplateCreateRequest`. The draft is validated (placeholder
@@ -422,7 +422,7 @@ async def get_email_template(
 ) -> Dict[str, Any]:
     """Return a template's active subject, HTML and text, variable lists, default and version history.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Responses:** 200 with the active parts, `source`, `version`, `revision`,
@@ -485,7 +485,7 @@ async def update_email_template(
 ) -> Dict[str, Any]:
     """Validate a complete draft and save it as the new active version of a template.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Request:** flat JSON `TemplateDraft` with all three parts, checked against this
@@ -562,7 +562,7 @@ async def preview_email_template(
 ) -> Dict[str, Any]:
     """Render a draft, or the active version, with server-side sample variables; nothing is saved or sent.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Request:** optional JSON body. With no body, or no draft fields, the active version
@@ -608,7 +608,7 @@ async def disable_email_template(
 ) -> Dict[str, Any]:
     """Disable a template code while keeping its catalog entry and version history.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Effect:** the code stays listed with `is_enabled: false`. The email worker cancels
@@ -660,7 +660,7 @@ async def send_test_email_template(
 ) -> Dict[str, Any]:
     """Send a rendered test of a draft or the active version to the caller's own verified email address.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Request:** optional JSON body with the same draft semantics as preview. The
@@ -784,7 +784,7 @@ async def rollback_email_template(
 ) -> Dict[str, Any]:
     """Re-activate an earlier stored version of a template.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user; other users get 403.
 
     **Request:** JSON `{"version": <int>}`.

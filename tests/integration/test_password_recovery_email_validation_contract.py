@@ -25,7 +25,7 @@ def _authenticated_session(fake_redis, token: str = "change-access-token"):
         make_session_payload(
             user_hash="usr-change-contract",
             user_id="usr-contract-001",
-            session_token=token,
+            access_token=token,
         ),
     )
     return SimpleNamespace(
@@ -37,7 +37,7 @@ def _authenticated_session(fake_redis, token: str = "change-access-token"):
         permissions=[],
         groups=[],
         username="change-contract-user",
-        session_token=token,
+        access_token=token,
     )
 
 
@@ -45,7 +45,7 @@ def _assert_response_has_no_password_material(response) -> None:
     body = response.text.lower()
     for forbidden in [CURRENT_PASSWORD, NEW_PASSWORD, WEAK_PASSWORD, "$argon2", "reset token"]:
         assert forbidden.lower() not in body
-    for forbidden_key in ["access_token", "refresh_token", "session_token", "password_hash"]:
+    for forbidden_key in ["access_token", "refresh_token", "access_token", "password_hash"]:
         assert forbidden_key not in body
 
 
@@ -56,11 +56,12 @@ async def test_authenticated_change_password_success_preserves_current_session_a
     token = "change-access-token-a"
     session = _authenticated_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-a", "family_id": "family-a"}), \
-         patch("src.routes.auth.change_user_password", create=True, return_value={"password_changed": True}), \
-         patch("src.routes.auth.revoke_user_auth_state_except_current", create=True) as revoke_except_current:
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-a", "family_id": "family-a"}),
+        patch("src.routes.auth.change_user_password", create=True, return_value={"password_changed": True}),
+        patch("src.routes.auth.revoke_user_auth_state_except_current", create=True) as revoke_except_current,
+    ):
         response = await client.post(
             "/auth/password/change",
             json={"current_password": CURRENT_PASSWORD, "new_password": NEW_PASSWORD},
@@ -72,8 +73,8 @@ async def test_authenticated_change_password_success_preserves_current_session_a
     assert body["success"] is True
     assert "access_token" not in body
     assert "refresh_token" not in body
-    assert "session_token" not in body
-    assert "session_token" not in response.cookies
+    assert "access_token" not in body
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
     revoke_except_current.assert_called_once()
     revoke_kwargs = revoke_except_current.call_args.kwargs
@@ -87,11 +88,12 @@ async def test_authenticated_change_password_accepts_form_fields(client, integra
     token = "change-access-token-form"
     session = _authenticated_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-f", "family_id": "family-f"}), \
-         patch("src.routes.auth.change_user_password", create=True, return_value={"password_changed": True}) as change_user_password, \
-         patch("src.routes.auth.revoke_user_auth_state_except_current", create=True):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-f", "family_id": "family-f"}),
+        patch("src.routes.auth.change_user_password", create=True, return_value={"password_changed": True}) as change_user_password,
+        patch("src.routes.auth.revoke_user_auth_state_except_current", create=True),
+    ):
         response = await client.post(
             "/auth/password/change",
             data={"current_password": CURRENT_PASSWORD, "new_password": NEW_PASSWORD},
@@ -121,8 +123,9 @@ async def test_change_password_rejects_missing_required_fields_without_echo(clie
     token = "change-missing-field-token"
     session = _authenticated_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+    ):
         response = await client.post(
             "/auth/password/change",
             json=payload,
@@ -141,11 +144,12 @@ async def test_change_password_wrong_current_password_uses_generic_invalid_crede
     token = "change-wrong-current-token"
     session = _authenticated_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-a", "family_id": "family-a"}), \
-         patch("src.routes.auth.change_user_password", create=True, side_effect=AuthenticationError("Invalid username or password", ErrorCode.INVALID_CREDENTIALS)), \
-         patch("src.routes.auth.revoke_user_auth_state_except_current", create=True) as revoke_except_current:
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.routes.auth.JWTTokenHandler.decode_access_token", return_value={"jti": "access-jti-a", "family_id": "family-a"}),
+        patch("src.routes.auth.change_user_password", create=True, side_effect=AuthenticationError("Invalid username or password", ErrorCode.INVALID_CREDENTIALS)),
+        patch("src.routes.auth.revoke_user_auth_state_except_current", create=True) as revoke_except_current,
+    ):
         response = await client.post(
             "/auth/password/change",
             json={"current_password": "wrong-current-contract-2026", "new_password": NEW_PASSWORD},
@@ -165,10 +169,11 @@ async def test_change_password_rejects_weak_new_password_without_mutation_or_sec
     token = "change-weak-password-token"
     session = _authenticated_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.routes.auth.change_user_password", create=True) as change_user_password, \
-         patch("src.routes.auth.assert_password_policy", create=True, side_effect=ValidationError("Weak password", ErrorCode.WEAK_PASSWORD)):
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.routes.auth.change_user_password", create=True) as change_user_password,
+        patch("src.routes.auth.assert_password_policy", create=True, side_effect=ValidationError("Weak password", ErrorCode.WEAK_PASSWORD)),
+    ):
         response = await client.post(
             "/auth/password/change",
             json={"current_password": CURRENT_PASSWORD, "new_password": WEAK_PASSWORD},

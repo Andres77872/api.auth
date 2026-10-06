@@ -1,13 +1,14 @@
 """Live assistant persistence checks in an explicitly isolated MySQL schema.
 
-Run with REAL_DB_* pointing at a disposable database named assistant_verify_*.
-The tests never create, clear or write the application's magic_auth schema.
-Canonical tables/14_assistant.sql must already be applied to that test schema.
+Run with REAL_DB_* pointing at a disposable database named assistant_verify_*,
+or through the disposable Docker E2E service. Canonical tables/14_assistant.sql
+must already be applied. Other application databases are refused.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import asyncio
+import os
 import threading
 import uuid
 
@@ -41,8 +42,12 @@ pytestmark = pytest.mark.real_db
 def mysql_factory():
     config = dict(_REAL_DB_CONFIG)
     database = config.get("database", "")
-    if not database.startswith("assistant_verify_"):
-        pytest.skip("Requires disposable assistant_verify_* schema; never writes application tables")
+    compose_test = (
+        os.environ.get("E2E_REQUIRE_REAL_INFRA", "").lower() == "true"
+        and config.get("host") == "mysql-test" and database == "magic_auth"
+    )
+    if not database.startswith("assistant_verify_") and not compose_test:
+        pytest.skip("Requires disposable assistant_verify_* schema or the isolated Docker E2E service")
     config.pop("cursorclass", None)
     config["autocommit"] = False
 

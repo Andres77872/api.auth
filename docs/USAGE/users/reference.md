@@ -5,7 +5,7 @@ rules, request fields, response fields, errors and settings. Task walkthroughs a
 [usage.md](usage.md); the email and bulk routes have their detailed contracts in
 [email-management.md](email-management.md) and [bulk-operations.md](bulk-operations.md).
 
-Every route takes an access token (`Authorization: Bearer <access JWT>` or the `session_token`
+Every route takes an access token (`Authorization: Bearer <access JWT>` or the `access_token`
 cookie). A missing, invalid or expired token returns `401`. Write routes read form fields
 (`application/x-www-form-urlencoded` or `multipart/form-data`); `POST /users/me/emails` also accepts
 a JSON body. The error envelope and code catalog are in [errors.md](../errors.md).
@@ -17,7 +17,7 @@ a JSON body. The error envelope and code catalog are in [errors.md](../errors.md
 | Path | Method | Caller | Input | Purpose |
 | --- | --- | --- | --- | --- |
 | `/users/profile` | `GET` | Any user | - | Own account, type info, groups, projects |
-| `/users/profile` | `PUT` | Any user | Form | Change own `username` and/or legacy `email` field |
+| `/users/profile` | `PUT` | Any user | Form | Change own `username` |
 | `/users/access-summary` | `GET` | Any user | - | Own groups, reachable projects and effective permissions |
 | `/users/list` | `GET` | Root, admin (overlap) | Query | Filtered, paginated user list |
 | `/users/search/query` | `GET` | Root, admin (scope) | Query | Quick username/email search |
@@ -29,7 +29,7 @@ a JSON body. The error envelope and code catalog are in [errors.md](../errors.md
 | `/users/{user_hash}/emails` | `GET` | Root, admin (scope) | - | A user's addresses, masked |
 | `/users/{user_hash}/emails/{email_id}/resend` | `POST` | Root, admin (scope) | - | Resend activation for a user's pending address (`202`) |
 | `/users/{user_hash}` | `GET` | Self, root, admin (overlap) | Query | Account detail with groups and projects |
-| `/users/{user_hash}` | `PUT` | Root, admin (overlap) | Form | Change `username`, legacy `email`; root also `user_type` |
+| `/users/{user_hash}` | `PUT` | Root, admin (overlap) | Form | Change `username`; root also `user_type` |
 | `/users/{user_hash}/status` | `PUT` | Root, admin (overlap) | Query `is_active` | Deactivate a user |
 | `/users/{user_hash}/reset-password` | `POST` | Root, admin (scope) | - | Queue a password-reset link email |
 | `/users/{user_hash}` | `DELETE` | Root, admin (overlap) | - | Soft delete |
@@ -85,7 +85,7 @@ Every route that takes a `{user_hash}` returns `404` for an unknown or inactive 
 | `offset` | int | `0` | Rows to skip |
 | `sort_by` | string | `username` | `username`, `created_at`, `email`, `user_type`, `last_login`; other values sort by username |
 | `sort_order` | string | `asc` | `desc`; other values sort ascending |
-| `search` | string | - | Substring of `username` or the legacy `users.email` |
+| `search` | string | - | Substring of `username` or the activated primary email |
 | `user_type_filter` | string | - | `root`, `admin`, `consumer`; not validated (an unknown value matches nothing) |
 | `group_filter` | string | - | User group name or hash; active memberships only |
 | `project_filter` | string | - | Project name or hash; users reaching it through user groups |
@@ -101,7 +101,7 @@ so an admin's page can hold fewer than `limit` users. `has_more` is `offset + le
 
 | Parameter | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `q` | string | required | Substring of `username` or the legacy `users.email` |
+| `q` | string | required | Substring of `username` or the activated primary email |
 | `user_type_filter` | string | - | `root`, `admin`, `consumer`; anything else returns `400` |
 | `limit` | int | `50` | Values above `100` become `100`; values below `1` become `50` |
 
@@ -135,8 +135,9 @@ admin can get fewer than `limit` results; `total_results` is the number returned
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `username` | One of the two | New unique username; a taken name returns `409` (`CONF_5004`) |
-| `email` | One of the two | Overwrites the legacy `users.email` field only: not verified, not a login identifier, not an address under `/users/me/emails` |
+| `username` | Yes | New unique username; a taken name returns `409` (`CONF_5004`) |
+
+Email edits use `/users/me/emails`. Sending `email` to profile or admin edits returns `400`.
 
 Sending `password`, `current_password`, `new_password`, `password_confirmation` or `password_hash`
 returns `400` (`VAL_3001`) with `details.use_endpoint: "/auth/password/change"`.
@@ -146,7 +147,6 @@ returns `400` (`VAL_3001`) with `details.use_endpoint: "/auth/password/change"`.
 | Field | Required | Notes |
 | --- | --- | --- |
 | `username` | At least one field | New unique username |
-| `email` | At least one field | Legacy `users.email` field only, as above |
 | `user_type` | At least one field | Root callers only (admin gets `403`, `AUTHZ_2002`). Sets the type without assigning a project; a changed type signs the user out everywhere |
 
 ### `PATCH /users/{user_hash}/type`
@@ -161,22 +161,20 @@ returns `400` (`VAL_3001`) with `details.use_endpoint: "/auth/password/change"`.
 | --- | --- | --- |
 | `username` | Yes | Unique; a taken name returns `409` (`CONF_5004`) |
 | `password` | Yes | Must pass the shared password policy (`400`, `VAL_3007`, with `reason_codes`) |
-| `email` | No | Format-checked, stored in the legacy `users.email` field only; no activation email is sent |
 
 ### `POST /user-types/admin`
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `username`, `password`, `email` | As for root | Same rules as `POST /user-types/root` |
-| `assigned_project_ids` | One of the two | Internal project IDs (`proj-...`, the project's `id`, not its hash); repeat the field per project. The first assigned one is the primary project; a project without an admin group is skipped and listed in `skipped_projects` |
-| `assigned_project_id` | One of the two | A single internal project ID; ignored when `assigned_project_ids` is sent |
+| `username`, `password` | As for root | Same rules as `POST /user-types/root` |
+| `assigned_project_ids` | Yes | Internal project IDs (`proj-...`, the project's `id`, not its hash); repeat the field per project. A project without an admin group is skipped and listed in `skipped_projects` |
 
 ### `PUT /user-types/{user_hash}/type`
 
 | Field | Required | Notes |
 | --- | --- | --- |
 | `user_type` | Yes | `root`, `admin`, `consumer` (`400`, `VAL_3012`, otherwise) |
-| `assigned_project_id` | When `user_type=admin` | Internal project ID; missing returns `400` (`VAL_3002`), unknown returns `404` (`NF_4002`), a project without an admin group returns `404` (`NF_4003`). Nothing changes on these errors |
+| `assigned_project_ids` | When `user_type=admin` | Internal project IDs; repeat the field. Missing returns `400` (`VAL_3002`), unknown returns `404` (`NF_4002`), a project without an admin group returns `404` (`NF_4003`). Nothing changes on these errors |
 
 ### `PUT /user-types/admin/{user_hash}/projects`
 
@@ -198,7 +196,7 @@ All success bodies carry `success` and usually `message`. Timestamps are ISO 860
 
 | Endpoint | Fields |
 | --- | --- |
-| `GET /users/profile` | `user_hash`, `username`, `email` (legacy field), `user_type`, `user_type_info`, `created_at`, `updated_at`, `last_login`, `is_active`, `groups[]` (`group_hash`, `group_name`, `group_description`, `assigned_at`, `assigned_by`), `projects[]` (`project_hash`, `project_name`, `project_description`, `created_at`, `updated_at`, `permissions`: the caller's effective permissions in that project) |
+| `GET /users/profile` | `user_hash`, `username`, `email` (activated primary address), `user_type`, `user_type_info`, `created_at`, `updated_at`, `last_login`, `is_active`, `groups[]` (`group_hash`, `group_name`, `group_description`, `assigned_at`, `assigned_by`), `projects[]` (`project_hash`, `project_name`, `project_description`, `created_at`, `updated_at`, `permissions`: the caller's effective permissions in that project) |
 | `PUT /users/profile` | `user` (`user_hash`, `username`, `email`, `user_type`, `created_at`, `updated_at`) |
 | `GET /users/access-summary` | `access_summary.user` (`user_hash`, `username`, `user_type`, `user_type_details`, `email`), `user_groups[]` (as profile plus `projects_count`), `accessible_projects[]` (`project_hash`, `project_name`, `project_description`, `access_groups[]`, `effective_permissions[]`), `current_session` (only `project_hash` is filled), `summary` (`total_groups`, `total_projects`, `is_admin`, always `false`) |
 | `GET /users/list` | `users[]` (`user_hash`, `username`, `email`, `user_type`, `user_type_info`, `created_at`, `last_login`, `is_active`, `groups[]`, `projects[]` with `project_group` and `permissions`), `pagination` (`total`, `limit`, `offset`, `has_more`), `filters` |
@@ -225,8 +223,8 @@ All success bodies carry `success` and usually `message`. Timestamps are ISO 860
 | Endpoint | Fields |
 | --- | --- |
 | `POST /user-types/root` | `user` (`user_hash`, `username`, `email`, `user_type: "root"`, `created_at`) |
-| `POST /user-types/admin` | `user` (`user_hash`, `username`, `email`, `user_type`, `assigned_project_ids` and `assigned_projects[]` (`project_id`, `project_hash`, `project_name`) for the projects actually assigned, `skipped_projects[]` (same fields plus `reason: "no_admin_group"`), `primary_project_id` (`null` if every project was skipped), `created_at`, `created_by`); `message` counts the assigned projects |
-| `GET /user-types/{user_hash}/info` | `user_type_info` (`user_id`, `user_hash`, `username`, `user_type`, `capabilities`, `assigned_project_id`, `assigned_projects`, `total_assigned_projects`); the three assignment fields are `null` for non-admins |
+| `POST /user-types/admin` | `user` (`user_hash`, `username`, `email`, `user_type`, `assigned_project_ids` and `assigned_projects[]` (`project_id`, `project_hash`, `project_name`) for the projects actually assigned, `skipped_projects[]` (same fields plus `reason: "no_admin_group"`), `created_at`, `created_by`); `message` counts the assigned projects |
+| `GET /user-types/{user_hash}/info` | `user_type_info` (`user_id`, `user_hash`, `username`, `user_type`, `capabilities`, `assigned_projects`, `total_assigned_projects`); the assignment fields are `null` for non-admins |
 | `PUT /user-types/{user_hash}/type` | `user_type_info` as above, for the new type |
 | `GET /user-types/users/{user_type}` | `users[]` (`user_hash`, `username`, `email`, `user_type`, `created_at`, `is_active`; admins with an assignment add `assigned_project` (`project_id`, `project_hash`, `project_name`), their first assigned project), `pagination`, `filter` (`user_type`, `project_filter`: the admin's assigned project hashes, `null` for root) |
 | `GET /user-types/stats` | `statistics` (`total_users`, `user_types.{root,admin,consumer}.{count,percentage}`, `system_info`, `scope`) |
@@ -253,7 +251,7 @@ was granted the project, not when this admin joined the group.
 | Status | Code | When |
 | --- | --- | --- |
 | `400` | `VAL_3001` | No field to update; self-deactivation or self-delete; reset-password on a root user; password field sent to `PUT /users/profile`; target of an admin-project route is not an admin; malformed email |
-| `400` | `VAL_3002` | Missing `assigned_project_id(s)` on admin creation or promotion; empty `username` or `password` |
+| `400` | `VAL_3002` | Missing `assigned_project_ids(s)` on admin creation or promotion; empty `username` or `password` |
 | `400` | `VAL_3007` | Password rejected by the shared policy (`details.reason_codes`) |
 | `400` | `VAL_3012` | Invalid `user_type` |
 | `403` | `AUTHZ_2001` | Caller is not root/admin on a `/users` admin route; target outside the admin's overlap or scope, including any root target of an admin; non-root caller on hard delete |

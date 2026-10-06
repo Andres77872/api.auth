@@ -78,6 +78,6 @@ async def test_oversized_post_rejected(client_with_request_validation, fake_redi
 
     assert response.status_code == 413
     data = response.json()
-    # returnJson_413 uses 'Error' (capital E) and 'action' key
-    assert data["status"] == "Error"
-    assert "large" in data["action"].lower() or "payload" in data["action"].lower()
+    assert data["status"] == "error"
+    assert data["error"]["code"] == "VAL_3010"
+    assert "large" in data["error"]["message"].lower()

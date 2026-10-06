@@ -6,7 +6,7 @@ in the [groups reference](../groups/reference.md).
 
 ## Endpoints
 
-Every route takes an access token (`Authorization: Bearer <access JWT>` or the `session_token`
+Every route takes an access token (`Authorization: Bearer <access JWT>` or the `access_token`
 cookie). "Admin scope" means root, or an admin user assigned to administer the project.
 
 | Path | Method | Who | Input | Purpose |
@@ -120,7 +120,6 @@ paging until a page has fewer than `limit` rows.
 | Field | Content |
 | --- | --- |
 | `total_users` | Distinct users with an active membership in a user group that holds an active grant to a project group containing the project. Root users count only if they are such members |
-| `active_sessions` | Always `null`; the procedure does not measure sessions |
 | `total_groups` | User groups with an active grant to a project group containing the project |
 | `total_project_groups` | Project groups the project is actively assigned to |
 | `group_distribution` | Object mapping each such user group's name to its active member count, largest first; groups with no members appear with `0` |
@@ -128,7 +127,6 @@ paging until a page has fewer than `limit` rows.
 ```json
 {
   "total_users": 12,
-  "active_sessions": null,
   "total_groups": 3,
   "total_project_groups": 2,
   "group_distribution": {"qa_team": 8, "user_proj-5f0c": 4, "admin_proj-5f0c": 1}

@@ -27,9 +27,8 @@ from typing import Annotated, Any, Mapping, Optional
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
-from src.Util.auth_constants import OAUTH_INIT_MODE_LEGACY_REDEEM
 from src.Util.db import (
     check_admin_multi_project_access,
     db_oauth_connections,
@@ -48,40 +47,14 @@ from src.Util.error_handler import (
     NotFoundError,
     ValidationError,
 )
-from src.Util.oauth.admin_models import (
-    AllowedUrl,
-    BindingInfo,
-    BindingUpsert,
-    BindingUrlCreate,
-    ConnectionCreate,
-    ConnectionCredentialsUpdate,
-    ConnectionInfo,
-    ConnectionUpdate,
-    CredentialProbeResult,
-    CredentialsStatus,
-    LegacyRedeemUpdate,
-    ProviderCatalogEntry,
-    ProviderCatalogUpdate,
-    ReadinessCheck,
-)
+from src.Util.oauth.admin_models import AllowedUrl, BindingInfo, BindingUpsert, BindingUrlCreate, ConnectionCreate, ConnectionCredentialsUpdate, ConnectionInfo, ConnectionUpdate, CredentialProbeResult, CredentialsStatus, ProviderCatalogEntry, ProviderCatalogUpdate, ReadinessCheck
 from src.Util.oauth.db_source import evaluate_binding_row, invalidate_connection_cache
 from src.Util.oauth.pipeline import client_ip, safe_details, user_agent
 from src.Util.oauth.provider import ConnectionConfig, OAuthProviderUnknown
 from src.Util.oauth.registry import get_adapter, is_registered, register_default_adapters
-from src.Util.oauth.secrets import (
-    KIND_CLIENT_SECRET,
-    KIND_LEGACY_REDEEM_TOKEN,
-    KIND_LEGACY_REDEEM_URL,
-    KIND_SIGNING_KEY,
-    OAuthSecretError,
-    OAuthSecretsNotReady,
-    decrypt_secret,
-    encrypt_secret,
-    fingerprint_from_digest,
-    secret_hmac,
-)
+from src.Util.oauth.secrets import KIND_CLIENT_SECRET, KIND_SIGNING_KEY, OAuthSecretError, OAuthSecretsNotReady, decrypt_secret, encrypt_secret, fingerprint_from_digest, secret_hmac
 from src.Util.oauth.settings import load_oauth_settings
-from src.Util.oauth.url_safety import UnsafeURLError, validate_origin, validate_redeem_url, validate_redirect_uri
+from src.Util.oauth.url_safety import UnsafeURLError, validate_origin, validate_redirect_uri
 
 
 logger = logging.getLogger(__name__)
@@ -354,8 +327,6 @@ def _binding_info(row: Mapping[str, Any]) -> BindingInfo:
         default_user_group_hash=row.get("default_user_group_hash"),
         default_user_group_name=row.get("default_user_group_name"),
         existing_user_policy=str(row.get("existing_user_policy") or "deny"),
-        init_mode=str(row.get("init_mode") or "api"),
-        has_legacy_redeem=bool(row.get("has_legacy_redeem")),
         delivery_mode=str(row.get("delivery_mode") or "bff"),
         state_ttl_seconds=row.get("state_ttl_seconds"),
         urls=urls,
@@ -377,7 +348,7 @@ def _require_binding(project_hash: str, connection_key: str) -> Mapping[str, Any
 async def list_providers(session_data=Depends(require_oauth_admin)) -> dict[str, Any]:
     """List the OAuth provider catalog: each provider type, its kill-switch state and whether this backend can serve it.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root or admin user whose session has the `admin` permission; consumers get `403` even when
     their global role grants `admin`.
 
@@ -421,7 +392,7 @@ async def update_provider(
 ) -> dict[str, Any]:
     """Change a provider type's catalog entry: its status (the run-time kill switch) and catalog-level login/link flags.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON; every field is optional and omitted fields are left unchanged.
@@ -464,7 +435,7 @@ async def list_connections(
 ) -> dict[str, Any]:
     """List OAuth connections (provider app registrations), ordered by display name.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root or admin user whose session has the `admin` permission; consumers get `403`. Root sees
     every connection. Admin users see shared connections (no owner project) and connections owned
     by the projects they administer; `pagination.total` counts only those. `binding_count` counts
@@ -522,7 +493,7 @@ async def create_connection(
 ) -> dict[str, Any]:
     """Create an OAuth connection in `draft` status: one provider app registration that projects can later bind.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON, no secrets.
@@ -586,7 +557,7 @@ async def create_connection(
 async def get_connection(connection_hash: ConnectionHashPath, session_data=Depends(require_oauth_admin)) -> dict[str, Any]:
     """Get one OAuth connection's non-secret configuration and credential status.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root or admin user whose session has the `admin` permission; consumers get `403`. Admin users
     may read shared connections and those owned by projects they administer; a connection owned
     by another project returns `403` (an unknown hash is still `404`).
@@ -617,7 +588,7 @@ async def update_connection(
 ) -> dict[str, Any]:
     """Update a connection's non-secret configuration (display name, client id, scopes, issuer and endpoints, restrictions, provider params).
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON partial update: omitted fields keep their stored value and a field sent as
@@ -688,7 +659,7 @@ async def activate_connection(
 ) -> dict[str, Any]:
     """Activate a connection (`status: active`) so the project bindings that use it can serve sign-in.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** no request body.
@@ -715,7 +686,7 @@ async def disable_connection(
     Stored credentials and bindings are kept, so `.../activate` restores service. The change
     applies at once on this instance and within the 30-second connection cache on other instances.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** no request body.
@@ -739,7 +710,7 @@ async def delete_connection(
 ) -> dict[str, Any]:
     """Remove a connection that no project binding uses.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:**
@@ -833,7 +804,7 @@ def _encrypt_credentials(current: Mapping[str, Any], body: ConnectionCredentials
 async def get_credentials(connection_hash: ConnectionHashPath, session_data=Depends(require_oauth_admin)) -> dict[str, Any]:
     """Show whether a connection has credentials stored, without revealing them.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root or admin user whose session has the `admin` permission; consumers get `403`. Admin users
     may read shared connections and those owned by projects they administer; a connection owned
     by another project returns `403`.
@@ -865,7 +836,7 @@ async def set_credentials(
 ) -> dict[str, Any]:
     """Store a connection's client secret and/or signing key, encrypted at rest and write-only.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON (never form or query parameters, so secrets stay out of URL-encoded logs)
@@ -914,7 +885,7 @@ async def test_credentials(
 ) -> dict[str, Any]:
     """Check a connection's stored configuration and fingerprint a candidate secret, without saving anything.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON object with the same shape as `PUT .../credentials`; both fields are
@@ -965,7 +936,7 @@ async def list_connection_bindings(
 ) -> dict[str, Any]:
     """List the project bindings that use a connection.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root or admin user whose session has the `admin` permission; consumers get `403`. Root sees
     the bindings of every project. Admin users may list shared connections and those owned by
     projects they administer (another project's connection returns `403`), and see only the
@@ -989,13 +960,13 @@ async def list_connection_bindings(
 async def list_project_bindings(project_hash: ProjectHashPath, session_data=Depends(require_oauth_admin)) -> dict[str, Any]:
     """List a project's OAuth bindings with their allowed URLs and readiness.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project.
 
     **Responses:** `200` with `bindings[]`: `connection_key`, the bound connection
     (`connection_hash`, `provider_type`, display name, `connection_status`, `credential_status`),
     `enabled`, `login_enabled`, `link_enabled`, `provisioning_mode`, default user group,
-    `existing_user_policy`, `init_mode`, `has_legacy_redeem`, `state_ttl_seconds`, `urls[]`,
+    `existing_user_policy`, `state_ttl_seconds`, `urls[]`,
     `ready` and `readiness[]`. `404` unknown project (checked before access, so a missing project
     is not hidden behind `403`); `403` the caller does not administer the project.
     """
@@ -1013,7 +984,7 @@ async def list_project_bindings(project_hash: ProjectHashPath, session_data=Depe
 async def project_readiness(project_hash: ProjectHashPath, session_data=Depends(require_oauth_admin)) -> dict[str, Any]:
     """Explain, per binding, whether a project's OAuth providers are usable and which layer is missing.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project.
 
     **Responses:** `200` with `oauth_enabled` and `providers[]` (`connection_key`,
@@ -1026,7 +997,7 @@ async def project_readiness(project_hash: ProjectHashPath, session_data=Depends(
     `404` unknown project; `403` the caller does not administer the project.
 
     Readiness evaluates the database-stored configuration, which serves sign-in only when the
-    deployment reads OAuth configuration from the database (`OAUTH_CONFIG_SOURCE=db`). The
+    deployment reads OAuth configuration from the database. The
     per-purpose `login_enabled` / `link_enabled` flags are not part of `ready`.
     """
 
@@ -1060,7 +1031,7 @@ async def upsert_binding(
 ) -> dict[str, Any]:
     """Create or update the binding that makes a connection available to a project under `connection_key`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project. Connections without an owner project
     can be bound by such admins; a connection owned by another project only by root.
 
@@ -1114,7 +1085,6 @@ async def upsert_binding(
             provisioning_mode=body.provisioning_mode,
             default_user_group_id=group_id,
             existing_user_policy=body.existing_user_policy,
-            init_mode=None,
             delivery_mode=None,
             state_ttl_seconds=body.state_ttl_seconds if "state_ttl_seconds" in body.model_fields_set else (existing or {}).get("state_ttl_seconds"),
             rate_limit_overrides=(existing or {}).get("rate_limit_overrides"),
@@ -1145,7 +1115,7 @@ async def delete_binding(
 ) -> dict[str, Any]:
     """Remove a project's binding together with its allowed URLs; the connection itself is kept.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project.
 
     **Responses:** `200` when removed. `404` unknown project or binding; `403` the caller does not
@@ -1174,7 +1144,7 @@ async def add_binding_url(
 ) -> dict[str, Any]:
     """Add one exact-match URL to a binding's redirect URI or return-origin allow-list.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project.
 
     **Request:** JSON `{"kind": ..., "url": ...}`.
@@ -1225,7 +1195,7 @@ async def remove_binding_url(
 ) -> dict[str, Any]:
     """Remove one URL from a binding's allow-list.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie) of a
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie) of a
     root user, or of an admin user assigned to this project.
 
     **Responses:** `200` when removed. `404` unknown project or binding, or the `url_id` does not
@@ -1242,65 +1212,3 @@ async def remove_binding_url(
     invalidate_connection_cache()
     _audit(ActivityType.OAUTH_BINDING_URL_REMOVED, request=request, session_data=session_data, reason=connection_key)
     return {"success": True, "message": "URL removed"}
-
-
-@router.put(
-    "/projects/{project_hash}/bindings/{connection_key}/legacy-redeem",
-    responses={**_ROOT_ONLY_403, 404: {"description": "Unknown project or binding."}},
-)
-async def set_legacy_redeem(
-    project_hash: ProjectHashPath,
-    connection_key: ConnectionKeyPath,
-    request: Request,
-    body: LegacyRedeemUpdate = Body(..., description="Write-only redeem endpoint and bearer; both required."),
-    session_data=Depends(require_oauth_root),
-) -> dict[str, Any]:
-    """Store the legacy provider-init redeem bridge on a binding and switch it to `init_mode: legacy_redeem`.
-
-    Compatibility path for a companion backend that still issues provider-init tokens: when a
-    sign-in starts with such a token, api.auth POSTs it to `redeem_url`, authenticated with
-    `redeem_token` as a bearer, to learn the project and return origin.
-
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
-    cookie) of a root user.
-
-    **Request:** JSON with `redeem_url` and `redeem_token`. Both are stored encrypted and are
-    write-only. Because the token is sent to it as a bearer, `redeem_url` must be `https://`
-    (plain `http://` only to `localhost`, `127.0.0.1` or `::1`) and must not contain
-    credentials; internal hostnames and private addresses are allowed. The redeem call never
-    follows redirects.
-
-    **Responses:** `200` with the binding (`init_mode: legacy_redeem`, `has_legacy_redeem: true`);
-    the URL and token are never echoed. `400` when `redeem_url` breaks those rules, or the
-    server has no OAuth secret encryption keys configured. `404` unknown project or binding. No endpoint
-    switches a binding back to `init_mode: api`.
-    """
-
-    _require_project(project_hash)
-    row = _require_binding(project_hash, connection_key)
-    binding_id = str(row["binding_id"])
-    try:
-        validate_redeem_url(body.redeem_url)
-    except UnsafeURLError as exc:
-        raise ValidationError(
-            message="Redeem URL must be an https URL (plain http only on localhost) without credentials",
-            error_code=ErrorCode.INVALID_INPUT,
-        ) from exc
-    try:
-        url = encrypt_secret(owner_id=binding_id, kind=KIND_LEGACY_REDEEM_URL, value=body.redeem_url)
-        token = encrypt_secret(owner_id=binding_id, kind=KIND_LEGACY_REDEEM_TOKEN, value=body.redeem_token)
-    except OAuthSecretsNotReady as exc:
-        raise ValidationError(message="Server OAuth secret encryption keys are not configured", error_code=ErrorCode.INVALID_INPUT) from exc
-    db_oauth_connections.upsert_binding(
-        id=binding_id, project_id=str(row["project_id"]), connection_id=str(row["connection_id"]),
-        connection_key=str(row["connection_key"]), enabled=None, login_enabled=None, link_enabled=None,
-        provisioning_mode=None, default_user_group_id=row.get("default_user_group_id"), existing_user_policy=None,
-        init_mode=OAUTH_INIT_MODE_LEGACY_REDEEM, delivery_mode=None, state_ttl_seconds=row.get("state_ttl_seconds"),
-        rate_limit_overrides=row.get("rate_limit_overrides"), actor=session_data.user_id,
-    )
-    updated = db_oauth_connections.set_binding_legacy_redeem(
-        binding_id=binding_id, url_ciphertext=url.ciphertext, token_ciphertext=token.ciphertext, key_id=url.key_id, actor=session_data.user_id
-    )
-    invalidate_connection_cache()
-    _audit(ActivityType.OAUTH_BINDING_UPDATED, request=request, session_data=session_data, reason=f"{connection_key}:legacy_redeem")
-    return {"success": True, "message": "Legacy redeem bridge saved (encrypted; never echoed)", "binding": _binding_info(updated or {})}

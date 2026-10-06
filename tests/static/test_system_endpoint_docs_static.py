@@ -76,7 +76,7 @@ def test_protected_system_curl_examples_include_a_session_transport():
             if not any(route in lowered for route in PROTECTED_PATHS):
                 continue
             has_bearer = "authorization: bearer" in lowered
-            has_session_cookie = "cookie:" in lowered and "session_token=" in lowered
+            has_session_cookie = "cookie:" in lowered and "access_token=" in lowered
             if not (has_bearer or has_session_cookie):
                 offenders.append(
                     f"{path.relative_to(ROOT)}: {command.splitlines()[0].strip()}"

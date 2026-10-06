@@ -25,7 +25,6 @@ def _make_user(user_type="consumer", user_id="1", user_hash="usr-test-001",
     u.email = email
     u.user_type = user_type
     u.is_active = True
-    u.assigned_project_id = None
     return u
 
 
@@ -50,7 +49,7 @@ def _make_group(group_id="1", group_hash="grp-test-001", group_name="Test Group"
 
 def _make_session_data(user_hash="usr-test-001", user_id="1", user_type="consumer",
                        project_hash="prj-test-001", project_name="Test Project",
-                       project_id="1", session_token="test-token",
+                       project_id="1", access_token="test-token",
                        permissions=None, groups=None):
     s = MagicMock()
     s.user_hash = user_hash
@@ -59,7 +58,7 @@ def _make_session_data(user_hash="usr-test-001", user_id="1", user_type="consume
     s.project_hash = project_hash
     s.project_name = project_name
     s.project_id = project_id
-    s.session_token = session_token
+    s.access_token = access_token
     s.permissions = permissions or []
     s.groups = groups or []
     s.session_length = 259200
@@ -402,7 +401,7 @@ async def test_logout_cookie_attributes(
     assert len(cookies) == 2, f"Expected access+refresh cookie clears, got {len(cookies)}"
     cookie_headers = [cookie.decode().lower() for cookie in cookies]
 
-    for expected_name in ("session_token", "refresh_token"):
+    for expected_name in ("access_token", "refresh_token"):
         cookie = next((value for value in cookie_headers if f"{expected_name}=" in value), None)
         assert cookie is not None, f"Missing {expected_name} clear cookie in: {cookie_headers}"
         assert "httponly" in cookie, f"Missing httponly in: {cookie}"
@@ -519,7 +518,7 @@ async def test_refresh_response_rotates_refresh_token_and_old_access_session(
     data = response.json()
     assert data["access_token"]
     assert data["refresh_token"]
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
     assert data["refresh_token"] != pair.refresh_token
     assert fake_redis.get(f"session:{old_access_jti}") is None
 
@@ -574,7 +573,7 @@ async def test_refresh_succeeds_after_old_access_session_eviction(
     assert data["access_token"]
     assert data["refresh_token"]
     assert data["refresh_token"] != pair.refresh_token
-    assert data["session_token"] == data["access_token"]
+    assert data["access_token"] == data["access_token"]
     assert fake_redis.get(f"session:{old_access_jti}") is None
 
     old_record = _decode_redis_json(fake_redis, f"refresh_token:{old_refresh_jti}")

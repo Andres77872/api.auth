@@ -5,7 +5,7 @@ the `admin_` guard, soft deletes) are in [README.md](README.md#rules-and-caveats
 
 ## Authorization
 
-Every route takes an access token (`Authorization: Bearer <access JWT>` or the `session_token`
+Every route takes an access token (`Authorization: Bearer <access JWT>` or the `access_token`
 cookie). The dependency reads the permission names in the validated session.
 
 | Prefix | Dependency | Session must carry | Extra rule |

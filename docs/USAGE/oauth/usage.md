@@ -11,7 +11,7 @@ access token.
 
 ## Enable a provider for a project
 
-Needs `OAUTH_ENABLED=true`, `OAUTH_CONFIG_SOURCE=db` and the `OAUTH_SECRET_*` keys set on
+Needs `OAUTH_ENABLED=true` and the `OAUTH_SECRET_*` keys set on
 the deployment (see [Deployment settings](reference.md#deployment-settings)). Nothing
 below requires a restart.
 
@@ -172,7 +172,7 @@ curl -G "$AUTH/auth/oauth/callback" \
 ```
 
 On success the answer is the same `LoginResponse` as a password login, plus
-`session_token` and `refresh_token` cookies, for the project the API key belongs to.
+`access_token` and `refresh_token` cookies, for the project the API key belongs to.
 Deliver the session to your front end your own way (a cookie on your domain, a one-time
 code); `api.auth` never redirects the browser back. From here the session is an ordinary
 local session. If the provider answered with `error`, forward that instead of `code` so
@@ -259,11 +259,9 @@ Returns every active link of the user (all providers) with masked subject and e-
 | One client | `POST /admin/oauth/connections/{connection_hash}/disable` | Root |
 | One project | Binding `{"enabled": false}` | Root or project admin |
 | Sign-in only, keep linking | Binding `{"login_enabled": false}` | Root or project admin |
-| Google under the environment source | `GOOGLE_OAUTH_ENABLED=false` | Deployment |
 
 `OAUTH_ENABLED` is checked only by `init`, `start` and `providers`: link and reauth
-starts, callbacks of round trips already started, and `POST /auth/google/start` under the
-database source keep working. The catalog, connection and binding switches are checked on
+starts and callbacks of round trips already started keep working. The catalog, connection and binding switches are checked on
 every request, including the callback, which re-resolves the connection after consuming
 the state, so they also stop transactions already at the provider. Other instances follow
 within `30` seconds.

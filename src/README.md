@@ -16,7 +16,7 @@ short guide with curl examples that links back to this document.
 
 | Credential | How to send it | Scheme in this document | Accepted by |
 | --- | --- | --- | --- |
-| Access token (JWT) | `Authorization: Bearer <access_token>`, or the HttpOnly `session_token` cookie | `HTTPBearerOrCookie` | Every route that lists this scheme |
+| Access token (JWT) | `Authorization: Bearer <access_token>`, or the HttpOnly `access_token` cookie | `HTTPBearerOrCookie` | Every route that lists this scheme |
 | Refresh token (JWT) | HttpOnly `refresh_token` cookie (path `/auth`) or a `refresh_token` form field; `Authorization` is ignored | none | `POST /auth/refresh`, and `POST /auth/switch-project` alongside the access token |
 | API key | `X-API-Key: sk_{public_id}.{secret}` | `ProjectApiKey`, or a declared `X-API-Key` header parameter | `POST /auth/validate-api-key`, `POST /auth/oauth/init`, `GET /auth/oauth/providers` |
 | OAuth init token | `init_token` field of the JSON body | none | `POST /auth/oauth/start` |
@@ -41,8 +41,6 @@ place.
   by default, or 30 days, absolute, when the login sent `remember_me=true`.
   Re-using a spent refresh token always fails; outside a short grace window it
   also revokes the whole family. An access token is never a refresh credential.
-- **`session_token`**: deprecated alias of `access_token` in response bodies and
-  the name of the access-token cookie.
 - Logout revokes the current session; deactivating a user revokes all of that
   user's sessions and refresh families.
 - Project-scoped consumer login, `POST /auth/refresh`, `GET /auth/validate`, and
@@ -112,14 +110,13 @@ The [error reference](/documentation/USAGE/errors.md) lists every code.
 
 ## Route Modules
 
-API version `2.2.0` registers 246 method/path operations across 28 modules in
+API version `3.0.0` registers 239 method/path operations across 27 modules in
 `src/routes`, each under one tag:
 
 | Module | Tag | Operations | Surface |
 | --- | --- | ---: | --- |
 | `auth.py` | Authentication | 13 | Local login, registration, refresh, validation, password and email flows |
 | `auth_oauth.py` | OAuth | 9 | Provider-agnostic sign-in: init, providers, start, callback, link, reauth, unlink, links |
-| `auth_google.py` | Google OAuth | 5 | Deprecated `/auth/google/*` aliases onto the OAuth pipeline |
 | `auth_patreon.py` | Patreon Link | 4 | Patreon link proof, status, and unlink |
 | `users.py` | User Management | 19 | Profile, lifecycle, email management, scoped administration |
 | `user_api_keys.py` | API Keys - User | 5 | Self-service API keys |
@@ -132,8 +129,8 @@ API version `2.2.0` registers 246 method/path operations across 28 modules in
 | `permission_assignments.py` | Permission Assignments | 17 | Direct and user-group assignments and lookups |
 | `admin_billing.py` | Admin - Billing | 22 | Billing groups, credentials, catalog, metrics |
 | `internal_billing.py` | Billing Internal | 6 | Billing S2S facts, catalog, Checkout, Portal, resync |
-| `stripe_webhooks.py` | Stripe Webhooks | 2 | Global fallback and per-billing-group Stripe webhooks |
-| `admin_oauth.py` | Admin - OAuth | 20 | Provider catalog, connections, credentials, project bindings, readiness |
+| `stripe_webhooks.py` | Stripe Webhooks | 1 | Per-billing-group Stripe webhooks |
+| `admin_oauth.py` | Admin - OAuth | 19 | Provider catalog, connections, credentials, project bindings, readiness |
 | `assistant.py` | Admin - Assistant | 0 | Root-only WebSocket assistant (one WebSocket endpoint; no HTTP operations) |
 | `admin_patreon.py` | Admin - Patreon | 8 | Root-only Patreon operations |
 | `internal_patreon.py` | Patreon Internal | 2 | Patreon entitlement S2S read and resync |
@@ -149,7 +146,7 @@ API version `2.2.0` registers 246 method/path operations across 28 modules in
 The count excludes FastAPI's built-in documentation routes and the seven routes
 declared directly in `src/main.py`: `/ping`, the three `/documentation` routes
 (wiki home, page renderer, and the `_search.json` index behind its search), the
-legacy `/docs/USAGE/*` redirect, `/llms.txt`, and the `/` redirect to `/docs`.
+`/llms.txt`, and the `/` redirect to `/docs`.
 
 ## Further Reading
 

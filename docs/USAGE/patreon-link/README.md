@@ -25,7 +25,7 @@ anyone in and never issues local tokens, sessions or cookies.
 
 | Family | Routes | Caller and authentication |
 | --- | --- | --- |
-| Link lifecycle | `POST /auth/patreon/link/request`, `POST /auth/patreon/link/confirm`, `GET /auth/patreon/link/status`, `DELETE /auth/patreon/link` | Signed-in user (`Authorization: Bearer` or the `session_token` cookie); request, confirm and unlink also need recent authentication |
+| Link lifecycle | `POST /auth/patreon/link/request`, `POST /auth/patreon/link/confirm`, `GET /auth/patreon/link/status`, `DELETE /auth/patreon/link` | Signed-in user (`Authorization: Bearer` or the `access_token` cookie); request, confirm and unlink also need recent authentication |
 | Webhook | `POST /webhooks/patreon` | Patreon; `X-Patreon-Signature` over the raw body |
 | Server-to-server | `GET /internal/users/{user_hash}/entitlements`, `POST /internal/users/{user_hash}/entitlements/patreon/resync` | Companion service; `Authorization: Bearer <PATREON_S2S_BEARER_TOKEN>` |
 | Operator dashboard | `/admin/patreon/*` (8 routes) | Root users only |

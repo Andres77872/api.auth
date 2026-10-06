@@ -138,16 +138,16 @@ async def test_non_root_can_still_create_ordinary_permissions_and_root_reserved_
     [
         ("post", "/roles/permission-groups/GH-PLAIN/permissions/PH-ADMIN", "assign_permission_to_group"),
         ("delete", "/roles/permission-groups/GH-PRIV/permissions/PH-ADMIN", "remove_permission_from_group"),
-        ("post", "/roles/roles/RH-PLAIN/permission-groups/GH-PRIV", "assign_permission_group_to_role"),
-        ("delete", "/roles/roles/RH-PRIV/permission-groups/GH-PRIV", "remove_permission_group_from_role"),
+        ("post", "/roles/RH-PLAIN/permission-groups/GH-PRIV", "assign_permission_group_to_role"),
+        ("delete", "/roles/RH-PRIV/permission-groups/GH-PRIV", "remove_permission_group_from_role"),
         ("put", f"/roles/users/{MEMBER_A.user_hash}/role", "assign_role_to_user"),
         ("delete", f"/roles/users/{MEMBER_A.user_hash}/role", "remove_role_from_user"),
         ("put", "/roles/permissions/PH-ADMIN", "update_permission"),
         ("delete", "/roles/permissions/PH-ADMIN", "delete_permission"),
         ("put", "/roles/permission-groups/GH-PRIV", "update_permission_group"),
         ("delete", "/roles/permission-groups/GH-PRIV", "delete_permission_group"),
-        ("put", "/roles/roles/RH-PRIV", "update_role"),
-        ("delete", "/roles/roles/RH-PRIV", "delete_role"),
+        ("put", "/roles/RH-PRIV", "update_role"),
+        ("delete", "/roles/RH-PRIV", "delete_role"),
     ],
 )
 async def test_non_root_cannot_move_or_alter_reserved_permissions(caller, method, path, writer):
@@ -173,7 +173,7 @@ async def test_non_root_cannot_change_its_own_role(caller, method):
 @pytest.mark.asyncio
 async def test_ordinary_role_work_is_unchanged_for_manage_roles_holders():
     linked, _ = await _send(CONSUMER_ADMIN, "post", "/roles/permission-groups/GH-PLAIN/permissions/PH-READ")
-    grouped, _ = await _send(CONSUMER_ADMIN, "post", "/roles/roles/RH-PLAIN/permission-groups/GH-PLAIN")
+    grouped, _ = await _send(CONSUMER_ADMIN, "post", "/roles/RH-PLAIN/permission-groups/GH-PLAIN")
     assigned, _ = await _send(CONSUMER_ADMIN, "put", f"/roles/users/{ADMIN.user_hash}/role", data={"role_hash": "RH-PLAIN"})
 
     assert linked.status_code == 200, linked.text
@@ -256,7 +256,7 @@ async def test_bulk_role_assignment_cannot_replace_a_role_granting_reserved_perm
     by_root, root_assign = await _bulk_assign(ROOT, [MEMBER_A.user_hash], ["readers"])
 
     assert demote.status_code == 403, demote.text
-    assert demote.json()["error"]["details"]["user_hashes"] == [MEMBER_A.user_hash]
+    assert demote.json()["error"]["details"]["context"]["user_hashes"] == [MEMBER_A.user_hash]
     demote_assign.assert_not_called()
     assert by_root.status_code == 200, by_root.text
     root_assign.assert_called_once()

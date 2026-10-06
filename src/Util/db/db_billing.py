@@ -351,12 +351,6 @@ def upsert_customer(
     )
 
 
-def upsert_billing_customer(**kwargs: Any) -> dict[str, Any] | None:
-    """Readable alias over `sp_billing_customer_upsert`."""
-
-    return upsert_customer(**kwargs)
-
-
 def get_customer_operational_ref(*, user_id: str, billing_group_id: str, provider: str) -> dict[str, Any] | None:
     """Call `sp_billing_get_customer_operational_ref` for server-only provider code.
 
@@ -464,12 +458,6 @@ def record_webhook_delivery(
         context=f"record_webhook_delivery(provider={provider}, billing_group_id={billing_group_id}, event_type={event_type})",
         commit=True,
     )
-
-
-def record_billing_webhook_delivery(**kwargs: Any) -> dict[str, Any] | None:
-    """Alias over `sp_billing_webhook_delivery_record` for route seams."""
-
-    return record_webhook_delivery(**kwargs)
 
 
 # =============================================================================
@@ -726,12 +714,6 @@ def run_retention_purge(
         context="run_retention_purge()",
         commit=True,
     )
-
-
-def run_billing_retention_purge(**kwargs: Any) -> dict[str, Any] | None:
-    """Readable alias over `sp_billing_retention_purge`."""
-
-    return run_retention_purge(**kwargs)
 
 
 def billing_provider_exists(*, provider: str) -> bool:
@@ -1237,11 +1219,9 @@ __all__ = [
     "resolve_billing_group_by_webhook_secret_hmac",
     "resolve_event_scope",
     "resolve_user_billing_group",
-    "record_billing_webhook_delivery",
     "record_purchase_event",
     "record_webhook_delivery",
     "resolve_user_project",
-    "run_billing_retention_purge",
     "run_retention_purge",
     "set_billing_group_capabilities",
     "set_billing_group_credentials",
@@ -1250,6 +1230,5 @@ __all__ = [
     "set_catalog_item_provisioned",
     "update_billing_group",
     "update_catalog_item",
-    "upsert_billing_customer",
     "upsert_customer",
 ]

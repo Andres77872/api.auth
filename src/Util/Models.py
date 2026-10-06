@@ -62,7 +62,6 @@ class User(BaseModelConfig):
     email: Optional[str] = None
     password_hash: str
     user_type: str = "consumer"
-    assigned_project_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
@@ -96,64 +95,17 @@ class UserGroup(BaseModelConfig):
 
 
 class ProjectGroup(BaseModelConfig):
-    """Project groups that define permissions"""
+    """Container of projects linked to user groups for access."""
     id: str
     group_hash: str
     group_name: str
     group_description: Optional[str] = None
-    permissions: List[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_active: bool = True
 
 
-class Permission(BaseModelConfig):
-    """Model for project-specific permissions in RBAC system"""
-    id: str
-    permission_hash: str
-    project_id: str
-    permission_name: str
-    permission_display_name: str
-    permission_description: Optional[str] = None
-    permission_category: str = 'general'
-    is_system_permission: bool = False
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    created_by: Optional[str] = None
-    is_active: bool = True
-    granted_through_role: Optional[str] = None
-
-
-class PermissionGroup(BaseModelConfig):
-    """Model for project-specific permission groups (roles) in RBAC system"""
-    id: str
-    group_hash: str
-    project_id: str
-    group_name: str
-    group_display_name: str
-    group_description: Optional[str] = None
-    group_priority: int = 0
-    is_system_role: bool = False
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    created_by: Optional[str] = None
-    is_active: bool = True
-    permissions: Optional[List[Permission]] = None
-
-
 # =================== DATABASE RELATIONSHIP MODELS ===================
-
-class UserProject(BaseModelConfig):
-    """Model for user-project access relationships (consumer users)"""
-    id: str
-    user_id: str
-    project_id: str
-    user_project_hash: str
-    granted_at: Optional[datetime] = None
-    granted_by: Optional[str] = None
-    revoked_at: Optional[datetime] = None
-    revoked_by: Optional[str] = None
-    is_active: bool = True
 
 
 class UserGroupMember(BaseModelConfig):
@@ -192,19 +144,6 @@ class PermissionGroupPermission(BaseModelConfig):
     is_active: bool = True
 
 
-class UserProjectPermissionGroup(BaseModelConfig):
-    """Model for user to permission group assignments within projects"""
-    id: str
-    user_id: str
-    project_id: str
-    permission_group_id: str
-    assigned_at: Optional[datetime] = None
-    assigned_by: Optional[str] = None
-    removed_at: Optional[datetime] = None
-    removed_by: Optional[str] = None
-    is_active: bool = True
-
-
 class PermissionAuditLog(BaseModelConfig):
     """Model for permission and RBAC audit log entries"""
     id: str
@@ -218,10 +157,6 @@ class PermissionAuditLog(BaseModelConfig):
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     project_id: Optional[str] = None
-
-
-# Legacy alias for backward compatibility
-LegacyUserGroup = UserGroup
 
 
 # =================== COMMON RESPONSE COMPONENTS ===================
@@ -343,7 +278,6 @@ class TokenPairFields(BaseModelConfig):
     """Shared token-pair response fields for auth credential issuers."""
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
-    session_token: Optional[str] = None  # Deprecated access-token alias
     token_type: str = TOKEN_TYPE_BEARER
     expires_in: Optional[int] = None
     refresh_expires_in: Optional[int] = None
@@ -401,38 +335,6 @@ class ValidateApiKeyResponse(BaseResponse):
 class LogoutResponse(BaseResponse):
     """Logout endpoint response"""
     pass
-
-
-class GoogleOAuthStartRequest(BaseModelConfig):
-    """Google OAuth start request.
-
-    Browser-provided strict project/group hashes are intentionally absent. The
-    server resolves those bindings only through the opaque provider-init token.
-    """
-
-    provider_init_token: str = Field(..., min_length=1, max_length=4096)
-    redirect_uri: Optional[str] = None
-    return_origin: Optional[str] = None
-    remember_me: bool = False
-
-    @field_validator("provider_init_token", mode="before")
-    @classmethod
-    def normalize_provider_init_token(cls, value: Any) -> Any:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("provider_init_token is required")
-        return value.strip()
-
-
-class GoogleOAuthStartResponse(BaseResponse):
-    """Non-browser/test Google OAuth start response.
-
-    Browser flows normally redirect. This model carries only a provider URL,
-    expiry, and non-reversible state fingerprint for explicit negotiated flows.
-    """
-
-    authorization_url: Optional[str] = None
-    expires_in: int
-    state_fingerprint: str
 
 
 class ExternalIdentityInfo(BaseModelConfig):
@@ -671,12 +573,6 @@ class PatreonProofConfirmRequest(PatreonSafeModelConfig):
         return _optional_stripped_string_or_none(value)
 
 
-class PatreonLinkConfirmRequest(PatreonProofConfirmRequest):
-    """Compatibility name for Patreon link-confirm route bodies."""
-
-    pass
-
-
 class PatreonUnlinkRequest(PatreonSafeModelConfig):
     """Authenticated unlink request body for clients that send DELETE JSON."""
 
@@ -730,12 +626,6 @@ class PatreonProofRequestResponse(BaseResponse):
 
     def model_dump_safe(self, **kwargs: Any) -> Dict[str, Any]:
         return _model_dump_patreon_safe(self, **kwargs)
-
-
-class PatreonLinkRequestResponse(PatreonProofRequestResponse):
-    """Compatibility name for Patreon link-request responses."""
-
-    pass
 
 
 class PatreonLinkStatusResponse(BaseResponse):
@@ -1120,7 +1010,6 @@ def assert_patreon_response_model_allow_lists() -> None:
     model_allow_lists = {
         PatreonSafeEntitlement: PATREON_SAFE_ENTITLEMENT_FIELD_NAMES,
         PatreonProofRequestResponse: PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES,
-        PatreonLinkRequestResponse: PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES,
         PatreonLinkStatusResponse: PATREON_LINK_STATUS_RESPONSE_FIELD_NAMES,
         PatreonUnlinkResponse: PATREON_UNLINK_RESPONSE_FIELD_NAMES,
         PatreonEntitlementS2SResponse: PATREON_S2S_RESPONSE_FIELD_NAMES,
@@ -1947,7 +1836,6 @@ class UserTypeInfo(BaseModelConfig):
     username: str
     user_type: str
     capabilities: List[str] = Field(default_factory=list)
-    assigned_project_id: Optional[str] = None
     assigned_projects: Optional[List[Dict[str, Any]]] = None
     total_assigned_projects: Optional[int] = None
     created_at: Optional[datetime] = None
@@ -2259,16 +2147,11 @@ class LoginRequest(BaseModelConfig):
 
 
 class RegisterRequest(BaseModelConfig):
-    """Register request model – updated to accept a *user_group_hash* instead of a project hash"""
+    """Consumer registration; email enrollment uses the activation flow."""
+    model_config = ConfigDict(extra="forbid")
     username: str
     password: str
-    email: Optional[str] = None
     user_group_hash: str
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def normalize_optional_email(cls, value: Any) -> Any:
-        return _optional_email_or_none(value)
 
 
 class SwitchProjectRequest(BaseModelConfig):
@@ -2288,20 +2171,9 @@ class CheckAvailabilityRequest(BaseModelConfig):
 
 
 class UserUpdateRequest(BaseModelConfig):
-    """User update request model.
-
-    The legacy ``password`` field is retained only for parser compatibility
-    while routes reject it before persistence. Clients must use
-    ``POST /auth/password/change`` for credential rotation.
-    """
+    """Profile edits; email and password use their dedicated verified flows."""
+    model_config = ConfigDict(extra="forbid")
     username: Optional[str] = None
-    email: Optional[str] = None
-    password: Optional[str] = None
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def normalize_optional_email(cls, value: Any) -> Any:
-        return _optional_email_or_none(value)
 
 
 class ProjectCreateRequest(BaseModelConfig):
@@ -2318,34 +2190,23 @@ class ProjectUpdateRequest(BaseModelConfig):
 
 class CreateRootUserRequest(BaseModelConfig):
     """Create root user request model"""
+    model_config = ConfigDict(extra="forbid")
     username: str
     password: str
-    email: Optional[str] = None
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def normalize_optional_email(cls, value: Any) -> Any:
-        return _optional_email_or_none(value)
 
 
 class CreateAdminUserRequest(BaseModelConfig):
     """Create admin user request model"""
+    model_config = ConfigDict(extra="forbid")
     username: str
     password: str
-    email: Optional[str] = None
-    assigned_project_id: Optional[str] = None
     assigned_project_ids: Optional[List[str]] = None
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def normalize_optional_email(cls, value: Any) -> Any:
-        return _optional_email_or_none(value)
 
 
 class UpdateUserTypeRequest(BaseModelConfig):
-    """Update user type request model"""
+    """Update user type and administrative project assignments."""
     user_type: str
-    assigned_project_id: Optional[str] = None
+    assigned_project_ids: Optional[List[str]] = None
 
 
 class UserGroupCreateRequest(BaseModelConfig):
@@ -2363,14 +2224,12 @@ class UserGroupUpdateRequest(BaseModelConfig):
 class ProjectGroupCreateRequest(BaseModelConfig):
     """Project group create request model"""
     group_name: str
-    permissions: List[str]
     description: Optional[str] = None
 
 
 class ProjectGroupUpdateRequest(BaseModelConfig):
     """Project group update request model"""
     group_name: Optional[str] = None
-    permissions: Optional[List[str]] = None
     description: Optional[str] = None
 
 
@@ -2401,20 +2260,7 @@ class AssignmentRequest(BaseModelConfig):
     project_hash: Optional[str] = None
 
 
-# =================== LEGACY COMPATIBILITY MODELS ===================
-
-class UserLogin(BaseModelConfig):
-    """Legacy compatibility login response"""
-    user_session: str
-    user_session_length: int
-    user_hash: str
-    user_collection: str
-    user_id: str
-    project_id: Optional[str] = None  # Optional for global root sessions
-    user_project_id: Optional[str] = None
-    groups: List[str] = Field(default_factory=list)
-    user_type: str = 'consumer'
-    assigned_project_id: Optional[str] = None
+# =================== AUTHENTICATION CONTEXT MODELS ===================
 
 
 class EnhancedUserLogin(BaseModelConfig):
@@ -2423,18 +2269,14 @@ class EnhancedUserLogin(BaseModelConfig):
     scope: Optional[str] = None
     project_hash: Optional[str] = None
     project_name: Optional[str] = None
-    user_project_hash: str = ""
-    session_token: str
     session_length: int
     user_id: str
     username: Optional[str] = None  # Phase 1.2a: populated from session data to avoid get_user_by_hash()
     project_id: Optional[str] = None  # Optional for global root sessions
-    user_project_id: Optional[str] = None
     groups: List[str] = Field(default_factory=list)
     permissions: List[str] = Field(default_factory=list)
     available_projects: List['ProjectSummary'] = Field(default_factory=list)
     user_type: str = 'consumer'
-    assigned_project_id: Optional[str] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
     token_type: str = TOKEN_TYPE_BEARER
@@ -2457,30 +2299,6 @@ class ProjectSummary(BaseModelConfig):
     project_description: Optional[str] = None
     project_group_name: str
     permissions: List[str] = Field(default_factory=list)
-
-
-class UserPermissionSummary(BaseModelConfig):
-    """Summary of user's permissions within a project"""
-    user_id: str
-    user_hash: str
-    username: str
-    project_id: str
-    project_hash: str
-    project_name: str
-    assigned_roles: List[PermissionGroup] = Field(default_factory=list)
-    effective_permissions: List[Permission] = Field(default_factory=list)
-    highest_priority_role: Optional[PermissionGroup] = None
-
-
-class ProjectRoleSummary(BaseModelConfig):
-    """Summary of roles within a project"""
-    project_id: str
-    project_hash: str
-    project_name: str
-    roles: List[PermissionGroup] = Field(default_factory=list)
-    total_permissions: int
-    total_users: int
-    permission_categories: List[str] = Field(default_factory=list)
 
 
 # =================== ADMIN USER GROUPS ADDITIONAL RESPONSES ===================

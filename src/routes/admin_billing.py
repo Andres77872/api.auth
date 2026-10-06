@@ -6,7 +6,7 @@ subscription plans / credit packages. Creating or repricing a catalog item provi
 Stripe Product/Price on the group's own account.
 
 This is an ADMIN surface authenticated with a user access token (Bearer header or
-``session_token`` cookie) carrying the ``admin`` or ``manage_billing`` permission; writing
+``access_token`` cookie) carrying the ``admin`` or ``manage_billing`` permission; writing
 Stripe credentials additionally requires a root user. It is distinct from the S2S
 ``internal_billing`` router. It never exposes raw Stripe secrets or operational ids; only
 presence flags and non-secret fingerprints are returned. api.auth stays agnostic of product
@@ -52,7 +52,7 @@ from src.Util.Models import (
     PaginationInfo,
     StripeAccountCredentialsUpdate,
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.admin_scope import AdminScope, require_admin_scope, require_project_in_scope, resolve_admin_scope
 from src.Util.billing.config import load_billing_config
 from src.Util.billing.security import decrypt_provider_ref, encrypt_provider_ref, hmac_provider_ref, provider_ref_fingerprint
@@ -493,7 +493,7 @@ async def list_groups(
 ) -> ListBillingGroupsResponse:
     """List billing groups, newest first, with optional search and offset pagination.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403` whatever their global role grants. Root sees every group. Admin
     users see only the groups they fully own: every active project attached to the group
@@ -538,7 +538,7 @@ async def create_group(
 ) -> BillingGroupResponse:
     """Create a billing group owned by the caller, with no Stripe credentials and every capability off.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. An admin user keeps managing the new group only while every
     project attached to it is one of its assigned projects.
@@ -575,7 +575,7 @@ async def get_metrics(scope: AdminScope = Depends(require_billing_scope)) -> Bil
     Counts cover groups by status, credential states, catalog items by type and provisioning
     state, mapped projects, and webhook-secret coverage. No secrets or per-user data.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Root gets platform-wide counts; admin users get counts over the
     groups they fully own (the groups `GET /admin/billing` lists for them).
@@ -601,7 +601,7 @@ async def get_metrics(scope: AdminScope = Depends(require_billing_scope)) -> Bil
 async def get_group(group_hash: _GroupHash, scope: AdminScope = Depends(require_billing_scope)) -> BillingGroupDetailsResponse:
     """Return one billing group with its projects, full catalog, credential status, and readiness.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -650,7 +650,7 @@ async def update_group(
 ) -> BillingGroupResponse:
     """Update a billing group's name, description, or status.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -694,7 +694,7 @@ async def update_capabilities(
 ) -> BillingGroupResponse:
     """Turn a billing group's checkout, portal, provisioning, and webhooks capabilities on or off.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -770,7 +770,7 @@ async def update_capabilities(
 async def delete_group(group_hash: _GroupHash, scope: AdminScope = Depends(require_billing_scope)) -> BaseResponse:
     """Permanently delete a billing group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -801,7 +801,7 @@ async def delete_group(group_hash: _GroupHash, scope: AdminScope = Depends(requi
 async def list_group_projects(group_hash: _GroupHash, scope: AdminScope = Depends(require_billing_scope)) -> BillingGroupProjectsResponse:
     """List the projects currently attached to a billing group, most recently attached first.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -843,7 +843,7 @@ async def attach_project(
     The project's users then resolve to this group's Stripe account and catalog for status,
     catalog, Checkout, and Portal calls.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -896,7 +896,7 @@ async def detach_project(
     The mapping is kept with status `removed`; the project's users then fall back to the
     free default in billing reads.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -924,7 +924,7 @@ async def detach_project(
 async def get_credentials(group_hash: _GroupHash, scope: AdminScope = Depends(require_billing_scope)) -> BillingCredentialsStatusResponse:
     """Return the status of a billing group's Stripe credentials without any secret values.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1085,7 +1085,7 @@ async def set_credentials(
 ) -> BillingCredentialsStatusResponse:
     """Verify a billing group's Stripe credentials with Stripe, then store them encrypted and mark them `active`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root user; other admins get `403`.
 
     **Request:** JSON (never form, so secrets stay out of form logs). `secret_key` is always
@@ -1119,7 +1119,7 @@ async def rotate_credentials(
     `credential_status` goes straight to `active`; there is no intermediate rotating state and
     the previous secret key is not kept.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root user; other admins get `403`.
 
     **Request:** JSON; secret fields are write-only and never echoed back.
@@ -1137,7 +1137,7 @@ async def test_credentials(
 ) -> CredentialValidationResponse:
     """Check Stripe credentials against Stripe without saving them (a "test connection").
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root user; other admins get `403`.
 
     **Request:** the same JSON body as `PUT .../credentials`, with the same prefix checks,
@@ -1170,7 +1170,7 @@ async def list_catalog(
 ) -> CatalogListResponse:
     """List a billing group's catalog items, ordered by item type, sort order, and creation time.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1237,7 +1237,7 @@ def _reconcile_result(report: stripe_catalog_sync.CatalogReconcileReport) -> Cat
 async def reconcile_catalog(group_hash: _GroupHash, scope: AdminScope = Depends(require_billing_scope)) -> CatalogReconcileResponse:
     """Compare the group's local catalog with the active prices in its Stripe account, without writing anything.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1272,7 +1272,7 @@ async def sync_catalog(group_hash: _GroupHash, scope: AdminScope = Depends(requi
     or `drift`) and timestamp are recorded, only when the Stripe read succeeded. Local prices
     and plan codes are never overwritten from Stripe, and nothing is created in Stripe.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1309,7 +1309,7 @@ async def import_catalog(
     `plan_code` metadata, else a slug of the product name. Recurring prices become
     `subscription_plan` items, one-time prices `credit_package` items.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1389,7 +1389,7 @@ async def create_catalog_item(
 ) -> CatalogItemResponse:
     """Create a catalog item (subscription plan or credit package) and, when allowed, provision it into Stripe.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1468,7 +1468,7 @@ async def update_catalog_item(
 ) -> CatalogItemResponse:
     """Update a catalog item's display fields, price, or opaque JSON; omitted fields keep their current value.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1532,7 +1532,7 @@ async def archive_catalog_item(
 ) -> CatalogItemResponse:
     """Archive a catalog item, or set it active again with `archived=false`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other
@@ -1561,7 +1561,7 @@ async def archive_catalog_item(
 async def delete_catalog_item(group_hash: _GroupHash, item_hash: _ItemHash, scope: AdminScope = Depends(require_billing_scope)) -> BaseResponse:
     """Archive a catalog item (soft delete); same effect as `POST .../archive` with `archived=true`.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token` cookie)
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token` cookie)
     of a root or admin user whose session has the `admin` or `manage_billing` permission;
     consumers get `403`. Admin users only reach groups they fully own (every active project
     attached is one of their assigned projects, or an empty group they created); other

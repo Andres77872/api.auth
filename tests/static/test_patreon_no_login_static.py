@@ -40,7 +40,7 @@ FORBIDDEN_SESSION_ISSUANCE_FRAGMENTS = (
 FORBIDDEN_PATREON_RESPONSE_FIELDS = (
     "access_token",
     "refresh_token",
-    "session_token",
+    "access_token",
     "api_key",
     "token_type",
     "expires_in",

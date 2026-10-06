@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Depends, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.decorators import log_and_handle_errors
 from src.Util.log_context_models import LogContext
 from src.Util.error_handler import AuthorizationError, ErrorCode, NotFoundError, ValidationError
@@ -148,7 +148,7 @@ async def list_admin_email_logs(
 ) -> Dict[str, Any]:
     """List transactional email outbox messages, newest first, with redacted recipients.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `logs` and offset `pagination`. There is no total count:
@@ -209,7 +209,7 @@ async def list_audit_logs(
     """
     List per-request API audit records (written by the API audit middleware), newest first.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `logs`, `pagination` (`total`, `has_more`, `next_offset`) and
@@ -296,7 +296,7 @@ async def list_security_events(
     """
     List recent security events from the API audit log and the activity log, merged into one shape.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Behavior:** up to `limit` events are read from each source, filtered by `severity`,
@@ -421,7 +421,7 @@ async def get_statistics(
     """
     Summarize API audit traffic over the last `days` days.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `overview` (request totals, success/failure counts and
@@ -461,8 +461,8 @@ _EXPORT_REQUEST_BODY: Dict[str, Any] = {
                 "properties": {
                     "source": {
                         "type": "string",
-                        "enum": ["activity", "api_audit", "audit"],
-                        "description": "`activity` = activity log; `api_audit` (alias `audit`) = per-request API audit log.",
+                        "enum": ["activity", "api_audit"],
+                        "description": "`activity` = activity log; `api_audit` = per-request API audit log.",
                     },
                     "format": {"type": "string", "enum": ["csv", "json"]},
                     "limit": {
@@ -516,7 +516,7 @@ async def export_logs(
     """
     Download activity-log or API-audit records as a CSV or JSON file attachment.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Request:** JSON body `{"source", "format", "limit"?, "filters"?}`; see the request
@@ -614,7 +614,7 @@ async def get_user_activity(
     """
     Summarize one user's recent activity-log and API-audit history with a merged timeline.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root or admin user; other users get 403.
 
     **Responses:** 200 with `summary` (activity counts grouped by category and name from the

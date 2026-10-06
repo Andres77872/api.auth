@@ -68,7 +68,7 @@ def _assert_no_live_secret_or_raw_stripe_id(response, *, context: str) -> None:
         assert field not in serialized, f"{context}: forbidden field `{field}` leaked in live Stripe smoke response"
     for raw_prefix in ("cus_", "sub_", "price_", "prod_", "in_", "pi_", "ch_", "cs_", "evt_", "whsec_", "sk_"):
         assert raw_prefix not in serialized, f"{context}: raw Stripe prefix `{raw_prefix}` leaked"
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
 
 

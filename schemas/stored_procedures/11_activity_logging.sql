@@ -120,9 +120,9 @@ BEGIN
         ac.activity_category,
         ac.activity_description
     FROM activity_logs al
-    LEFT JOIN users u ON al.user_id = u.id
+    LEFT JOIN v_users u ON al.user_id = u.id
     LEFT JOIN projects p ON al.project_id = p.id
-    LEFT JOIN users tu ON al.target_user_id = tu.id
+    LEFT JOIN v_users tu ON al.target_user_id = tu.id
     LEFT JOIN user_groups ug ON al.user_group_id = ug.id
     LEFT JOIN activity_catalog ac ON al.activity_catalog_id = ac.id
     WHERE 
@@ -157,7 +157,7 @@ BEGIN
     -- Return count
     SELECT COUNT(*) as total_count
     FROM activity_logs al
-    LEFT JOIN users u ON al.user_id = u.id
+    LEFT JOIN v_users u ON al.user_id = u.id
     WHERE 
         (p_user_id IS NULL OR al.user_id = p_user_id)
         AND (p_project_id IS NULL OR al.project_id = p_project_id)
@@ -326,7 +326,7 @@ BEGIN
         ac.activity_name,
         ac.activity_description
     FROM activity_logs al
-    LEFT JOIN users u ON al.user_id = u.id
+    LEFT JOIN v_users u ON al.user_id = u.id
     LEFT JOIN activity_catalog ac ON al.activity_catalog_id = ac.id
     WHERE 
         al.severity_level IN ('warning', 'critical')

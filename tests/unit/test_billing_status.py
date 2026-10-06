@@ -376,10 +376,10 @@ def test_free_default_is_project_safe_and_coerces_malformed_metadata() -> None:
         {"normalized_status": "TRIALING"},
     ],
 )
-def test_safe_status_row_accepts_legacy_status_keys(row: dict[str, Any]) -> None:
-    expected = "past_due" if "billing_status" in row else "trialing"
-
-    assert billing_status.safe_status_from_row(row, now=NOW).status == expected
+def test_safe_status_row_does_not_read_retired_status_keys(row: dict[str, Any]) -> None:
+    safe = billing_status.safe_status_from_row(row, now=NOW)
+    assert safe.status == "unknown"
+    assert safe.plan_code == "free"
 
 
 def test_safe_status_row_normalizes_fields_and_datetime_values() -> None:

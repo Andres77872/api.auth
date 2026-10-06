@@ -72,7 +72,7 @@ def _session(*, token: str, username: str, user_id: str, user_hash: str, project
         project_name=project.project_name,
         permissions=[],
         groups=["Mailpit E2E Group"],
-        session_token=token,
+        access_token=token,
         session_length=259200,
         scope="project",
     )
@@ -86,7 +86,6 @@ def _login_user(*, username: str, email: str, user_id: str, user_hash: str):
         email=email,
         user_type="consumer",
         is_active=True,
-        assigned_project_id=None,
     )
 
 
@@ -485,7 +484,7 @@ async def test_mailpit_activation_chain_register_add_deliver_verify_login(client
              patch("src.routes.auth.revoke_user_auth_state") as revoke_auth_state:
             verify_response = await client.post("/auth/email/verify", json={"token": token})
         assert verify_response.status_code == 202
-        assert "session_token" not in verify_response.cookies
+        assert "access_token" not in verify_response.cookies
         assert "refresh_token" not in verify_response.cookies
         assert harness.activated_email == email
         revoke_auth_state.assert_called_once_with(user_id, reason="email_activation")

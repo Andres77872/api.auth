@@ -199,8 +199,10 @@ class _CleanupCursor:
             self.writes.append(text)
             return
         if "information_schema.tables" in lowered:
-            self._row = {"count": 1}
-        elif "information_schema.routines" in lowered:
+            self._row = {"count": int(params[0] != "user_sessions")}
+        elif any(f"information_schema.{kind}" in lowered for kind in ("routines", "views", "triggers")):
+            self._row = {"count": 0}
+        elif "from activity_catalog" in lowered:
             self._row = {"count": 0}
         elif "from email_templates" in lowered:
             assert "is_active = true" in lowered, "only ACTIVE stale rows are work; inert history is not"

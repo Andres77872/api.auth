@@ -80,7 +80,7 @@ Some surfaces do not use the standard envelope:
 | Surface | Body | Code available |
 | --- | --- | --- |
 | Request middleware: missing `User-Agent` (`422`), POST body over 8 MiB (`413`) | `{"status": "Error", "action": "User-Agent header not found"}` / `"Payload too large (max 8 MiB)"` | No |
-| OAuth sign-in, link, reauth and unlink (`/auth/oauth/*`, `/auth/google/*`) | Standard `error` object plus top-level `"success": false` and `correlation_id` | Yes (`EXT_80xx`) |
+| OAuth sign-in, link, reauth and unlink (`/auth/oauth/*`) | Standard `error` object plus top-level `"success": false` and `correlation_id` | Yes (`EXT_80xx`) |
 | Patreon link denials, Patreon S2S and webhooks, billing S2S and Stripe webhooks | `{"success": false, "message": "..."}` | No |
 
 ### Success envelope
@@ -102,7 +102,7 @@ that must not reveal account state answer `202` with:
 | Status | Meaning here | Typical sources |
 | --- | --- | --- |
 | `200` | Success | Most routes, including bulk operations with per-item failures. |
-| `201` | Created | `POST /roles/roles`, `POST /roles/permission-groups`, `POST /roles/permissions`. |
+| `201` | Created | `POST /roles`, `POST /roles/permission-groups`, `POST /roles/permissions`. |
 | `202` | Accepted | Generic email flows (`POST /auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`, `POST /users/me/emails`, `POST /users/me/emails/{email_id}/resend`, `POST /users/{user_hash}/emails/{email_id}/resend`); some Patreon, billing S2S and webhook routes. |
 | `204` | No content | `GET /ping` liveness probe. |
 | `400` | Validation | Request-validation failures (`VAL_3001`) and route checks (`VAL_3xxx`). A few non-validation codes also use `400`: `AUTH_1012`, `EXT_8211`, `EXT_8013`, `EXT_8031`, and `INT_7005` on email-template send-test. |
@@ -297,7 +297,7 @@ they are returned with. Codes that exist in `ErrorCode` but are never returned a
 
 #### OAuth / external identity (`EXT_80xx`)
 
-These power the provider-agnostic `/auth/oauth/*` routes and the deprecated `/auth/google/*` aliases,
+These power the provider-agnostic `/auth/oauth/*` routes ,
 for every provider (Google, GitHub, Discord, Microsoft, generic OIDC). Category `external`. Public
 messages are deliberately neutral and never say which check failed; read `error.code`. The status is
 the default for the code; some routes override it (for example `EXT_8011` is `403` on start and
@@ -308,7 +308,7 @@ the default for the code; some routes override it (for example `EXT_8011` is `40
 | --- | --- | --- | --- |
 | `EXT_8010` | `OAUTH_PROVIDER_NOT_CONFIGURED` | 503 | Connection or provider prerequisites missing or unhealthy. |
 | `EXT_8011` | `OAUTH_PROVIDER_DISABLED` | 404 | OAuth or the connection is disabled. |
-| `EXT_8012` | `OAUTH_PROVIDER_INIT_INVALID` | 401 | Provider-init token missing, invalid or expired. |
+| `EXT_8012` | `OAUTH_INIT_INVALID` | 401 | Init token missing, invalid or expired. |
 | `EXT_8013` | `OAUTH_REDIRECT_URI_NOT_ALLOWED` | 400 | Return or redirect URI not allow-listed for the binding. |
 | `EXT_8014` | `OAUTH_STATE_INVALID` | 401 | Missing, unknown or invalid state. |
 | `EXT_8016` | `OAUTH_STATE_REUSED` | 401 | State already consumed (back button, replayed callback). |
@@ -387,7 +387,7 @@ These `ErrorCode` members exist but no code path returns them to a client. Do no
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `401` `AUTH_1001` on `POST /auth/login` | Wrong identifier or password, or the account is inactive; login does not say which. | Recheck credentials; an admin can look for the user with `GET /users/list?include_inactive=true`. |
-| `401` `AUTH_1003` `Not authenticated` | Neither `Authorization: Bearer` nor the `session_token` cookie was sent. | Send the access token. |
+| `401` `AUTH_1003` `Not authenticated` | Neither `Authorization: Bearer` nor the `access_token` cookie was sent. | Send the access token. |
 | `401` `AUTH_1003` on a protected route, including `GET /auth/validate` | Access token expired, or its Redis session was removed (logout, deactivation, cache clear, per-user cache invalidation). | Call `POST /auth/refresh`; if that fails, sign in again. |
 | `401` `AUTH_1008` | Sensitive operation more than `OAUTH_RECENT_REAUTH_SECONDS` (default `300`) after sign-in. | Sign in again, or complete `POST /auth/oauth/{connection}/reauth/start` for this session, then retry. |
 | `403` `AUTH_1005` on `/roles/*` | The caller's account is inactive. | Reactivate the account. |
@@ -474,7 +474,6 @@ users anything more specific. As an operator:
 | `EXT_8031` | User cancelled at the provider. | Offer to try again; do not report an error. |
 | `EXT_8032` | A local account already uses this verified email. | Sign in with the existing method, then link the provider. |
 
-The deprecated `/auth/google/*` aliases are covered in the [Google OAuth suite](google-oauth/README.md).
 
 ### JWT configuration failure
 

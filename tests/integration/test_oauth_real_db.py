@@ -133,7 +133,7 @@ def _bind(project_id, connection_id, *, group_id, mode="both", enabled=True, key
     return db_oauth_connections.upsert_binding(
         id=f"pob-{secrets.token_hex(12)}", project_id=project_id, connection_id=connection_id, connection_key=key,
         enabled=enabled, login_enabled=True, link_enabled=True, provisioning_mode=mode, default_user_group_id=group_id,
-        existing_user_policy="deny", init_mode="api", delivery_mode="bff", state_ttl_seconds=None,
+        existing_user_policy="deny", delivery_mode="bff", state_ttl_seconds=None,
         rate_limit_overrides=None, actor=None,
     )
 
@@ -158,7 +158,8 @@ def test_connection_secret_round_trips_as_ciphertext_and_detects_row_swap(chain,
 
         source = DatabaseConnectionSource(settings=settings)
         resolved = source.get_binding(project_hash=project_hash, connection_key="google")
-        assert resolved.binding.trusts_caller_scope is False
+        assert resolved.binding.project_id == project_id
+        assert resolved.binding.project_hash == project_hash
         assert resolved.binding.default_user_group_id == group_id
         assert resolved.binding.redirect_uris == ("https://bff.example/cb",)
         assert source.load_secrets(resolved).client_secret == SECRET

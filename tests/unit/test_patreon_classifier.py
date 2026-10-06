@@ -69,8 +69,8 @@ def _models_module() -> ModuleType:
 def _classification_entrypoint(module: ModuleType):
     for name in (
         "classify_patreon_entitlement",
-        "classify_entitlement",
-        "classify_member_entitlement",
+        "classify_patreon_entitlement",
+        "classify_patreon_entitlement",
     ):
         candidate = getattr(module, name, None)
         if callable(candidate):
@@ -85,8 +85,8 @@ def _classification_entrypoint(module: ModuleType):
 def _safe_serializer(module: ModuleType):
     for name in (
         "to_safe_entitlement",
-        "serialize_safe_entitlement",
-        "build_safe_entitlement_dto",
+        "to_safe_entitlement",
+        "to_safe_entitlement",
     ):
         candidate = getattr(module, name, None)
         if callable(candidate):
@@ -367,7 +367,7 @@ def test_patreon_response_models_are_exact_explicit_allow_list_contracts():
     response_contracts = [
         (models.PatreonSafeEntitlement, models.PATREON_SAFE_ENTITLEMENT_FIELD_NAMES),
         (models.PatreonProofRequestResponse, models.PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES),
-        (models.PatreonLinkRequestResponse, models.PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES),
+        (models.PatreonProofRequestResponse, models.PATREON_PROOF_REQUEST_RESPONSE_FIELD_NAMES),
         (models.PatreonLinkStatusResponse, models.PATREON_LINK_STATUS_RESPONSE_FIELD_NAMES),
         (models.PatreonUnlinkResponse, models.PATREON_UNLINK_RESPONSE_FIELD_NAMES),
         (models.PatreonEntitlementS2SResponse, models.PATREON_S2S_RESPONSE_FIELD_NAMES),

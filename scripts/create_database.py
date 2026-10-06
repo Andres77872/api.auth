@@ -14,7 +14,6 @@ Environment Variables (optional):
     DB_PORT - Database port (default: 3306)
     DB_USER - Database user (default: root)
     DB_MYSQL_PASSWORD - Database password (default: prompt)
-    DB_PASSWORD - Deprecated fallback for legacy shells
 """
 
 import os
@@ -29,9 +28,8 @@ DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER', 'root'),
-    # Accept the deprecated DB_PASSWORD as a fallback, matching recreate_database.py
-    # and the migration scripts so bootstrap credentials resolve consistently.
-    'password': os.getenv('DB_MYSQL_PASSWORD') or os.getenv('DB_PASSWORD', None),
+    # Use the canonical database credential configured by the operator.
+    'password': os.getenv('DB_MYSQL_PASSWORD'),
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor,
     'autocommit': False
@@ -39,6 +37,8 @@ DB_CONFIG = {
 
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
+from scripts.bootstrap_root_user import read_root_password, bootstrap_root_user
 SCHEMAS_DIR = BASE_DIR / 'schemas'
 
 # Files to execute in order
@@ -48,15 +48,14 @@ TABLE_FILES = [
     'tables/03_create_indexes.sql',
     'tables/04_add_constraints.sql',
     'tables/05_initialize_data.sql',
+    'tables/09_email_activation_tables.sql',  # schemas/tables/09_email_activation_tables.sql
     'tables/06_create_views.sql',
     'tables/07_error_logs.sql',
     'tables/08_activity_logging_tables.sql',
-    'tables/09_email_activation_tables.sql',  # schemas/tables/09_email_activation_tables.sql
     'tables/10_external_accounts.sql',  # schemas/tables/10_external_accounts.sql
     'tables/11_patreon_entitlements.sql',  # schemas/tables/11_patreon_entitlements.sql
 ]
-# Legacy plaintext password-reset schema is intentionally absent from fresh
-# bootstrap; reset links live in the hash-only email activation token tables.
+# Reset links live in the hash-only email activation token tables.
 
 STORED_PROCEDURE_FILES = [
     'stored_procedures/01_user_management.sql',
@@ -93,7 +92,7 @@ BILLING_PROVIDER_FACT_FILES = [
     'triggers/07_billing_provider_facts_triggers.sql',  # schemas/triggers/07_billing_provider_facts_triggers.sql
 ]
 
-# Provider-agnostic OAuth configuration (docs/agnostic_oauth). Runs last: the catalog table
+# Provider-agnostic OAuth configuration. Runs last: the catalog table
 # is referenced at run time by the external-account triggers and procedures above.
 OAUTH_CONNECTION_FILES = [
     'tables/13_oauth_connections.sql',  # schemas/tables/13_oauth_connections.sql
@@ -209,6 +208,8 @@ def create_database():
     
     print(f"\nConnecting to MySQL at {DB_CONFIG['host']}:{DB_CONFIG['port']}...")
     
+    root_password = read_root_password()
+
     try:
         # Connect without specifying database
         connection = pymysql.connect(**DB_CONFIG)
@@ -334,15 +335,12 @@ def create_database():
         print(f"  Triggers created: {trigger_count}")
         
         cursor.close()
+        bootstrap_root_user(connection, password=root_password)
         connection.close()
         
         print_header("Database Creation Complete!")
         print("\n✓ Database 'magic_auth' has been created successfully!")
-        print("\n  Initial Credentials:")
-        print("    Username: root")
-        print("    Password: admin123")
-        print("    Email: root@system.local")
-        print("\n  ⚠️  Please change the default password immediately!")
+        print("Root account provisioned with the password supplied during setup.")
         
     except pymysql.Error as e:
         print(f"\n✗ Database error: {e}")

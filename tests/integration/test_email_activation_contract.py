@@ -16,16 +16,15 @@ GENERIC_ACCEPTED_BODY = {
 }
 
 
-def test_register_and_admin_request_models_allow_omitted_email():
+def test_account_creation_uses_dedicated_email_enrollment():
     from src.Util.Models import CreateAdminUserRequest, CreateRootUserRequest, RegisterRequest
 
     register = RegisterRequest(username="person", password="SecureP@ss123", user_group_hash="grp-1")
     admin = CreateAdminUserRequest(username="admin", password="SecureP@ss123")
     root = CreateRootUserRequest(username="root", password="SecureP@ss123")
 
-    assert register.email is None
-    assert admin.email is None
-    assert root.email is None
+    for model in (RegisterRequest, CreateAdminUserRequest, CreateRootUserRequest):
+        assert "email" not in model.model_fields
 
 
 @pytest.mark.asyncio
@@ -75,7 +74,7 @@ async def test_public_email_verify_is_generic_202_and_creates_no_session(client,
 
     assert response.status_code == 202
     assert response.json() == GENERIC_ACCEPTED_BODY
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
 
 

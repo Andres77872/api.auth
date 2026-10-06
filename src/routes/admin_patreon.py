@@ -35,7 +35,7 @@ from src.Util.Models import (
     PatreonResyncAcceptedResponse,
     assert_patreon_response_model_allow_lists,
 )
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityType
 from src.Util.db import db_patreon, get_user_by_hash, is_root_user
 from src.Util.decorators import log_and_handle_errors
@@ -184,7 +184,7 @@ async def get_admin_patreon_status(
 ) -> Dict[str, Any]:
     """Return the Patreon integration's operational health for the root dashboard, with secrets redacted.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with overall `status` (`healthy`, `degraded`, `disabled` or `unknown`),
@@ -238,7 +238,7 @@ async def list_admin_patreon_entitlements(
 
     Only users that have a stored entitlement snapshot are listed.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `items[]` (`user_hash`, `display_name`, entitlement `status`,
@@ -293,7 +293,7 @@ async def get_admin_patreon_entitlement(
 ) -> Dict[str, Any]:
     """Return one user's normalized Patreon entitlement, in the same shape as the service-to-service read.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `user_hash`, `entitlement` (`external_source`, `status`,
@@ -331,7 +331,7 @@ async def get_admin_patreon_entitlement_history(
     Each row is a change of entitlement status, plan, tier or link status (or a tier-map
     miss), with the normalized `reason` and `sync_source` that caused it.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `user_hash` and `items[]` (`history_id`, `previous_status`,
@@ -382,7 +382,7 @@ async def list_admin_patreon_tier_map(
 ) -> Dict[str, Any]:
     """List the stored Patreon tier map that turns campaign tiers into internal plan and tier codes.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `items[]` ordered by priority — `campaign_fingerprint`,
@@ -442,7 +442,7 @@ async def list_admin_patreon_sync_jobs(
 ) -> Dict[str, Any]:
     """List Patreon sync jobs queued for the sync worker, paginated.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `items[]` (`job_id`, `job_type`, `status`, `priority`, `attempts`,
@@ -499,7 +499,7 @@ async def list_admin_patreon_webhooks(
     Only deliveries whose signature verified are recorded; rejected signatures show up in the
     status endpoint's webhook counters instead.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Responses:** `200` with `items[]` (`delivery_id`, `event_type`, `status`,
@@ -556,7 +556,7 @@ async def enqueue_admin_patreon_resync(
 ) -> Dict[str, Any]:
     """Queue a Patreon source-of-truth resync for one user or for every configured campaign.
 
-    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `session_token`
+    **Auth:** root only — access token (`Authorization: Bearer <access JWT>` or `access_token`
     cookie) of a root user.
 
     **Request:** JSON object; every field is optional (`scope` defaults to `user`).

@@ -33,7 +33,7 @@ from src.Util.email.templates import (
     EmailTemplateDisabled,
     EmailTemplateError,
     EmailTemplateLookupError,
-    render_email_template,
+    render_transactional_template,
 )
 from src.Util.patreon.security import PATREON_PROOF_PURPOSE
 
@@ -416,7 +416,7 @@ class EmailWorker:
 
         template_code = _template_code_for_message(message)
         variables = self._render_variables(message)
-        rendered = render_email_template(
+        rendered = render_transactional_template(
             template_code,
             variables,
             message_id=message_id,

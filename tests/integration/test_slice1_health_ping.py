@@ -53,7 +53,7 @@ async def test_system_health_returns_200(client, fake_redis, patched_cache_manag
     with patch("src.routes.system.validate_session", return_value=object()), \
          patch("src.routes.system.count_users", return_value=42), \
          patch("src.routes.system.count_user_groups", return_value=5), \
-         patch("src.routes.system.count_project_permission_groups", return_value=3):
+         patch("src.routes.system.count_project_groups", return_value=3):
         response = await client.get("/system/health", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
@@ -72,7 +72,7 @@ async def test_system_info_returns_200(client, fake_redis, patched_cache_manager
          patch("src.routes.system.count_users", return_value=100), \
          patch("src.routes.system.count_projects", return_value=25), \
          patch("src.routes.system.count_user_groups", return_value=10), \
-         patch("src.routes.system.count_project_permission_groups", return_value=8):
+         patch("src.routes.system.count_project_groups", return_value=8):
         response = await client.get("/system/info", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
@@ -89,7 +89,7 @@ async def test_health_degraded_when_db_fails(client, fake_redis, patched_cache_m
     with patch("src.routes.system.validate_session", return_value=object()), \
          patch("src.routes.system.count_users", return_value=None), \
          patch("src.routes.system.count_user_groups", return_value=5), \
-         patch("src.routes.system.count_project_permission_groups", return_value=3):
+         patch("src.routes.system.count_project_groups", return_value=3):
         response = await client.get("/system/health", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
@@ -112,7 +112,7 @@ async def test_health_degraded_when_email_delivery_enabled_but_worker_missing(cl
     with patch("src.routes.system.validate_session", return_value=object()), \
          patch("src.routes.system.count_users", return_value=42), \
          patch("src.routes.system.count_user_groups", return_value=5), \
-         patch("src.routes.system.count_project_permission_groups", return_value=3), \
+         patch("src.routes.system.count_project_groups", return_value=3), \
          patch("src.routes.system.SystemMetrics.get_email_provider_health", return_value={"status": "ready", "ready": True, "delivery_enabled": True}), \
          patch("src.routes.system.SystemMetrics.get_email_outbox_metrics", return_value={"status": "healthy"}), \
          patch("src.routes.system.SystemMetrics.get_email_worker_metrics", return_value={"status": "unknown", "delivery_enabled": True, "heartbeat_count": 0}), \

@@ -28,7 +28,6 @@ from src.Util.Models import (
     PatreonResyncRequest,
     PatreonSafeEntitlement,
     ValidateSessionResponse,
-    UserLogin,
     EnhancedUserLogin,
     assert_patreon_response_model_allow_lists,
 )
@@ -51,7 +50,6 @@ router = APIRouter(tags=["Patreon Internal"])
 # creating DB/Redis side effects at import time.
 rate_limiter = None
 get_entitlement_by_user_hash = db_patreon.get_entitlement_by_user_hash
-get_patreon_entitlement_by_user_hash = db_patreon.get_patreon_entitlement_by_user_hash
 enqueue_member_resync = patreon_sync.enqueue_member_resync
 
 _GENERIC_DENIAL_MESSAGE = "Request could not be processed."
@@ -108,14 +106,6 @@ def _plain_mapping(value: Any) -> dict[str, Any]:
     if callable(model_dump):
         try:
             dumped = model_dump()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, Mapping):
-            return {str(key): item for key, item in dumped.items()}
-    legacy_dict = getattr(value, "dict", None)
-    if callable(legacy_dict):
-        try:
-            dumped = legacy_dict()
         except Exception:
             dumped = None
         if isinstance(dumped, Mapping):
@@ -612,7 +602,7 @@ async def get_internal_patreon_entitlement(
     never accepts them as authority.
 
     **Auth:** the dedicated Patreon S2S bearer — `Authorization: Bearer <Patreon S2S token>`.
-    User access tokens, `session_token` cookies and API keys are not accepted. The route answers
+    User access tokens, `access_token` cookies and API keys are not accepted. The route answers
     `401` whenever the S2S entitlement feature is disabled or no S2S token is configured.
 
     **Responses:**
@@ -703,7 +693,7 @@ async def enqueue_internal_patreon_resync(
     """Ask api.auth to re-read one user's Patreon membership from Patreon (queued for the sync worker).
 
     **Auth:** the dedicated Patreon S2S bearer — `Authorization: Bearer <Patreon S2S token>`.
-    User access tokens, `session_token` cookies and API keys are not accepted; `401` whenever the
+    User access tokens, `access_token` cookies and API keys are not accepted; `401` whenever the
     S2S entitlement feature is disabled or no S2S token is configured.
 
     **Request:** optional JSON body `{"force": bool, "reason": str}`; it may be omitted.
@@ -813,7 +803,7 @@ def _route_path(route: Any) -> str:
 
 
 def _assert_identity_contract_unchanged() -> None:
-    for model_cls in (ValidateSessionResponse, UserLogin, EnhancedUserLogin):
+    for model_cls in (ValidateSessionResponse, EnhancedUserLogin):
         fields = {str(field).lower() for field in getattr(model_cls, "model_fields", {})}
         offenders = sorted(fields & _FORBIDDEN_AUTH_VALIDATE_FIELD_FRAGMENTS)
         if offenders:
@@ -876,7 +866,6 @@ __all__ = [
     "capture_patreon_internal_audit",
     "record_patreon_internal_activity",
     "get_entitlement_by_user_hash",
-    "get_patreon_entitlement_by_user_hash",
     "get_internal_patreon_entitlement",
     "enqueue_internal_patreon_resync",
 ]

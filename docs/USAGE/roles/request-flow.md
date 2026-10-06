@@ -48,7 +48,7 @@ targeting itself gets `403` `AUTHZ_2009`.
 
 ## Creating a role, group, or permission
 
-Example: `POST /roles/roles`.
+Example: `POST /roles`.
 
 1. Admin guard, then form validation (`400` `VAL_3001` for a missing field or `role_priority` outside
    `0`–`100`). `POST /roles/permissions` runs the reserved-name check on `permission_name` here.
@@ -64,7 +64,7 @@ Groups (`pg_` IDs, `sp_global_create_permission_group`) and permissions (`perm_`
 
 ## Linking and unlinking
 
-`POST /roles/roles/{role_hash}/permission-groups/{group_hash}`:
+`POST /roles/{role_hash}/permission-groups/{group_hash}`:
 
 1. Admin guard.
 2. Role lookup (`404` `NF_4007`), group lookup (`404` `NF_4011`).
@@ -101,7 +101,7 @@ reported as `500` `INT_7001`.
 
 | Route | Checks after the lookup | Write |
 | --- | --- | --- |
-| `DELETE /roles/roles/{role_hash}` | Reserved (role's groups), then system role (`403` `AUTHZ_2009`) | `sp_global_delete_role`: `roles.is_active = FALSE` |
+| `DELETE /roles/{role_hash}` | Reserved (role's groups), then system role (`403` `AUTHZ_2009`) | `sp_global_delete_role`: `roles.is_active = FALSE` |
 | `DELETE /roles/permission-groups/{group_hash}` | Reserved (group's permissions) | `UPDATE global_permission_groups SET is_active = 0` only |
 | `DELETE /roles/permissions/{permission_hash}` | Reserved (name) | `UPDATE global_permissions SET is_active = 0` only |
 

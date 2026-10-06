@@ -22,7 +22,7 @@ Fix: the executor checks FastAPI's actual route resolution and requires it to ma
 
 Evidence: `src/routes/admin_patreon.py` calls `ensure_patreon_catalog_safely` before listing the tier map. Treating every GET as safe would permit configuration synchronization while the assistant's mutation switch is off.
 
-Fix: the endpoint now accepts a backwards-compatible `refresh_catalog` flag. `admin_patreon__read_tier_map` pins it to false and does not expose the flag as a model argument. The existing refresh-and-list operation pins it to true and is classified as a mutation. The executor refuses an attempt to override the read variant's flag. Existing dashboard requests retain their prior refresh behavior.
+Fix: the endpoint now accepts a `refresh_catalog` flag. `admin_patreon__read_tier_map` pins it to false and does not expose the flag as a model argument. The existing refresh-and-list operation pins it to true and is classified as a mutation. The executor refuses an attempt to override the read variant's flag. Existing dashboard requests retain their prior refresh behavior.
 
 Validation: direct real-handler tests prove the read variant does not call synchronization; ASGI tests prove the tool cannot promote the read to a write.
 
@@ -30,7 +30,7 @@ Validation: direct real-handler tests prove the read variant does not call synch
 
 Evidence: canonical `schemas/stored_procedures/04_project_groups.sql` declares three parameters. The previous `update_project_group` wrapper passed a fourth serialized permissions argument, so normal rename/description updates failed against the canonical database.
 
-Fix: `src/Util/db/db_project_groups.py` passes the three declared parameters. The legacy permissions argument is retained for compatibility but rejects a nonempty permission list: project groups are containers and do not own permissions. This avoids silently accepting a permission change that cannot be persisted.
+Fix: `src/Util/db/db_project_groups.py` passes the three declared parameters. The helper accepts only the declared project-group fields. Project groups are containers and do not own permissions.
 
 Validation: cursor-boundary test checks the exact procedure name/arguments, commits and returned record; a separate test rejects unsupported permission assignment. Existing project-group integration tests pass.
 
@@ -44,7 +44,7 @@ Validation: canonical three-result-set cursor tests verify distinct values for a
 
 ### P2: the shared root helper is broader than this feature's root-only requirement
 
-Evidence: `src/middleware/authentication.py` accepts `global_admin` permission even when `user_type` is not root. This is an existing application compatibility rule; this review does not assert an exploitable privilege escalation in the existing role-assignment rules.
+Evidence: `src/middleware/authentication.py` accepts `global_admin` permission even when `user_type` is not root. This is an application authorization rule; this review does not assert an exploitable privilege escalation in the existing role-assignment rules.
 
 Mitigation: the new assistant does not rely on that helper for its root-only boundary. `src/assistant/tools.py` requires the expected session owner, exact session root type and a fresh database root type. Transport authorization has the same strict requirement. Tests reject a demoted root and a different session owner.
 

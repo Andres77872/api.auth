@@ -61,7 +61,6 @@ CREATE TABLE projects (
 | `project_groups` | Project group definitions |
 | `project_group_members` | Project → Project Group memberships |
 | `user_group_project_groups` | User Group → Project Group access links |
-| `user_sessions` | User sessions per project |
 
 ---
 
@@ -302,20 +301,11 @@ CALL sp_get_admin_project_assignments_with_details('admin-user-id');
 
 | Procedure | Description |
 |-----------|-------------|
-| `sp_get_project_stats` | Basic statistics |
 | `sp_get_project_statistics` | Detailed statistics |
 | `sp_get_project_group_stats` | Project group statistics |
 
 **Examples:**
 ```sql
--- Basic stats
-CALL sp_get_project_stats('project-id');
--- Returns 4 result sets:
---   1. total_users (with access)
---   2. active_sessions
---   3. project_group_count
---   4. user_group_count (with access)
-
 -- Detailed statistics
 CALL sp_get_project_statistics('project-id');
 -- Returns 3 result sets:

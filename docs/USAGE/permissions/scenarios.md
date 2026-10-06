@@ -17,7 +17,7 @@ permission group to the user's user group or directly to the user will not work.
 
    ```bash
    curl "http://localhost:8000/roles/users/$USER_HASH/role" -H "Authorization: Bearer $TOKEN"
-   curl "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups" -H "Authorization: Bearer $TOKEN"
+   curl "http://localhost:8000/roles/$ROLE_HASH/permission-groups" -H "Authorization: Bearer $TOKEN"
    ```
 
 2. Link a group containing the permission to that role, or assign the user a role that has it
@@ -25,7 +25,7 @@ permission group to the user's user group or directly to the user will not work.
    a group containing it or assign a role that grants it:
 
    ```bash
-   curl -X POST "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$PG_HASH" \
+   curl -X POST "http://localhost:8000/roles/$ROLE_HASH/permission-groups/$PG_HASH" \
      -H "Authorization: Bearer $ROOT_TOKEN"
    ```
 
@@ -72,7 +72,7 @@ session-based guards accept it only from the role.
      -H "Authorization: Bearer $USER_TOKEN"
    ```
 
-The member can now call every `/permissions` admin route. `POST /roles/roles` and
+The member can now call every `/permissions` admin route. `POST /roles` and
 `/admin/project-groups` still return `403`.
 
 Team members cannot widen or narrow the delegation themselves: assigning or removing
@@ -143,11 +143,11 @@ through the API.
 # 1. Where is it assigned?
 curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/user-groups" -H "Authorization: Bearer $TOKEN"
 curl "http://localhost:8000/permissions/permissions/groups/$PG_HASH/users" -H "Authorization: Bearer $TOKEN"
-curl "http://localhost:8000/roles/roles?limit=100" -H "Authorization: Bearer $TOKEN"
-#    then GET /roles/roles/{role_hash}/permission-groups for each role
+curl "http://localhost:8000/roles?limit=100" -H "Authorization: Bearer $TOKEN"
+#    then GET /roles/{role_hash}/permission-groups for each role
 
 # 2. Remove every link
-curl -X DELETE "http://localhost:8000/roles/roles/$ROLE_HASH/permission-groups/$PG_HASH" -H "Authorization: Bearer $TOKEN"
+curl -X DELETE "http://localhost:8000/roles/$ROLE_HASH/permission-groups/$PG_HASH" -H "Authorization: Bearer $TOKEN"
 curl -X DELETE "http://localhost:8000/permissions/admin/user-groups/$USER_GROUP_HASH/permission-groups/$PG_HASH" -H "Authorization: Bearer $TOKEN"
 curl -X DELETE "http://localhost:8000/permissions/users/$USER_HASH/permission-groups/$PG_HASH" -H "Authorization: Bearer $TOKEN"
 

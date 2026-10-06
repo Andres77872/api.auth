@@ -41,7 +41,7 @@ status — to confirm a kill took effect.
 
 Operational isolation controls:
 
-- Block `/webhooks/stripe` at ingress during active webhook incidents.
+- Block `/webhooks/stripe/*` at ingress during active webhook incidents.
 - Stop `src/workers/billing_sync_worker.py` to pause source-of-truth repair and retention cadence. The Docker entrypoint starts it in every API container: turn off `BILLING_SYNC_ENABLED` and `STRIPE_SYNC_ENABLED` (the worker then only writes heartbeats), or redeploy with `BILLING_SYNC_WORKER_ENABLED=0`.
 - Disable consumer S2S pulls in the companion service if `api.auth` billing needs isolation.
 
@@ -55,8 +55,7 @@ more projects. Provision a group in this order (all behind disabled-by-default f
 1. **Create the group** — `POST /admin/billing` (dashboard → Billing → New billing
    group), or seed the first one with `scripts/migrations/billing_group_bootstrap.py`
    (`--apply`, dry-run by default, redacted output). That script reads the project to
-   attach from `PROJECT_HASH`, or from `BILLING_PROJECT_HASH` as an equivalent alias;
-   `--apply` fails without one of the two.
+   attach from `BILLING_PROJECT_HASH`; `--apply` fails without it.
 2. **Attach project(s)** — `POST /admin/billing/{hash}/projects` with `project_hash`.
    A project belongs to exactly one group; re-attaching to a different group is rejected
    (409). One subscription then applies to every project in the group.
@@ -77,8 +76,7 @@ more projects. Provision a group in this order (all behind disabled-by-default f
    deactivate the old one once the new one is stored; a failed reprice leaves the old one live.
 5. **Point Stripe at the per-account webhook endpoint** — each account's webhook destination
    is `POST /webhooks/stripe/{billing_group_hash}` (its own signing secret is selected by the
-   URL; verification is single-attempt). The legacy global `POST /webhooks/stripe` remains as
-   a single-account migration fallback that resolves the group from event metadata.
+   URL; verification is single-attempt).
 6. **Enable group capabilities** — `checkout_enabled`/`portal_enabled`/`provisioning_enabled`/
    `webhooks_enabled` are gated server-side: they only take effect when the group is `active`
    with `credential_status='active'`. The per-group webhook endpoint answers `503` (Stripe
@@ -127,12 +125,9 @@ BILLING_ID_HMAC_SECRET
 BILLING_PROVIDER_REF_ENCRYPTION_KEY
 BILLING_PROVIDER_REF_ENCRYPTION_KEY_ID
 BILLING_PROVIDER_REF_DECRYPTION_KEYS_JSON
-STRIPE_SECRET_KEY                 # OPTIONAL — single-account/migration only; not a readiness gate
-STRIPE_WEBHOOK_SECRET             # OPTIONAL — global /webhooks/stripe endpoint only
-STRIPE_PORTAL_CONFIGURATION_ID    # OPTIONAL — global portal fallback REMOVED; set per-group
 ```
 
-### Per-group credentials vs. the env secrets (readiness is per group)
+### Per-group credentials and readiness
 
 Each billing group owns its own Stripe account: its **secret key, webhook secret, and portal
 configuration id** are stored encrypted on `billing_groups` and set via
@@ -140,9 +135,6 @@ configuration id** are stored encrypted on `billing_groups` and set via
 provisioning, reconcile, source-of-truth reads, and the path-scoped webhook endpoint) uses the
 **per-group** key, fail-closed, with **no fallback to the env secret**.
 
-- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PORTAL_CONFIGURATION_ID` are **optional,
-  single-account/migration only** and **no longer gate readiness**. SDK/API version pins remain
-  fail-closed.
 - **Operational readiness is per group.** With a valid access session, read `/system/health` →
   `billing_provider_stripe.per_group` for the true state: `credentials_active` /
   `credentials_absent` / `credentials_rotating` / `credentials_revoked`, `groups_with_webhook_secret`,
@@ -151,8 +143,7 @@ provisioning, reconcile, source-of-truth reads, and the path-scoped webhook endp
   `webhooks_enabled` and `webhook_secret_missing_active_groups > 0`, health reports `degraded`.
 - **Webhook routing.** Multi-account deployments MUST point each Stripe account's webhook at the
   path-scoped `POST /webhooks/stripe/{billing_group_hash}` endpoint (it selects that group's own
-  signing secret from the URL — single-attempt verification). The global `POST /webhooks/stripe`
-  verifies only against the env `STRIPE_WEBHOOK_SECRET` and is single-account/migration only.
+  signing secret from the URL — single-attempt verification).
 - **Portal config has no env fallback:** a group that offers the Customer Portal must set its own
   `portal_configuration_id`; without one, portal sessions are refused with `422` (group not ready).
 
@@ -283,8 +274,7 @@ Run these steps in order. Do not skip from disabled config to broad production e
 3. **Bootstrap provider registry**: run bootstrap dry-run and apply disabled provider seed only after review.
 4. **Enable generic S2S read for controlled projects**: set `BILLING_ENABLED=true` and `BILLING_S2S_ENABLED=true` only after S2S bearer/HMAC readiness. Verify projects resolve to the intended billing group, catalog reads are correct, and users without billing rows receive the group-scoped free default.
 5. **Enable webhook route in not-mutating posture**: configure each Stripe
-   account for `/webhooks/stripe/{billing_group_hash}`; reserve
-   `/webhooks/stripe` for explicit single-account migration use. Keep processing
+   account for `/webhooks/stripe/{billing_group_hash}`. Keep processing
    disabled until signed sanitized fixture validation and raw-body audit
    exclusion pass.
 6. **Enable Stripe webhook processing in test mode**: set `STRIPE_BILLING_ENABLED=true` and `STRIPE_WEBHOOKS_ENABLED=true` only in a controlled test environment. Process only approved MVP events.
@@ -392,7 +382,7 @@ Metrics must not contain raw provider refs, secrets, signatures, idempotency key
 
 1. Keep invalid deliveries rejected before mutation.
 2. Check exact raw-body handling and secret deployment by version label only.
-3. Temporarily set `STRIPE_WEBHOOKS_ENABLED=false` or block `/webhooks/stripe` at ingress if active failures continue.
+3. Temporarily set `STRIPE_WEBHOOKS_ENABLED=false` or block `/webhooks/stripe/*` at ingress if active failures continue.
 4. Validate with sanitized signed fixtures.
 5. Re-enable and run source-of-truth resync for affected scopes if needed.
 
@@ -490,7 +480,7 @@ Preferred rollback disables behavior and preserves evidence:
 
 1. **Stop new provider actions**: set `STRIPE_CHECKOUT_ENABLED=false`, `STRIPE_PORTAL_ENABLED=false`, `STRIPE_WEBHOOKS_ENABLED=false`, and `STRIPE_SYNC_ENABLED=false`.
 2. **Close generic billing if needed**: set `BILLING_CHECKOUT_ENABLED=false`, `BILLING_PORTAL_ENABLED=false`, `BILLING_SYNC_ENABLED=false`, `BILLING_S2S_ENABLED=false`, and finally `BILLING_ENABLED=false` if isolation requires it.
-3. **Disable ingress/webhook intake**: block `/webhooks/stripe` at ingress and/or rotate Stripe webhook secret to stop new deliveries.
+3. **Disable ingress/webhook intake**: block `/webhooks/stripe/*` at ingress and/or rotate Stripe webhook secret to stop new deliveries.
 4. **Stop sync execution**: stop `src/workers/billing_sync_worker.py` (in Docker, the sync flags from steps 1-2 already idle it; `BILLING_SYNC_WORKER_ENABLED=0` removes the process) and any scheduler/one-shot job that can claim billing sync jobs.
 5. **Disable consumer consumption**: consuming projects stop billing S2S pulls and fall back to local product behavior/free-default policy.
 6. **Clear only billing/Stripe Redis namespaces when approved**: clean rate-limit, replay, idempotency, sync lock, and heartbeat keys in billing/Stripe namespaces only. Never clear local auth/session/refresh namespaces.

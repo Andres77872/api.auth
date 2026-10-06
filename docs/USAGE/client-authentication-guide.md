@@ -22,7 +22,7 @@ pair in the JSON body **and** sets it as cookies, so one API serves both styles.
 
 | Cookie | Carries | `Path` | `Max-Age` | Attributes |
 | --- | --- | --- | --- | --- |
-| `session_token` | Access token | `/` | Access-token lifetime: `900` seconds by default (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly`, `Secure`, `SameSite=Strict`, host-only (no `Domain`) |
+| `access_token` | Access token | `/` | Access-token lifetime: `900` seconds by default (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES`) | `HttpOnly`, `Secure`, `SameSite=Strict`, host-only (no `Domain`) |
 | `refresh_token` | Refresh token | `/auth` | Remaining family lifetime: `259200` seconds (72 hours) after each rotation, or the seconds left of the 30-day `remember_me` window | `HttpOnly`, `Secure`, `SameSite=Strict`, host-only |
 
 - Both cookies are set by `POST /auth/login`, `/auth/platform/login`, `/auth/register` (when it
@@ -31,7 +31,7 @@ pair in the JSON body **and** sets it as cookies, so one API serves both styles.
   the session as over.
 - The access cookie expires with the access token, so after 15 minutes the browser stops sending
   it and protected calls return `401` until the client refreshes.
-- `session_token` is a legacy name: the cookie holds the access token, never a refresh credential.
+- The `access_token` cookie carries the access JWT.
 - When a request carries both `Authorization: Bearer` and the cookie, the header wins.
 
 Token lifetimes, rotation and revocation rules are in
@@ -66,7 +66,7 @@ Token lifetimes, rotation and revocation rules are in
 
 | Client | Access token | Refresh token |
 | --- | --- | --- |
-| Same-site browser app | `session_token` cookie only; ignore the copies in the JSON body | `refresh_token` cookie only |
+| Same-site browser app | `access_token` cookie only; ignore the copies in the JSON body | `refresh_token` cookie only |
 | BFF or server-rendered app | Server memory or its session store; the browser gets only the BFF's own session cookie | Server-side session store, encrypted at rest |
 | Mobile and desktop | Memory | iOS Keychain, Android Keystore, or the OS credential store |
 | Scripts and services | Memory | Secret manager, or a file readable only by the service account |
@@ -137,7 +137,7 @@ and never tell the user whether an address is registered.
 
 1. Sign in with `fetch(..., { credentials: 'include' })` and a form body; keep only the non-secret
    parts of the response (`user`, `project`, `accessible_projects`, `expires_at`).
-2. Call protected routes with `credentials: 'include'`; the browser attaches `session_token`.
+2. Call protected routes with `credentials: 'include'`; the browser attaches `access_token`.
 3. On `401`, call `POST /auth/refresh` with no body (the `refresh_token` cookie is sent because the
    path starts with `/auth`), then retry once.
 4. On startup, call `GET /auth/validate` to learn whether a session exists; it refreshes through

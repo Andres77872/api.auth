@@ -46,17 +46,6 @@ def test_subject_hmac_is_plain_hmac_sha256_of_the_raw_subject_under_the_pepper()
     assert provider_sub_hmac(GOLDEN_SUBJECT, pepper=GOLDEN_PEPPER).hex() == _reference_digest()
 
 
-def test_subject_hmac_matches_the_value_the_google_module_has_always_produced():
-    from src.Util import google_id_token_verifier as legacy
-
-    assert legacy.provider_sub_hmac(GOLDEN_SUBJECT, pepper=GOLDEN_PEPPER) == provider_sub_hmac(
-        GOLDEN_SUBJECT, pepper=GOLDEN_PEPPER
-    )
-    assert legacy.provider_email_hmac("User@Example.test", pepper=GOLDEN_PEPPER) == provider_email_hmac(
-        "user@example.test", pepper=GOLDEN_PEPPER
-    )
-
-
 def test_identity_namespace_is_never_part_of_the_hashed_input():
     """The same subject must hash identically whatever namespace or provider it is filed under."""
     env = {
@@ -73,22 +62,6 @@ def test_identity_namespace_is_never_part_of_the_hashed_input():
     )
     assert google.sub_hash == other.sub_hash == bytes.fromhex(GOLDEN_DIGEST_HEX)
     assert google.identity_namespace != other.identity_namespace
-
-
-def test_renamed_pepper_variable_falls_back_to_the_google_name_with_the_same_value():
-    legacy_only = load_oauth_settings(env={"GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER})
-    renamed = load_oauth_settings(env={"OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER})
-    both_equal = load_oauth_settings(
-        env={"OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER, "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER}
-    )
-    assert legacy_only.provider_sub_pepper == renamed.provider_sub_pepper == both_equal.provider_sub_pepper == GOLDEN_PEPPER
-
-
-def test_conflicting_pepper_values_fail_loudly_instead_of_silently_picking_one():
-    with pytest.raises(OAuthSettingsError):
-        load_oauth_settings(
-            env={"OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER, "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER + "-different"}
-        )
 
 
 def test_settings_repr_never_contains_a_pepper_or_key():
@@ -156,39 +129,8 @@ def test_reauth_adds_prompt_login_but_never_consent_or_offline_access():
     assert "access_type" not in login
 
 
-def test_adapter_url_equals_the_output_of_the_original_google_url_builder(monkeypatch):
-    """Differential check against the pre-refactor builder, which is still in the tree."""
-    from src.Util.google_oauth_config import load_google_oauth_config
-    from src.Util.oauth.adapters.google import GoogleAdapter
-    from src.Util.oauth.connections import EnvironmentConnectionSource
-    from src.Util.oauth_clients import build_google_authorization_url
-
-    env = {
-        "GOOGLE_OAUTH_ENABLED": "true",
-        "GOOGLE_OAUTH_CLIENT_ID": "differential-client.apps.googleusercontent.com",
-        "GOOGLE_OAUTH_CLIENT_SECRET": "differential-secret-not-real",
-        "GOOGLE_OAUTH_REDIRECT_URIS": "https://bff.example/auth/google/callback/return",
-        "GOOGLE_OAUTH_RETURN_ORIGINS": "https://app.example",
-        "GOOGLE_OAUTH_STATE_PEPPER": "p" * 40,
-        "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": "q" * 40,
-        "GOOGLE_OAUTH_EMAIL_HASH_PEPPER": "r" * 40,
-        "PROVIDER_INIT_REDEEM_URL": "http://bff.internal/redeem",
-        "PROVIDER_INIT_REDEEM_TOKEN": "t" * 40,
-    }
-    config = load_google_oauth_config(env=env)
-    redirect_uri = "https://bff.example/auth/google/callback/return"
-    for prompt in (None, "login", "consent"):
-        original = build_google_authorization_url(
-            state="st", nonce="no", code_challenge="ch", redirect_uri=redirect_uri, config=config,
-            extra_params={"prompt": prompt} if prompt else None,
-        ).authorization_url
-        resolved = EnvironmentConnectionSource(config_loader=lambda: config).get_binding(project_hash=None, connection_key="google")
-        tx = OAuthTransaction(state="st", nonce="no", code_verifier="ve", code_challenge="ch", redirect_uri=redirect_uri, prompt=prompt)
-        assert GoogleAdapter().build_authorization_url(resolved.config, tx) == original, f"prompt={prompt}"
-
-
-def test_plain_toggles_let_the_new_name_win_instead_of_failing_on_a_leftover_legacy_value():
-    settings = load_oauth_settings(env={"OAUTH_ENABLED": "true", "GOOGLE_OAUTH_ENABLED": "false"})
-    assert settings.enabled is True
-    assert load_oauth_settings(env={"GOOGLE_OAUTH_ENABLED": "true"}).enabled is True
-    assert load_oauth_settings(env={}).enabled is False
+def test_oauth_settings_ignore_removed_provider_environment_names():
+    settings = load_oauth_settings(env={"GOOGLE_OAUTH_ENABLED": "true", "GOOGLE_OAUTH_PROVIDER_SUB_PEPPER": GOLDEN_PEPPER})
+    assert settings.enabled is False
+    assert settings.provider_sub_pepper == ""
+    assert load_oauth_settings(env={"OAUTH_ENABLED": "true"}).enabled is True

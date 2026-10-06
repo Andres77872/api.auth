@@ -16,7 +16,7 @@ from tests.integration.conftest import make_session_payload, create_test_session
 
 def _make_session(user_type="consumer", user_id="1", user_hash="usr-test-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
-                  session_token="test-token"):
+                  access_token="test-token"):
     s = MagicMock()
     s.user_id = user_id
     s.user_hash = user_hash
@@ -26,7 +26,7 @@ def _make_session(user_type="consumer", user_id="1", user_hash="usr-test-001",
     s.project_id = project_id
     s.permissions = permissions or []
     s.groups = []
-    s.session_token = session_token
+    s.access_token = access_token
     s.session_length = 259200
     s.username = "testuser"
     return s
@@ -56,20 +56,21 @@ async def test_permissions_endpoint_resolves_correctly(client, fake_redis, patch
     This test verifies the endpoint works (not 404 or wrong handler).
     """
     token = "test-permissions-token"
-    session = _make_session(session_token=token, permissions=["read", "write"])
+    session = _make_session(access_token=token, permissions=["read", "write"])
     create_test_session(fake_redis, token, make_session_payload(
-        session_token=token, permissions=["read", "write"]))
+        access_token=token, permissions=["read", "write"]))
 
     user = _make_user()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.permission_assignments.validate_session", return_value=session), \
-         patch("src.routes.permission_assignments.get_user_by_hash", return_value=user), \
-         patch("src.routes.permission_assignments.get_user_all_permissions", return_value={
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.permission_assignments.validate_session", return_value=session),
+        patch("src.routes.permission_assignments.get_user_by_hash", return_value=user),
+        patch("src.routes.permission_assignments.get_user_all_permissions", return_value={
              "permissions": ["read", "write"],
              "sources": []
-         }):
+         }),
+    ):
         response = await client.get(
             "/permissions/users/me/permissions",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},
@@ -95,21 +96,22 @@ async def test_permissions_check_endpoint_resolves_correctly(client, fake_redis,
     should handle this endpoint.
     """
     token = "test-perm-check-token"
-    session = _make_session(session_token=token, permissions=["read", "write"])
+    session = _make_session(access_token=token, permissions=["read", "write"])
     create_test_session(fake_redis, token, make_session_payload(
-        session_token=token, permissions=["read", "write"]))
+        access_token=token, permissions=["read", "write"]))
 
     user = _make_user()
 
-    with patch("src.Util.db.validate_session", return_value=session), \
-         patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.routes.permission_assignments.validate_session", return_value=session), \
-         patch("src.routes.permission_assignments.get_user_by_hash", return_value=user), \
-         patch("src.routes.permission_assignments.check_user_has_permission_extended", return_value={
+    with (
+        patch("src.Util.db.validate_session", return_value=session),
+        patch("src.routes.permission_assignments.validate_session", return_value=session),
+        patch("src.routes.permission_assignments.get_user_by_hash", return_value=user),
+        patch("src.routes.permission_assignments.check_user_has_permission_extended", return_value={
              "has_permission": True,
              "permission": "read",
              "sources": []
-         }):
+         }),
+    ):
         response = await client.get(
             "/permissions/users/me/permissions/check/read",
             headers={"Authorization": f"Bearer {token}", "User-Agent": "test"},

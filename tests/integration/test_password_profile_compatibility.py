@@ -20,7 +20,7 @@ def _profile_session(fake_redis, token="profile-password-contract-token"):
     create_test_session(
         fake_redis,
         token,
-        make_session_payload(user_hash="usr-profile-contract", user_id="usr-profile-001", session_token=token),
+        make_session_payload(user_hash="usr-profile-contract", user_id="usr-profile-001", access_token=token),
     )
     session = SimpleNamespace(
         user_id="usr-profile-001",
@@ -31,7 +31,7 @@ def _profile_session(fake_redis, token="profile-password-contract-token"):
         permissions=[],
         groups=[],
         username="profile-contract-user",
-        session_token=token,
+        access_token=token,
     )
     user = MagicMock()
     user.id = "usr-profile-001"
@@ -66,11 +66,12 @@ async def test_put_profile_rejects_password_equivalent_fields_with_sanitized_gui
     token = f"profile-password-contract-{field_name}"
     session, user = _profile_session(integration_env["redis"], token)
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.update_user", return_value=_updated_profile_user(user)) as update_user:
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=user),
+        patch("src.routes.users.get_user_by_hash", return_value=user),
+        patch("src.routes.users.update_user", return_value=_updated_profile_user(user)) as update_user,
+    ):
         response = await client.put(
             "/users/profile",
             data={field_name: PASSWORD_FIELD_VALUE},
@@ -90,11 +91,12 @@ async def test_put_profile_non_password_update_remains_compatible(client, integr
     updated_user = _updated_profile_user(user)
     updated_user.username = "updated-profile-contract-user"
 
-    with patch("src.Util.Seccurity.validate_session", return_value=session), \
-         patch("src.Util.decorators.validate_session", return_value=session), \
-         patch("src.Util.decorators.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.get_user_by_hash", return_value=user), \
-         patch("src.routes.users.update_user", return_value=updated_user) as update_user:
+    with (
+        patch("src.Util.decorators.validate_session", return_value=session),
+        patch("src.Util.decorators.get_user_by_hash", return_value=user),
+        patch("src.routes.users.get_user_by_hash", return_value=user),
+        patch("src.routes.users.update_user", return_value=updated_user) as update_user,
+    ):
         response = await client.put(
             "/users/profile",
             data={"username": "updated-profile-contract-user"},

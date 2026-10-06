@@ -61,7 +61,6 @@ def _id_prefix(value: Any) -> str:
 class TokenPair:
     access_token: str
     refresh_token: str
-    session_token: str
     token_type: str
     expires_in: int
     refresh_expires_in: int
@@ -322,57 +321,6 @@ def _anchor_to_session_seed(
         "remember_me": bool(anchor.get("remember_me", False)),
         "refresh_ttl_seconds": anchor.get("refresh_ttl_seconds"),
         "absolute_expires_at": anchor.get("absolute_expires_at"),
-    }
-
-
-def _legacy_family_claims_seed(family: Dict[str, Any], claims: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a safe seed for pre-anchor families after token/family validation.
-
-    This fallback is intentionally narrow. If required identifiers cannot be
-    proven from the active family plus signed refresh claims, refresh fails
-    closed and the user must re-login.
-    """
-    family_id = str(family.get("family_id") or "")
-    refresh_jti = str(claims.get("jti") or "")
-    session_id = claims.get("session_id")
-    user_hash = family.get("user_hash") or claims.get("user_hash")
-    scope = str(family.get("scope") or claims.get("scope") or AUTH_SCOPE_PROJECT)
-
-    if not family_id or family_id != str(claims.get("family_id")):
-        raise _auth_unauthorized("Refresh context unavailable; re-login required")
-    if not refresh_jti or not session_id or not user_hash:
-        raise _auth_unauthorized("Refresh context unavailable; re-login required")
-
-    if scope == AUTH_SCOPE_PLATFORM:
-        collection = PLATFORM_COLLECTION_SENTINEL
-        project_hash = None
-        project_id = None
-    else:
-        collection = claims.get("collection") or family.get("project_hash")
-        project_hash = family.get("project_hash") or (collection if collection != PLATFORM_COLLECTION_SENTINEL else None)
-        project_id = family.get("project_id")
-        if not collection or not project_hash:
-            raise _auth_unauthorized("Refresh context unavailable; re-login required")
-
-    return {
-        "access_jti": str(family.get("current_access_jti") or ""),
-        "session_id": str(session_id),
-        "family_id": family_id,
-        "refresh_jti": refresh_jti,
-        "user_id": family.get("user_id"),
-        "user_hash": user_hash,
-        "username": None,
-        "user_type": None,
-        "scope": scope,
-        "collection": collection,
-        "project_id": project_id,
-        "project_hash": project_hash,
-        "project_name": None,
-        "issued_at": family.get("updated_at") or family.get("created_at"),
-        "expires_at": None,
-        "remember_me": bool(family.get("remember_me", False)),
-        "refresh_ttl_seconds": family.get("refresh_ttl_seconds"),
-        "absolute_expires_at": family.get("absolute_expires_at"),
     }
 
 
@@ -773,7 +721,7 @@ def _issue_token_pair(
     return TokenPair(
         access_token=access_token,
         refresh_token=refresh_token,
-        session_token=access_token,
+
         token_type=TOKEN_TYPE_BEARER,
         expires_in=access_ttl,
         refresh_expires_in=effective_refresh_ttl,
@@ -914,18 +862,15 @@ def _login_from_context(access_token: str, session: Dict[str, Any], context: Aut
         scope=context.scope,
         project_hash=project_hash,
         project_name=project_name,
-        user_project_hash=session.get("user_project_hash", ""),
-        session_token=access_token,
+        access_token=access_token,
         session_length=0,
         user_id=str(session.get("user_id")),
         username=session.get("username") or _field(context.user, "username"),
         project_id=project_id,
-        user_project_id=session.get("user_project_id"),
         groups=context.groups,
         permissions=context.permissions,
         available_projects=available_projects,
         user_type=user_type_value,
-        assigned_project_id=session.get("assigned_project_id") or _field(context.user, "assigned_project_id", None),
         plan=session_plan,
     )
 
@@ -1132,7 +1077,7 @@ def _build_rotated_pair(
         TokenPair(
             access_token=access_token,
             refresh_token=refresh_token,
-            session_token=access_token,
+
             token_type=TOKEN_TYPE_BEARER,
             expires_in=access_ttl,
             refresh_expires_in=refresh_ttl,
@@ -1214,7 +1159,8 @@ def rotate_refresh_family(
             raise _auth_unauthorized("Refresh token/session mismatch: anchor")
         context_session = _anchor_to_session_seed(anchor, claims, family)
     else:
-        context_session = _legacy_family_claims_seed(family, claims)
+        revoke_refresh_family(family_id, reason="missing_refresh_context")
+        raise _auth_unauthorized("Refresh context unavailable; re-login required")
 
     _require_refresh_claim_session_match(claims, family, context_session)
     if target_project is not None:

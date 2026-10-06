@@ -97,7 +97,7 @@ async def test_removing_an_admin_from_a_project_it_does_not_administer_is_404():
             )
 
     assert response.status_code == 404, response.text
-    assert _error(response)["code"] == "NF_4003"
+    assert _error(response)["code"] == "NF_4004"
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,7 @@ async def test_promoting_to_admin_of_a_project_without_admin_group_is_404_and_ch
         async with router_client(USER_TYPES) as client:
             response = await client.put(
                 f"/user-types/{MEMBER_A.user_hash}/type",
-                data={"user_type": "admin", "assigned_project_id": PROJECT_A.id},
+                data={"user_type": "admin", "assigned_project_ids": [PROJECT_A.id]},
                 headers=AUTH,
             )
 
@@ -265,7 +265,7 @@ async def test_profile_projects_carry_the_callers_permissions():
     extra = [
         (f"{USERS_ROUTES}.get_user_type_info", MagicMock(return_value={"user_type": "consumer"})),
         (f"{USERS_ROUTES}.get_user_groups_for_user", MagicMock(return_value=[])),
-        (f"{USERS_ROUTES}.get_user_effective_permissions", MagicMock(return_value=["read", "write"])),
+        (f"{USERS_ROUTES}.get_user_permissions", MagicMock(return_value=["read", "write"])),
     ]
     with directory(session_for(MEMBER_A), extra=extra):
         async with router_client(USERS_ROUTES) as client:
@@ -298,7 +298,7 @@ async def test_user_type_routes_report_admin_project_assignments():
             info = await client.get(f"/user-types/{ADMIN.user_hash}/info", headers=AUTH)
             retyped = await client.put(
                 f"/user-types/{ADMIN.user_hash}/type",
-                data={"user_type": "admin", "assigned_project_id": PROJECT_A.id}, headers=AUTH,
+                data={"user_type": "admin", "assigned_project_ids": [PROJECT_A.id]}, headers=AUTH,
             )
             listed = await client.get("/user-types/users/admin", headers=AUTH)
 
@@ -306,10 +306,10 @@ async def test_user_type_routes_report_admin_project_assignments():
         assert response.status_code == 200, response.text
     for body in (info.json(), retyped.json()):
         assert body["user_type_info"]["total_assigned_projects"] == 1
-        assert body["user_type_info"]["assigned_project_id"] == PROJECT_A.id
-    assert listed.json()["users"][0]["assigned_project"] == {
+        assert body["user_type_info"]["assigned_projects"][0]["project_id"] == PROJECT_A.id
+    assert listed.json()["users"][0]["assigned_projects"] == [{
         "project_id": PROJECT_A.id, "project_hash": PROJECT_A.project_hash, "project_name": PROJECT_A.project_name,
-    }
+    }]
 
 
 @pytest.mark.asyncio
@@ -339,5 +339,5 @@ async def test_create_admin_reports_projects_skipped_for_lacking_an_admin_group(
         "project_id": PROJECT_B.id, "project_hash": PROJECT_B.project_hash,
         "project_name": PROJECT_B.project_name, "reason": "no_admin_group",
     }]
-    assert user["primary_project_id"] == PROJECT_A.id
+    assert "primary_project_id" not in user
     assert "1 project(s)" in body["message"]

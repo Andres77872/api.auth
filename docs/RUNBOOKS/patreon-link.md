@@ -178,7 +178,7 @@ PATREON_ID_HMAC_SECRET="<secret-managed-value>" \
 Operational rules:
 
 - Do not paste real IDs into this runbook or tickets.
-- `PATREON_ID_HMAC_SECRET` is required for stable campaign/member/tier HMACs; `PATREON_HMAC_SECRET` exists only as backward-compatible fallback and should not be the production standard.
+- `PATREON_ID_HMAC_SECRET` is required for stable campaign/member/tier HMACs.
 - Validate ambiguity before enabling entitlement projection.
 - Unknown active tiers must fail safe and produce `patreon_tier_map_miss` / `act-cat-087`.
 - Do not expose raw Patreon campaign or tier IDs to Magic Worlds or the browser.

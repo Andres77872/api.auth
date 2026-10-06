@@ -41,7 +41,7 @@ CONNECTION_CONFIG = {
     "host": _require_env("DB_HOST"),
     "port": _get_int_env("DB_PORT", 3306),
     "user": _require_env("DB_USER"),
-    "password": _require_env("DB_MYSQL_PASSWORD", "DB_PASSWORD"),
+    "password": _require_env("DB_MYSQL_PASSWORD"),
     "database": _require_env("DB_NAME"),
     "charset": "utf8mb4",
     "autocommit": False,

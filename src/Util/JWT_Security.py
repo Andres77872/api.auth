@@ -53,10 +53,6 @@ def _resolve_jwt_secret_for_runtime() -> str:
 
 JWT_SECRET_KEY = _resolve_jwt_secret_for_runtime()
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES
-# Backward-compatible name for old imports/tests. Access tokens are no longer
-# 72h by default; this value mirrors the configured minute TTL as a fraction of
-# hours instead of reviving the old long-lived behavior.
-JWT_ACCESS_TOKEN_EXPIRE_HOURS = JWT_ACCESS_TOKEN_EXPIRE_MINUTES / 60
 
 
 class JWTTokenHandler:
@@ -64,8 +60,7 @@ class JWTTokenHandler:
     JWT token helper for the access/refresh-token contract.
 
     The request path must validate signature, exp, type, and the lifecycle claims
-    before Redis state is trusted. Legacy compatibility helpers remain at the
-    bottom of the file, but new tokens include jti/family_id/scope claims.
+    before Redis state is trusted. Tokens include jti/family_id/scope claims.
     """
 
     @staticmethod
@@ -228,18 +223,3 @@ class JWTTokenHandler:
             return all(field in unverified_payload for field in required_fields)
         except Exception:
             return False
-
-
-def jwt_encode(session_id: int, user_hash: str, collection: str) -> tuple[str, None]:
-    """Compatibility function that mimics cypher_x_encode interface."""
-    token = JWTTokenHandler.create_access_token(session_id, user_hash, collection)
-    return token, None
-
-
-def jwt_decode(token: str) -> tuple[list[Any], None]:
-    """Compatibility function that mimics cypher_x_decode interface."""
-    try:
-        session_id = JWTTokenHandler.extract_session_id(token)
-        return [session_id], None
-    except HTTPException:
-        return [0], None

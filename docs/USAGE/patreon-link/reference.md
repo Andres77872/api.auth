@@ -51,7 +51,6 @@ Creator tokens are global provider state, never stored per user.
 | `PATREON_EMAIL_HASH_PEPPER` | HMAC key of the proof recipient's e-mail. |
 | `PATREON_PROOF_TOKEN_PEPPER` | HMAC key of proof tokens at rest. |
 | `PATREON_ID_HMAC_SECRET` | HMAC key of campaign, member and tier ids. Required for linking. |
-| `PATREON_HMAC_SECRET` | Legacy alias, read only when `PATREON_ID_HMAC_SECRET` is empty. |
 | `PATREON_WEBHOOK_DELIVERY_HASH_PEPPER` | HMAC key of webhook delivery hashes; plain SHA-256 is used when empty. |
 | `PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY` | Encryption of the stored creator token and of quarantined payloads. Required for token refresh and payload capture. |
 | `PATREON_PROVIDER_TOKEN_ENCRYPTION_KEY_ID` | Id stored with each ciphertext. |
@@ -192,7 +191,7 @@ Machine-to-machine routes:
 | `GET /internal/users/{user_hash}/entitlements` | S2S bearer | `200` entitlement |
 | `POST /internal/users/{user_hash}/entitlements/patreon/resync` | S2S bearer | `202` accepted or refused |
 
-"Access token" means `Authorization: Bearer <access JWT>` or the `session_token` cookie.
+"Access token" means `Authorization: Bearer <access JWT>` or the `access_token` cookie.
 "Recent authentication" means a sign-in, or an OAuth reauth of the same session, within
 `OAUTH_RECENT_REAUTH_SECONDS` (default `300`); without it the answer is `401` `AUTH_1008`.
 Unknown body fields on the link routes are `400` `VAL_3001`. Rate-limited link routes
@@ -493,4 +492,4 @@ fields above. These are always server-only:
 - tokens and secrets: `creator_token`, `creator_access_token`, `creator_refresh_token`, `patreon_access_token`, `patreon_refresh_token`, `proof_token_raw`, `proof_token`, `proof_secret`, `token_hash`, `s2s_token`, `s2s_bearer_token`, `webhook_secret`, `patreon_client_secret`, HMAC secrets, encryption keys
 - raw Patreon statuses: `patron_status`, `currently_entitled_tiers`, `last_charge_status`
 - internals: `delivery_hash`, `raw_body_sha256`, `payload_hash`, `audit_rows`, activity rows, sync-job internals
-- local auth material: `access_token`, `refresh_token`, `session_token`, `api_key`, `token_type`, `expires_in` and their variants
+- local auth material: `access_token`, `refresh_token`, `access_token`, `api_key`, `token_type`, `expires_in` and their variants

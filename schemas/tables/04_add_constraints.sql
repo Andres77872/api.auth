@@ -118,15 +118,6 @@ ALTER TABLE user_group_project_group_roles
         REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- ===================================================================================
--- USER_SESSIONS TABLE CONSTRAINTS
--- ===================================================================================
-ALTER TABLE user_sessions
-    ADD CONSTRAINT fk_user_sessions_user FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    ADD CONSTRAINT fk_user_sessions_project FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- ===================================================================================
 -- API_AUDIT_LOG TABLE CONSTRAINTS
 -- ===================================================================================
 ALTER TABLE api_audit_log
@@ -456,69 +447,6 @@ BEGIN
 END$$
 
 -- Validation triggers
-CREATE TRIGGER tr_validate_session_expiry
-BEFORE INSERT ON user_sessions
-FOR EACH ROW
-BEGIN
-    DECLARE v_user_type VARCHAR(20);
-    DECLARE v_has_access INT DEFAULT 0;
-    
-    -- Check session expiry
-    IF NEW.expires_at <= NOW() THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Session expiry must be in the future';
-    END IF;
-    
-    -- Get user type
-    SELECT user_type INTO v_user_type 
-    FROM users 
-    WHERE id = NEW.user_id AND is_active = TRUE;
-    
-    -- Validate user exists and is active
-    IF v_user_type IS NULL THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'User does not exist or is inactive';
-    END IF;
-    
-    -- Validate project exists and is active
-    IF NOT EXISTS (
-        SELECT 1
-        FROM projects
-        WHERE id = NEW.project_id
-          AND is_active = TRUE
-          AND (archived = FALSE OR archived IS NULL)
-    ) THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Project does not exist, is inactive, or is archived';
-    END IF;
-    
-    -- Root users have access to all projects
-    IF v_user_type = 'root' THEN
-        SET v_has_access = 1;
-    ELSE
-        -- Check access via groups of groups: User → User Group → Project Group → Project
-        SELECT COUNT(*) INTO v_has_access
-        FROM user_group_members ugm
-        JOIN user_groups ug ON ug.id = ugm.user_group_id AND ug.is_active = TRUE
-        JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = TRUE
-        JOIN project_groups pg ON pg.id = ugpg.project_group_id AND pg.is_active = TRUE
-        JOIN project_group_members pgm ON pg.id = pgm.project_group_id AND pgm.is_active = TRUE
-        JOIN projects p ON p.id = pgm.project_id
-            AND p.is_active = TRUE
-            AND (p.archived = FALSE OR p.archived IS NULL)
-        WHERE ugm.user_id = NEW.user_id
-          AND ugm.is_active = TRUE
-          AND pgm.project_id = NEW.project_id
-        LIMIT 1;
-    END IF;
-    
-    -- Reject session if no access
-    IF v_has_access = 0 THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'User does not have access to this project';
-    END IF;
-END$$
-
 CREATE TRIGGER tr_validate_permission_cache_expiry
 BEFORE INSERT ON permission_cache
 FOR EACH ROW

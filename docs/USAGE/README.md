@@ -1,6 +1,6 @@
 # Documentation overview
 
-Integration, administration and operations guides for `api.auth` API version `2.2.0`: the
+Integration, administration and operations guides for `api.auth` API version `3.0.0`: the
 authentication and authorization service behind Magic Auth. It signs users in (password or
 OAuth), issues access and refresh sessions, decides which projects and actions a user may reach,
 and manages API keys, transactional email, Patreon entitlement links and Stripe billing facts.
@@ -73,7 +73,6 @@ Each topic folder has the same pages, so you always know where to look:
 | Topic | Covers |
 | --- | --- |
 | [OAuth](oauth/README.md) | Provider-agnostic sign-in: connections, project bindings, readiness, linking, the admin API |
-| [Google OAuth](google-oauth/README.md) | Deprecated `/auth/google/*` aliases onto the OAuth pipeline and `GOOGLE_OAUTH_*` configuration |
 | [Patreon link](patreon-link/README.md) | Entitlement-only account linking: proof, admin, S2S reads, webhooks, sync |
 | [Stripe billing](stripe-billing/README.md) | Billing groups, catalog, per-account credentials, S2S checkout and portal, webhooks |
 
@@ -92,7 +91,7 @@ Operations → Runbooks.
 
 | Task | Guide |
 | --- | --- |
-| Bootstrap the first root user | [Getting started](getting-started.md#first-root-bootstrap-and-current-seed-caveat) |
+| Bootstrap the first root user | [Getting started](getting-started.md#first-root-bootstrap) |
 | Create a project and let users register into it | [Getting started](getting-started.md#set-up-the-first-project-and-groups) |
 | Sign in, refresh or sign out | [Authentication](authentication-usage-cases.md) |
 | Build a browser or mobile client | [Client integration guide](client-authentication-guide.md) |
@@ -111,10 +110,10 @@ Operations → Runbooks.
 
 ## API surface
 
-API version `2.2.0` registers **246 HTTP method/path operations across 28 `src/routes/*.py`
+API version `3.0.0` registers **239 HTTP method/path operations across 27 `src/routes/*.py`
 modules** (`assistant.py` adds one WebSocket endpoint and no HTTP operations). The count excludes
 FastAPI's built-in `/docs`, `/redoc` and `/openapi.json` routes and the routes declared directly in
-`src/main.py` (`/ping`, the `/documentation` wiki, the legacy `/docs/USAGE/*` redirect, `/llms.txt`
+`src/main.py` (`/ping`, the `/documentation` wiki, `/llms.txt`
 and the `/` redirect). Endpoint-level contracts live in each topic's reference page and in the running OpenAPI
 document.
 
@@ -122,7 +121,6 @@ document.
 | --- | --- | --- | ---: | --- |
 | Authentication | `/auth` | `auth.py` | 13 | Mixed public/session |
 | OAuth | `/auth/oauth` | `auth_oauth.py` | 9 | Project API key (init, providers), public (start, callback), session (link, reauth, unlink) |
-| Google OAuth (deprecated) | `/auth/google` | `auth_google.py` | 5 | Public OAuth + session |
 | Patreon link | `/auth/patreon` | `auth_patreon.py` | 4 | Session + recent reauth |
 | Users | `/users` | `users.py` | 19 | Session/scoped admin/root |
 | User API keys | `/users/api-keys` | `user_api_keys.py` | 5 | Session + step-up |
@@ -134,10 +132,10 @@ document.
 | Roles | `/roles` | `global_roles.py` | 28 | Mixed session/admin |
 | Permission assignments | `/permissions` | `permission_assignments.py` | 17 | Mixed session/admin |
 | Admin billing | `/admin/billing` | `admin_billing.py` | 22 | Admin/manage_billing; credentials root-only |
-| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 20 | Admin; connections, credentials and catalog root-only |
+| Admin OAuth | `/admin/oauth` | `admin_oauth.py` | 19 | Admin; connections, credentials and catalog root-only |
 | Root assistant | `/admin/assistant/ws` | `assistant.py` | 0 | One root-only WebSocket endpoint; excluded from HTTP operation counts |
 | Billing internal | `/internal/.../billing` | `internal_billing.py` | 6 | Dedicated billing S2S bearer |
-| Stripe webhooks | `/webhooks/stripe` | `stripe_webhooks.py` | 2 | Stripe signature |
+| Stripe webhooks | `/webhooks/stripe/{billing_group_hash}` | `stripe_webhooks.py` | 1 | Stripe signature |
 | Admin Patreon | `/admin/patreon` | `admin_patreon.py` | 8 | Root |
 | Patreon internal | `/internal/users/{user_hash}/entitlements` | `internal_patreon.py` | 2 | Dedicated Patreon S2S bearer |
 | Patreon webhook | `/webhooks/patreon` | `patreon_webhooks.py` | 1 | Patreon signature |
@@ -159,13 +157,13 @@ Rules that hold for every route. Topic pages only repeat a rule when a route fam
 | POST size | POST requests whose `Content-Length` exceeds 8 MiB are rejected with `413`. |
 | Content types | Older CRUD and admin mutations take form fields (`application/x-www-form-urlencoded` or multipart; list fields repeat). OAuth init/start and administration, email templates, internal email and billing, audit export and the user-group bulk add take JSON. Webhooks take the provider's signed raw body. Each reference page states the format per route. |
 | Validation errors | Request-validation failures return `400` `VAL_3001` with `error.details.validation_errors`; FastAPI's default `422` body is never produced. Outside `DEBUG_MODE`, `error.details` is returned only for validation failures and rate limits. See the [error reference](errors.md). |
-| Session tokens | Access and refresh tokens are distinct JWTs. `session_token` is a deprecated alias of `access_token` in response bodies and the name of the access-token cookie; it is never a refresh credential. The refresh token travels in the `refresh_token` cookie (path `/auth`) or form field. |
+| Session tokens | Access and refresh tokens are distinct JWTs. The `access_token` cookie carries the access JWT; the response field has the same name. The refresh token travels in the `refresh_token` cookie (path `/auth`) or form field. |
 | Permission freshness | Auth-time permissions are re-read on every token check and cached per token for up to 30 seconds (API-key validation results: 60 seconds). Role and permission changes need no new login. |
 | Billing plan projection | Project-scoped consumer login, `POST /auth/refresh`, `GET /auth/validate` and consumer `POST /auth/validate-api-key` may include a provider-neutral subscription `plan`, resolved at response time from the project's billing group. It is never stored in JWT claims, cookies or Redis session state. Platform sessions and switch-project responses omit it. |
 | System details | `/system/info` and `/system/health` require a valid access session. `/ping` and `/system/ping` are public. |
 | Project stubs | `PATCH /projects/{project_hash}/owner` and `/archive` currently return `501`; archive enforcement elsewhere is active. |
 | CORS | Set `ALLOWED_ORIGINS` explicitly. `.env.example` is the maintained deployment template. When unset, CORS, early-reject responses and email-link origin checks share one built-in list (`DEFAULT_ALLOWED_ORIGINS` in `src/Util/auth_constants.py`) of localhost/LAN development origins plus the hosted auth UI origin `https://auth-ui.arz.ai`; never rely on it in a deployment. |
-| First root | There is no unauthenticated API bootstrap. The canonical SQL seeds a legacy SHA-256 root credential that the Argon2id-only verifier rejects, while the Python bootstrap scripts print a different password. Rotate that row to Argon2id before first login, or omit the seed and create the root through the application helper; see [Getting started](getting-started.md#first-root-bootstrap-and-current-seed-caveat). |
+| First root | Create the first root with `scripts/bootstrap_root_user.py` using an operator-supplied password that satisfies the policy and is hashed with Argon2id; see [Getting started](getting-started.md#first-root-bootstrap). |
 
 ## Writing and maintaining these docs
 
@@ -208,11 +206,11 @@ table above also feeds the wiki's home page.
 ### Checks
 
 ```bash
-.venv/bin/python -m pytest tests/static tests/unit/test_documentation_renderer.py -q
+.venv/bin/python -m pytest tests/static tests/unit/test_docs_site_markdown.py -q
 ```
 
 `tests/static/test_documentation_consistency.py` verifies the route inventory, that reference route
 tables list only registered operations, that local links and anchors resolve, that every `json`
 fence parses and that referenced repository files exist. The other `tests/static/*_docs_static.py`
-files guard topic-specific contracts, and `tests/unit/test_documentation_renderer.py` covers the
+files guard topic-specific contracts, and `tests/unit/test_docs_site_markdown.py` covers the
 wiki renderer.

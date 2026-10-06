@@ -26,8 +26,8 @@ project ─► role catalog                                          (metadata o
 
 | Family | Paths | Routes |
 | --- | --- | --- |
-| Roles | `/roles/roles`, `/roles/roles/{role_hash}` | 5 |
-| Role to permission-group links | `/roles/roles/{role_hash}/permission-groups[/{group_hash}]` | 3 |
+| Roles | `/roles`, `/roles/{role_hash}` | 5 |
+| Role to permission-group links | `/roles/{role_hash}/permission-groups[/{group_hash}]` | 3 |
 | Permission groups | `/roles/permission-groups`, `/roles/permission-groups/{group_hash}` | 5 |
 | Group to permission links | `/roles/permission-groups/{group_hash}/permissions[/{permission_hash}]` | 3 |
 | Permissions | `/roles/permissions`, `/roles/permissions/{permission_hash}` | 5 |
@@ -46,7 +46,7 @@ many users and is documented here too. Full contract: [Roles reference](referenc
   `admin`, `manage_users`, `manage_roles`, and the other
   [reserved permission names](reference.md#reserved-permission-names), and cannot change their own role.
   The same holds for bulk role assignment and for the `/permissions` assignment routes.
-- **Doubled path.** Role CRUD lives at `/roles/roles/...`: the router prefix `/roles` plus route paths
+- **Doubled path.** Role CRUD lives at `/roles/...`: the router prefix `/roles` plus route paths
   that also start with `/roles`.
 - **Form fields.** Writes take form-encoded or multipart bodies. A JSON body is not read (`400`
   `VAL_3001` for required fields; optional-only `PUT`s silently change nothing).

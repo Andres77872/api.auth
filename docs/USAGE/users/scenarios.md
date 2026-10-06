@@ -31,7 +31,7 @@ curl "http://localhost:8000/users/access-summary" \
 - Registration always creates a `consumer`. If the group reaches no active project, the account is
   still created but no tokens are issued; add the user to a group with project reach before they
   sign in.
-- An `email` sent to `/auth/register` only fills the legacy `users.email` column. Step 3 is what makes
+- An `email` sent to `/auth/register` only fills the activated primary email column. Step 3 is what makes
   email sign-in and password recovery work ([User email management](email-management.md)).
 - Activating the address revokes every session of the user, so step 4 needs a fresh sign-in.
 
@@ -66,7 +66,7 @@ curl "http://localhost:8000/user-types/admin/$ADMIN_HASH/projects" \
 # 1. Promote with the first project
 curl -X PUT "http://localhost:8000/user-types/$USER_HASH/type" \
   -H "Authorization: Bearer $ROOT_TOKEN" \
-  -d "user_type=admin&assigned_project_id=$PROJECT_ID"
+  -d "user_type=admin&assigned_project_ids=$PROJECT_ID"
 
 # 2. Add more projects
 curl -X POST "http://localhost:8000/user-types/admin/$USER_HASH/projects/add" \
@@ -178,7 +178,7 @@ Soft delete keeps the old account's `user_emails` rows, and an activated address
 one account, so the new account's activation link is consumed without effect.
 
 ```bash
-# 1. Find the old account; its legacy email field holds its primary address
+# 1. Find the old account; its activated primary email identifies it
 curl "http://localhost:8000/users/list?include_inactive=true&search=old.address@example.com" \
   -H "Authorization: Bearer $ROOT_TOKEN"
 

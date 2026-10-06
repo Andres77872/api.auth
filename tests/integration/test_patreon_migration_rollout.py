@@ -313,10 +313,10 @@ def test_no_per_user_patreon_token_columns_in_link_membership_or_entitlement_tab
             assert not _has_forbidden_column(block, column), f"Patreon per-user rows must not store raw token column {column}"
 
 
-def test_patreon_activity_catalog_range_is_seeded_after_google_oauth():
+def test_patreon_activity_catalog_range_is_seeded():
     source = _read(ACTIVITY_SQL).lower()
 
-    assert "act-cat-074" in source, "Google OAuth activity range must remain present"
+    assert "google_oauth_started" not in source
     for number in range(75, 75 + len(PATREON_ACTIVITY_CODES)):
         assert f"act-cat-{number:03d}" in source, f"missing Patreon activity catalog id act-cat-{number:03d}"
     for code in PATREON_ACTIVITY_CODES:

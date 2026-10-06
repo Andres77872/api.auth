@@ -20,13 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi import HTTPException
 
-from src.Util.auth_constants import OAUTH_INIT_MODE_LEGACY_REDEEM
-from src.Util.oauth.connections import (
-    LegacyRedeemConfig,
-    OAuthConnectionUnavailable,
-    ProjectBinding,
-    ResolvedConnection,
-)
+from src.Util.oauth.connections import OAuthConnectionUnavailable, ProjectBinding, ResolvedConnection
 from src.Util.oauth.provider import (
     ConnectionConfig,
     ConnectionSecrets,
@@ -101,7 +95,6 @@ class FakeSource:
                 redirect_uris=(redirect_uri,), return_origins=(origin,), **extra,
             ),
             adapter=self.adapter,
-            source_name=self.name,
         )
 
     def _checked(self, resolved):
@@ -121,17 +114,12 @@ class FakeSource:
                 return self._checked(resolved)
         raise OAuthConnectionUnavailable("not_configured", "binding_not_found")
 
-    def find_legacy_bindings(self, *, connection_key):
-        return [r for r in self.bindings.values() if r.binding.init_mode == OAUTH_INIT_MODE_LEGACY_REDEEM]
 
     def list_project_bindings(self, *, project_hash):
         return [r for key, r in self.bindings.items() if key == project_hash]
 
     def load_secrets(self, resolved):
         return ConnectionSecrets(client_secret=f"secret-of-{resolved.config.connection_id}")
-
-    def load_legacy_redeem(self, resolved):
-        return LegacyRedeemConfig(url="http://bff.internal/redeem", token="legacy-bearer-not-real")
 
 
 async def _fake_api_key_context(api_key):
@@ -204,7 +192,7 @@ async def test_full_login_through_a_non_google_provider_with_auto_provisioning(c
 
     assert callback.status_code == 200, callback.text
     assert callback.json()["project"]["project_hash"] == PROJECT_A
-    assert "session_token" in callback.cookies
+    assert "access_token" in callback.cookies
     assert adapter.exchanged == [("oac-a", "alice")]
 
     kwargs = db["create_consumer_user_from_external_account"].call_args.kwargs
@@ -322,7 +310,7 @@ async def test_existing_user_from_another_project_is_denied_by_default_and_enrol
     source.bindings[PROJECT_A] = ResolvedConnection(
         config=current.config,
         binding=ProjectBinding(**{**current.binding.__dict__, "existing_user_policy": "join_default_group"}),
-        adapter=current.adapter, source_name=current.source_name,
+        adapter=current.adapter,
     )
     with db_patcher(extra_patches=["assign_user_to_group"]) as db:
         db["get_user_accessible_projects"].side_effect = [[], [_project(PROJECT_A)]]
@@ -333,70 +321,6 @@ async def test_existing_user_from_another_project_is_denied_by_default_and_enrol
 
 
 # ─────────────────────────────────────── legacy bridge never trusts caller-asserted scope
-
-@contextmanager
-def _legacy_google_binding(source, redeemed):
-    """Put project A's binding in legacy-redeem mode behind the deprecated Google alias."""
-    from src.Util.oauth.adapters.google import GoogleAdapter
-
-    base = source.bindings[PROJECT_A]
-    source.bindings[PROJECT_A] = ResolvedConnection(
-        config=ConnectionConfig(connection_id="oac-a", provider_type="google", client_id="client-a",
-                                scopes="openid email", identity_namespace="google"),
-        binding=ProjectBinding(**{**base.binding.__dict__, "connection_key": "google", "init_mode": OAUTH_INIT_MODE_LEGACY_REDEEM}),
-        adapter=GoogleAdapter(), source_name="db",
-    )
-
-    async def _redeem(token, **kwargs):
-        return dict(redeemed)
-
-    with patch("src.routes.auth_google._connection_source", lambda: source), patch(
-        "src.routes.auth_google.redeem_provider_init_token", _redeem
-    ):
-        yield
-
-
-def _redeemed(**overrides):
-    payload = {"active": True, "provider": "google", "purpose": "login", "audience": "api.auth", "expires_in": 300,
-               "project_hash": PROJECT_A, "user_group_hash": "hash-grp-a", "return_origin": "https://a.example"}
-    payload.update(overrides)
-    return payload
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"project_hash": PROJECT_B},                  # a backend speaking for someone else's project
-        {"user_group_hash": "hash-of-an-admin-group"},  # a backend asserting a privileged group
-    ],
-)
-async def test_legacy_bridge_rejects_a_redeemed_scope_that_is_not_the_bindings_own(client, source, fake_redis, overrides):
-    with _legacy_google_binding(source, _redeemed(**overrides)):
-        response = await client.post(
-            "/auth/google/start",
-            json={"provider_init_token": "opaque", "redirect_uri": "https://a.example/cb", "return_origin": "https://a.example"},
-            follow_redirects=False,
-        )
-    assert response.status_code == 401
-    assert not list(fake_redis.scan_iter(match="oauth_state:*"))
-    assert PROJECT_B not in response.text and "admin" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_legacy_bridge_accepts_the_bindings_own_scope_and_never_stores_the_asserted_group(client, source, fake_redis):
-    with _legacy_google_binding(source, _redeemed()):
-        response = await client.post(
-            "/auth/google/start",
-            json={"provider_init_token": "opaque", "redirect_uri": "https://a.example/cb", "return_origin": "https://a.example"},
-            follow_redirects=False,
-        )
-    assert response.status_code == 303
-    from src.Util.oauth_state import OAuthStateStore
-
-    record = OAuthStateStore(redis_client=fake_redis).consume_state(_state(response))
-    assert record.project_hash == PROJECT_A and record.connection_id == "oac-a"
-    assert record.user_group_hash is None, "database bindings provision from their own group, not the redeemed one"
 
 
 @pytest.mark.asyncio

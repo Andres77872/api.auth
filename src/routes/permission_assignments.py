@@ -30,7 +30,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Path, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from src.Util.Seccurity import HTTPBearerOrCookie
+from src.Util.security import HTTPBearerOrCookie
 from src.Util.db import (
     validate_session, 
     get_user_by_hash, 
@@ -176,7 +176,7 @@ async def assign_permission_group_to_group(
     for the group's direct members, but it is **not** part of the auth-time permission set:
     session and route permission checks are role-derived.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment). Only root may assign a permission group
     containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
@@ -252,7 +252,7 @@ async def remove_permission_group_from_group(
 
     Idempotent: returns `200` even if the permission group was not assigned to the user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment). Only root may remove a permission group
     containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
@@ -323,7 +323,7 @@ async def get_group_permission_groups(
     """
     List the active permission groups assigned to a user group.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -372,7 +372,7 @@ async def bulk_assign_permission_groups_to_group(
     if a non-root caller lists a group containing a reserved permission name, the request
     fails with `403` and nothing is assigned.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment). Only root may assign a permission group
     containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
@@ -483,7 +483,7 @@ async def assign_permission_group_to_user_direct(
     up in the inspection endpoints but are **not** part of the user's auth-time permission set,
     which is role-derived.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment). Only root may assign a permission group
     containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
@@ -562,7 +562,7 @@ async def remove_permission_group_from_user_direct(
     Idempotent: returns `200` even if the group was not directly assigned. Groups the user
     receives through their role or user groups are not affected.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment). Only root may remove a permission group
     containing a reserved permission name (see `POST /roles/permissions`). Other callers get `403`.
@@ -631,7 +631,7 @@ async def get_my_permission_groups(session_data=Depends(require_valid_session)):
     Only direct assignments are returned; groups received through the caller's role or user
     groups are not included (see `/permissions/users/me/permission-sources`).
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; always returns the caller's own data.
 
     **Responses:**
@@ -665,7 +665,7 @@ async def get_user_direct_permission_groups(
     Only direct assignments are returned; groups received through the user's role or user groups
     are not included.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -712,7 +712,7 @@ async def get_my_permissions(session_data=Depends(require_valid_session)):
     permissions of `root`/`admin`. Soft-deleted roles, permission groups, user groups, and
     permissions contribute nothing.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; always returns the caller's own data.
 
     **Responses:**
@@ -747,7 +747,7 @@ async def check_my_permission(
     permissions are not reported. Like `GET /permissions/users/me/permissions`, soft-deleted roles,
     permission groups, user groups, and permissions count for nothing.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; always checks the caller.
 
     **Responses:**
@@ -779,7 +779,7 @@ async def get_my_permission_sources(session_data=Depends(require_valid_session))
     so `summary.total_permission_groups` counts entries, not distinct groups. Only the role source
     feeds the auth-time permission set.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; always returns the caller's own data.
 
     **Responses:**
@@ -837,7 +837,7 @@ async def add_permission_group_to_catalog(
     re-adding re-activates the entry, and omitted `catalog_purpose`/`notes` keep their previous
     values. Not limited to the caller's projects.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -912,7 +912,7 @@ async def remove_permission_group_from_catalog(
     Idempotent: returns `200` even if the group was not cataloged for the project. No permission
     assignment changes.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -980,7 +980,7 @@ async def get_project_catalog(
     The catalog does not restrict which permission groups can be used. Any authenticated user can
     read any project's catalog; there is no project-membership check.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -1019,7 +1019,7 @@ async def get_permission_group_catalog(
 
     Catalog entries do not limit where the group applies.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Any authenticated user; no role or permission check.
 
     **Responses:**
@@ -1060,7 +1060,7 @@ async def get_user_groups_using_permission_group(
     """
     List the active user groups that have a permission group assigned.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -1101,7 +1101,7 @@ async def get_users_using_permission_group(
     user groups. Each entry includes the user's id, hash, username, email, user type, role id,
     and the assignment metadata.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `session_token` HttpOnly
+    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly
     cookie). Caller must be `root` or `admin`, or a `consumer` holding `manage_roles` from any
     source (role, user group, or direct assignment); other callers get `403`.
 
@@ -1129,4 +1129,3 @@ async def get_users_using_permission_group(
         "users_with_direct_assignment": users,
         "count": len(users)
     }
-    

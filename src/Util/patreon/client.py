@@ -709,9 +709,7 @@ class PatreonClient:
         store = db_module or self._db_module
         if store is None:
             return False
-        method = getattr(store, "upsert_patreon_provider_token_state", None) or getattr(
-            store, "upsert_provider_token_state", None
-        )
+        method = getattr(store, "upsert_patreon_provider_token_state", None)
         if not callable(method):
             return False
         kwargs = self._encrypted_token_state_kwargs(
@@ -883,18 +881,12 @@ class PatreonClient:
             result["included"] = included
         return result
 
-    async def get_campaign_members(self, campaign_id: str) -> dict[str, Any]:
-        """Compatibility alias for paginated campaign member reads."""
-
-        return await self.fetch_campaign_members(campaign_id)
 
     async def get_member(self, member_id: str) -> dict[str, Any]:
         """Read one Patreon member by provider member identifier."""
 
         return await self._request_json(self._member_url(member_id), operation="member")
 
-    async def fetch_member(self, member_id: str) -> dict[str, Any]:
-        return await self.get_member(member_id)
 
     async def get_member_by_id(self, member_id: str) -> dict[str, Any]:
         return await self.get_member(member_id)

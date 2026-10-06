@@ -18,10 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-try:  # pragma: no cover - exercised when dependency is installed.
-    from cryptography.fernet import Fernet
-except Exception:  # pragma: no cover - local test env may not have deps installed yet.
-    Fernet = None  # type: ignore
+from cryptography.fernet import Fernet
 
 
 HASH_VERSION = "v1"
@@ -190,57 +187,9 @@ def validate_payload_key(key: str | bytes) -> bytes:
     return decoded
 
 
-class _FallbackPayloadCipher:
-    """Small authenticated fallback used only when cryptography is unavailable.
-
-    Production installs should use cryptography's Fernet implementation.  The
-    fallback still keeps test payloads confidential and tamper-checked using
-    stdlib HMAC-derived keystream blocks, so no plaintext link/recipient values
-    appear in durable ciphertext during local targeted tests.
-    """
-
-    VERSION = b"EPL1"
-
-    def __init__(self, key: str | bytes) -> None:
-        self._key = validate_payload_key(key)
-
-    def encrypt(self, plaintext: bytes) -> bytes:
-        nonce = secrets.token_bytes(16)
-        ciphertext = self._xor_with_keystream(plaintext, nonce)
-        tag = hmac.digest(self._key, self.VERSION + nonce + ciphertext, "sha256")
-        return base64.urlsafe_b64encode(self.VERSION + nonce + tag + ciphertext)
-
-    def decrypt(self, token: bytes | str) -> bytes:
-        token_bytes = token if isinstance(token, bytes) else token.encode("ascii")
-        decoded = base64.urlsafe_b64decode(token_bytes)
-        if len(decoded) < len(self.VERSION) + 16 + 32 or not decoded.startswith(self.VERSION):
-            raise ValueError("invalid render payload ciphertext")
-        offset = len(self.VERSION)
-        nonce = decoded[offset : offset + 16]
-        offset += 16
-        expected_tag = decoded[offset : offset + 32]
-        offset += 32
-        ciphertext = decoded[offset:]
-        actual_tag = hmac.digest(self._key, self.VERSION + nonce + ciphertext, "sha256")
-        if not hmac.compare_digest(actual_tag, expected_tag):
-            raise ValueError("invalid render payload ciphertext")
-        return self._xor_with_keystream(ciphertext, nonce)
-
-    def _xor_with_keystream(self, data: bytes, nonce: bytes) -> bytes:
-        output = bytearray()
-        counter = 0
-        while len(output) < len(data):
-            block = hmac.digest(self._key, nonce + counter.to_bytes(4, "big"), "sha256")
-            output.extend(block)
-            counter += 1
-        return bytes(left ^ right for left, right in zip(data, output))
-
-
 def _payload_cipher(key: str | bytes):
     key_bytes = key if isinstance(key, bytes) else key.encode("ascii")
-    if Fernet is not None:
-        return Fernet(key_bytes)
-    return _FallbackPayloadCipher(key)
+    return Fernet(key_bytes)
 
 
 def encrypt_render_payload(payload: Mapping[str, Any], *, key: str | bytes) -> bytes:

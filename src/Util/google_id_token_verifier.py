@@ -24,8 +24,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-from src.Util.google_oauth_config import GoogleOAuthConfig, load_google_oauth_config
-
 
 MAX_JWKS_CACHE_TTL_SECONDS = 3600
 
@@ -195,68 +193,6 @@ def sanitize_google_claims(claims: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def provider_sub_hmac(provider_sub: str, *, pepper: str | None = None, config: GoogleOAuthConfig | None = None) -> bytes:
-    """Return the durable HMAC authority key for a provider ``sub``.
-
-    Delegates to :mod:`src.Util.oauth.identity`; kept here for compatibility.
-    """
-
-    from src.Util.oauth import identity as oauth_identity
-
-    try:
-        return oauth_identity.provider_sub_hmac(
-            provider_sub, pepper=pepper or (config.provider_sub_pepper if config else None)
-        )
-    except oauth_identity.OAuthIdentityKeyError as exc:
-        raise GoogleIDTokenValidationError(str(exc)) from exc
-
-
-def provider_sub_fingerprint(provider_sub: str) -> str:
-    from src.Util.oauth import identity as oauth_identity
-
-    return oauth_identity.provider_sub_fingerprint(provider_sub)
-
-
-def provider_email_hmac(email: str | None, *, pepper: str | None = None, config: GoogleOAuthConfig | None = None) -> bytes | None:
-    from src.Util.oauth import identity as oauth_identity
-
-    try:
-        return oauth_identity.provider_email_hmac(
-            email, pepper=pepper or (config.email_hash_pepper if config else None)
-        )
-    except oauth_identity.OAuthIdentityKeyError as exc:
-        raise GoogleIDTokenValidationError(str(exc)) from exc
-
-
-def mask_provider_email(email: str | None) -> str | None:
-    from src.Util.oauth import identity as oauth_identity
-
-    return oauth_identity.mask_provider_email(email)
-
-
-class DefaultJWKSFetcher:
-    """Small requests-based JWKS fetcher used outside tests."""
-
-    def __init__(self, *, jwks_uri: str, timeout_seconds: float = 5.0) -> None:
-        self.jwks_uri = jwks_uri
-        self.timeout_seconds = timeout_seconds
-        self.last_headers: Mapping[str, Any] = {}
-
-    def fetch_jwks(self) -> Mapping[str, Any]:
-        import requests
-
-        response = requests.get(self.jwks_uri, timeout=self.timeout_seconds)
-        self.last_headers = dict(response.headers)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, Mapping):
-            raise GoogleIDTokenValidationError("Google JWKS response is malformed")
-        return payload
-
-    def __call__(self) -> Mapping[str, Any]:
-        return self.fetch_jwks()
-
-
 def _default_google_auth_verify(id_token_value: str, *, audience: str, clock_skew_in_seconds: int) -> Mapping[str, Any]:
     try:
         from google.auth.transport import requests as google_requests
@@ -278,10 +214,8 @@ def _default_google_auth_verify(id_token_value: str, *, audience: str, clock_ske
 
 @dataclass
 class GoogleIDTokenVerifier:
-    client_id: str | None = None
-    audience: str | None = None
+    client_id: str
     jwks_fetcher: Any | None = None
-    jwks_client: Any | None = None
     google_auth_verifier: Callable[..., Mapping[str, Any]] | None = None
     leeway_seconds: int = 30
     issuers: Sequence[str] = ("https://accounts.google.com", "accounts.google.com")
@@ -290,24 +224,9 @@ class GoogleIDTokenVerifier:
     allowed_hosted_domains: Sequence[str] = ()
 
     def __post_init__(self) -> None:
-        config = None
-        if not self.client_id and not self.audience:
-            config = load_google_oauth_config()
-            self.client_id = config.client_id
-        if not self.jwks_uri:
-            config = config or load_google_oauth_config()
-            self.jwks_uri = config.jwks_uri
-            self.jwks_cache_ttl_seconds = min(int(self.jwks_cache_ttl_seconds), int(config.jwks_cache_ttl_seconds))
-            self.leeway_seconds = min(int(self.leeway_seconds), int(config.leeway_seconds))
-            self.issuers = tuple(config.issuers)
-            # Production path (verify_google_id_token() builds with no args) loads config
-            # here, so the hosted-domain allow-list is sourced from GoogleOAuthConfig.
-            self.allowed_hosted_domains = tuple(self.allowed_hosted_domains) or tuple(config.allowed_hosted_domains)
-        self.client_id = self.client_id or self.audience
         if not self.client_id:
             raise GoogleIDTokenValidationError("Google OAuth client ID is not configured")
-        if self.jwks_fetcher is None and self.jwks_client is not None:
-            self.jwks_fetcher = self.jwks_client
+        self.jwks_uri = self.jwks_uri or "https://www.googleapis.com/oauth2/v3/certs"
         if self.jwks_fetcher is None:
             # Process-wide cache keyed by JWKS URI. A fresh verifier per callback used
             # to mean a JWKS fetch per callback; the instance cache never survived.
@@ -411,26 +330,13 @@ class GoogleIDTokenVerifier:
         assert_google_auth_claims_agree(local_claims, google_claims)
         return sanitize_google_claims(local_claims)
 
-    verify_id_token = verify
-    verify_google_id_token = verify
-
-
-def verify_google_id_token(id_token_value: str, *, expected_nonce: str, now: int | None = None) -> dict[str, Any]:
-    return GoogleIDTokenVerifier().verify(id_token_value, expected_nonce=expected_nonce, now=now)
-
 
 __all__ = [
-    "DefaultJWKSFetcher",
     "GoogleIDTokenValidationError",
     "GoogleIDTokenVerifier",
     "assert_google_auth_claims_agree",
-    "mask_provider_email",
-    "provider_email_hmac",
-    "provider_sub_fingerprint",
-    "provider_sub_hmac",
     "resolve_jwks_cache_ttl_seconds",
     "sanitize_google_claims",
     "validate_google_claims",
     "validate_jose_header",
-    "verify_google_id_token",
 ]

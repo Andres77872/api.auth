@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
-from src.Util.documentation_renderer import DocumentationRenderer
+from src.Util.docs_site.markdown import render_markdown, slugify
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +26,7 @@ CENTRAL_INDEXES = (
 ROUTE_COUNTS = {
     "admin_billing.py": 22,
     "admin_dashboard.py": 8,
-    "admin_oauth.py": 20,
+    "admin_oauth.py": 19,
     "admin_patreon.py": 8,
     "admin_project_groups.py": 7,
     "admin_user_groups.py": 13,
@@ -34,7 +34,6 @@ ROUTE_COUNTS = {
     "assistant.py": 0,  # WebSocket endpoint, no HTTP operations.
     "audit_logs.py": 6,
     "auth.py": 13,
-    "auth_google.py": 5,
     "auth_oauth.py": 9,
     "auth_patreon.py": 4,
     "bulk_operations.py": 4,
@@ -47,7 +46,7 @@ ROUTE_COUNTS = {
     "patreon_webhooks.py": 1,
     "permission_assignments.py": 17,
     "projects.py": 11,
-    "stripe_webhooks.py": 2,
+    "stripe_webhooks.py": 1,
     "system.py": 7,
     "user_api_keys.py": 5,
     "user_types_auth.py": 10,
@@ -85,9 +84,9 @@ def _documentation_files() -> list[Path]:
 
 
 def _slugify(text: str) -> str:
-    """Match ``DocumentationRenderer._slugify`` exactly."""
+    """Use the renderer's heading anchor contract."""
 
-    return re.sub(r"[^\w\s-]", "", text.lower()).strip().replace(" ", "-")
+    return slugify(text)
 
 
 def _canonical_route(path: str) -> str:
@@ -144,11 +143,11 @@ def test_route_inventory_matches_source_and_central_indexes():
     }
 
     assert actual == ROUTE_COUNTS
-    assert sum(actual.values()) == 246
+    assert sum(actual.values()) == 239
 
     for index in CENTRAL_INDEXES:
         text = index.read_text(encoding="utf-8")
-        assert re.search(r"\b246\b.*\b28\b|\b28\b.*\b246\b", text, re.DOTALL)
+        assert re.search(r"\b239\b.*\b27\b|\b27\b.*\b239\b", text, re.DOTALL)
         for module, count in ROUTE_COUNTS.items():
             assert re.search(
                 rf"`{re.escape(module)}`[^\n]*\|\s*{count}\s*\|",
@@ -225,14 +224,10 @@ def test_markdown_corpus_renders_without_errors():
 
     for source in _documentation_files():
         try:
-            rendered = DocumentationRenderer.render_page(
-                source.read_text(encoding="utf-8"),
-                source.stem,
-                str(source.relative_to(ROOT)),
-            )
-            if "<article>" not in rendered:
+            rendered = render_markdown(source.read_text(encoding="utf-8"))
+            if not rendered.html:
                 failures.append(
-                    f"{source.relative_to(ROOT)} -> missing rendered article"
+                    f"{source.relative_to(ROOT)} -> empty rendered document"
                 )
         except Exception as exc:  # pragma: no cover - reports the source file
             failures.append(f"{source.relative_to(ROOT)} -> {exc!r}")
@@ -349,12 +344,12 @@ def test_schema_inventory_matches_canonical_sql():
         ),
     }
     assert expected_counts == {
-        "Tables": 83,
-        "Indexes": 83,
-        "Stored Procedures": 318,
+        "Tables": 82,
+        "Indexes": 77,
+        "Stored Procedures": 314,
         "Functions": 1,
         "Views": 18,
-        "Triggers": 125,
+        "Triggers": 122,
     }
 
     for label, count in expected_counts.items():
@@ -366,8 +361,8 @@ def test_schema_inventory_matches_canonical_sql():
     activity_seed = (
         ROOT / "schemas" / "tables" / "08_activity_logging_tables.sql"
     ).read_text(encoding="utf-8")
-    assert len(set(re.findall(r"act-cat-\d{3}", activity_seed))) == 111
-    assert "111 seeded" in schema_index
+    assert len(set(re.findall(r"act-cat-\d{3}", activity_seed))) == 100
+    assert "100 seeded" in schema_index
     assert "16 billing IDs reserved in runtime but not yet seeded" in schema_index
 
 
@@ -388,47 +383,33 @@ def test_documented_activity_type_count_matches_runtime_enum():
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
     )
-    assert count == 112
+    assert count == 101
 
     for relative in (
         "docs/USAGE/audit_logs/reference.md",
         "docs/USAGE/audit_logs/usage.md",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "112" in text
+        assert "101" in text
 
 
-def test_first_root_bootstrap_caveat_matches_source():
-    seed = (
-        ROOT / "schemas" / "tables" / "05_initialize_data.sql"
-    ).read_text(encoding="utf-8")
-    scripts = "\n".join(
-        (ROOT / relative).read_text(encoding="utf-8")
-        for relative in (
-            "scripts/create_database.py",
-            "scripts/recreate_database.py",
-        )
-    )
-    verifier = (ROOT / "src" / "Util" / "password_security.py").read_text(
-        encoding="utf-8"
-    )
-    guide = (ROOT / "docs" / "USAGE" / "getting-started.md").read_text(
-        encoding="utf-8"
-    )
-
-    seeded_password = re.search(r"Password hash for '([^']+)'", seed)
-    printed_passwords = set(
-        re.findall(r'print\("    Password: ([^"]+)"\)', scripts)
-    )
-
-    assert seeded_password is not None
-    assert printed_passwords
-    assert seeded_password.group(1) in guide
-    for printed_password in printed_passwords:
-        assert f"`{printed_password}`" in guide
-    assert "self.hasher.verify(hashed_password, password)" in verifier
+def test_first_root_bootstrap_uses_operator_password_and_argon2():
+    seed = (ROOT / "schemas/tables/05_initialize_data.sql").read_text(encoding="utf-8")
+    bootstrap = (ROOT / "scripts/bootstrap_root_user.py").read_text(encoding="utf-8")
+    guide = (ROOT / "docs/USAGE/getting-started.md").read_text(encoding="utf-8")
+    assert "INSERT INTO users" not in seed
+    assert "SHA2(" not in seed
+    assert "hash_password(password)" in bootstrap
+    assert "BOOTSTRAP_ROOT_PASSWORD" in bootstrap
+    assert "bootstrap_root_user.py" in guide
     assert "Argon2id" in guide
-    assert "cannot log in" in guide
+    for relative in ("scripts/create_database.py", "scripts/recreate_database.py"):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        calls = [node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                 and node.func.id == "bootstrap_root_user"]
+        assert len(calls) == 1
+        assert not re.search(r'print\("    Password:', source)
 
 
 def test_central_contracts_cover_current_high_risk_boundaries():
@@ -440,7 +421,7 @@ def test_central_contracts_cover_current_high_risk_boundaries():
     for required in (
         "user-agent",
         "8 mib",
-        "session_token",
+        "access_token",
         "refresh_token",
         "plan",
         "allowed_origins",

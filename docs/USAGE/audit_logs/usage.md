@@ -42,7 +42,7 @@ curl "http://localhost:8000/admin/activity?search=alice&days=7" \
 
 ### List activity types
 
-`GET /admin/activity/types` returns the 112 values of the runtime `ActivityType` enum in
+`GET /admin/activity/types` returns the 101 values of the runtime `ActivityType` enum in
 `activity_types`.
 
 ```bash

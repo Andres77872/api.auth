@@ -22,13 +22,6 @@ DELIMITER $$
 -- CLEANUP OPERATIONS
 -- ===================================================================================
 
-DROP PROCEDURE IF EXISTS sp_cleanup_expired_sessions$$
-CREATE PROCEDURE sp_cleanup_expired_sessions()
-BEGIN
-    UPDATE user_sessions SET is_active = 0 WHERE expires_at < NOW() AND is_active = 1;
-    SELECT ROW_COUNT() as cleaned_sessions;
-END$$
-
 DROP PROCEDURE IF EXISTS sp_cleanup_permission_cache$$
 CREATE PROCEDURE sp_cleanup_permission_cache()
 BEGIN
@@ -45,7 +38,7 @@ BEGIN
     
     -- Clean orphaned user_group_members (users deleted or inactive)
     UPDATE user_group_members ugm
-    LEFT JOIN users u ON ugm.user_id = u.id
+    LEFT JOIN v_users u ON ugm.user_id = u.id
     SET ugm.is_active = 0, ugm.removed_at = NOW()
     WHERE ugm.is_active = 1 AND (u.id IS NULL OR u.is_active = 0);
     SET v_cleaned_ugm = ROW_COUNT();
@@ -82,17 +75,14 @@ DROP PROCEDURE IF EXISTS sp_system_health_check$$
 CREATE PROCEDURE sp_system_health_check()
 BEGIN
     SELECT COUNT(*) as users_without_valid_type, 'Users with invalid user_type' as issue_description
-    FROM users WHERE user_type NOT IN ('root', 'admin', 'consumer') OR user_type IS NULL;
+    FROM v_users WHERE user_type NOT IN ('root', 'admin', 'consumer') OR user_type IS NULL;
     
     SELECT COUNT(*) as orphaned_user_group_memberships,
            'User group memberships without valid users or groups' as issue_description
     FROM user_group_members ugm
-    LEFT JOIN users u ON ugm.user_id = u.id
+    LEFT JOIN v_users u ON ugm.user_id = u.id
     LEFT JOIN user_groups ug ON ugm.user_group_id = ug.id
     WHERE ugm.is_active = 1 AND (u.id IS NULL OR u.is_active = 0 OR ug.id IS NULL OR ug.is_active = 0);
-    
-    SELECT COUNT(*) as expired_active_sessions, 'Expired sessions still marked as active' as issue_description
-    FROM user_sessions WHERE is_active = 1 AND expires_at < NOW();
     
     SELECT COUNT(*) as empty_permission_groups,
            'Global permission groups without any assigned permissions' as issue_description
@@ -113,5 +103,5 @@ DELIMITER ;
 -- SYSTEM MAINTENANCE PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'System maintenance stored procedures created successfully!' as status,
-       '5 procedures for cleanup and health monitoring' as details;
+       '4 procedures for cleanup and health monitoring' as details;
 

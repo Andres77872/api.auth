@@ -128,13 +128,13 @@ class AssistantToolExecutor:
     def __init__(
         self,
         app: FastAPI,
-        session_token: str | Callable[[], str | Awaitable[str]],
+        access_token: str | Callable[[], str | Awaitable[str]],
         user_id: str,
         policy_loader: Callable[[], Any],
         audit_callback: Callable[[dict], Any] | None = None,
     ) -> None:
         self.app = app
-        self.session_token = session_token
+        self.access_token = access_token
         self.user_id = user_id
         self.policy_loader = policy_loader
         self.audit_callback = audit_callback
@@ -166,7 +166,7 @@ class AssistantToolExecutor:
             return {"ok": False, "error": "tool_disabled", "message": "This skill or tool is disabled in assistant configuration."}
         if spec.mutates and not policy.get("mutations_enabled", False):
             return {"ok": False, "error": "mutations_disabled", "message": "Application changes are disabled. The root user must explicitly enable changes and this tool in assistant configuration."}
-        token = await _maybe_await(self.session_token() if callable(self.session_token) else self.session_token)
+        token = await _maybe_await(self.access_token() if callable(self.access_token) else self.access_token)
         try:
             await _require_live_root(token, self.user_id)
         except PermissionError as exc:

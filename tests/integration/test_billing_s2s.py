@@ -200,7 +200,7 @@ async def test_billing_s2s_read_requires_dedicated_bearer_and_rejects_cookie_or_
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
     async with _billing_client() as client:
         no_auth = await client.get(READ_PATH, headers={"User-Agent": "billing-s2s-red-contract-test"})
-        cookie_only = await client.get(READ_PATH, cookies={"session_token": "jwt-looking-but-not-s2s"})
+        cookie_only = await client.get(READ_PATH, cookies={"access_token": "jwt-looking-but-not-s2s"})
         jwt_only = await client.get(READ_PATH, headers={"Authorization": "Bearer header.payload.signature"})
         wrong_bearer = await client.get(READ_PATH, headers=_auth_headers("wrong-billing-token"))
 
@@ -226,7 +226,7 @@ async def test_authorized_billing_read_returns_project_scoped_free_default_and_s
     payload = response.json()
     _assert_free_default(payload)
     _assert_no_raw_provider_leaks(payload, context="free default billing read")
-    assert "session_token" not in response.cookies
+    assert "access_token" not in response.cookies
     assert "refresh_token" not in response.cookies
 
 
@@ -290,6 +290,12 @@ async def test_checkout_and_portal_fail_closed_without_ready_group_or_customer(m
     monkeypatch.setenv("STRIPE_PORTAL_ENABLED", "true")
     monkeypatch.setenv("BILLING_S2S_BEARER_TOKEN", S2S_TOKEN)
     monkeypatch.setenv("BILLING_RETURN_URL_ALLOWLIST", RETURN_ORIGIN)
+    route_module = _future_route_module()
+    monkeypatch.setattr(route_module, "resolve_user_billing_group", lambda **_: None)
+    monkeypatch.setattr(
+        route_module, "resolve_user_project",
+        lambda **_: {"user_id": "usr-1", "project_id": "prj-1"},
+    )
     checkout_body = {
         "project_hash": PROJECT_HASH,
         "provider": "stripe",

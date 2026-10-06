@@ -33,7 +33,7 @@ the catalog.
 
 ### Checkout or Portal returns 503
 
-- `BILLING_RETURN_URL_ALLOWLIST` (and its alias `BILLING_ALLOWED_RETURN_ORIGINS`) is empty. An
+- `BILLING_RETURN_URL_ALLOWLIST` is empty. An
   empty allowlist allows no return URL, so every Checkout and Portal request is refused. Set the
   consuming apps' origins and reload.
 - One of the four flags is off. Checkout needs `BILLING_ENABLED`, `BILLING_CHECKOUT_ENABLED`,
@@ -141,7 +141,6 @@ Nothing is recorded; Stripe retries.
   `webhooks_enabled` is off, its credentials are not `active`, or it has no webhook secret (or
   the secret cannot be decrypted). These look identical from outside; check the group with
   `GET /admin/billing/{group_hash}`.
-- Global route: `STRIPE_WEBHOOK_SECRET` is empty.
 
 ### Stripe shows 401 from the endpoint
 
@@ -151,8 +150,7 @@ Nothing is recorded; Stripe retries.
 - The server clock is more than `STRIPE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS` off.
 - The Stripe endpoint uses an API version other than `2026-05-27.dahlia`; every event is
   rejected. Change the endpoint's API version in Stripe.
-- Several Stripe accounts send to the global `/webhooks/stripe`; only one secret fits. Give each
-  account its path-scoped URL.
+- Give each account its group-scoped URL and store its own signing secret.
 
 Repeated failures from one IP turn into `429` for the rest of the window.
 

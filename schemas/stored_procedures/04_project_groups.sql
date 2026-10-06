@@ -217,7 +217,7 @@ CREATE PROCEDURE sp_get_users_with_access_to_project_group(IN p_project_group_id
 BEGIN
     SELECT DISTINCT u.id, u.user_hash, u.username, u.email, u.user_type,
            ug.group_name as via_user_group, ugpg.granted_at
-    FROM users u
+    FROM v_users u
     JOIN user_group_members ugm ON u.id = ugm.user_id AND ugm.is_active = 1
     JOIN user_groups ug ON ugm.user_group_id = ug.id AND ug.is_active = 1
     JOIN user_group_project_groups ugpg ON ug.id = ugpg.user_group_id AND ugpg.is_active = 1

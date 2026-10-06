@@ -99,14 +99,6 @@ def _plain_mapping(value: Any) -> dict[str, Any]:
             dumped = None
         if isinstance(dumped, Mapping):
             return {str(key): item for key, item in dumped.items()}
-    legacy_dict = getattr(value, "dict", None)
-    if callable(legacy_dict):
-        try:
-            dumped = legacy_dict()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, Mapping):
-            return {str(key): item for key, item in dumped.items()}
     return {}
 
 
@@ -339,11 +331,7 @@ def _delivery_hash_material(
 
 
 async def _call_record_delivery(**kwargs: Any) -> Mapping[str, Any] | None:
-    for method_name in ("record_webhook_delivery", "record_patreon_webhook_delivery"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            return await _maybe_await(method(**kwargs))
-    raise RuntimeError("Patreon webhook delivery DB wrapper is not available")
+    return await _maybe_await(db_patreon.record_patreon_webhook_delivery(**kwargs))
 
 
 def _delivery_is_duplicate(row: Mapping[str, Any] | None) -> bool:
@@ -646,11 +634,7 @@ def _should_resync_instead_of_commit(
 
 
 async def _resolve_link_by_provider_hash(provider_sub_hash: bytes) -> Mapping[str, Any] | None:
-    for method_name in ("resolve_patreon_link_by_provider_hash", "get_patreon_link_by_provider_sub_hash"):
-        method = getattr(db_patreon, method_name, None)
-        if callable(method):
-            return await _maybe_await(method(provider_sub_hash=provider_sub_hash))
-    raise RuntimeError("Patreon provider-hash link resolver DB wrapper is not available")
+    return await _maybe_await(db_patreon.get_patreon_link_by_provider_sub_hash(provider_sub_hash=provider_sub_hash))
 
 
 async def _current_snapshot_for_user(user_hash: str | None) -> Mapping[str, Any] | None:

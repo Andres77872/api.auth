@@ -10,9 +10,9 @@ import logging
 from typing import Callable
 from fastapi import Request, BackgroundTasks
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
-from src.Util.Seccurity import returnJson_422, returnJson_413
+from src.Util.error_handler import ValidationError, ErrorCode, build_error_response
 from src.Util.activity_logger import set_request_context, clear_request_context
 from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.logger_ws import logger
@@ -69,7 +69,7 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
         
         # Validate user-agent header
         if 'user-agent' not in request.headers:
-            response = returnJson_422()
+            response = JSONResponse(status_code=422, content=build_error_response(ValidationError("User-Agent header is required", ErrorCode.MISSING_REQUIRED_FIELD)))
             process_time = time.time() - start_time
             response.headers["X-Process-Time"] = str(process_time)
             _apply_cors_reject_headers(request, response)
@@ -79,7 +79,7 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
         if request.method == 'POST':
             content_length = request.headers.get('content-length')
             if content_length and int(content_length) > self.MAX_CONTENT_LENGTH:
-                response = returnJson_413()
+                response = JSONResponse(status_code=413, content=build_error_response(ValidationError("Request payload is too large", ErrorCode.INVALID_LENGTH)))
                 process_time = time.time() - start_time
                 response.headers["X-Process-Time"] = str(process_time)
                 _apply_cors_reject_headers(request, response)

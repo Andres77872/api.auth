@@ -154,22 +154,15 @@ class APIAuditLogger:
             return True
         return any(fragment in normalized for fragment in APIAuditLogger.SENSITIVE_FIELD_FRAGMENTS)
 
-    @staticmethod
-    def is_google_oauth_path(path: str) -> bool:
-        """Return True for the deprecated Google alias route family."""
-
-        normalized_path = (path or "").split("?", 1)[0]
-        return normalized_path == "/auth/google" or normalized_path.startswith("/auth/google/")
 
     @staticmethod
     def is_oauth_path(path: str) -> bool:
-        """Return True for any OAuth login route: ``/auth/oauth/*`` and the Google aliases."""
+        """Return True for any OAuth login route: ``/auth/oauth/*``."""
 
         normalized_path = (path or "").split("?", 1)[0]
         return (
             normalized_path == "/auth/oauth"
             or normalized_path.startswith("/auth/oauth/")
-            or APIAuditLogger.is_google_oauth_path(normalized_path)
         )
 
     @staticmethod
@@ -518,8 +511,6 @@ class APIAuditLogger:
             tags.append('authentication')
         if APIAuditLogger.is_oauth_path(path):
             tags.append('oauth')
-            if APIAuditLogger.is_google_oauth_path(path):
-                tags.append('google_oauth')
             tags.append('external_idp')
         if APIAuditLogger.is_patreon_path(path):
             tags.append('patreon')
@@ -622,7 +613,7 @@ class APIAuditLogger:
         Args:
             All request details
             auth_method: Authentication method used ('session' or 'api_key').
-                         Defaults to 'session' for backward compatibility.
+                         Defaults to 'session' for authenticated session events.
 
         Returns:
             True if logged successfully, False otherwise

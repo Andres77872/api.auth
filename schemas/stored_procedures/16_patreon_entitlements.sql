@@ -67,7 +67,7 @@ BEGIN
 
     START TRANSACTION;
 
-    IF NOT EXISTS (SELECT 1 FROM users WHERE id = p_user_id AND is_active = TRUE) THEN
+    IF NOT EXISTS (SELECT 1 FROM v_users WHERE id = p_user_id AND is_active = TRUE) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Patreon proof user is not active';
     END IF;
 
@@ -277,7 +277,7 @@ BEGIN
 
     START TRANSACTION;
 
-    IF NOT EXISTS (SELECT 1 FROM users WHERE id = p_user_id AND user_type = 'consumer' AND is_active = TRUE) THEN
+    IF NOT EXISTS (SELECT 1 FROM v_users WHERE id = p_user_id AND user_type = 'consumer' AND is_active = TRUE) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Patreon link target is not an active consumer';
     END IF;
 
@@ -854,7 +854,7 @@ BEGIN
            pec.last_synced_at,
            pec.stale_after,
            pec.classification_version
-    FROM users u
+    FROM v_users u
     LEFT JOIN patreon_entitlements_current pec ON pec.user_id = u.id
     WHERE u.user_hash = p_user_hash
       AND u.is_active = TRUE
@@ -1363,7 +1363,7 @@ BEGIN
            pec.stale_after,
            pec.updated_at
     FROM patreon_entitlements_current pec
-    JOIN users u ON u.id = pec.user_id
+    JOIN v_users u ON u.id = pec.user_id
     WHERE (p_status IS NULL OR p_status = '' OR pec.entitlement_status = p_status)
       AND (p_plan_code IS NULL OR p_plan_code = '' OR pec.plan_code = p_plan_code)
       AND (p_link_status IS NULL OR p_link_status = '' OR pec.link_status = p_link_status)
@@ -1399,7 +1399,7 @@ BEGIN
            peh.sync_source,
            peh.observed_at
     FROM patreon_entitlement_history peh
-    JOIN users u ON u.id = peh.user_id
+    JOIN v_users u ON u.id = peh.user_id
     WHERE u.user_hash = p_user_hash
     ORDER BY peh.observed_at DESC, peh.created_at DESC
     LIMIT p_limit;

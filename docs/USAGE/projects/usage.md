@@ -138,7 +138,7 @@ Root, or an admin user assigned to the project. The soft delete:
 
 - sets `projects.is_active = 0`, after which the project returns `404` on every route;
 - deactivates the project's rows in `project_group_members`, so no group reaches it;
-- deactivates its `user_sessions` rows; access tokens scoped to it fail with `401` on their next
+- access tokens scoped to it fail with `401` on their next
   use.
 
 The default project group and user groups are kept. There is no undelete route.

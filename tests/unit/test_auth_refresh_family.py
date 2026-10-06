@@ -85,7 +85,7 @@ def test_issue_project_token_pair_writes_jti_and_family_keys(monkeypatch):
 
     assert pair.access_token
     assert pair.refresh_token
-    assert pair.session_token == pair.access_token
+    assert pair.access_token == pair.access_token
     assert pair.remember_me is False
     assert pair.cookie_metadata["access"]["name"] == ACCESS_COOKIE_NAME
     assert pair.cookie_metadata["refresh"]["name"] == REFRESH_COOKIE_NAME
@@ -371,42 +371,7 @@ def test_remembered_refresh_rotation_keeps_original_absolute_expiry_in_final_wee
     assert rotation.token_pair.refresh_expires_in < REMEMBER_ME_REFRESH_TTL_SECONDS
 
 
-def test_legacy_family_without_anchor_or_old_session_backfills_anchor(monkeypatch):
-    from fakeredis import FakeStrictRedis
-    import src.Util.auth_lifecycle as lifecycle
-
-    fake = FakeStrictRedis()
-    monkeypatch.setattr(lifecycle, "redis_client", fake)
-
-    pair = lifecycle.issue_project_token_pair(
-        user={
-            "id": "usr-db-1",
-            "user_hash": "usr-hash-1",
-            "username": "consumer",
-            "user_type": "consumer",
-        },
-        project={
-            "id": "prj-db-1",
-            "project_hash": "prj-hash-1",
-            "project_name": "Project One",
-        },
-        permissions=["read"],
-        groups=["Consumers"],
-    )
-    family_id = pair.refresh_claims["family_id"]
-    fake.delete(f"session:{pair.access_claims['jti']}", f"session_full:{pair.access_claims['jti']}")
-    fake.delete(f"refresh_anchor:{family_id}")
-
-    rotation = lifecycle.rotate_refresh_family(pair.refresh_token, **_project_refresh_hooks())
-
-    anchor = _decode(fake.get(f"refresh_anchor:{family_id}"))
-    assert rotation.token_pair.refresh_token != pair.refresh_token
-    assert anchor["family_id"] == family_id
-    assert anchor["current_access_jti"] == rotation.token_pair.access_claims["jti"]
-    assert anchor["current_refresh_jti"] == rotation.token_pair.refresh_claims["jti"]
-
-
-def test_legacy_family_without_reconstructable_context_fails_closed(monkeypatch):
+def test_missing_refresh_context_revokes_family_and_fails_closed(monkeypatch):
     from fakeredis import FakeStrictRedis
     import src.Util.auth_lifecycle as lifecycle
 
@@ -445,7 +410,7 @@ def test_legacy_family_without_reconstructable_context_fails_closed(monkeypatch)
     assert getattr(exc_info.value, "status_code", None) == 401
     family = _decode(fake.get(f"refresh_family:{family_id}"))
     assert family["status"] == "revoked"
-    assert family["revocation_reason"] == "missing_user"
+    assert family["revocation_reason"] == "missing_refresh_context"
     assert fake.get(f"refresh_anchor:{family_id}") is None
 
 

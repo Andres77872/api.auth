@@ -17,19 +17,6 @@ from src.Util.error_handler import ErrorCode
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 
-# Procedures called by source that no schema file creates, as of this test's
-# introduction. Shrink this list when you fix one; never grow it.
-KNOWN_MISSING_PROCEDURES = frozenset({
-    "sp_find_admin_groups_for_user_in_project",
-    "sp_find_default_user_group_for_project",
-    "sp_find_user_groups_for_project_access",
-    "sp_get_login_statistics",
-    "sp_get_project_group_membership",
-    "sp_get_project_permissions",
-    "sp_reactivate_project_in_group",
-    "sp_search_project_groups",
-})
-
 
 def _source_references(pattern: str) -> dict[str, list[str]]:
     references: dict[str, list[str]] = {}
@@ -59,6 +46,4 @@ def test_every_called_procedure_exists_in_the_schema():
     called = _source_references(r"callproc\(\s*['\"](\w+)['\"]")
     undefined = set(called) - _schema_procedures()
 
-    assert sorted(undefined - KNOWN_MISSING_PROCEDURES) == []
-    # A fixed entry must leave the allowlist, or it will hide the next regression.
-    assert sorted(KNOWN_MISSING_PROCEDURES - undefined) == []
+    assert sorted(undefined) == []
