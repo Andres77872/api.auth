@@ -8,7 +8,7 @@ and error codes are listed per endpoint in [reference.md](reference.md#error-cod
 | Item | Created | Stored | Checked |
 | --- | --- | --- | --- |
 | Init token | `init`, 32 random bytes | Redis `oauth_init:<HMAC>`, `300` s, with connection id, binding id, project, return origin, `remember_me` | Consumed once by `start` |
-| State | `start` or link/reauth start, 32 random bytes | Redis `oauth_state:<HMAC>`, binding `state_ttl_seconds` or `OAUTH_MAX_STATE_TTL_SECONDS`, whichever is lower (at most `600` s) | Consumed once by the callback, before the code exchange |
+| State | `start` or link/reauth start, 32 random bytes | Redis `oauth_state:<HMAC>`, binding/deployment TTL, at most `600` s; link TTL is also capped by the original proof's remaining validity | Consumed once by the callback, before the code exchange |
 | Nonce | With the state, 32 random bytes | Inside the state record | Against the ID token's `nonce` (OIDC types) |
 | PKCE verifier | With the state, 32 random bytes; `S256` challenge sent to the provider | Inside the state record only | Sent with the code exchange |
 | `oauth_state` cookie | With the `303` | Browser; value is a fingerprint of the state | At the callback, only when the browser sends it |
@@ -21,6 +21,13 @@ The state record also holds the purpose (`login`, `link`, `reauth`), the connect
 binding ids, the project, the redirect URI and, for link and reauth, the user and session
 that started it. The callback takes all of these from the record, never from the
 request, so a caller cannot switch provider, project or user mid-flight.
+
+Version 3 link/reauth states also bind the verified refresh family and scope. Links
+capture their original proof and its fixed deadline. A separate expiring, HMAC-keyed
+completion authorization survives state consumption. The callback checks the live
+session before exchange and at completion, following normal refresh to the family's
+current access session. A refresh anchor alone is insufficient. Version 2 states are
+accepted for login only; older pending links/reauths must restart.
 
 ## Init
 
@@ -124,19 +131,28 @@ Every refusal records `oauth_login_denied` with a `sub_reason` for operators, su
 
 ### Link
 
-1. The state must name a user and the binding must allow linking: `401` `EXT_8024`.
+1. The initiating session/family must still be live in the original context and the
+   original proof must remain valid: `401` `EXT_8024`. A missing, replaced or expired
+   original marker cannot authorize completion. Deadline/store failures answer
+   `401` `EXT_8014`; lost project access answers `403` `EXT_8025`. The binding must allow linking.
 2. If the identity is linked to another user, the subject-collision bucket is spent
    (`429` `EXT_8030`) and the answer is `409` `EXT_8027`.
-3. The identity is linked. Linking the same identity again refreshes its snapshot; a
+3. Immediately before the identity write, repeat the checks in a watched Redis
+   transaction that consumes completion authorization. The identity is linked.
+   Linking the same identity again refreshes its snapshot; a
    different identity in a namespace where the user already has one is refused:
    `409` `EXT_8027`.
-4. The session that started the link is marked recently authenticated,
-   `oauth_external_account_linked` is recorded and the masked identity is returned.
+4. `oauth_external_account_linked` is recorded and the masked identity is returned.
+   Linking does not renew recent authentication. Only reauth renews that proof.
 
 ### Reauth
 
-1. The identity must be linked to the user who started the reauth: `401` `EXT_8028`.
-2. A recent-reauthentication marker is written for that user and session
+1. The initiating session/family must still be live in the original context and the
+   identity must be linked to its user: `401` `EXT_8028`. Prior recent proof is not
+   required. Deadline/store failures answer `401` `EXT_8014`; lost project access
+   answers `403` `EXT_8025`.
+2. Final checks, completion authorization consumption and writing the
+   recent-reauthentication marker are one watched Redis transaction. The marker is for that user and session
    (`oauth_reauth:` key, lifetime `OAUTH_RECENT_REAUTH_SECONDS`), `oauth_reauth_succeeded`
    is recorded and `{"reauthenticated": true}` is returned.
 
@@ -154,8 +170,10 @@ access token.
 4. A database binding must have exactly one redirect URI (the environment binding uses
    its first). The return origin is the one named in the optional JSON body, which must
    be on the binding, or the binding's only one: `400` `EXT_8013`.
-5. State is created with the purpose, user id and session id (and `prompt=login` for
-   reauth), and the answer is `303` to the provider. Any failure here: `401` `EXT_8014`.
+5. State captures the verified user, logical session, family, scope and project
+   (and `prompt=login` for reauth). Linking captures the freshest existing proof
+   without extending it and expires no later than that proof. The answer is `303`
+   to the provider. Storage failure: `401` `EXT_8014`.
 
 ## Unlink
 

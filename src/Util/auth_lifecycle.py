@@ -116,6 +116,15 @@ class RevocationSummary:
     sessions_missing: int = 0
 
 
+class OAuthSessionAuthorizationDenied(RuntimeError):
+    """Internal, redacted reason for refusing a session-bound OAuth transaction."""
+
+    def __init__(self, reason: str, *, project_access_denied: bool = False):
+        super().__init__(reason)
+        self.reason = reason
+        self.project_access_denied = project_access_denied
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -921,6 +930,114 @@ def validate_access_session(
     login_data = _login_from_context(access_token, session, context)
     cache_manager.set_session_full(access_jti, login_data)
     return login_data
+
+
+def authorize_oauth_session(
+    *,
+    record: Any,
+    state_store: Any,
+    complete: bool = False,
+    get_user_by_hash_fn: Optional[Callable[..., Any]] = None,
+    get_project_by_hash_fn: Optional[Callable[[str], Any]] = None,
+    get_user_groups_in_project_by_hash_fn: Optional[Callable[[str, str], Iterable[Any]]] = None,
+    get_user_permissions_fn: Optional[Callable[[str], Iterable[str]]] = None,
+    get_user_accessible_projects_fn: Optional[Callable[[str], Iterable[Any]]] = None,
+) -> None:
+    """Authorize the original logical session, following its current access JTI.
+
+    Completion's EXEC is the ordering point relative to revocation. For linking,
+    the SQL write follows that authorization; Redis and SQL are not one transaction.
+    A live access session is mandatory even if a refresh anchor survives expiry.
+    """
+    from src.Util.oauth_state import OAuthStateInvalidError, OAuthStateStoreUnavailable, fingerprint_oauth_value
+
+    authorization = record.authorization
+    if authorization is None:
+        raise OAuthStateInvalidError("OAuth session authorization is missing")
+    completion_key = state_store.completion_key(record.authorization_ref)
+    family_key = f"{REFRESH_FAMILY_PREFIX}{authorization.family_id}"
+    revoked_key = f"{REVOKED_FAMILY_PREFIX}{authorization.family_id}"
+    marker_key = state_store.recent_reauth_key(user_id=authorization.user_id, session_id=authorization.session_id)
+    for _ in range(3):
+        try:
+            with state_store.redis.pipeline(transaction=True) as pipe:
+                pipe.watch(completion_key, family_key, revoked_key, marker_key)
+                state_store.validate_completion(record, reader=pipe)
+                family = _loads_json(pipe.get(family_key))
+                if not family or family.get("status") != "active" or pipe.exists(revoked_key):
+                    raise OAuthSessionAuthorizationDenied("family_revoked_or_missing")
+                access_jti = str(family.get("current_access_jti") or "")
+                if not access_jti:
+                    raise OAuthSessionAuthorizationDenied("session_missing")
+                session_key = f"{SESSION_PREFIX}{access_jti}"
+                pipe.watch(session_key)
+                session = _loads_json(pipe.get(session_key))
+                # Rotation may have atomically moved the family while we selected
+                # its session key. Retry the new pointer before classifying it.
+                if _loads_json(pipe.get(family_key)) != family:
+                    continue
+                if not session:
+                    raise OAuthSessionAuthorizationDenied("session_missing")
+                now = _utc_now()
+                for payload in (family, session):
+                    expires_at = _parse_datetime(payload.get("expires_at"))
+                    if expires_at is None or expires_at <= now:
+                        raise OAuthSessionAuthorizationDenied("session_expired")
+                    for name in ("user_id", "user_hash", "family_id", "scope", "project_hash"):
+                        if payload.get(name) != getattr(authorization, name):
+                            raise OAuthSessionAuthorizationDenied("session_binding_changed")
+                if (session.get("session_id") != authorization.session_id or session.get("access_jti") != access_jti
+                        or session.get("refresh_jti") != family.get("current_refresh_jti")):
+                    raise OAuthSessionAuthorizationDenied("session_binding_changed")
+                proof = authorization.proof
+                if record.purpose == "link":
+                    if proof is None or not proof.authenticated_at_ms <= int(now.timestamp() * 1000) < proof.expires_at_ms:
+                        raise OAuthSessionAuthorizationDenied("recent_auth_expired")
+                    if proof.source == "marker":
+                        raw = pipe.get(marker_key)
+                        if (raw is None or pipe.pttl(marker_key) <= 0
+                                or fingerprint_oauth_value(raw, length=64) != proof.marker_fingerprint):
+                            raise OAuthSessionAuthorizationDenied("recent_auth_marker_changed")
+
+                user = load_active_user(authorization.user_hash, session_payload=session, get_user_by_hash_fn=get_user_by_hash_fn)
+                if user is None or str(_field(user, "id")) != authorization.user_id:
+                    raise OAuthSessionAuthorizationDenied("user_inactive_or_changed")
+                context = reconstruct_auth_context(
+                    session,
+                    get_user_by_hash_fn=lambda *args, **kwargs: user,
+                    get_project_by_hash_fn=get_project_by_hash_fn,
+                    get_user_groups_in_project_by_hash_fn=get_user_groups_in_project_by_hash_fn,
+                    get_user_permissions_fn=get_user_permissions_fn,
+                    get_user_accessible_projects_fn=get_user_accessible_projects_fn,
+                )
+                if context is None:
+                    raise OAuthSessionAuthorizationDenied("project_access_lost", project_access_denied=True)
+                state_store.validate_completion(record, reader=pipe)
+                marker_write = None
+                if complete and record.purpose == "reauth":
+                    marker_write = state_store.recent_reauth_write(
+                        user_id=authorization.user_id, session_id=authorization.session_id,
+                    )
+                pipe.multi()
+                if complete:
+                    pipe.delete(completion_key)
+                    if marker_write is not None:
+                        key, value, expires_at_ms = marker_write
+                        pipe.set(key, value, pxat=expires_at_ms)
+                else:
+                    # Execute even this read-only preflight to validate WATCH.
+                    pipe.ping()
+                pipe.execute()
+                return
+        except WatchError:
+            continue
+        except (OAuthSessionAuthorizationDenied, OAuthStateInvalidError, OAuthStateStoreUnavailable):
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise OAuthSessionAuthorizationDenied("session_record_invalid") from exc
+        except Exception as exc:
+            raise OAuthStateStoreUnavailable("OAuth session authorization is unavailable") from exc
+    raise OAuthSessionAuthorizationDenied("session_changed_during_authorization")
 
 
 def _require_refresh_claim_session_match(claims: Dict[str, Any], family: Dict[str, Any], session: Dict[str, Any]) -> None:

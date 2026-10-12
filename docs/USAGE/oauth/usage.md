@@ -206,10 +206,17 @@ curl -si -X POST "$AUTH/auth/oauth/google/link/start" \
 ```
 
 Send the browser to the `Location`, then relay the callback as for sign-in. The callback
-answers the linked identity (masked) instead of a session, and marks the session as
-recently authenticated. `409` `EXT_8027` means the identity belongs to another user, or
+answers the linked identity (masked) instead of a session. Linking does not renew
+recent authentication. `409` `EXT_8027` means the identity belongs to another user, or
 the user already has a different identity for this provider. Pass
 `{"return_origin": "..."}` as JSON when the binding lists several return origins.
+
+The initiating session and original proof must remain valid through completion.
+Normal refresh within that logical session is supported. On callback `401` `EXT_8024`
+or `EXT_8014`, offer sign-in or reauth and then a new link start. Never replay the
+callback or reuse its state. A new proof cannot revive the old transaction. If a
+sensitive action follows linking after proof expiry, explicitly reauth before that
+action. No callback fields, auth headers or provider redirect changes are required.
 
 ## Reauthenticate with a provider
 
@@ -227,7 +234,9 @@ The provider is asked to prompt for login again. When the relayed callback retur
 authenticated for `OAUTH_RECENT_REAUTH_SECONDS`, which satisfies every route that
 requires recent authentication: `POST /auth/switch-project`, API-key changes, OAuth link
 and unlink, and the Patreon link routes. An identity not linked to the user answers
-`401` `EXT_8028`.
+`401` `EXT_8028`. The same code is returned when the initiating session/family is no
+longer valid in its original context. A dead session needs a new sign-in; an expired
+round trip (`EXT_8014`) needs a new reauth start, never callback replay.
 
 ## Unlink a provider
 

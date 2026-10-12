@@ -20,7 +20,8 @@ from src.Util import db
 from src.Util.Models import LoginResponse
 from src.Util.security import HTTPBearerOrCookie
 from src.Util.auth_constants import OAUTH_PURPOSE_LINK, OAUTH_PURPOSE_LOGIN, OAUTH_PURPOSE_REAUTH
-from src.Util.auth_flow import require_recent_reauthentication
+from src.Util.auth_flow import resolve_recent_authentication_proof
+from src.Util.JWT_Security import JWTTokenHandler
 from src.Util.auth_lifecycle import validate_access_session
 from src.Util.error_handler import ErrorCode
 from src.Util.oauth.connections import OAuthConnectionUnavailable, get_connection_source
@@ -31,12 +32,11 @@ from src.Util.oauth.pipeline import (
     PipelineDeps,
     field_of,
     oauth_error_response,
-    session_id_of,
 )
 from src.Util.oauth.settings import load_oauth_settings
 from src.Util.oauth.start import read_json_object, start_from_init_token
 from src.Util.oauth_rate_limit import OAuthRateLimiter
-from src.Util.oauth_state import OAuthStateStore
+from src.Util.oauth_state import OAuthSessionAuthorization, OAuthStateStore, OAuthStateStoreUnavailable
 
 
 logger = logging.getLogger(__name__)
@@ -366,9 +366,11 @@ async def oauth_callback(
       and `refresh_token` cookies. Only active consumer accounts can sign in this way;
       unknown identities are provisioned only when the binding allows auto-creation, and
       nothing is merged by email.
-    - link — `{success, message, external_identity}` (masked identity).
+    - link — `{success, message, external_identity}` (masked identity); requires the
+      initiating session and original proof to remain valid and does not renew reauth.
     - reauth — `{success, message, reauthenticated: true}`; satisfies the
-      recent-authentication check of the session that started it.
+      recent-authentication check of the session that started it, if that session/family
+      is still live in its original project context.
 
     **Errors** (OAuth envelope with `correlation_id`):
     - `400` — missing `state`, or neither `code` nor `error` (`EXT_8014`); user cancelled
@@ -430,6 +432,7 @@ async def start_session_round_trip(
 
     try:
         login_data = validate_access_session(credentials.credentials)
+        claims = JWTTokenHandler.decode_access_token(credentials.credentials)
     except Exception:
         return oauth_error_response(ErrorCode.OAUTH_PROVISIONING_DENIED, status_code=401)
     user_id = str(field_of(login_data, "user_id") or "")
@@ -441,16 +444,19 @@ async def start_session_round_trip(
         code = ErrorCode.OAUTH_PROVIDER_DISABLED if exc.kind == "disabled" else ErrorCode.OAUTH_PROVIDER_NOT_CONFIGURED
         return oauth_error_response(code)
 
+    proof = None
     if purpose == OAUTH_PURPOSE_LINK:
         if not resolved.binding.can_link:
             return oauth_error_response(ErrorCode.OAUTH_PROVISIONING_DENIED, status_code=401)
         try:
-            require_recent_reauthentication(
+            proof = resolve_recent_authentication_proof(
                 user_id=user_id,
                 access_token=credentials.credentials,
-                session_id=session_id_of(login_data),
-                operation="oauth_link",
+                session_id=str(claims["session_id"]),
+                reauth_store=pipeline.deps.state_store(),
             )
+        except OAuthStateStoreUnavailable:
+            return oauth_error_response(ErrorCode.OAUTH_STATE_INVALID, status_code=401)
         except Exception:
             return oauth_error_response(ErrorCode.OAUTH_PROVISIONING_DENIED, status_code=401)
 
@@ -474,7 +480,12 @@ async def start_session_round_trip(
         redirect_uri=redirect_uri,
         return_origin=return_origin,
         user_id=user_id,
-        session_id=session_id_of(login_data),
+        session_id=str(claims["session_id"]),
+        authorization=OAuthSessionAuthorization(
+            user_id=user_id, user_hash=str(claims["user_hash"]), session_id=str(claims["session_id"]),
+            family_id=str(claims["family_id"]), scope=str(claims["scope"]),
+            project_hash=str(field_of(login_data, "project_hash") or "") or None, proof=proof,
+        ),
         prompt="login" if purpose == OAUTH_PURPOSE_REAUTH else None,
     )
     try:

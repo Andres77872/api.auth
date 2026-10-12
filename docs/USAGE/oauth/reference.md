@@ -89,7 +89,7 @@ They always answer JSON and never redirect.
 | Purpose | Body | Side effects |
 | --- | --- | --- |
 | `login` | `LoginResponse`, the same shape as `POST /auth/login` | `access_token` and `refresh_token` cookies set for the project fixed at init |
-| `link` | `ExternalIdentityLinkResponse` | Identity linked to the user who started the link; the session is marked recently authenticated |
+| `link` | `ExternalIdentityLinkResponse` | Identity linked to the user who started the link; recent authentication is not renewed |
 | `reauth` | `{"success": true, "message": "Reauthentication succeeded", "reauthenticated": true}` | The session that started the reauth is marked recently authenticated |
 
 `iss` is accepted and checked only for adapters that require it; none of the built-in
@@ -119,6 +119,13 @@ adapters do.
 A database binding must list exactly one redirect URI; when it lists several return
 origins the caller must name one. `link/start` also needs `link_enabled` and provisioning mode
 `link_only` or `both`.
+
+Both callbacks revalidate the original logical session, refresh family and project.
+Normal refresh is supported; logout, revocation, a missing live session or changed
+project context prevents completion. Links also require the original proof to remain
+valid throughout the provider round trip. A later reauth cannot extend a pending link.
+Callbacks remain public: relays forward `code` and `state` without a local access token.
+On rejection, sign in/reauth and start a new transaction; never replay its consumed callback.
 
 `DELETE /auth/oauth/{connection}/link` returns:
 
@@ -184,7 +191,7 @@ emitted and with which status.
 | `EXT_8012` | `401` | Init token unknown, expired or already used, or Redis unavailable (`start`). |
 | `EXT_8013` | `400` | `init`: return origin not on the binding. `start`: redirect URI not on the binding, or not named when several exist. Link/reauth start: the binding does not have exactly one redirect URI, or `return_origin` is not on the binding or not named when several exist. |
 | `EXT_8014` | `400` | Callback without `state`, or without both `code` and `error`. |
-| `EXT_8014` | `401` | State unknown, expired or malformed, Redis unavailable, or `oauth_state` cookie mismatch (callback); state could not be created (`start`, link/reauth start). |
+| `EXT_8014` | `401` | State/completion authorization unknown, expired, malformed or unsupported; Redis unavailable; binding-cookie mismatch (callback); state creation failed. Version 2 link/reauth states require a new attempt. |
 | `EXT_8016` | `401` | State already consumed (callback). |
 | `EXT_8017` | `401` | ID-token nonce mismatch. |
 | `EXT_8018` | `502` | Provider returned an `error` other than a cancellation, or the code exchange failed (including missing or undecryptable credentials). |
@@ -193,10 +200,10 @@ emitted and with which status.
 | `EXT_8021` | `401` | Audience or `azp` mismatch. |
 | `EXT_8022` | `401` | ID token expired, or `iat` in the future. |
 | `EXT_8023` | `401` | Connection restriction not met: Google `hosted_domains`, GitHub `orgs`. |
-| `EXT_8024` | `401` | Login refused (binding `login_enabled` off, unknown identity without auto-create, e-mail collision on a provider whose e-mail is not trusted, no usable provisioning group, inactive or non-consumer account); link refused (session invalid, linking not allowed, no recent authentication); reauth start with an invalid session. |
-| `EXT_8025` | `403` | The user does not reach the project fixed at init, or the project is inactive or archived (callback). |
+| `EXT_8024` | `401` | Login refused (binding `login_enabled` off, unknown identity without auto-create, e-mail collision on a provider whose e-mail is not trusted, no usable provisioning group, inactive or non-consumer account); link start/completion refused (initiating session/family invalid, context changed, linking not allowed, original proof expired or replaced); reauth start with an invalid session. |
+| `EXT_8025` | `403` | User no longer reaches the bound project, or the project is inactive or archived (login, link or reauth callback). |
 | `EXT_8027` | `409` | Link callback: the identity belongs to another user, or the user already has an identity in this namespace. |
-| `EXT_8028` | `401` | Reauth callback: the identity is not linked to the session's user. Unlink: invalid session or no recent authentication. |
+| `EXT_8028` | `401` | Reauth callback: identity not linked to the initiating user, or initiating session/family no longer valid in the original context. Unlink: invalid session or no recent authentication. |
 | `EXT_8028` | `404` | Unlink: connection not available in the project, or nothing linked. |
 | `EXT_8029` | `409` | Unlink: the account has no usable password. |
 | `EXT_8030` | `429` | Rate limited (`start`, callback, link collisions, unlink). `Retry-After` is set. |

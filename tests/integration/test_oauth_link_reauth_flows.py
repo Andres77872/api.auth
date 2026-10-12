@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
@@ -28,10 +29,26 @@ def _enabled(monkeypatch, oauth_google_source):
 
 @contextmanager
 def _session_and_seams(fake_google_token_exchange, fake_google_verifier, *, recent_reauth=True):
+    from src.Util import auth_lifecycle, db
+
+    user = SimpleNamespace(id=SESSION.user_id, user_hash=SESSION.user_hash, username="link-user", user_type="consumer", is_active=True)
+    project = SimpleNamespace(id="prj-test-google", project_hash=SESSION.project_hash, project_name="OAuth test", is_active=True, archived=False)
+    group = SimpleNamespace(id="grp-test-google", group_name="Consumers")
+    db.get_user_by_hash.return_value = user
+    db.get_project_by_hash.return_value = project
+    db.get_user_groups_in_project_by_hash.return_value = [group]
+    db.get_user_accessible_projects.return_value = [project]
+    db.get_user_permissions.return_value = []
     with ExitStack() as stack:
-        stack.enter_context(patch("src.routes.auth_oauth.validate_access_session", return_value=SESSION))
-        if recent_reauth:
-            stack.enter_context(patch("src.routes.auth_oauth.require_recent_reauthentication", return_value=True))
+        with patch.object(auth_lifecycle, "_utc_now", return_value=datetime.now(timezone.utc) - timedelta(seconds=0 if recent_reauth else 301)):
+            pair = auth_lifecycle.issue_project_token_pair(user=vars(user), project=vars(project), groups=[group.group_name])
+        SESSION.session_id = pair.access_claims["session_id"]
+        AUTH["Authorization"] = "Bearer " + pair.access_token
+        hooks = {name + "_fn": getattr(db, name) for name in (
+            "get_user_by_hash", "get_project_by_hash", "get_user_groups_in_project_by_hash", "get_user_permissions", "get_user_accessible_projects"
+        )}
+        stack.enter_context(patch("src.routes.auth_oauth.validate_access_session", side_effect=lambda token: auth_lifecycle.validate_access_session(token, **hooks)))
+        stack.enter_context(patch("src.Util.session_plan.resolve_session_plan", return_value=None))
         yield
 
 

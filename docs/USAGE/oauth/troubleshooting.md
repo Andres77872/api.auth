@@ -37,7 +37,7 @@ tickets; use the `correlation_id`, fingerprints and activity ids.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `401` `EXT_8016` | The same `code` and `state` were relayed twice (browser refresh, a retrying proxy) | Relay each callback once; start a new sign-in. |
-| `401` `EXT_8014` | The state expired (the user took longer than the state TTL), never existed, or the `oauth_state` cookie sent with the request belongs to another round trip | Start again. If users are slow, raise the binding's `state_ttl_seconds` (at most `600`). |
+| `401` `EXT_8014` | State/completion authorization expired, is malformed/unsupported, or the binding cookie mismatches; version 2 link/reauth states are refused | Start again. Login/reauth TTL may be raised to `600`; link TTL cannot exceed the original proof deadline, so reauth before starting a new link. |
 | `400` `EXT_8014` | The relay dropped `state`, or sent neither `code` nor `error` | Forward every query parameter the provider sent. |
 | `400` `EXT_8031` | The user cancelled at the provider | Normal outcome; offer to try again. |
 | `502` `EXT_8018` | Wrong client secret, the code expired or was already exchanged, the redirect URI at the token endpoint differs, or the provider answered an error | Test and re-store the secret; check the redirect URI; start a new sign-in. |
@@ -69,7 +69,10 @@ When the binding's `login_enabled` is off the denial carries `reason`
 | `link/start` `401` `EXT_8024` | No recent authentication, `link_enabled` off, or provisioning mode not `link_only`/`both` | Sign in again or run a reauth round trip first; check the binding. |
 | `link/start` or `reauth/start` `400` `EXT_8013` | The binding lists several redirect URIs, or several return origins and none was named | Keep one redirect URI per binding; send `{"return_origin": "..."}`. |
 | Link callback `409` `EXT_8027` | The identity is linked to another user, or this user already has a different identity for the provider | Unlink the other identity first. The owner is never disclosed. |
-| Reauth callback `401` `EXT_8028` | The account chosen at the provider is not the one linked to this user | Sign in at the provider with the linked account. |
+| Link callback `401` `EXT_8024` | Initiating session/family no longer valid, project context changed, or original proof expired/replaced | Sign in or reauth, restore the intended project and start a new link. Never replay the callback. |
+| Link/reauth callback `403` `EXT_8025` | Account lost access to the bound project, or project is inactive/archived | Restore authorized access before starting a new transaction. |
+| Reauth callback `401` `EXT_8028` | Provider identity is not linked to this user, or initiating session/family no longer valid in its original context | Use the linked provider identity; a revoked/expired session needs a new local sign-in. |
+| A sensitive action needs reauth after linking | Linking no longer renews recent authentication | Run explicit reauth before retrying the sensitive action. |
 | Unlink `409` `EXT_8029` | The account has no usable password; accounts created by auto-create have none | Set a password first. |
 | Unlink `401` `EXT_8028` | No recent authentication | Sign in again or reauth, then retry. |
 | All sessions ended after an unlink | Expected: unlink revokes every session and refresh token of the user | Sign in again. |

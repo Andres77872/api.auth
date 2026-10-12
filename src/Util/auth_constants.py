@@ -50,6 +50,7 @@ AUTH_CHANGE_PASSWORD_RATE_PREFIX = "auth_change_password_rate:"
 # OAuth Redis key prefixes -----------------------------------------------
 OAUTH_STATE_PREFIX = "oauth_state:"
 OAUTH_STATE_CONSUMED_PREFIX = "oauth_state_consumed:"
+OAUTH_COMPLETION_PREFIX = "oauth_completion:"
 OAUTH_RECENT_REAUTH_PREFIX = "oauth_reauth:"
 OAUTH_INIT_TOKEN_PREFIX = "oauth_init:"
 OAUTH_INIT_TOKEN_CONSUMED_PREFIX = "oauth_init_consumed:"

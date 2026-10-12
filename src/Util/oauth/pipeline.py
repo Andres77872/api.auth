@@ -26,7 +26,7 @@ import inspect
 import ipaddress
 import logging
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 from uuid import uuid4
 
@@ -82,6 +82,7 @@ from src.Util.oauth_state import (
     OAuthStateRecord,
     OAuthStateReplayError,
     OAuthStateStoreUnavailable,
+    OAuthSessionAuthorization,
     fingerprint_oauth_value,
 )
 
@@ -327,6 +328,7 @@ class AuthorizationStart:
     user_id: str | None = field(default=None, repr=False)
     session_id: str | None = field(default=None, repr=False)
     prompt: str | None = None
+    authorization: OAuthSessionAuthorization | None = field(default=None, repr=False)
 
 
 # ───────────────────────────────────────────────────────────────────── pipeline
@@ -387,6 +389,7 @@ class OAuthPipeline:
             "remember_me": bool(start.remember_me),
             "user_id": start.user_id,
             "session_id": start.session_id,
+            "authorization": asdict(start.authorization) if start.authorization else None,
             "init_token_fingerprint": start.init_fingerprint,
             "scope_fingerprint": start.scope_fingerprint,
             # Diagnostic only. Behind a BFF both are the backend's, so they are recorded
@@ -502,6 +505,11 @@ class OAuthPipeline:
             if cancelled:
                 return oauth_error_response(ErrorCode.OAUTH_USER_CANCELLED, correlation_id=correlation_id)
             return oauth_error_response(ErrorCode.OAUTH_CODE_EXCHANGE_FAILED, status_code=502, correlation_id=correlation_id)
+
+        if record.purpose in {OAUTH_PURPOSE_LINK, OAUTH_PURPOSE_REAUTH}:
+            denial = await self._authorize_session(request, resolved=resolved, record=record, correlation_id=correlation_id)
+            if denial is not None:
+                return denial
 
         adapter = self.deps.adapter(resolved)
         if adapter.capabilities.issuer_response_param:
@@ -803,6 +811,40 @@ class OAuthPipeline:
         return None, "no_bound_user_group"
 
     # --------------------------------------------------------------------- link
+    async def _authorize_session(
+        self, request: Request, *, resolved: ResolvedConnection, record: OAuthStateRecord,
+        correlation_id: str, complete: bool = False,
+    ) -> Any:
+        from src.Util.auth_lifecycle import OAuthSessionAuthorizationDenied, authorize_oauth_session
+
+        try:
+            if resolved.binding.project_hash != record.project_hash:
+                raise OAuthSessionAuthorizationDenied("binding_project_changed", project_access_denied=True)
+            db = self.deps.db
+            authorize_oauth_session(
+                record=record, state_store=self.deps.state_store(), complete=complete,
+                get_user_by_hash_fn=db.get_user_by_hash, get_project_by_hash_fn=db.get_project_by_hash,
+                get_user_groups_in_project_by_hash_fn=db.get_user_groups_in_project_by_hash,
+                get_user_permissions_fn=db.get_user_permissions, get_user_accessible_projects_fn=db.get_user_accessible_projects,
+            )
+            return None
+        except OAuthSessionAuthorizationDenied as exc:
+            reason = exc.reason
+            if exc.project_access_denied:
+                code, status = ErrorCode.OAUTH_PROJECT_ACCESS_DENIED, 403
+            else:
+                code = (ErrorCode.OAUTH_PROVISIONING_DENIED if record.purpose == OAUTH_PURPOSE_LINK
+                        else ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED)
+                status = 401
+        except (OAuthStateInvalidError, OAuthStateStoreUnavailable):
+            reason, code, status = "completion_authorization_invalid", ErrorCode.OAUTH_STATE_INVALID, 401
+        await self.deps.emit(
+            EVENT_STATE_REJECTED, resolved=resolved,
+            details={"reason": "session_authorization_denied", "sub_reason": reason,
+                     "state_fingerprint": record.state_fingerprint}, request=request,
+        )
+        return oauth_error_response(code, status_code=status, correlation_id=correlation_id)
+
     async def _complete_link(
         self, request: Request, *, resolved: ResolvedConnection, record: OAuthStateRecord, key: IdentityKey, correlation_id: str
     ) -> Any:
@@ -823,6 +865,9 @@ class OAuthPipeline:
             return oauth_error_response(
                 ErrorCode.EXTERNAL_IDENTITY_SUB_CONFLICT, message=OAUTH_LINKING_DENIED_MESSAGE, correlation_id=correlation_id
             )
+        denial = await self._authorize_session(request, resolved=resolved, record=record, correlation_id=correlation_id, complete=True)
+        if denial is not None:
+            return denial
         try:
             linked = db.link_external_account(
                 external_account_id=f"uea-{uuid4().hex}",
@@ -843,8 +888,6 @@ class OAuthPipeline:
             return oauth_error_response(
                 ErrorCode.EXTERNAL_IDENTITY_SUB_CONFLICT, message=OAUTH_LINKING_DENIED_MESSAGE, correlation_id=correlation_id
             )
-        # A completed provider round trip is itself fresh proof for this session.
-        self._mark_reauth(user_id, record.session_id)
         await self.deps.emit(
             EVENT_LINKED,
             resolved=resolved,
@@ -865,12 +908,6 @@ class OAuthPipeline:
         )
 
     # ------------------------------------------------------------------- reauth
-    def _mark_reauth(self, user_id: str, session_id: str | None) -> None:
-        try:
-            self.deps.state_store().mark_recent_reauth(user_id=user_id, session_id=session_id)
-        except Exception:
-            logger.debug("OAuth recent-reauth marker failed", exc_info=True)
-
     async def _complete_reauth(
         self, request: Request, *, resolved: ResolvedConnection, record: OAuthStateRecord, key: IdentityKey, correlation_id: str
     ) -> Any:
@@ -881,7 +918,9 @@ class OAuthPipeline:
         # Step-up only counts when the identity that came back belongs to the session's user.
         if not user_id or not linked_user or text_of(linked_user, "id") != user_id:
             return oauth_error_response(ErrorCode.EXTERNAL_IDENTITY_NOT_LINKED, status_code=401, correlation_id=correlation_id)
-        self.deps.state_store().mark_recent_reauth(user_id=user_id, session_id=record.session_id)
+        denial = await self._authorize_session(request, resolved=resolved, record=record, correlation_id=correlation_id, complete=True)
+        if denial is not None:
+            return denial
         await self.deps.emit(
             EVENT_REAUTH_SUCCEEDED,
             resolved=resolved,

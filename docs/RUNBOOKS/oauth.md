@@ -43,6 +43,31 @@ peppers unchanged. For encryption-key rotation, retain old key IDs in
 `OAUTH_SECRET_DECRYPTION_KEYS_JSON`, activate the new key and rewrite credentials through
 the administration API. Remove an old key only after no ciphertext references it.
 
+## Session-bound OAuth completion rollout
+
+This fix requires no SQL migration, provider registration changes or client request
+changes. Verify the Redis server supports `SET PXAT` (Redis 6.2+) and watched
+transactions, including expiry of watched keys; application and Redis clocks must
+be synchronized. The disposable test stack uses Redis 7.4.9.
+
+Drain old workers' active callbacks and perform a coordinated traffic cutover. Do
+not leave unpatched workers serving callbacks. Version 2 login states remain accepted;
+version 2 link/reauth states fail with `401 EXT_8014` and require a new attempt.
+Keep cryptographic peppers unchanged. Roll back only to a build retaining the guard.
+
+Monitor `oauth_state_rejected` with `reason=session_authorization_denied`, its redacted
+`sub_reason`, callback denial rates and completion rates. Check clients can recover
+from callback `401` by signing in/reauthenticating and starting a fresh transaction.
+Clients chaining sensitive operations after linking may need explicit reauth because
+linking no longer renews proof. Existing identity links are not removed by the fix;
+investigate suspicious historical links separately when handling an incident.
+
+Revocation invalidates pending completion through session/family records; unused
+completion records expire without Redis-wide scans. Final completion's Redis `EXEC`
+is the ordering point: revocation before it prevents completion. A link authorized
+first may finish its SQL write afterward. Redis and MySQL are not a distributed
+transaction, and logout does not undo an already-authorized link.
+
 ## Emergency controls
 
 Disable a project binding or connection for narrow containment. `OAUTH_ENABLED=false`

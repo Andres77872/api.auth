@@ -7,9 +7,12 @@ from the route handlers so they can be unit-tested in isolation.
 
 import hmac
 import time
-from typing import Optional, List, Any, Mapping
+from typing import Optional, List, Any, Mapping, TYPE_CHECKING
 
 from src.Util.error_handler import AuthenticationError, AuthorizationError, ErrorCode, mask_uuid
+
+if TYPE_CHECKING:
+    from src.Util.oauth_state import OAuthRecentAuthProof
 
 
 def resolve_target_project(
@@ -286,3 +289,26 @@ def require_recent_reauthentication(
         error_code=ErrorCode.MFA_REQUIRED,
         details={"operation": str(operation or "sensitive_operation")},
     )
+
+
+def resolve_recent_authentication_proof(*, user_id: str, access_token: str, session_id: str, reauth_store: Any) -> "OAuthRecentAuthProof":
+    """Capture the freshest existing proof, without extending its lifetime."""
+    from src.Util.oauth_state import OAuthRecentAuthProof
+
+    now_ms = int(time.time() * 1000)
+    claims = _access_token_claims(access_token) or {}
+    proofs = []
+    try:
+        authenticated_at_ms = int(claims.get("reauth_at") or claims.get("auth_time")) * 1000
+        expires_at_ms = authenticated_at_ms + _recent_reauth_ttl_seconds() * 1000
+        if authenticated_at_ms <= now_ms < expires_at_ms:
+            proofs.append(OAuthRecentAuthProof("token", authenticated_at_ms, expires_at_ms))
+    except (ValueError, TypeError):
+        pass
+    marker = reauth_store.recent_reauth_proof(user_id=user_id, session_id=session_id, now_ms=now_ms)
+    if marker is not None:
+        proofs.append(marker)
+    if not proofs:
+        raise AuthenticationError(message="Recent reauthentication required", error_code=ErrorCode.MFA_REQUIRED,
+                                  details={"operation": "oauth_link"})
+    return max(proofs, key=lambda proof: proof.expires_at_ms)
