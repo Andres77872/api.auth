@@ -1,7 +1,7 @@
 """
 Slice 11 — Middleware: Request Validation + Auth Context
 
-Tests: RequestValidationMiddleware behavior (X-Process-Time header, POST > 8MB → 413).
+Tests: request validation and outer body-limit behavior (timing and POST > 8 MiB → 413).
 AuthContextMiddleware behavior (does not break requests).
 Uses the REAL app with all middleware active.
 
@@ -62,7 +62,7 @@ async def test_oversized_post_rejected(client_with_request_validation, fake_redi
                                         patched_db_connection, patched_db_error_logger,
                                         patched_audit_logger, patched_audit_ids,
                                         patched_cache_manager, patched_activity_logger):
-    """POST > 8MB → 413 through RequestValidationMiddleware."""
+    """POST > 8 MiB → 413 before downstream validation reads the body."""
     # Create a payload larger than 8MB
     oversized_data = "x" * (9 * 1024 * 1024)  # 9MB
 

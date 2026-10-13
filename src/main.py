@@ -14,6 +14,7 @@ from src.middleware.error_handler import register_exception_handlers
 from src.middleware.auth_context import AuthContextMiddleware
 from src.middleware.api_audit import APIAuditMiddleware
 from src.middleware.request_validation import RequestValidationMiddleware
+from src.middleware.body_limit import RequestBodyLimitMiddleware
 from src.routes import (
     auth, auth_oauth, auth_patreon, email_webhooks, patreon_webhooks,
     stripe_webhooks, internal_patreon, internal_billing, internal_email, users, user_types_auth, projects,
@@ -127,11 +128,13 @@ app.add_middleware(RequestValidationMiddleware)
 app.add_middleware(APIAuditMiddleware)
 
 # Add Auth Context Middleware (extracts user context for audit logging)
-# IMPORTANT: AuthContextMiddleware MUST be the innermost middleware (registered LAST)
-# so that it executes BEFORE route handlers and their decorators.
+# Auth context executes before audit and route handlers (last registered runs first).
 # This ensures request.state.session_validation is populated before
 # @log_and_handle_errors reads it (Phase 2.2 dependency).
 app.add_middleware(AuthContextMiddleware)
+
+# Bound actual bytes before authentication, audit, parsers, and webhook readers.
+app.add_middleware(RequestBodyLimitMiddleware, allowed_origins=ALLOWED_ORIGINS)
 
 
 # Documentation wiki (docs/ rendered at /documentation; see src/Util/docs_site)

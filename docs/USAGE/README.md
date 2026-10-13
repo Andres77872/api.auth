@@ -154,7 +154,7 @@ Rules that hold for every route. Topic pages only repeat a rule when a route fam
 | Contract | Current behavior |
 | --- | --- |
 | User agent | Every request needs a `User-Agent` header. Without one, the request middleware answers `422` with `{"status": "Error", "action": "User-Agent header not found"}` before any route runs. Browsers and `curl` send one. |
-| POST size | POST requests whose `Content-Length` exceeds 8 MiB are rejected with `413`. |
+| Request body size | All HTTP methods and webhooks have an 8 MiB actual-byte limit, including lengthless/chunked bodies. Oversized reads return `413` / `VAL_3010`; declared oversized bodies are rejected before reading. |
 | Content types | Older CRUD and admin mutations take form fields (`application/x-www-form-urlencoded` or multipart; list fields repeat). OAuth init/start and administration, email templates, internal email and billing, audit export and the user-group bulk add take JSON. Webhooks take the provider's signed raw body. Each reference page states the format per route. |
 | Validation errors | Request-validation failures return `400` `VAL_3001` with `error.details.validation_errors`; FastAPI's default `422` body is never produced. Outside `DEBUG_MODE`, `error.details` is returned only for validation failures and rate limits. See the [error reference](errors.md). |
 | Session tokens | Access and refresh tokens are distinct JWTs. The `access_token` cookie carries the access JWT; the response field has the same name. The refresh token travels in the `refresh_token` cookie (path `/auth`) or form field. |

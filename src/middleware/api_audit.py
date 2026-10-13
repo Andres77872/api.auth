@@ -13,7 +13,7 @@ from fastapi import Request, BackgroundTasks
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from starlette.routing import Match
-import io
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.Util.api_audit_logger import (
     APIAuditLogger,
@@ -22,6 +22,13 @@ from src.Util.api_audit_logger import (
 )
 from src.Util.audit_session_id import audit_session_id
 from src.Util.auth_constants import PATREON_WEBHOOK_ROUTE
+from src.middleware.body_limit import (
+    MAX_AUDIT_CAPTURE_BYTES,
+    RequestBodyLimitMiddleware,
+    RequestBodyState,
+    payload_too_large_response,
+    request_body_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +56,17 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
     so it can access user context from request.state
     """
     
+    def __init__(self, app: ASGIApp, **kwargs):
+        super().__init__(app, **kwargs)
+        # Keep standalone uses bounded too; production has an earlier guard.
+        self._standalone_body_limit = RequestBodyLimitMiddleware(super().__call__)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and request_body_state(scope) is None:
+            await self._standalone_body_limit(scope, receive, send)
+        else:
+            await super().__call__(scope, receive, send)
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
         Process request and log to audit trail.
@@ -123,35 +141,13 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         # Get query parameters
         request_query = dict(request.query_params) if request.query_params else None
         
-        # Get request body (if present)
-        request_body = None
-        request_size_bytes = 0
-        
-        if request.method in ["POST", "PUT", "PATCH", "DELETE"]:
-            try:
-                if self._is_raw_body_audit_excluded(request.url.path):
-                    request_size_bytes = int(request.headers.get("content-length") or 0)
-                    request_body = {"_note": "Request body excluded from audit"}
-                else:
-                    # Read body
-                    body_bytes = await request.body()
-                    request_size_bytes = len(body_bytes)
-
-                    if body_bytes:
-                        try:
-                            request_body = json.loads(body_bytes.decode('utf-8'))
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            # Body is not JSON, skip logging it
-                            request_body = {"_note": "Non-JSON body"}
-
-                        # BaseHTTPMiddleware supplies a _CachedRequest whose
-                        # wrapped_receive() replays this cached body downstream.
-                        # Replacing request._receive here breaks the ASGI
-                        # disconnect lifecycle and can hang POST endpoints that
-                        # return StreamingResponse.
-                    
-            except Exception as e:
-                logger.warning(f"Failed to read request body: {e}")
+        # Capture only bytes read normally by parsers/handlers. Never force a
+        # complete-body read or replace BaseHTTPMiddleware's cached receive.
+        body_state = request_body_state(request.scope)
+        body_excluded = self._is_raw_body_audit_excluded(path)
+        captures_body = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        body_state.capture_enabled = captures_body and not body_excluded
+        request_body = {"_note": "Request body excluded from audit"} if captures_body and body_excluded else None
         
         route_pattern = self._route_pattern(request)
         
@@ -169,7 +165,7 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             request_headers=request_headers,
             request_body=request_body,
             request_query=request_query,
-            request_size_bytes=request_size_bytes,
+            request_size_bytes=body_state.received_bytes,
             client_ip=client_ip,
             user_agent=user_agent,
             referer=referer,
@@ -181,6 +177,8 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
         # Process request
         try:
             response = await call_next(request)
+            if body_state.exceeded:
+                response = payload_too_large_response(request.scope)
             
             # Calculate duration
             duration_ms = int((time.time() - start_time) * 1000)
@@ -264,7 +262,8 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
                     target_resource_type=resource_type,
                     target_resource_id=resource_id,
                     tags=tags,
-                    security_event=is_security
+                    security_event=is_security,
+                    **self._request_capture(body_state, captures_body, body_excluded),
                 )
             
             # Add response logging to background tasks
@@ -284,8 +283,9 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             duration_ms = int((time.time() - start_time) * 1000)
             
             # Extract error info
-            error_code = type(e).__name__
-            error_message = APIAuditLogger.sanitize_sensitive_text(str(e))
+            status_code = 413 if body_state.exceeded else 500
+            error_code = "VAL_3010" if body_state.exceeded else type(e).__name__
+            error_message = "Request payload is too large" if body_state.exceeded else APIAuditLogger.sanitize_sensitive_text(str(e))
             
             # Get resource info
             resource_type, resource_id = APIAuditLogger.extract_resource_info(
@@ -297,9 +297,9 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             is_security = APIAuditLogger.is_security_event(
                 path,
                 request.method,
-                500,
+                status_code,
                 user_type,
-            ) or self._is_route_specific_security_event(path, 500) or (
+            ) or self._is_route_specific_security_event(path, status_code) or (
                 'auth' in error_code.lower() or
                 'permission' in error_code.lower() or
                 'unauthorized' in error_code.lower()
@@ -309,17 +309,17 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
             tags = APIAuditLogger.generate_tags(
                 path,
                 request.method,
-                500,  # Server error
+                status_code,
                 user_type
             )
             tags.append('exception')
-            tags = self._add_route_specific_tags(path, tags, status_code=500)
+            tags = self._add_route_specific_tags(path, tags, status_code=status_code)
             
             # Log the error response immediately (before re-raising)
             try:
                 APIAuditLogger.log_response(
                     audit_id=audit_id,
-                    response_status=500,
+                    response_status=status_code,
                     response_body=None,
                     response_headers={},
                     response_size_bytes=0,
@@ -328,13 +328,50 @@ class APIAuditMiddleware(BaseHTTPMiddleware):
                     target_resource_type=resource_type,
                     target_resource_id=resource_id,
                     tags=tags,
-                    security_event=is_security
+                    security_event=is_security,
+                    **self._request_capture(body_state, captures_body, body_excluded),
                 )
             except Exception as log_error:
                 logger.error(f"Failed to log error response: {log_error}")
             
             # Re-raise the exception
             raise
+
+    @staticmethod
+    def _request_capture(state: RequestBodyState, captures_body: bool, excluded: bool) -> Dict[str, Any]:
+        body = None
+        capture_status = "not_requested"
+        if captures_body:
+            if excluded:
+                capture_status = "excluded"
+                body = {"_note": "Request body excluded from audit"}
+            elif state.exceeded:
+                capture_status = "request_limit"
+                body = {"_note": "Request body omitted: exceeds request size limit"}
+            elif state.capture_truncated:
+                capture_status = "audit_limit"
+                body = {"_note": "Request body omitted: exceeds 64 KiB audit limit"}
+            elif not state.complete:
+                capture_status = "incomplete"
+                body = {"_note": "Request body not fully read; omitted from audit"}
+            elif state.capture:
+                try:
+                    body = APIAuditLogger.filter_sensitive_data(json.loads(state.capture.decode("utf-8")))
+                    capture_status = "complete"
+                    # Redaction/JSON escaping can expand a small input.
+                    if len(json.dumps(body).encode("utf-8")) > MAX_AUDIT_CAPTURE_BYTES:
+                        capture_status = "audit_limit"
+                        body = {"_note": "Request body omitted: exceeds 64 KiB audit limit"}
+                except (ValueError, UnicodeDecodeError, RecursionError):
+                    capture_status = "non_json"
+                    body = {"_note": "Non-JSON body"}
+            else:
+                capture_status = "complete"
+        return {
+            "request_body": body,
+            "request_size_bytes": state.received_bytes,
+            "request_metadata": {"body_complete": state.complete, "body_capture": capture_status},
+        }
     
     @staticmethod
     def _route_pattern(request: Request) -> Optional[str]:

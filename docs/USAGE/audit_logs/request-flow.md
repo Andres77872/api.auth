@@ -5,11 +5,15 @@ tables are described in [architecture.md](architecture.md).
 
 ## Capturing a request
 
-Middleware runs outermost first: `AuthContextMiddleware`, then `APIAuditMiddleware`, then
-`RequestValidationMiddleware` and CORS, then the route.
+Middleware runs outermost first: `RequestBodyLimitMiddleware`, then
+`AuthContextMiddleware`, `APIAuditMiddleware`, `RequestValidationMiddleware` and CORS,
+then the route.
 
 ```text
 request
+  -> RequestBodyLimitMiddleware
+       reject declared lengths over 8 MiB before reading or audit work
+       meter actual bytes during downstream reads; stop at the first over-limit chunk
   -> AuthContextMiddleware
        X-API-Key present (and path is not /auth/validate or /auth/validate-api-key)?
          validate the key -> request.state.user, session_id = key ID, auth_method = "api_key"
@@ -20,25 +24,31 @@ request
        skip if OPTIONS, or path is /ping, /health, /metrics, /docs, /redoc, /openapi.json,
        /auth/validate or /webhooks/email (exact or sub-path)
        read user, session_id (never token bytes), project and auth_method from request.state
-       redact headers, query and JSON body
+       redact headers/query; enable capture of at most 64 KiB during normal body reads
        CALL sp_log_api_request  (synchronous, before the route runs; response_status = 0)
   -> RequestValidationMiddleware, CORS, route handler
   <- response
        compute security_event and tags from path, method, status and user type
-       attach a background task: CALL sp_update_api_response
+       attach a background task: update bounded request capture, then CALL sp_update_api_response
          (status, is_success, duration, tags, security_event, resource guess)
+         in one transaction, preserving the initial request_timestamp
   <- response sent, then the background task runs
 ```
 
 Consequences:
 
-- A request is recorded even if the handler crashes. Requests rejected
-  by `RequestValidationMiddleware` (missing `User-Agent`, body over 8 MiB) are recorded too.
+- A request that enters audit middleware is recorded even if the handler crashes.
+  Missing `User-Agent` and streamed body overflows are recorded too. Declared oversized
+  requests are rejected before audit and appear only in structured body-limit warnings.
 - Until the background task runs, the row shows `response_status = 0` and `is_success = null`.
+- Audit capture does not force a body read. Complete JSON up to 64 KiB is redacted;
+  larger/incomplete bodies contain omission notes, and raw webhook bodies stay excluded.
+  `request_size_bytes` counts actual bytes read; metadata records whether the read completed.
 - The middleware receives the response as a stream. For a `4xx`/`5xx` JSON body of at most
   64 KiB it drains the stream, records `error_code`, `error_message` and the redacted
   `response_body`, and replays the same bytes to the client. When an unhandled exception
   escapes, the response row is written at once with status `500` and the exception class name.
+  Body-limit failures instead record `413` and `VAL_3010`, even if parsing wraps the exception.
 - A failure to write the audit row is logged and ignored; the request still proceeds.
 
 ## Writing an activity entry

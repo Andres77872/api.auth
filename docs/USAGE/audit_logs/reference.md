@@ -128,8 +128,8 @@ Every read response carries `generated_at` (UTC, ISO 8601 with `Z`).
 | `route_pattern` | Path template of the matched route (`/users/{user_hash}`); `null` when no route matches |
 | `user_id`, `user_type` | From the access token or API key; `null` for anonymous requests |
 | `session_id` | A non-credential session identifier, never token bytes: the access token's `session_id` claim (a UUID, stable across refreshes and project switches of one sign-in), or the API key ID for `X-API-Key` requests. A token without a usable claim is stored as `tokhash:` plus 32 hex characters (a keyed HMAC-SHA-256). Rows written before this change are masked the same way when read; see [Existing rows with token prefixes](#existing-rows-with-token-prefixes). `null` for anonymous requests. |
-| `request_body`, `request_query` | Redacted JSON; `request_body` only for `POST`, `PUT`, `PATCH`, `DELETE`. Non-JSON bodies are stored as `{"_note": "Non-JSON body"}`. |
-| `request_size_bytes`, `response_size_bytes` | Response size comes from `Content-Length` |
+| `request_body`, `request_query` | Redacted JSON; `request_body` only for `POST`, `PUT`, `PATCH`, `DELETE`, captured during normal handler/parser reads. Complete JSON bodies and their redacted serialization must fit within 64 KiB. Larger or incomplete bodies contain an omission `_note`; non-JSON bodies contain `{"_note": "Non-JSON body"}`. Webhook raw bodies remain excluded. Capture is populated when response logging finishes; an in-progress row can have a null body. |
+| `request_size_bytes`, `response_size_bytes` | Request size is actual bytes read, including the first rejected chunk for a streamed overflow; an unread body has size 0. `metadata.body_complete` distinguishes incomplete reads. Response size comes from `Content-Length`. |
 | `response_status` | `0` until the response row is written |
 | `response_body` | Redacted JSON error body for `4xx`/`5xx` responses up to 64 KiB; `null` for successes and other bodies |
 | `request_timestamp`, `response_timestamp` | Database time |
@@ -140,7 +140,7 @@ Every read response carries `generated_at` (UTC, ISO 8601 with `Z`).
 | `error_code`, `error_message` | `error.code` and `error.message` of a JSON error body; for an unhandled exception, the exception class name and message |
 | `project_id` | Project of the token or key |
 | `target_resource_type`, `target_resource_id` | Guessed from path segments such as `users`, `projects`, `emails` |
-| `metadata` | Unused (`null`) |
+| `metadata` | Middleware capture metadata: `body_complete` (boolean), `body_capture` (`complete`, `non_json`, `audit_limit`, `request_limit`, `incomplete`, `excluded`, or `not_requested`). Other metadata is preserved. |
 | `tags` | JSON array, for example `["post", "client_error", "user_type_admin", "admin_action", "create", "security_event"]` |
 | `security_event` | See [security event rules](#security-event-rules) |
 | `username`, `user_hash`, `project_name`, `project_hash` | Joined at query time |

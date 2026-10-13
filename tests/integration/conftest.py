@@ -46,6 +46,7 @@ def app_with_request_validation():
     from fastapi.responses import PlainTextResponse
     from src.middleware.error_handler import register_exception_handlers
     from src.middleware.request_validation import RequestValidationMiddleware
+    from src.middleware.body_limit import RequestBodyLimitMiddleware
     from src.routes import (
         auth, users, user_types_auth, projects,
         admin_user_groups, admin_project_groups, admin_dashboard, system, bulk_operations, global_roles, permission_assignments
@@ -74,6 +75,7 @@ def app_with_request_validation():
     test_app.include_router(global_roles.router, tags=['Global Role System'])
     test_app.include_router(permission_assignments.router, tags=['Permission Assignments'])
     test_app.add_middleware(RequestValidationMiddleware)
+    test_app.add_middleware(RequestBodyLimitMiddleware)
     return test_app
 
 

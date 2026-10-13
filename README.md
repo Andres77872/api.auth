@@ -236,7 +236,7 @@ curl -X POST "http://localhost:8000/auth/validate-api-key" \
 ### Request Format
 
 - A **`User-Agent` header is required on every request**. Missing it returns `422`.
-- POST requests whose `Content-Length` exceeds 8 MiB are rejected with `413`.
+- HTTP request bodies are limited to 8 MiB of actual received bytes on every method, including webhooks and chunked requests without `Content-Length`. Declared oversized bodies are rejected before reading; a read that crosses the limit returns `413` (`VAL_3010`, `Request payload is too large`). Clients within the limit need no format or header changes. See [request body protection](docs/RUNBOOKS/request-body-protection.md).
 - Form fields (`application/x-www-form-urlencoded` or `multipart/form-data`): login, platform login, registration, refresh, switch-project, availability checks, the OAuth `form_post` callback, and most older CRUD/admin mutations, including `/admin` bulk operations (list fields are repeated).
 - JSON or form: email verification, forgot password, and reset password.
 - JSON: OAuth init/start, Patreon link request/confirm, OAuth administration, admin Patreon resync, internal billing, internal Patreon resync, internal email, email templates, audit export, and the user-group bulk assignment. Admin billing mixes JSON and form per route.

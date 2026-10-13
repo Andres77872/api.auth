@@ -75,11 +75,13 @@ With `DEBUG_MODE=true` (also `1` or `yes`), `error.details` and `error.trace` ar
 
 ### Other error bodies
 
+Request middleware uses the standard envelope: missing `User-Agent` returns
+`422` / `VAL_3002`, and an HTTP body over 8 MiB returns `413` / `VAL_3010`.
+
 Some surfaces do not use the standard envelope:
 
 | Surface | Body | Code available |
 | --- | --- | --- |
-| Request middleware: missing `User-Agent` (`422`), POST body over 8 MiB (`413`) | `{"status": "Error", "action": "User-Agent header not found"}` / `"Payload too large (max 8 MiB)"` | No |
 | OAuth sign-in, link, reauth and unlink (`/auth/oauth/*`) | Standard `error` object plus top-level `"success": false` and `correlation_id` | Yes (`EXT_80xx`) |
 | Patreon link denials, Patreon S2S and webhooks, billing S2S and Stripe webhooks | `{"success": false, "message": "..."}` | No |
 
@@ -111,8 +113,8 @@ that must not reveal account state answer `202` with:
 | `404` | Not found | Unknown resource (`NF_4xxx`) or unknown route (`NF_4004`). |
 | `405` | Method not allowed | Wrong HTTP method; returned as `INT_7001` with category `internal`. |
 | `409` | Conflict | Duplicates (`CONF_5001`–`CONF_5004`), [stored-procedure refusals](#stored-procedure-refusals) (`CONF_5005`), OAuth identity conflicts. |
-| `413` | Payload too large | POST body over 8 MiB (middleware body, no code). |
-| `422` | Unprocessable | Missing `User-Agent` (middleware body, no code); internal email recipient, `action_url`, template or variable checks (`VAL_3001`); billing S2S request or `Idempotency-Key` checks (`{"success": false}`). Request-validation failures are `400`, not `422`. |
+| `413` | Payload too large | HTTP request body over 8 MiB on any method, including webhooks and chunked bodies (`VAL_3010`). |
+| `422` | Unprocessable | Missing `User-Agent` (`VAL_3002`); internal email recipient, `action_url`, template or variable checks (`VAL_3001`); billing S2S request or `Idempotency-Key` checks (`{"success": false}`). Request-validation failures are `400`, not `422`. |
 | `429` | Rate limited | `INT_7005`, `EXT_8030`, Patreon and billing surfaces. Honor `Retry-After` when present. |
 | `500` | Server error | `INT_7001`, `DB_6xxx`, and `INT_7003` for Redis failures inside database helpers. |
 | `501` | Not implemented | `PATCH /projects/{project_hash}/owner`, `PATCH /projects/{project_hash}/archive` (`INT_7006`). |
@@ -247,10 +249,10 @@ they are returned with. Codes that exist in `ErrorCode` but are never returned a
 | Code | Name | HTTP | Returned when |
 | --- | --- | --- | --- |
 | `VAL_3001` | `INVALID_INPUT` | 400 / 422 | Request-validation failure (with `validation_errors`), route-level format checks, every bare `400` or `422`; also profile updates that try to change a password (use `POST /auth/password/change`) and `force_password_reset` on bulk update, which is not supported. |
-| `VAL_3002` | `MISSING_REQUIRED_FIELD` | 400 | A field the handler checks itself is empty (for example registration without `user_group_hash`, bulk update without `is_active` or `user_type`). |
+| `VAL_3002` | `MISSING_REQUIRED_FIELD` | 400 / 422 | A field the handler checks itself is empty (for example registration without `user_group_hash`, bulk update without `is_active` or `user_type`); missing `User-Agent` returns 422. |
 | `VAL_3007` | `WEAK_PASSWORD` | 400 | The shared password policy rejected a new password (registration, reset, change, root/admin creation). Reason codes (`too_short`, `common_password`, `obvious_identifier_derivation`, `repeated_or_sequential`) are visible only with `DEBUG_MODE`. |
 | `VAL_3009` | `INVALID_RANGE` | 400 | Audit-log `limit` or `days` out of range, or an export larger than the hard limit. |
-| `VAL_3010` | `INVALID_LENGTH` | 400 | Bulk list longer than the route limit (`100` users, `50` for bulk delete). |
+| `VAL_3010` | `INVALID_LENGTH` | 400 / 413 | Bulk list longer than the route limit (`100` users, `50` for bulk delete); an HTTP body exceeding 8 MiB returns 413. |
 | `VAL_3012` | `INVALID_ENUM_VALUE` | 400 | Unknown `user_type`, audit export `source` or `format`, or billing provider value. |
 
 ### Not found (`NF_4xxx`)
@@ -446,8 +448,8 @@ Permission resolution beyond group membership is covered in
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `422` with `{"status": "Error", "action": "User-Agent header not found"}` | No `User-Agent` header. | Send one; `curl` does by default. |
-| `413` with `"Payload too large (max 8 MiB)"` | POST `Content-Length` over 8 MiB. | Send a smaller body. |
+| `422` with `VAL_3002`, `"User-Agent header is required"` | No `User-Agent` header. | Send one; `curl` does by default. |
+| `413` with `VAL_3010`, `"Request payload is too large"` | Declared length or actual received HTTP body exceeds 8 MiB, including non-POST methods and chunked bodies. | Reduce the encoded request size or use supported batching; do not retry the same payload automatically. |
 | `400` `VAL_3001` with `validation_errors` | Missing or mistyped field. Most write routes take form fields; list fields repeat the key (`user_hashes=a&user_hashes=b`). | Fix the fields named in `validation_errors[].field`. |
 | `405` `INT_7001` `Method Not Allowed` | Wrong HTTP method for the path. | Check the method in the suite reference. |
 

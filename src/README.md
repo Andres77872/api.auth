@@ -67,7 +67,7 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECTS
 - Every request must carry a `User-Agent` header. Without one the API answers
   `422` with a short `{"status": "Error", "action": …}` body before any route
   runs. Browsers and `curl` send one automatically.
-- POST requests whose `Content-Length` exceeds 8 MiB are rejected with `413`.
+- HTTP request bodies are limited to 8 MiB of actual received bytes on every method, including webhooks and chunked requests without `Content-Length`. Declared oversized bodies are rejected before reading; a read that crosses the limit returns `413` with code `VAL_3010` and message `Request payload is too large`.
 - Form fields (`application/x-www-form-urlencoded` or `multipart/form-data`):
   login, platform login, registration, refresh, switch-project, availability
   checks, the OAuth `form_post` callback, and most older CRUD and admin

@@ -16,6 +16,7 @@ from src.Util.error_handler import ValidationError, ErrorCode, build_error_respo
 from src.Util.activity_logger import set_request_context, clear_request_context
 from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util.logger_ws import logger
+from src.middleware.body_limit import apply_reject_cors_headers
 
 # Configure logging
 log = logging.getLogger(__name__)
@@ -29,10 +30,7 @@ ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_env.split(",") if o.strip
 
 def _apply_cors_reject_headers(request: Request, response: Response) -> None:
     """Reflect a whitelisted Origin on early reject responses (never wildcard)."""
-    origin = request.headers.get('origin')
-    if origin and origin in ALLOWED_ORIGINS:
-        response.headers['Access-Control-Allow-Origin'] = origin
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
+    apply_reject_cors_headers(request.scope, response, ALLOWED_ORIGINS)
 
 
 class RequestValidationMiddleware(BaseHTTPMiddleware):
@@ -41,7 +39,6 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
     
     Features:
     - Validates user-agent header presence
-    - Checks POST request size limits (8MB)
     - Tracks request processing time
     - Sets activity logging context (IP, user agent)
     - Logs requests via logger_ws
@@ -50,9 +47,6 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
         app = FastAPI()
         app.add_middleware(RequestValidationMiddleware)
     """
-    
-    # Maximum POST request size in bytes (8MB)
-    MAX_CONTENT_LENGTH = 8388608
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
@@ -74,16 +68,6 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
             response.headers["X-Process-Time"] = str(process_time)
             _apply_cors_reject_headers(request, response)
             return response
-        
-        # Validate POST request size
-        if request.method == 'POST':
-            content_length = request.headers.get('content-length')
-            if content_length and int(content_length) > self.MAX_CONTENT_LENGTH:
-                response = JSONResponse(status_code=413, content=build_error_response(ValidationError("Request payload is too large", ErrorCode.INVALID_LENGTH)))
-                process_time = time.time() - start_time
-                response.headers["X-Process-Time"] = str(process_time)
-                _apply_cors_reject_headers(request, response)
-                return response
         
         # Extract IP address for activity logging
         ip_address = self._get_client_ip(request)

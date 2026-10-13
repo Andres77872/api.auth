@@ -62,6 +62,10 @@ is refused here, unlike on some other admin routes.
   it does not delay the client.
 - **Best effort.** Both loggers catch and log their own failures. A database outage does not fail
   requests, but it leaves gaps in the audit trail.
+- **Body reads are bounded.** An outer ASGI guard limits actual HTTP input to 8 MiB.
+  Audit captures at most 64 KiB during normal reads, preserves webhook exclusions, and
+  fills request capture in the response transaction without moving the request timestamp.
+  See [request body protection](../../RUNBOOKS/request-body-protection.md).
 - **Error details come from the JSON error body.** The response reaches the middleware as a
   stream; for a `4xx`/`5xx` with a JSON body of at most 64 KiB, the middleware drains it, fills
   `error_code`, `error_message` and the redacted `response_body`, and replays the same bytes to

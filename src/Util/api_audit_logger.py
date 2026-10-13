@@ -685,7 +685,11 @@ class APIAuditLogger:
         target_resource_type: Optional[str],
         target_resource_id: Optional[str],
         tags: Optional[List[str]],
-        security_event: bool
+        security_event: bool,
+        *,
+        request_body: Optional[Any] = None,
+        request_size_bytes: Optional[int] = None,
+        request_metadata: Optional[Dict] = None,
     ) -> bool:
         """
         Update audit log with response details (called in background).
@@ -706,6 +710,17 @@ class APIAuditLogger:
             
             with get_connection() as conn:
                 cursor = conn.cursor()
+                if request_size_bytes is not None:
+                    # Complete capture in this same transaction, preserving the
+                    # initial request_timestamp used by sp_update_api_response.
+                    filtered_request = APIAuditLogger.filter_sensitive_data(request_body) if request_body is not None else None
+                    filtered_metadata = APIAuditLogger.filter_sensitive_data(request_metadata) if request_metadata else {}
+                    cursor.execute(
+                        "UPDATE api_audit_log SET request_body = %s, request_size_bytes = %s, "
+                        "metadata = JSON_MERGE_PATCH(COALESCE(metadata, JSON_OBJECT()), %s) WHERE id = %s",
+                        (json.dumps(filtered_request) if filtered_request is not None else None,
+                         request_size_bytes, json.dumps(filtered_metadata), audit_id),
+                    )
                 cursor.callproc('sp_update_api_response', (
                     audit_id,
                     response_status,
