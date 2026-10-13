@@ -94,12 +94,16 @@ def test_group_get_and_list_return_capabilities_webhook_presence_and_catalog_syn
 
 @pytest.fixture
 def purchase(real_factory, group):
-    buyer = real_factory.create_user()
+    chain = real_factory.create_full_chain()
+    buyer = chain["user"]
     other_user = real_factory.create_user()
-    project = real_factory.create_project()
+    project = chain["project"]
     other_project = real_factory.create_project()
     purchase_ref = f"bpur-{secrets.token_hex(12)}"
     with _real_db():
+        db_billing.attach_project_to_billing_group(
+            id=f"bgp-{secrets.token_hex(12)}", billing_group_id=group["id"], project_id=project["id"], added_by=None,
+        )
         db_billing.record_purchase_event(
             purchase_id=f"bpe-{secrets.token_hex(12)}", history_id=None, user_id=buyer["id"], project_id=project["id"],
             billing_group_id=group["id"], customer_id=None, provider="stripe", purchase_ref=purchase_ref,

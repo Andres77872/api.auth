@@ -263,6 +263,7 @@ async def test_checkout_replayed_from_before_the_fix_resolves_by_its_checkout_re
     lookup = {
         "matched_by": "checkout_ref",
         "user_id": "usr-1",
+        "user_hash": USER_HASH,
         "project_id": "prj-1",
         "billing_group_id": "bg-1",
         "customer_id": "bcustrow-1",
@@ -334,3 +335,125 @@ async def test_allowed_webhook_events_setting_narrows_what_is_processed(monkeypa
     assert response.status_code == 200
     assert response.json() == {"success": True, "status": "ignored_noop"}
     assert seams.observed == []
+
+
+def _capture_deliveries(monkeypatch):
+    deliveries = []
+    monkeypatch.setattr(_route_module(), "record_webhook_delivery", lambda **kw: deliveries.append(kw) or {"delivery_status": "accepted"})
+    return deliveries
+
+
+def _assert_no_mutations(seams, deliveries):
+    assert not (seams.customers or seams.observed or seams.purchases or seams.jobs or deliveries)
+    assert _route_module()._DELIVERY_MEMORY_LEDGER == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["customer_subscription_updated.json", "checkout_session_completed_payment.json"])
+async def test_signed_foreign_metadata_is_rejected_before_any_mutation(monkeypatch, filename):
+    seams = _Seams(monkeypatch, metadata_scope={**SCOPE, "billing_group_id": "bg-foreign"})
+    deliveries = _capture_deliveries(monkeypatch)
+    response = await seams.post(*_fixture(filename))
+    assert response.status_code == 403
+    assert response.json() == {"success": False, "message": "Webhook rejected."}
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", [
+    {"user_id": "foreign-user"}, {"project_id": "foreign-project"},
+    {"billing_group_id": "foreign-group"}, {"provider": "foreign-provider"},
+])
+async def test_known_reference_disagreement_is_rejected(monkeypatch, conflict):
+    seams = _Seams(monkeypatch, metadata_scope=SCOPE, lookup={**SCOPE, **conflict})
+    deliveries = _capture_deliveries(monkeypatch)
+    response = await seams.post(*_fixture("customer_subscription_updated.json"))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+async def test_remapped_project_purchase_uses_original_checkout_ownership(monkeypatch):
+    lookup = {**SCOPE, "matched_by": "checkout_ref", "historical_checkout_verified": True,
+              "checkout_project_id": SCOPE["project_id"], "customer_id": "bcustrow-1"}
+    seams = _Seams(monkeypatch, metadata_scope={**SCOPE, "billing_group_id": "new-group"}, lookup=lookup)
+    response = await seams.post(*_fixture("checkout_session_completed_payment.json"))
+    assert response.status_code == 200
+    [purchase] = seams.purchases
+    assert purchase["project_id"] == SCOPE["project_id"]
+    assert purchase["billing_group_id"] == SCOPE["billing_group_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proof", [{}, {"historical_checkout_verified": True, "checkout_project_id": "other-project"}])
+async def test_remapped_metadata_without_original_checkout_proof_is_rejected(monkeypatch, proof):
+    seams = _Seams(monkeypatch, metadata_scope={**SCOPE, "billing_group_id": "new-group"}, lookup={**SCOPE, **proof})
+    deliveries = _capture_deliveries(monkeypatch)
+    response = await seams.post(*_fixture("checkout_session_completed_payment.json"))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolver", ["resolve_user_billing_group", "resolve_event_scope"])
+async def test_scope_failure_is_retryable_without_consuming_delivery(monkeypatch, resolver):
+    seams = _Seams(monkeypatch, metadata_scope=SCOPE)
+    deliveries = _capture_deliveries(monkeypatch)
+    module = _route_module()
+    original = getattr(module, resolver)
+    def unavailable(**_kwargs):
+        raise RuntimeError("test database unavailable")
+    monkeypatch.setattr(module, resolver, unavailable)
+    raw, signature = _fixture("customer_subscription_updated.json")
+    response = await seams.post(raw, signature)
+    assert response.status_code == 503
+    _assert_no_mutations(seams, deliveries)
+    monkeypatch.setattr(module, resolver, original)
+    response = await seams.post(raw, signature)
+    assert response.status_code == 200
+    assert len(seams.observed) == 1
+
+
+@pytest.mark.asyncio
+async def test_sql_reference_conflict_is_a_neutral_rejection(monkeypatch):
+    from src.Util.error_handler import ConflictError
+    seams = _Seams(monkeypatch, metadata_scope=SCOPE)
+    deliveries = _capture_deliveries(monkeypatch)
+    def conflict(**_kwargs):
+        raise ConflictError(message="Billing event scope conflict")
+    monkeypatch.setattr(_route_module(), "resolve_event_scope", conflict)
+    response = await seams.post(*_fixture("customer_subscription_updated.json"))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+async def test_conflicting_metadata_aliases_are_rejected(monkeypatch):
+    seams = _Seams(monkeypatch, metadata_scope=SCOPE)
+    deliveries = _capture_deliveries(monkeypatch)
+    payload = _payload("customer_subscription_updated.json")
+    payload["data"]["object"]["metadata"]["customer_ref"] = "bcust-contradiction"
+    response = await seams.post(*_signed(payload))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_hash", ["unknown-foreign-user", "***FILTERED***"])
+async def test_unresolvable_foreign_user_hash_cannot_override_known_ownership(monkeypatch, user_hash):
+    seams = _Seams(monkeypatch, lookup=SCOPE)
+    deliveries = _capture_deliveries(monkeypatch)
+    payload = _payload("customer_subscription_updated.json")
+    payload["data"]["object"]["metadata"]["user_hash"] = user_hash
+    response = await seams.post(*_signed(payload))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_project_metadata_requires_authoritative_project_ownership(monkeypatch):
+    seams = _Seams(monkeypatch, lookup={**SCOPE, "project_id": None, "project_hash": None})
+    deliveries = _capture_deliveries(monkeypatch)
+    response = await seams.post(*_fixture("customer_subscription_updated.json"))
+    assert response.status_code == 403
+    _assert_no_mutations(seams, deliveries)

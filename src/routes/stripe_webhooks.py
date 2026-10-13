@@ -30,7 +30,7 @@ from src.Util.billing.redaction import assert_no_billing_forbidden_fields, redac
 from src.Util.billing.security import provider_ref_evidence, provider_ref_hmac_or_none
 from src.Util.db import db_billing
 from src.Util.email.route_support import client_ip, user_agent
-from src.Util.error_handler import rate_limit_headers
+from src.Util.error_handler import ConflictError, rate_limit_headers
 from src.Util.stripe import classifier as stripe_classifier
 from src.Util.stripe import webhooks as stripe_webhook_adapter
 from src.Util.stripe.account import StripeAccountNotReadyError, get_stripe_account_secrets_for_group
@@ -78,6 +78,14 @@ _SAFE_EVENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW
 _DELIVERY_MEMORY_LEDGER: set[str] = set()
 
 
+class WebhookScopeConflict(ValueError):
+    """Signed references disagree with the authenticated billing scope."""
+
+
+class WebhookScopeUnavailable(RuntimeError):
+    """Ownership could not be checked; the delivery must remain retryable."""
+
+
 # --------------------------------------------------------------------------- OpenAPI documentation
 # The handlers read the raw body and the signature header from the Request themselves, so the
 # body and header are declared here for the schema only. Webhooks carry no security scheme:
@@ -121,6 +129,7 @@ _WEBHOOK_RESPONSES: dict[int | str, dict[str, Any]] = {
             "event id, or event `api_version` check failed."
         )
     },
+    403: {"description": "Webhook rejected: billing ownership references disagree."},
     429: {"description": "Too many signature failures from this client IP; retry after `Retry-After`."},
 }
 
@@ -566,8 +575,8 @@ async def _resolve_scope_from_metadata(metadata: Mapping[str, Any]) -> dict[str,
         return None
     try:
         row = await _maybe_await(resolve_user_billing_group(user_hash=user_hash, project_hash=project_hash))
-    except Exception:
-        row = None
+    except Exception as exc:
+        raise WebhookScopeUnavailable() from exc
     item = _plain_mapping(row)
     if item and item.get("user_id") and item.get("project_id"):
         return item
@@ -591,14 +600,18 @@ async def _lookup_event_refs(
         "charge_id_hmac": provider_ref_hmac_or_none(_charge_provider_id(event), kind="charge_id", config=config, provider=provider),
         "customer_id_hmac": provider_ref_hmac_or_none(_customer_provider_id(event), kind="customer_id", config=config, provider=provider),
         "price_id_hmac": provider_ref_hmac_or_none(_price_provider_id(event), kind="price_id", config=config, provider=provider),
+        "customer_ref": _string_field(metadata, "api_auth_customer_ref", "customer_ref"),
+        "subscription_ref": _string_field(metadata, "api_auth_subscription_ref", "subscription_ref"),
+        "purchase_ref": _string_field(metadata, "api_auth_purchase_ref", "purchase_ref"),
     }
     if not any(lookup_args.values()):
         return {}
     try:
         row = await _maybe_await(resolve_event_scope(provider=provider, billing_group_id=billing_group_id, **lookup_args))
+    except ConflictError as exc:
+        raise WebhookScopeConflict() from exc
     except Exception as exc:
-        logger.debug("Stripe webhook ref lookup unavailable: %s", type(exc).__name__)
-        row = None
+        raise WebhookScopeUnavailable() from exc
     return _plain_mapping(row)
 
 
@@ -613,9 +626,15 @@ async def _resolve_event_scope(
     Metadata identifies the user and project when the object carries it (Checkout copies it
     onto the Subscription and PaymentIntent). Rows matched by the checkout ref or by a
     provider id are authoritative for the user and group; disputes and older objects without
-    metadata resolve through them alone.
+    metadata resolve through them alone. Contradictions fail closed. A historical
+    checkout can prove the original project/group after that project is reassigned.
     """
 
+    for name in ("customer_ref", "subscription_ref", "purchase_ref", "checkout_ref"):
+        first = _string_field(metadata, "api_auth_" + name)
+        second = _string_field(metadata, name)
+        if first and second and first != second:
+            raise WebhookScopeConflict()
     metadata_scope = await _resolve_scope_from_metadata(metadata)
     lookup = await _lookup_event_refs(
         event,
@@ -624,9 +643,29 @@ async def _resolve_event_scope(
     )
     lookup_user_id = _string_field(lookup, "user_id")
     if not lookup_user_id:
+        if metadata_scope and _string_field(metadata_scope, "billing_group_id") != billing_group_id:
+            raise WebhookScopeConflict()
         return metadata_scope, lookup
-    if metadata_scope and _string_field(metadata_scope, "user_id") != lookup_user_id:
-        metadata_scope = None
+    if (_string_field(lookup, "billing_group_id") != billing_group_id
+            or _string_field(lookup, "provider", default="stripe") != constants.STRIPE_PROVIDER_NAME):
+        raise WebhookScopeConflict()
+    for key in ("user_id", "project_id"):
+        if metadata_scope and lookup.get(key) and metadata_scope.get(key) != lookup[key]:
+            raise WebhookScopeConflict()
+    # Resolved ids above are authoritative. Hash matching in MySQL is case
+    # insensitive; do not reject a client spelling that already resolved to those
+    # same ids. Check unresolved metadata too, tolerating old masked projects.
+    if not metadata_scope:
+        for key in ("user_hash", "project_hash"):
+            supplied = _string_field(metadata, key)
+            masked_legacy_project = key == "project_hash" and supplied == "***FILTERED***"
+            if (supplied and not masked_legacy_project
+                    and supplied.casefold() != str(lookup.get(key) or "").casefold()):
+                raise WebhookScopeConflict()
+    if metadata_scope and _string_field(metadata_scope, "billing_group_id") != billing_group_id:
+        if not (_truthy(lookup.get("historical_checkout_verified"))
+                and lookup.get("checkout_project_id") == metadata_scope.get("project_id")):
+            raise WebhookScopeConflict()
     scope = dict(metadata_scope or {})
     for key in ("user_id", "project_id", "billing_group_id"):
         value = _string_field(lookup, key)
@@ -727,12 +766,14 @@ async def _persist_classification(
     lookup = _plain_mapping(lookup)
     user_id = _string_field(scope, "user_id")
     group_id = billing_group_id or _string_field(scope, "billing_group_id")
+    if billing_group_id and _string_field(scope, "billing_group_id") != billing_group_id:
+        raise WebhookScopeConflict()
     if not user_id or not group_id:
         return None
     safe_meta = _plain_mapping(classification.safe_metadata)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     try:
-        customer_id = await _upsert_customer_from_event(event=event, scope=scope, billing_group_id=group_id) or _string_field(lookup, "customer_id")
+        customer_id = _string_field(lookup, "customer_id") or await _upsert_customer_from_event(event=event, scope=scope, billing_group_id=group_id)
         if classification.subscription_status:
             if not customer_id:
                 # billing_subscriptions.customer_id is required; the resync worker can recover it.
@@ -918,7 +959,18 @@ async def _process_event(
     """Process a verified event within the billing group selected by the URL."""
 
     metadata = _event_metadata(event.payload)
-    scope, lookup = await _resolve_event_scope(event, metadata, billing_group_id=billing_group_id)
+    try:
+        scope, lookup = await _resolve_event_scope(event, metadata, billing_group_id=billing_group_id)
+    except WebhookScopeConflict:
+        logger.warning("Stripe webhook rejected: billing scope conflict")
+        await record_stripe_webhook_activity(
+            ActivityType.STRIPE_WEBHOOK_REJECTED, event="webhook_rejected", outcome="scope_conflict",
+            request=request, status_code=403, details={"event_type": event.event_type},
+        )
+        return _webhook_json_response(status_code=403, message=_GENERIC_REJECTED_MESSAGE)
+    except Exception as exc:
+        logger.warning("Stripe webhook scope lookup unavailable: %s", type(exc).__name__)
+        return _webhook_json_response(status_code=503, message=_GENERIC_UNAVAILABLE_MESSAGE)
     group_id = billing_group_id
 
     duplicate, _ = await _record_delivery_ledger(event, billing_group_id=group_id, status="received", reason="verified")

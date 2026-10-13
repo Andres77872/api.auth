@@ -59,7 +59,7 @@ async def test_plan_transition_keeps_access_sessions_and_drops_cached_validation
     result = await stripe_webhooks._persist_classification(
         event,
         classification,
-        scope={"user_id": "u-1"},
+        scope={"user_id": "u-1", "billing_group_id": "bg-1"},
         billing_group_id="bg-1",
     )
 

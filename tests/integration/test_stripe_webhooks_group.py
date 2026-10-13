@@ -2,7 +2,7 @@
 
 Verifies that `POST /webhooks/stripe/{billing_group_hash}` selects the group's own webhook
 secret deterministically and threads the URL-resolved billing_group_id into the entitlement
-write (overriding any group implied by event metadata).
+write only after verifying agreement with metadata and stored ownership.
 """
 
 from __future__ import annotations
@@ -86,11 +86,11 @@ async def test_path_scoped_webhook_threads_url_group_into_observe(monkeypatch):
             provider="stripe", event_type="customer.subscription.updated", subscription_status="active", reason="ok"
         ),
     )
-    # Metadata resolves to a DIFFERENT group; the URL group must win.
+    # Matching metadata is required; the URL remains the authenticated authority.
     monkeypatch.setattr(
         module,
         "resolve_user_billing_group",
-        lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "meta-group"},
+        lambda **_: {"user_id": "usr-1", "project_id": "prj-1", "billing_group_id": "bg-url-1"},
     )
     monkeypatch.setattr(module, "record_webhook_delivery", lambda **_: {"delivery_status": "accepted"})
     monkeypatch.setattr(module, "resolve_event_scope", lambda **_: None)

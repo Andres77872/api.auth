@@ -17,6 +17,74 @@ SET collation_connection = utf8mb4_unicode_ci;
 
 DELIMITER $$
 
+-- Shared ownership checks also run from integrity triggers. Original Checkout
+-- intents are server-created evidence and remain valid after project reassignment.
+DROP PROCEDURE IF EXISTS sp_billing_assert_customer_owner$$
+CREATE PROCEDURE sp_billing_assert_customer_owner(
+    IN p_user_id VARCHAR(64), IN p_group_id VARCHAR(64),
+    IN p_provider VARCHAR(32), IN p_customer_id VARCHAR(64)
+)
+BEGIN
+    IF p_customer_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM billing_customers
+        WHERE id = p_customer_id AND user_id = p_user_id
+          AND billing_group_id = p_group_id AND provider = p_provider
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing customer ownership conflict';
+    END IF;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_billing_assert_subscription_owner$$
+CREATE PROCEDURE sp_billing_assert_subscription_owner(
+    IN p_user_id VARCHAR(64), IN p_group_id VARCHAR(64), IN p_provider VARCHAR(32),
+    IN p_customer_id VARCHAR(64), IN p_subscription_id VARCHAR(64)
+)
+BEGIN
+    CALL sp_billing_assert_customer_owner(p_user_id, p_group_id, p_provider, p_customer_id);
+    IF p_subscription_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM billing_subscriptions
+        WHERE id = p_subscription_id AND user_id = p_user_id
+          AND billing_group_id = p_group_id AND provider = p_provider
+          AND customer_id <=> p_customer_id
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing subscription ownership conflict';
+    END IF;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_billing_assert_purchase_scope$$
+CREATE PROCEDURE sp_billing_assert_purchase_scope(
+    IN p_user_id VARCHAR(64), IN p_project_id VARCHAR(64), IN p_group_id VARCHAR(64),
+    IN p_provider VARCHAR(32), IN p_customer_id VARCHAR(64),
+    IN p_purchase_ref VARCHAR(64), IN p_checkout_ref VARCHAR(64)
+)
+BEGIN
+    CALL sp_billing_assert_customer_owner(p_user_id, p_group_id, p_provider, p_customer_id);
+    IF EXISTS (
+        SELECT 1 FROM billing_checkout_intents
+        WHERE (checkout_ref = p_checkout_ref OR purchase_ref = p_purchase_ref)
+          AND (user_id <> p_user_id OR project_id <> p_project_id
+               OR billing_group_id <> p_group_id OR provider <> p_provider
+               OR intent_type <> 'credit_purchase'
+               OR NOT (purchase_ref <=> p_purchase_ref)
+               OR (p_checkout_ref IS NOT NULL AND checkout_ref <> p_checkout_ref))
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing checkout ownership conflict';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM billing_checkout_intents
+        WHERE (checkout_ref = p_checkout_ref OR purchase_ref = p_purchase_ref)
+          AND user_id = p_user_id AND project_id = p_project_id
+          AND billing_group_id = p_group_id AND provider = p_provider
+          AND purchase_ref = p_purchase_ref AND intent_type = 'credit_purchase'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM v_user_billing_group_access
+        WHERE user_id = p_user_id AND project_id = p_project_id
+          AND billing_group_id = p_group_id AND billing_group_provider = p_provider
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing purchase project ownership conflict';
+    END IF;
+END$$
+
 -- ===================================================================================
 -- sp_billing_resolve_user_project
 -- Resolve an active user/project scope through the existing groups-of-groups access
@@ -151,6 +219,33 @@ BEGIN
       AND u.user_hash = p_user_hash
       AND p.project_hash = p_project_hash
       AND bpe.provider = COALESCE(NULLIF(TRIM(p_provider), ''), 'stripe')
+      AND NOT EXISTS (
+          SELECT 1 FROM billing_checkout_intents ci
+          WHERE (ci.checkout_ref = bpe.checkout_ref OR ci.purchase_ref = bpe.purchase_ref)
+            AND (ci.user_id <> bpe.user_id OR ci.project_id <> bpe.project_id
+                 OR ci.billing_group_id <> bpe.billing_group_id OR ci.provider <> bpe.provider
+                 OR ci.intent_type <> 'credit_purchase'
+                 OR NOT (ci.purchase_ref <=> bpe.purchase_ref)
+                 OR (bpe.checkout_ref IS NOT NULL AND ci.checkout_ref <> bpe.checkout_ref))
+      )
+      AND (
+          EXISTS (
+              SELECT 1 FROM billing_checkout_intents ci
+              WHERE (ci.checkout_ref = bpe.checkout_ref OR ci.purchase_ref = bpe.purchase_ref)
+                AND ci.user_id = bpe.user_id AND ci.project_id = bpe.project_id
+                AND ci.billing_group_id = bpe.billing_group_id AND ci.provider = bpe.provider
+                AND ci.purchase_ref = bpe.purchase_ref AND ci.intent_type = 'credit_purchase'
+          ) OR EXISTS (
+              SELECT 1 FROM billing_group_projects bgp
+              WHERE bgp.project_id = bpe.project_id AND bgp.billing_group_id = bpe.billing_group_id
+                AND bgp.status = 'active'
+          )
+      )
+      AND (bpe.customer_id IS NULL OR EXISTS (
+          SELECT 1 FROM billing_customers bc
+          WHERE bc.id = bpe.customer_id AND bc.user_id = bpe.user_id
+            AND bc.billing_group_id = bpe.billing_group_id AND bc.provider = bpe.provider
+      ))
     LIMIT 1;
 END$$
 
@@ -311,6 +406,70 @@ END$$
 -- sp_billing_customer_upsert
 -- Upserts one encrypted provider customer ref per (user, project, provider).
 -- ===================================================================================
+DROP PROCEDURE IF EXISTS sp_billing_assert_customer_upsert$$
+CREATE PROCEDURE sp_billing_assert_customer_upsert(
+    IN p_id VARCHAR(64), IN p_user VARCHAR(64), IN p_group VARCHAR(64),
+    IN p_provider VARCHAR(32), IN p_ref VARCHAR(64), IN p_hmac BINARY(32)
+)
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM billing_customers
+        WHERE (id = p_id OR customer_ref = p_ref
+               OR (provider = p_provider AND provider_customer_id_hmac = p_hmac)
+               OR (user_id = p_user AND billing_group_id = p_group AND provider = p_provider
+                   AND status IN ('creating','active','stale')))
+          AND (user_id <> p_user OR billing_group_id <> p_group OR provider <> p_provider
+               OR NOT (provider_customer_id_hmac <=> p_hmac))
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing customer upsert ownership conflict';
+    END IF;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_billing_assert_subscription_upsert$$
+CREATE PROCEDURE sp_billing_assert_subscription_upsert(
+    IN p_id VARCHAR(64), IN p_user VARCHAR(64), IN p_group VARCHAR(64),
+    IN p_provider VARCHAR(32), IN p_customer VARCHAR(64),
+    IN p_ref VARCHAR(64), IN p_hmac BINARY(32)
+)
+BEGIN
+    CALL sp_billing_assert_customer_owner(p_user, p_group, p_provider, p_customer);
+    IF EXISTS (
+        SELECT 1 FROM billing_subscriptions
+        WHERE (id = p_id OR subscription_ref = p_ref
+               OR (provider = p_provider AND provider_subscription_id_hmac = p_hmac)
+               OR (user_id = p_user AND billing_group_id = p_group AND provider = p_provider
+                   AND status IN ('pending','incomplete','trialing','active','past_due','unpaid','paused','stale','unknown')))
+          AND (user_id <> p_user OR billing_group_id <> p_group OR provider <> p_provider
+               OR customer_id <> p_customer
+               OR (p_hmac IS NOT NULL AND provider_subscription_id_hmac IS NOT NULL
+                   AND provider_subscription_id_hmac <> p_hmac))
+    ) OR EXISTS (
+        SELECT 1 FROM billing_checkout_intents WHERE subscription_ref = p_ref
+          AND (user_id <> p_user OR billing_group_id <> p_group OR provider <> p_provider)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing subscription upsert ownership conflict';
+    END IF;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_billing_assert_purchase_upsert$$
+CREATE PROCEDURE sp_billing_assert_purchase_upsert(
+    IN p_id VARCHAR(64), IN p_user VARCHAR(64), IN p_project VARCHAR(64), IN p_group VARCHAR(64),
+    IN p_provider VARCHAR(32), IN p_ref VARCHAR(64),
+    IN p_payment_hmac BINARY(32), IN p_charge_hmac BINARY(32)
+)
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM billing_purchase_events
+        WHERE (id = p_id OR purchase_ref = p_ref
+               OR (provider = p_provider AND provider_payment_intent_id_hmac = p_payment_hmac)
+               OR (provider = p_provider AND provider_charge_id_hmac = p_charge_hmac))
+          AND (user_id <> p_user OR project_id <> p_project OR billing_group_id <> p_group
+               OR provider <> p_provider OR purchase_ref <> p_ref)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing purchase upsert ownership conflict';
+    END IF;
+END$$
+
 DROP PROCEDURE IF EXISTS sp_billing_customer_upsert$$
 CREATE PROCEDURE sp_billing_customer_upsert(
     IN p_customer_id VARCHAR(64),
@@ -326,9 +485,19 @@ CREATE PROCEDURE sp_billing_customer_upsert(
     IN p_safe_metadata JSON
 )
 BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
     IF p_provider_customer_id_hmac IS NULL OR OCTET_LENGTH(p_provider_customer_id_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing customer HMAC must be 32 bytes';
     END IF;
+
+    START TRANSACTION;
+    CALL sp_billing_assert_customer_upsert(p_customer_id, p_user_id, p_billing_group_id,
+        p_provider, p_customer_ref, p_provider_customer_id_hmac);
 
     INSERT INTO billing_customers (
         id, user_id, billing_group_id, provider, customer_ref,
@@ -349,6 +518,10 @@ BEGIN
         status = VALUES(status),
         safe_metadata = COALESCE(VALUES(safe_metadata), safe_metadata),
         updated_at = NOW();
+
+    CALL sp_billing_assert_customer_upsert(p_customer_id, p_user_id, p_billing_group_id,
+        p_provider, p_customer_ref, p_provider_customer_id_hmac);
+    COMMIT;
 
     SELECT id AS customer_id,
            customer_ref,
@@ -512,6 +685,15 @@ BEGIN
 
     START TRANSACTION;
 
+    CALL sp_billing_assert_subscription_upsert(p_subscription_id, p_user_id, p_billing_group_id,
+        p_provider, p_customer_id, p_subscription_ref, p_provider_subscription_id_hmac);
+    IF EXISTS (
+        SELECT 1 FROM billing_entitlements_current WHERE id = p_current_id
+          AND (user_id <> p_user_id OR billing_group_id <> p_billing_group_id OR provider <> p_provider)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing entitlement upsert ownership conflict';
+    END IF;
+
     SELECT status, plan_code, tier_code
       INTO v_previous_status, v_previous_plan_code, v_previous_tier_code
     FROM billing_entitlements_current
@@ -578,6 +760,18 @@ BEGIN
         LIMIT 1;
     END IF;
 
+    CALL sp_billing_assert_subscription_upsert(p_subscription_id, p_user_id, p_billing_group_id,
+        p_provider, p_customer_id, p_subscription_ref, p_provider_subscription_id_hmac);
+    CALL sp_billing_assert_subscription_owner(p_user_id, p_billing_group_id, p_provider,
+        p_customer_id, v_subscription_id);
+    IF EXISTS (
+        SELECT 1 FROM billing_subscription_snapshots WHERE id = p_snapshot_id
+          AND (user_id <> p_user_id OR billing_group_id <> p_billing_group_id OR provider <> p_provider
+               OR customer_id <> p_customer_id OR subscription_id <> v_subscription_id)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing snapshot upsert ownership conflict';
+    END IF;
+
     INSERT INTO billing_subscription_snapshots (
         id, subscription_id, customer_id, user_id, billing_group_id, provider,
         observed_at, sync_source, normalized_status, plan_code, tier_code, tier_name,
@@ -620,6 +814,17 @@ BEGIN
         sync_source = VALUES(sync_source),
         safe_metadata = VALUES(safe_metadata),
         updated_at = NOW();
+
+    IF NOT EXISTS (
+        SELECT 1 FROM billing_entitlements_current
+        WHERE user_id = p_user_id AND billing_group_id = p_billing_group_id AND provider = p_provider
+          AND customer_id = p_customer_id AND subscription_id = v_subscription_id
+    ) OR EXISTS (
+        SELECT 1 FROM billing_entitlements_current WHERE id = p_current_id
+          AND (user_id <> p_user_id OR billing_group_id <> p_billing_group_id OR provider <> p_provider)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing entitlement upsert ownership conflict';
+    END IF;
 
     INSERT INTO billing_entitlement_history (
         id, user_id, billing_group_id, provider, customer_id, subscription_id,
@@ -692,6 +897,11 @@ BEGIN
 
     START TRANSACTION;
 
+    CALL sp_billing_assert_purchase_scope(p_user_id, p_project_id, p_billing_group_id,
+        p_provider, p_customer_id, p_purchase_ref, p_checkout_ref);
+    CALL sp_billing_assert_purchase_upsert(p_purchase_id, p_user_id, p_project_id, p_billing_group_id,
+        p_provider, p_purchase_ref, p_provider_payment_intent_id_hmac, p_provider_charge_id_hmac);
+
     SELECT status
       INTO v_previous_status
     FROM billing_purchase_events
@@ -741,6 +951,11 @@ BEGIN
     WHERE purchase_ref = p_purchase_ref
     LIMIT 1;
 
+    CALL sp_billing_assert_purchase_upsert(p_purchase_id, p_user_id, p_project_id, p_billing_group_id,
+        p_provider, p_purchase_ref, p_provider_payment_intent_id_hmac, p_provider_charge_id_hmac);
+    CALL sp_billing_assert_purchase_scope(p_user_id, p_project_id, p_billing_group_id,
+        p_provider, p_customer_id, p_purchase_ref, p_checkout_ref);
+
     INSERT INTO billing_purchase_history (
         id, purchase_id, user_id, project_id, billing_group_id, provider, purchase_ref,
         previous_status, new_status, credit_product_code, quantity,
@@ -778,7 +993,10 @@ CREATE PROCEDURE sp_billing_resolve_event_scope(
     IN p_payment_intent_id_hmac BINARY(32),
     IN p_charge_id_hmac BINARY(32),
     IN p_customer_id_hmac BINARY(32),
-    IN p_price_id_hmac BINARY(32)
+    IN p_price_id_hmac BINARY(32),
+    IN p_customer_ref VARCHAR(64),
+    IN p_subscription_ref VARCHAR(64),
+    IN p_purchase_ref VARCHAR(64)
 )
 proc: BEGIN
     DECLARE v_provider VARCHAR(32) DEFAULT 'stripe';
@@ -787,9 +1005,119 @@ proc: BEGIN
     DECLARE v_catalog_plan_code VARCHAR(64) DEFAULT NULL;
     DECLARE v_catalog_tier_code VARCHAR(64) DEFAULT NULL;
     DECLARE v_catalog_tier_name VARCHAR(120) DEFAULT NULL;
+    DECLARE v_users INT DEFAULT 0;
+    DECLARE v_projects INT DEFAULT 0;
+    DECLARE v_customers INT DEFAULT 0;
+    DECLARE v_subscriptions INT DEFAULT 0;
+    DECLARE v_purchases INT DEFAULT 0;
+    DECLARE v_conflicts INT DEFAULT 0;
 
     SET v_provider = COALESCE(NULLIF(TRIM(p_provider), ''), 'stripe');
     SET v_group = NULLIF(TRIM(p_billing_group_id), '');
+
+    -- Examine ALL matches globally before applying lookup precedence. A ref from
+    -- another group must never become a metadata-only miss, or be hidden by a
+    -- matching checkout/customer ref earlier in the precedence order.
+    SELECT COUNT(DISTINCT user_id), COUNT(DISTINCT project_id), COUNT(DISTINCT customer_id),
+           COUNT(DISTINCT subscription_id), COUNT(DISTINCT purchase_id),
+           COALESCE(SUM(provider <> v_provider OR (v_group IS NOT NULL AND billing_group_id <> v_group)), 0)
+      INTO v_users, v_projects, v_customers, v_subscriptions, v_purchases, v_conflicts
+    FROM (
+        SELECT ci.user_id, ci.project_id, ci.billing_group_id, ci.provider, ci.customer_id,
+               bs.id AS subscription_id, pe.id AS purchase_id
+        FROM billing_checkout_intents ci
+        LEFT JOIN billing_subscriptions bs ON bs.subscription_ref = ci.subscription_ref
+        LEFT JOIN billing_purchase_events pe ON pe.purchase_ref = ci.purchase_ref
+        WHERE ci.checkout_ref = p_checkout_ref
+        UNION ALL
+        SELECT user_id, NULL, billing_group_id, provider, id, NULL, NULL
+        FROM billing_customers
+        WHERE customer_ref = p_customer_ref
+           OR (provider = v_provider AND provider_customer_id_hmac = p_customer_id_hmac)
+        UNION ALL
+        SELECT user_id, NULL, billing_group_id, provider, customer_id, id, NULL
+        FROM billing_subscriptions
+        WHERE subscription_ref = p_subscription_ref
+           OR (provider = v_provider AND provider_subscription_id_hmac = p_subscription_id_hmac)
+        UNION ALL
+        SELECT user_id, project_id, billing_group_id, provider, customer_id, NULL, id
+        FROM billing_purchase_events
+        WHERE purchase_ref = p_purchase_ref
+           OR (provider = v_provider AND (provider_payment_intent_id_hmac = p_payment_intent_id_hmac
+                                         OR provider_charge_id_hmac = p_charge_id_hmac))
+    ) matches;
+    IF v_users > 1 OR v_projects > 1 OR v_customers > 1 OR v_subscriptions > 1
+       OR v_purchases > 1 OR v_conflicts > 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing event scope conflict';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM billing_checkout_intents ci
+        LEFT JOIN billing_customers bc ON bc.id = ci.customer_id
+          OR (ci.customer_id IS NULL AND bc.user_id = ci.user_id
+              AND bc.billing_group_id = ci.billing_group_id AND bc.provider = ci.provider
+              AND bc.status IN ('creating','active','stale'))
+        LEFT JOIN billing_subscriptions bs ON bs.subscription_ref = ci.subscription_ref
+        LEFT JOIN billing_purchase_events pe ON pe.purchase_ref = ci.purchase_ref
+        WHERE ci.checkout_ref = p_checkout_ref
+          AND ((p_subscription_ref IS NOT NULL AND NOT (ci.subscription_ref <=> p_subscription_ref))
+               OR (p_purchase_ref IS NOT NULL AND NOT (ci.purchase_ref <=> p_purchase_ref))
+               OR (p_customer_ref IS NOT NULL AND bc.id IS NOT NULL AND bc.customer_ref <> p_customer_ref)
+               OR (p_customer_id_hmac IS NOT NULL AND bc.id IS NOT NULL
+                   AND bc.provider_customer_id_hmac <> p_customer_id_hmac)
+               OR (p_subscription_id_hmac IS NOT NULL AND bs.provider_subscription_id_hmac IS NOT NULL
+                   AND bs.provider_subscription_id_hmac <> p_subscription_id_hmac)
+               OR (p_payment_intent_id_hmac IS NOT NULL AND pe.provider_payment_intent_id_hmac IS NOT NULL
+                   AND pe.provider_payment_intent_id_hmac <> p_payment_intent_id_hmac)
+               OR (p_charge_id_hmac IS NOT NULL AND pe.provider_charge_id_hmac IS NOT NULL
+                   AND pe.provider_charge_id_hmac <> p_charge_id_hmac)
+               OR (bc.id IS NOT NULL AND (bc.user_id <> ci.user_id OR bc.billing_group_id <> ci.billing_group_id OR bc.provider <> ci.provider))
+               OR (bs.id IS NOT NULL AND (bs.user_id <> ci.user_id OR bs.billing_group_id <> ci.billing_group_id OR bs.provider <> ci.provider))
+               OR (pe.id IS NOT NULL AND (pe.user_id <> ci.user_id OR pe.project_id <> ci.project_id
+                   OR pe.billing_group_id <> ci.billing_group_id OR pe.provider <> ci.provider)))
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing event checkout reference conflict';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM billing_customers
+        WHERE (customer_ref = p_customer_ref
+               OR (provider = v_provider AND provider_customer_id_hmac = p_customer_id_hmac))
+          AND ((p_customer_ref IS NOT NULL AND customer_ref <> p_customer_ref)
+               OR (p_customer_id_hmac IS NOT NULL AND provider_customer_id_hmac <> p_customer_id_hmac))
+    ) OR EXISTS (
+        SELECT 1 FROM billing_subscriptions bs
+        JOIN billing_customers bc ON bc.id = bs.customer_id
+        WHERE (bs.subscription_ref = p_subscription_ref
+               OR (bs.provider = v_provider AND bs.provider_subscription_id_hmac = p_subscription_id_hmac))
+          AND ((p_subscription_ref IS NOT NULL AND bs.subscription_ref <> p_subscription_ref)
+               OR (p_subscription_id_hmac IS NOT NULL AND bs.provider_subscription_id_hmac IS NOT NULL
+                   AND bs.provider_subscription_id_hmac <> p_subscription_id_hmac)
+               OR (p_customer_ref IS NOT NULL AND bc.customer_ref <> p_customer_ref)
+               OR (p_customer_id_hmac IS NOT NULL AND bc.provider_customer_id_hmac <> p_customer_id_hmac)
+               OR bc.user_id <> bs.user_id OR bc.billing_group_id <> bs.billing_group_id OR bc.provider <> bs.provider)
+    ) OR EXISTS (
+        SELECT 1 FROM billing_purchase_events pe
+        LEFT JOIN billing_customers bc ON bc.id = pe.customer_id
+        WHERE (pe.purchase_ref = p_purchase_ref OR (pe.provider = v_provider
+            AND (pe.provider_payment_intent_id_hmac = p_payment_intent_id_hmac
+                 OR pe.provider_charge_id_hmac = p_charge_id_hmac)))
+          AND ((p_purchase_ref IS NOT NULL AND pe.purchase_ref <> p_purchase_ref)
+               OR (p_checkout_ref IS NOT NULL AND pe.checkout_ref IS NOT NULL AND pe.checkout_ref <> p_checkout_ref)
+               OR (p_payment_intent_id_hmac IS NOT NULL AND pe.provider_payment_intent_id_hmac IS NOT NULL
+                   AND pe.provider_payment_intent_id_hmac <> p_payment_intent_id_hmac)
+               OR (p_charge_id_hmac IS NOT NULL AND pe.provider_charge_id_hmac IS NOT NULL
+                   AND pe.provider_charge_id_hmac <> p_charge_id_hmac)
+               OR (p_customer_ref IS NOT NULL AND bc.id IS NOT NULL AND bc.customer_ref <> p_customer_ref)
+               OR (p_customer_id_hmac IS NOT NULL AND bc.id IS NOT NULL
+                   AND bc.provider_customer_id_hmac <> p_customer_id_hmac)
+               OR (bc.id IS NOT NULL AND (bc.user_id <> pe.user_id
+                   OR bc.billing_group_id <> pe.billing_group_id OR bc.provider <> pe.provider)))
+    ) OR EXISTS (
+        SELECT 1 FROM billing_catalog_items
+        WHERE provider = v_provider AND provider_price_id_hmac = p_price_id_hmac
+          AND v_group IS NOT NULL AND billing_group_id <> v_group
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing event reference conflict';
+    END IF;
 
     IF p_price_id_hmac IS NOT NULL THEN
         SELECT plan_code, tier_code, tier_name
@@ -814,6 +1142,10 @@ proc: BEGIN
         IF v_id IS NOT NULL THEN
             SELECT 'checkout_ref' AS matched_by,
                    bci.user_id, bci.project_id, bci.billing_group_id,
+                   bci.provider,
+                   (SELECT user_hash FROM v_users WHERE id = bci.user_id) AS user_hash,
+                   (SELECT project_hash FROM projects WHERE id = bci.project_id) AS project_hash,
+                   TRUE AS historical_checkout_verified, bci.project_id AS checkout_project_id,
                    bc.id AS customer_id, bc.customer_ref,
                    bs.id AS subscription_id,
                    COALESCE(bs.subscription_ref, bci.subscription_ref) AS subscription_ref,
@@ -829,10 +1161,10 @@ proc: BEGIN
                    v_catalog_tier_name AS catalog_tier_name
             FROM billing_checkout_intents bci
             LEFT JOIN billing_customers bc
-              ON bc.user_id = bci.user_id
-             AND bc.billing_group_id = bci.billing_group_id
-             AND bc.provider = bci.provider
-             AND bc.status IN ('creating','active','stale')
+              ON bc.id = bci.customer_id
+              OR (bci.customer_id IS NULL AND bc.user_id = bci.user_id
+                  AND bc.billing_group_id = bci.billing_group_id AND bc.provider = bci.provider
+                  AND bc.status IN ('creating','active','stale'))
             LEFT JOIN billing_subscriptions bs ON bs.subscription_ref = bci.subscription_ref
             LEFT JOIN billing_purchase_events bpe ON bpe.purchase_ref = bci.purchase_ref
             WHERE bci.id = v_id
@@ -841,16 +1173,27 @@ proc: BEGIN
         END IF;
     END IF;
 
-    IF p_subscription_id_hmac IS NOT NULL THEN
+    IF p_subscription_id_hmac IS NOT NULL OR p_subscription_ref IS NOT NULL THEN
         SELECT id INTO v_id
         FROM billing_subscriptions
         WHERE provider = v_provider
-          AND provider_subscription_id_hmac = p_subscription_id_hmac
+          AND (provider_subscription_id_hmac = p_subscription_id_hmac OR subscription_ref = p_subscription_ref)
           AND (v_group IS NULL OR billing_group_id = v_group)
         LIMIT 1;
         IF v_id IS NOT NULL THEN
             SELECT 'subscription' AS matched_by,
                    bs.user_id, NULL AS project_id, bs.billing_group_id,
+                   bs.provider,
+                   (SELECT user_hash FROM v_users WHERE id = bs.user_id) AS user_hash,
+                   NULL AS project_hash,
+                   (SELECT COUNT(DISTINCT ci.project_id) = 1 FROM billing_checkout_intents ci
+                    WHERE ci.subscription_ref = bs.subscription_ref AND ci.user_id = bs.user_id
+                      AND ci.billing_group_id = bs.billing_group_id AND ci.provider = bs.provider
+                      AND ci.intent_type = 'subscription') AS historical_checkout_verified,
+                   (SELECT MIN(ci.project_id) FROM billing_checkout_intents ci
+                    WHERE ci.subscription_ref = bs.subscription_ref AND ci.user_id = bs.user_id
+                      AND ci.billing_group_id = bs.billing_group_id AND ci.provider = bs.provider
+                      AND ci.intent_type = 'subscription') AS checkout_project_id,
                    bs.customer_id, bc.customer_ref,
                    bs.id AS subscription_id, bs.subscription_ref, bs.status AS subscription_status,
                    NULL AS purchase_id, NULL AS purchase_ref, NULL AS purchase_status,
@@ -868,11 +1211,13 @@ proc: BEGIN
         END IF;
     END IF;
 
-    IF p_payment_intent_id_hmac IS NOT NULL OR p_charge_id_hmac IS NOT NULL THEN
+    IF p_payment_intent_id_hmac IS NOT NULL OR p_charge_id_hmac IS NOT NULL OR p_purchase_ref IS NOT NULL THEN
         SELECT id INTO v_id
         FROM billing_purchase_events
         WHERE provider = v_provider
           AND (
+                purchase_ref = p_purchase_ref
+             OR
                 (p_payment_intent_id_hmac IS NOT NULL
                  AND provider_payment_intent_id_fingerprint = LOWER(LEFT(HEX(p_payment_intent_id_hmac), 12))
                  AND provider_payment_intent_id_hmac = p_payment_intent_id_hmac)
@@ -886,6 +1231,15 @@ proc: BEGIN
         IF v_id IS NOT NULL THEN
             SELECT 'purchase' AS matched_by,
                    bpe.user_id, bpe.project_id, bpe.billing_group_id,
+                   bpe.provider,
+                   (SELECT user_hash FROM v_users WHERE id = bpe.user_id) AS user_hash,
+                   (SELECT project_hash FROM projects WHERE id = bpe.project_id) AS project_hash,
+                   EXISTS (SELECT 1 FROM billing_checkout_intents ci
+                           WHERE ci.purchase_ref = bpe.purchase_ref AND ci.user_id = bpe.user_id
+                             AND ci.project_id = bpe.project_id AND ci.billing_group_id = bpe.billing_group_id
+                             AND ci.provider = bpe.provider AND ci.intent_type = 'credit_purchase'
+                             AND (bpe.checkout_ref IS NULL OR ci.checkout_ref = bpe.checkout_ref)) AS historical_checkout_verified,
+                   bpe.project_id AS checkout_project_id,
                    bpe.customer_id, bc.customer_ref,
                    NULL AS subscription_id, NULL AS subscription_ref, NULL AS subscription_status,
                    bpe.id AS purchase_id, bpe.purchase_ref, bpe.status AS purchase_status,
@@ -903,16 +1257,20 @@ proc: BEGIN
         END IF;
     END IF;
 
-    IF p_customer_id_hmac IS NOT NULL THEN
+    IF p_customer_id_hmac IS NOT NULL OR p_customer_ref IS NOT NULL THEN
         SELECT id INTO v_id
         FROM billing_customers
         WHERE provider = v_provider
-          AND provider_customer_id_hmac = p_customer_id_hmac
+          AND (provider_customer_id_hmac = p_customer_id_hmac OR customer_ref = p_customer_ref)
           AND (v_group IS NULL OR billing_group_id = v_group)
         LIMIT 1;
         IF v_id IS NOT NULL THEN
             SELECT 'customer' AS matched_by,
                    bc.user_id, NULL AS project_id, bc.billing_group_id,
+                   bc.provider,
+                   (SELECT user_hash FROM v_users WHERE id = bc.user_id) AS user_hash,
+                   NULL AS project_hash,
+                   FALSE AS historical_checkout_verified, NULL AS checkout_project_id,
                    bc.id AS customer_id, bc.customer_ref,
                    NULL AS subscription_id, NULL AS subscription_ref, NULL AS subscription_status,
                    NULL AS purchase_id, NULL AS purchase_ref, NULL AS purchase_status,
@@ -1175,4 +1533,4 @@ DELIMITER ;
 -- BILLING PROVIDER FACT PROCEDURES COMPLETE
 -- ===================================================================================
 SELECT 'Billing provider fact stored procedures created!' AS status,
-       '17 procedures for scope resolution, free-default reads, session plan projection, checkout idempotency, customers, webhooks, webhook/sync ref resolution, normalized facts, sync jobs, and retention' AS details;
+       '23 procedures for ownership validation, scope resolution, free-default reads, session plan projection, checkout idempotency, customers, webhooks, webhook/sync ref resolution, normalized facts, sync jobs, and retention' AS details;

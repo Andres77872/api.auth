@@ -375,6 +375,9 @@ def resolve_event_scope(
     charge_id_hmac: bytes | None,
     customer_id_hmac: bytes | None,
     price_id_hmac: bytes | None,
+    customer_ref: str | None = None,
+    subscription_ref: str | None = None,
+    purchase_ref: str | None = None,
 ) -> dict[str, Any] | None:
     """Call `sp_billing_resolve_event_scope`: map a provider event's refs to stored local rows.
 
@@ -392,6 +395,9 @@ def resolve_event_scope(
             charge_id_hmac,
             customer_id_hmac,
             price_id_hmac,
+            customer_ref,
+            subscription_ref,
+            purchase_ref,
         ],
         context=f"resolve_event_scope(provider={provider}, billing_group_id={billing_group_id})",
     )

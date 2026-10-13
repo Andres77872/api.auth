@@ -54,6 +54,11 @@ def stored_group_credentials(monkeypatch):
     manifest = json.loads((WEBHOOK_ROOT / "signature_headers.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(module, "get_billing_group_by_hash", lambda **_: {"id": "bg-1", "status": "active", "webhooks_enabled": True})
     monkeypatch.setattr(module, "get_stripe_account_secrets_for_group", lambda **_: SimpleNamespace(webhook_secret=manifest["fixture_secret"]))
+    # Signature/response tests isolate ownership reads from an unavailable live DB.
+    monkeypatch.setattr(module, "resolve_user_billing_group", lambda **_: None)
+    monkeypatch.setattr(module, "resolve_event_scope", lambda **_: None)
+    monkeypatch.setattr(module, "record_webhook_delivery", lambda **_: {"delivery_status": "accepted"})
+    monkeypatch.setattr(module, "_DELIVERY_MEMORY_LEDGER", set())
 
 
 @asynccontextmanager

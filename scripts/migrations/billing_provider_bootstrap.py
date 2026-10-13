@@ -45,10 +45,17 @@ REQUIRED_TABLES = (
     "billing_raw_payload_quarantine",
 )
 REQUIRED_PROCEDURES = (
+    "sp_billing_assert_customer_owner",
+    "sp_billing_assert_subscription_owner",
+    "sp_billing_assert_purchase_scope",
+    "sp_billing_assert_customer_upsert",
+    "sp_billing_assert_subscription_upsert",
+    "sp_billing_assert_purchase_upsert",
     "sp_billing_resolve_user_project",
     "sp_billing_resolve_user_billing_group",
     "sp_billing_get_current_by_user_project",
     "sp_billing_get_session_plan",
+    "sp_billing_get_purchase_status_by_ref",
     "sp_billing_checkout_intent_begin",
     "sp_billing_checkout_intent_complete",
     "sp_billing_customer_upsert",
@@ -149,6 +156,9 @@ def _db_config() -> dict[str, Any]:
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
         "autocommit": False,
+        "connect_timeout": 10,
+        "read_timeout": 30,
+        "write_timeout": 30,
     }
 
 
@@ -198,6 +208,13 @@ def _check_db_readiness() -> tuple[int, int]:
                 """
             )
             found_procedures = {row["routine_name"] for row in cursor.fetchall()}
+            cursor.execute(
+                """SELECT COUNT(*) AS parameter_count FROM information_schema.parameters
+                   WHERE specific_schema = DATABASE()
+                     AND specific_name = 'sp_billing_resolve_event_scope'
+                     AND parameter_mode = 'IN'"""
+            )
+            resolver_parameter_count = int(cursor.fetchone()["parameter_count"])
     finally:
         connection.close()
 
@@ -208,6 +225,8 @@ def _check_db_readiness() -> tuple[int, int]:
             "Database billing schema is not ready: "
             f"missing_tables={len(missing_tables)}, missing_procedures={len(missing_procedures)}"
         )
+    if resolver_parameter_count != 11:
+        raise BootstrapError("Database billing scope resolver must accept eleven parameters")
     return len(found_tables), len(found_procedures)
 
 

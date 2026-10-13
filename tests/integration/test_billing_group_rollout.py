@@ -133,5 +133,8 @@ def test_purchase_status_lookup_is_scoped_to_user_and_project_and_returns_safe_c
     assert "p.project_hash=p_project_hash" in compact
     assert "bpe.user_id=u.id" in compact and "bpe.project_id=p.id" in compact
     assert "bpe.purchase_ref=p_purchase_ref" in compact
+    assert "ci.billing_group_id=bpe.billing_group_id" in compact
+    assert "bgp.billing_group_id=bpe.billing_group_id" in compact
+    projection = body[body.index("select bpe.purchase_ref"):body.index("from billing_purchase_events")]
     for forbidden in ("ciphertext", "_hmac", "_fingerprint", "safe_metadata", "customer_id", "checkout_ref"):
-        assert forbidden not in body, f"purchase lookup must not select {forbidden}"
+        assert forbidden not in projection, f"purchase lookup must not select {forbidden}"

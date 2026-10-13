@@ -170,6 +170,20 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_customers_before_insert//
 CREATE TRIGGER trg_billing_customers_before_insert BEFORE INSERT ON billing_customers FOR EACH ROW
 BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM v_user_billing_group_access
+        WHERE user_id = NEW.user_id AND billing_group_id = NEW.billing_group_id
+          AND billing_group_provider = NEW.provider
+    ) AND NOT EXISTS (
+        SELECT 1 FROM billing_checkout_intents
+        WHERE user_id = NEW.user_id AND billing_group_id = NEW.billing_group_id AND provider = NEW.provider
+    ) AND NOT EXISTS (
+        SELECT 1 FROM billing_customers
+        WHERE user_id = NEW.user_id AND billing_group_id = NEW.billing_group_id AND provider = NEW.provider
+          AND provider_customer_id_hmac = NEW.provider_customer_id_hmac
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing customer group ownership conflict';
+    END IF;
     IF NEW.provider_customer_id_hmac IS NULL OR OCTET_LENGTH(NEW.provider_customer_id_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing customer HMAC must be 32 bytes';
     END IF;
@@ -219,6 +233,25 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_checkout_intents_before_insert//
 CREATE TRIGGER trg_billing_checkout_intents_before_insert BEFORE INSERT ON billing_checkout_intents FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_customer_owner(NEW.user_id, NEW.billing_group_id, NEW.provider, NEW.customer_id);
+    IF EXISTS (
+        SELECT 1 FROM billing_purchase_events WHERE purchase_ref = NEW.purchase_ref
+          AND (user_id <> NEW.user_id OR project_id <> NEW.project_id
+               OR billing_group_id <> NEW.billing_group_id OR provider <> NEW.provider
+               OR (checkout_ref IS NOT NULL AND checkout_ref <> NEW.checkout_ref))
+    ) OR EXISTS (
+        SELECT 1 FROM billing_subscriptions WHERE subscription_ref = NEW.subscription_ref
+          AND (user_id <> NEW.user_id OR billing_group_id <> NEW.billing_group_id OR provider <> NEW.provider)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing checkout reference ownership conflict';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM v_user_billing_group_access
+        WHERE user_id = NEW.user_id AND project_id = NEW.project_id
+          AND billing_group_id = NEW.billing_group_id AND billing_group_provider = NEW.provider
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing checkout project ownership conflict';
+    END IF;
     IF NEW.provider_price_ref_hmac IS NULL OR OCTET_LENGTH(NEW.provider_price_ref_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing checkout price HMAC must be 32 bytes';
     END IF;
@@ -282,6 +315,7 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_subscriptions_before_insert//
 CREATE TRIGGER trg_billing_subscriptions_before_insert BEFORE INSERT ON billing_subscriptions FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_customer_owner(NEW.user_id, NEW.billing_group_id, NEW.provider, NEW.customer_id);
     IF NEW.provider_subscription_id_hmac IS NOT NULL
        AND OCTET_LENGTH(NEW.provider_subscription_id_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing subscription HMAC must be 32 bytes';
@@ -307,6 +341,7 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_subscriptions_before_update//
 CREATE TRIGGER trg_billing_subscriptions_before_update BEFORE UPDATE ON billing_subscriptions FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_customer_owner(NEW.user_id, NEW.billing_group_id, NEW.provider, NEW.customer_id);
     IF OLD.user_id <> NEW.user_id
        OR OLD.billing_group_id <> NEW.billing_group_id
        OR OLD.provider <> NEW.provider
@@ -325,6 +360,8 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_subscription_snapshots_before_insert//
 CREATE TRIGGER trg_billing_subscription_snapshots_before_insert BEFORE INSERT ON billing_subscription_snapshots FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
     IF NEW.payload_hash IS NOT NULL AND OCTET_LENGTH(NEW.payload_hash) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing subscription snapshot payload hash must be 32 bytes';
     END IF;
@@ -342,6 +379,8 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_subscription_snapshots_before_update//
 CREATE TRIGGER trg_billing_subscription_snapshots_before_update BEFORE UPDATE ON billing_subscription_snapshots FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
     IF OLD.subscription_id <> NEW.subscription_id
        OR OLD.customer_id <> NEW.customer_id
        OR OLD.user_id <> NEW.user_id
@@ -355,6 +394,11 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_current_before_insert//
 CREATE TRIGGER trg_billing_current_before_insert BEFORE INSERT ON billing_entitlements_current FOR EACH ROW
 BEGIN
+    IF NEW.plan_code <> 'free' AND (NEW.customer_id IS NULL OR NEW.subscription_id IS NULL) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Paid billing entitlement requires owned subscription';
+    END IF;
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
     IF NEW.status IN ('free','canceled','former','unknown')
        AND (NEW.plan_code <> 'free' OR NEW.tier_code IS NOT NULL OR NEW.tier_name IS NOT NULL) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Terminal billing current row must not grant paid plan';
@@ -369,6 +413,11 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_current_before_update//
 CREATE TRIGGER trg_billing_current_before_update BEFORE UPDATE ON billing_entitlements_current FOR EACH ROW
 BEGIN
+    IF NEW.plan_code <> 'free' AND (NEW.customer_id IS NULL OR NEW.subscription_id IS NULL) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Paid billing entitlement requires owned subscription';
+    END IF;
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
     IF OLD.user_id <> NEW.user_id
        OR OLD.billing_group_id <> NEW.billing_group_id
        OR OLD.provider <> NEW.provider THEN
@@ -384,6 +433,13 @@ BEGIN
        AND LOWER(CAST(NEW.safe_metadata AS CHAR)) REGEXP 'raw_payload|raw_body|provider_payload|stripe_signature' THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing current metadata must be sanitized';
     END IF;
+END//
+
+DROP TRIGGER IF EXISTS trg_billing_entitlement_history_before_insert//
+CREATE TRIGGER trg_billing_entitlement_history_before_insert BEFORE INSERT ON billing_entitlement_history FOR EACH ROW
+BEGIN
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
 END//
 
 DROP TRIGGER IF EXISTS trg_billing_entitlement_history_before_update//
@@ -402,6 +458,8 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_purchase_events_before_insert//
 CREATE TRIGGER trg_billing_purchase_events_before_insert BEFORE INSERT ON billing_purchase_events FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_purchase_scope(NEW.user_id, NEW.project_id, NEW.billing_group_id,
+        NEW.provider, NEW.customer_id, NEW.purchase_ref, NEW.checkout_ref);
     IF NEW.provider_payment_intent_id_hmac IS NOT NULL
        AND OCTET_LENGTH(NEW.provider_payment_intent_id_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing purchase payment HMAC must be 32 bytes';
@@ -433,6 +491,8 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_purchase_events_before_update//
 CREATE TRIGGER trg_billing_purchase_events_before_update BEFORE UPDATE ON billing_purchase_events FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_purchase_scope(NEW.user_id, NEW.project_id, NEW.billing_group_id,
+        NEW.provider, NEW.customer_id, NEW.purchase_ref, NEW.checkout_ref);
     IF OLD.user_id <> NEW.user_id
        OR OLD.project_id <> NEW.project_id
        OR OLD.billing_group_id <> NEW.billing_group_id
@@ -441,6 +501,19 @@ BEGIN
        OR (OLD.provider_payment_intent_id_hmac IS NOT NULL AND NOT (OLD.provider_payment_intent_id_hmac <=> NEW.provider_payment_intent_id_hmac))
        OR (OLD.provider_charge_id_hmac IS NOT NULL AND NOT (OLD.provider_charge_id_hmac <=> NEW.provider_charge_id_hmac)) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing purchase identity/provider scope is immutable';
+    END IF;
+END//
+
+DROP TRIGGER IF EXISTS trg_billing_purchase_history_before_insert//
+CREATE TRIGGER trg_billing_purchase_history_before_insert BEFORE INSERT ON billing_purchase_history FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM billing_purchase_events
+        WHERE id = NEW.purchase_id AND user_id = NEW.user_id AND project_id = NEW.project_id
+          AND billing_group_id = NEW.billing_group_id AND provider = NEW.provider
+          AND purchase_ref = NEW.purchase_ref
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing purchase history ownership conflict';
     END IF;
 END//
 
@@ -502,6 +575,15 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_sync_jobs_before_insert//
 CREATE TRIGGER trg_billing_sync_jobs_before_insert BEFORE INSERT ON billing_sync_jobs FOR EACH ROW
 BEGIN
+    CALL sp_billing_assert_subscription_owner(NEW.user_id, NEW.billing_group_id, NEW.provider,
+        NEW.customer_id, NEW.subscription_id);
+    IF NEW.purchase_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM billing_purchase_events
+        WHERE id = NEW.purchase_id AND user_id = NEW.user_id AND billing_group_id = NEW.billing_group_id
+          AND provider = NEW.provider AND (NEW.project_id IS NULL OR project_id = NEW.project_id)
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing sync purchase ownership conflict';
+    END IF;
     IF NEW.dedupe_key_hmac IS NULL OR OCTET_LENGTH(NEW.dedupe_key_hmac) <> 32 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing sync dedupe HMAC must be 32 bytes';
     END IF;
@@ -514,6 +596,11 @@ END//
 DROP TRIGGER IF EXISTS trg_billing_sync_jobs_before_update//
 CREATE TRIGGER trg_billing_sync_jobs_before_update BEFORE UPDATE ON billing_sync_jobs FOR EACH ROW
 BEGIN
+    IF NOT (OLD.user_id <=> NEW.user_id) OR NOT (OLD.project_id <=> NEW.project_id)
+       OR NOT (OLD.billing_group_id <=> NEW.billing_group_id) OR NOT (OLD.customer_id <=> NEW.customer_id)
+       OR NOT (OLD.subscription_id <=> NEW.subscription_id) OR NOT (OLD.purchase_id <=> NEW.purchase_id) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Billing sync ownership scope is immutable';
+    END IF;
     IF OLD.provider <> NEW.provider
        OR OLD.job_type <> NEW.job_type
        OR NOT (OLD.dedupe_key_hmac <=> NEW.dedupe_key_hmac) THEN

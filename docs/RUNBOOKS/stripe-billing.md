@@ -462,6 +462,79 @@ Retention-only worker pass:
 
 Never use retention purge to erase normalized billing status, purchase history, audit evidence, or activity history.
 
+## Deploying webhook ownership validation
+
+This release keeps the existing billing HTTP contract and `magic_auth_client` methods.
+Applications do not need a new billing-group parameter, SDK version, or credentials.
+Scope conflicts on signed Stripe deliveries return generic `403`; unavailable scope
+lookups return `503` before the delivery is deduplicated. Neither creates billing facts
+or resync jobs. Ownership is also checked by stored procedures and integrity triggers.
+
+1. Run the read-only ownership audit against the intended environment, using an explicit
+   environment file or exported database settings:
+
+   ```bash
+   ./.venv/bin/python scripts/migrations/billing_ownership_audit.py --env-file /secure/path/billing-db.env
+   ```
+
+   It uses a read-only consistent transaction and reports counts and local record ids.
+   It never repairs data or prints provider identifiers, credentials, ciphertext, or HMACs.
+   `purchases_without_checkout_evidence` identifies legacy records for review, not
+   necessarily corruption: purchases whose group still matches their project remain
+   readable. Other findings require investigation against the original Stripe account.
+2. In staging, apply the canonical billing procedure and trigger definitions and run
+   the signed webhook, real-MySQL ownership, and existing client billing tests. Include
+   a checkout → paid webhook → purchase lookup smoke flow.
+3. For production, pause webhook intake (`STRIPE_WEBHOOKS_ENABLED=false`) and billing
+   sync, and stop the sync worker during the update. Scope lookup fails closed while
+   paused; Stripe can redeliver unavailable requests. Keep consumer reads available
+   except during the brief replacement of procedure definitions.
+4. Apply `schemas/stored_procedures/17_billing_provider_facts.sql`, then
+   `schemas/triggers/07_billing_provider_facts_triggers.sql`. No table-column migration
+   is needed. The internal `sp_billing_resolve_event_scope` now accepts eleven
+   parameters; deploy the API and worker together with the matching Python DB wrapper.
+   Do not recreate the database or use provider bootstrap `--apply` to perform this
+   upgrade: bootstrap seeds registry rows, not SQL definitions.
+   The billing-only migration command performs a dry-run by default:
+
+   ```bash
+   ./.venv/bin/python scripts/migrations/billing_scope_upgrade.py --env-file /secure/path/billing-db.env --expected-host 192.168.1.90
+   ```
+
+   After stopping the API and worker, apply it with a new private backup directory:
+
+   ```bash
+   ./.venv/bin/python scripts/migrations/billing_scope_upgrade.py --env-file /secure/path/billing-db.env --expected-host 192.168.1.90 --apply --processes-stopped --backup-dir /secure/path/billing-scope-backup
+   ```
+
+   It backs up existing billing procedure/trigger definitions, records the ownership
+   audit, replaces only the two files above, and verifies the deployed bodies, resolver
+   signature, table definitions, row counts, and table checksums. Billing cleanup
+   replaces old definitions; it never deletes records or drops tables/columns. MySQL
+   DDL cannot be rolled back as a transaction. If interrupted, keep processing stopped
+   and reapply the reviewed migration with a new backup directory. Retain the previous
+   definitions as evidence; do not restore vulnerable webhook processing.
+5. Confirm readiness with `billing_provider_bootstrap.py --dry-run --check-db`, restart
+   the updated API/worker, smoke-test a valid same-group purchase, then restore the
+   previous webhook and sync flags. Monitor scope-rejection logs, webhook 403/503
+   rates, sync failures, and unexpected purchase 404s.
+
+Original checkout intents preserve the purchase's user, project, provider, and billing
+group after project reassignment. Valid historical purchases and their refund/dispute
+updates retain that original group. A contradictory checkout is rejected even when the
+purchase matches the project's current group. Historical records without either valid
+original checkout evidence or the matching current group return the existing `404`.
+
+Consumers already receive `AuthNotFoundError` for a purchase `404`. Handle it as an
+unverified purchase and withhold credit fulfilment until resolved; never use a Checkout
+redirect as proof of payment. Consumers already handling this exception need no code
+change. The fix does not reverse credits previously granted by an application.
+
+Reconcile audit findings against provider evidence before considering repairs. Preserve
+history and do not automatically rewrite billing groups, delete facts, or reverse balances.
+If deployment must be rolled back, disable affected processing and retain the ownership
+guards and evidence; restore service with a compatible server/worker build.
+
 ## Repairing facts recorded before the webhook fixes
 
 Builds before the webhook fixes wrote almost no facts after Checkout: the Checkout metadata sent to Stripe carried `project_hash` masked as `***FILTERED***`, and subscription, invoice, refund, and dispute events carried no metadata at all. The S2S status read also answered `free` for every user with a Stripe customer. After deploying the fixed build:
