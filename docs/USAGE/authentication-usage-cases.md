@@ -399,10 +399,15 @@ A message is queued only when the identifier matches an active account's **activ
 its username (the message then goes to the primary activated email). Pending, removed or unknown
 addresses get the same `202` and no message.
 
-The emailed link is built from, in order: a pinned base URL (`AUTH_EMAIL_PUBLIC_BASE_URL`, then
-`PUBLIC_AUTH_BASE_URL` or `BASE_URL`); the `X-Public-Base-Url` request header, when it is an http(s)
-origin listed in `ALLOWED_ORIGINS`; otherwise the API's own origin. A BFF, or the browser app itself,
-should send its frontend origin in `X-Public-Base-Url` unless the deployment pins one.
+The emailed link is built from, in order: a validated pinned base URL (`AUTH_EMAIL_PUBLIC_BASE_URL`,
+then `PUBLIC_AUTH_BASE_URL` or `BASE_URL`); an exact-allowlisted `X-Public-Base-Url`; otherwise the
+request's origin only if it is also exactly allowlisted. Wildcards do not authorize email origins.
+HTTPS is required unless `APP_ENV` is explicitly `dev`, `development`, `local`, `test`, `testing`
+or `pytest`. Production/staging requires an explicit allowlist or a valid pin. Without a trusted
+request origin the API returns `400` `VAL_3001`; missing/invalid trust configuration returns `503`
+`INT_7003`. These errors are independent of the account and occur before token issuance or
+idempotency writes. Send each application's frontend origin in `X-Public-Base-Url`; see the
+[client migration guide](client-authentication-guide.md#email-link-origins-and-client-migration).
 
 ### Reset the password
 

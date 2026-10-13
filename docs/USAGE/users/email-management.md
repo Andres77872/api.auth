@@ -52,9 +52,9 @@ or was queued. Enqueue failures are logged and still return `202`.
 }
 ```
 
-Apart from `401` for a bad token and the admin route's scope errors (`403`, `404`), the only other
-outcomes are `400` for a missing or malformed `email` on the add route, and `429` when a rate limit
-or the resend cooldown applies:
+Besides authentication/scope errors (`401`, `403`, `404`), email-request routes can return `400`
+for missing/malformed input or an untrusted link origin, `503` `INT_7003` for unavailable origin
+configuration, and `429` when a rate limit or the resend cooldown applies:
 
 ```http
 HTTP/1.1 429 Too Many Requests
@@ -157,9 +157,12 @@ The address is trimmed and lower-cased. Every outcome below returns the same `20
 | You already have 5 `pending` + `activated` addresses | Nothing is added or sent |
 | Activated by another account | A `pending` row and a link are created, but activation will not apply |
 
-The activation link targets `/auth/email/verify` on the configured public base URL (or an
-allow-listed `X-Public-Base-Url` header from a BFF, else the request origin) and expires after
-`EMAIL_ACTIVATION_TOKEN_TTL_SECONDS` (default `86400`).
+The activation link targets `/auth/email/verify` on a valid configured public-base pin, otherwise
+an exact-allowlisted `X-Public-Base-Url`, otherwise an exact-allowlisted request origin. It expires
+after `EMAIL_ACTIVATION_TOKEN_TTL_SECONDS` (default `86400`). The same origin policy applies to
+owner/admin resends and administrator-issued password resets: no trusted request origin returns
+`400` `VAL_3001`, and missing/invalid configuration returns `503` `INT_7003`, before issuing a
+token. See [client migration](../client-authentication-guide.md#email-link-origins-and-client-migration).
 
 ### Activate an address
 

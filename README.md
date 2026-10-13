@@ -423,11 +423,13 @@ API_KEY_PEPPER=change-me-generate-with-openssl-rand-hex-32
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:4173
 ```
 
-`ALLOWED_ORIGINS` is optional: when unset, CORS, early-reject responses, and
-email-link origin validation share the built-in `DEFAULT_ALLOWED_ORIGINS` list in
-[src/Util/auth_constants.py](src/Util/auth_constants.py). That list holds
-localhost/LAN development origins plus the hosted auth UI origin
-`https://auth-ui.arz.ai`, so set the variable explicitly in every deployment.
+When `ALLOWED_ORIGINS` is unset, CORS and early-reject responses use
+`DEFAULT_ALLOWED_ORIGINS` in [src/Util/auth_constants.py](src/Util/auth_constants.py).
+Email links use that list only in explicit development/test environments; production requires
+an explicit HTTPS allowlist or valid public-base pin. Both `X-Public-Base-Url` and the request
+origin must be exactly trusted; `*` never authorizes email origins. Missing request trust returns
+`400` `VAL_3001`, and unavailable origin configuration returns `503` `INT_7003`.
+See the [client migration guide](docs/USAGE/client-authentication-guide.md#email-link-origins-and-client-migration).
 
 OAuth connections, project bindings, and URL allow-lists live in the database and are
 managed through `/admin/oauth/*`. Connection secrets require `OAUTH_SECRET_ENCRYPTION_KEY`,

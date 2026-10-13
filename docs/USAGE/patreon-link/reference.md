@@ -170,7 +170,7 @@ Browser and dashboard routes:
 
 | Path | Method | Auth | Success |
 | --- | --- | --- | --- |
-| `/auth/patreon/link/request` | POST | Access token plus recent authentication | `202` neutral body, always |
+| `/auth/patreon/link/request` | POST | Access token plus recent authentication | `202` neutral membership outcome; origin errors are `400`/`503` |
 | `/auth/patreon/link/confirm` | POST | Access token plus recent authentication | `200` linked, or `202` neutral |
 | `/auth/patreon/link/status` | GET | Access token | `200` link status and entitlement |
 | `/auth/patreon/link` | DELETE | Access token plus recent authentication | `200` unlinked, or `202` neutral |
@@ -201,6 +201,13 @@ and status bodies also carry `retry_after_seconds`.
 ### Link request
 
 `POST /auth/patreon/link/request` — JSON body:
+
+The optional `X-Public-Base-Url` header selects an exact-allowlisted frontend origin unless a valid
+public-base pin is configured. Request-origin fallback must also be exactly allowlisted; `*` never
+authorizes either source. No trusted request origin returns `400` `VAL_3001`; missing/invalid
+trust configuration returns `503` `INT_7003`, before provider lookup or proof issuance. HTTPS is
+required outside explicit development/test environments. See
+[client migration](../client-authentication-guide.md#email-link-origins-and-client-migration).
 
 | Field | Notes |
 | --- | --- |
@@ -417,7 +424,7 @@ What callers actually receive:
 
 | Surface | Errors |
 | --- | --- |
-| Link routes | Neutral `202` bodies for refusals; `401` platform envelope (`AUTH_1008` when recent authentication is missing); `400` `VAL_3001`; `429` neutral body with `Retry-After`. |
+| Link routes | Neutral `202` bodies for membership refusals; `401` platform envelope (`AUTH_1008` when recent authentication is missing); `400` `VAL_3001`; `429` neutral body with `Retry-After`. Link request also returns `503` `INT_7003` for unavailable email-origin configuration. |
 | Webhook | Generic bodies with `401`, `429`, `500`, `503` (see [Webhook](#webhook)). |
 | S2S | Generic bodies with `401`, `404`, `429`; resync refusals as `202` or `429` with `accepted: false`. |
 | Admin | `403` `AUTHZ_2001`, `400` `VAL_3001`, `404` `NF_4004`, `429` `INT_7005` with `Retry-After`. |

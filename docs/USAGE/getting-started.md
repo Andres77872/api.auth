@@ -36,7 +36,7 @@ request:
 | `JWT_SECRET_KEY` | yes | — | HS256 signing key for access and refresh tokens, for example `openssl rand -hex 32`. See the caution below. |
 | `API_KEY_PEPPER` | yes | — | HMAC pepper for API-key hashing. Changing it invalidates every issued API key. |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `15` | Access-token lifetime. Refresh lifetimes are fixed; see [Authentication](authentication-usage-cases.md#lifetimes). |
-| `ALLOWED_ORIGINS` | no | built-in list | Comma-separated browser origins for CORS, also used to accept email-link origins. See below. |
+| `ALLOWED_ORIGINS` | for production email links unless pinned | built-in development list | Exact browser origins for CORS and email links. `*` never authorizes email-link origins. See below. |
 | `DEBUG_MODE` | no | `false` | `true`, `1` or `yes` adds error details and stack traces to responses. Never enable it in production. |
 | `APP_ENV` | no | none | `test`, `testing` or `pytest` marks a test runtime (see the caution below). Use `production`, `staging`, `development` or `local` otherwise. |
 
@@ -47,11 +47,15 @@ request:
 > secret, so never set a test `APP_ENV` in a deployment. Changing the secret invalidates every
 > issued token.
 
-`ALLOWED_ORIGINS` must list the exact browser origins of your frontends. When it is unset, CORS,
-early-reject responses and email-link origin checks fall back to the single built-in
-`DEFAULT_ALLOWED_ORIGINS` list in [src/Util/auth_constants.py](../../src/Util/auth_constants.py):
-localhost and LAN development origins plus the hosted UI origin `https://auth-ui.arz.ai`. That list
-is not a deployment configuration; set the variable in every deployment.
+`ALLOWED_ORIGINS` must list the exact browser origins of your frontends. When unset, CORS and
+early-reject responses use `DEFAULT_ALLOWED_ORIGINS` in
+[src/Util/auth_constants.py](../../src/Util/auth_constants.py): localhost/LAN development origins
+plus `https://auth-ui.arz.ai`. Email links use these defaults only when `APP_ENV` is explicitly
+`dev`, `development`, `local`, `test`, `testing` or `pytest`; only those environments permit HTTP.
+Production/staging and an unset/unknown environment require an explicit HTTPS allowlist or valid
+public-base pin. Send the approved frontend in `X-Public-Base-Url`; unlisted request origins fail
+with `400` `VAL_3001`, and missing/invalid configuration fails with `503` `INT_7003`.
+See [client migration](client-authentication-guide.md#email-link-origins-and-client-migration).
 
 ## Create the schema and run the server
 

@@ -66,9 +66,14 @@ apply to this suite:
   sends immediately to the caller's own activated address. Everything else is queued.
 - **Disabling a built-in template stops that email.** Queued messages for a disabled code are
   cancelled when the worker claims them.
-- **Link origins.** Activation and reset links use `AUTH_EMAIL_PUBLIC_BASE_URL` when set,
-  otherwise the `X-Public-Base-Url` header if its origin is in `ALLOWED_ORIGINS`, otherwise the
-  request's own origin.
+- **Link origins.** Activation, password-reset and Patreon proof links use a valid
+  `AUTH_EMAIL_PUBLIC_BASE_URL` pin (legacy aliases: `PUBLIC_AUTH_BASE_URL`, then `BASE_URL`),
+  otherwise an exact-allowlisted `X-Public-Base-Url`, otherwise an exact-allowlisted request
+  origin. `*` never authorizes email links. HTTPS and an explicit trust configuration are
+  required outside explicit development/test environments. No trusted request origin returns
+  `400` `VAL_3001`; missing/invalid trust configuration returns `503` `INT_7003`, before token
+  issuance or enqueueing. There is no automatic localhost fallback. See the
+  [client migration guide](../client-authentication-guide.md#email-link-origins-and-client-migration).
 
 ## Out of scope here
 

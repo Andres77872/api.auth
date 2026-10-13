@@ -34,6 +34,15 @@ Local/test defaults should remain fake or Mailpit-safe: `EMAIL_DELIVERY_ENABLED=
 
 Before rollout, confirm:
 
+- Inventory each frontend's origin, email-request headers and link pages; configure exact HTTPS
+  `ALLOWED_ORIGINS` entries and send `X-Public-Base-Url` for per-app destinations. Leave all
+  public-base pin aliases unset for that mode. Add entries and headers before deploying the fix;
+  see [client migration](../USAGE/client-authentication-guide.md#email-link-origins-and-client-migration).
+- Stage a real email flow for every application. Untrusted origins must return `400` `VAL_3001`
+  with no token issuance; missing/invalid trust configuration must return `503` `INT_7003`.
+  Monitor these errors and delivery after release; correct configuration instead of restoring
+  unsafe Host/wildcard fallbacks. Ingress should reject unknown API hosts and sanitize forwarding
+  headers. Existing queued/sent emails retain their original URLs.
 - MySQL is 8.0+ so worker claims can use `FOR UPDATE SKIP LOCKED`.
 - Redis is reachable for rate limits, idempotency cache, webhook event fast-dedupe, and worker wake/heartbeat keys.
 - Sender domain SPF/DKIM/DMARC records are verified by the provider.

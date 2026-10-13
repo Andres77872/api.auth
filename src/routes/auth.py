@@ -74,6 +74,8 @@ from src.Util.db.db_enhanced import validate_session as validate_enhanced_sessio
 from src.middleware.authentication import validate_api_key_context
 from src.Util.email.rate_limit import EmailRateLimiter, RateLimitExceeded
 from src.Util.email.route_support import (
+    EMAIL_LINK_ERROR_RESPONSES,
+    PUBLIC_BASE_URL_HEADER_PARAMETER,
     EmailIdempotencyPlan,
     client_ip,
     complete_idempotency,
@@ -85,6 +87,7 @@ from src.Util.email.route_support import (
     make_link_token_and_payload,
     parse_presented_token,
     prepare_idempotency,
+    public_base_url,
     rate_limited_response,
     read_request_payload,
     token_from_request_payload,
@@ -659,21 +662,11 @@ async def verify_email_activation(
 
 @router.post(
     "/password/forgot",
-    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
     openapi_extra={
         "parameters": [
             _IDEMPOTENCY_KEY_HEADER_PARAMETER,
-            {
-                "name": "X-Public-Base-Url",
-                "in": "header",
-                "required": False,
-                "schema": {"type": "string"},
-                "description": (
-                    "Browser origin to build the emailed link from (for BFFs). Used only when "
-                    "it is a well-formed http(s) origin on the allowed-origins list and no "
-                    "public base URL is pinned by configuration."
-                ),
-            },
+            PUBLIC_BASE_URL_HEADER_PARAMETER,
         ],
         "requestBody": _json_or_form_request_body(
             {
@@ -711,7 +704,8 @@ async def forgot_password_link(
 
     **Responses:**
     - `202` — neutral body whether or not a matching account exists.
-    - `400` — no identifier supplied (`VAL_3002`).
+    - `400` — no identifier supplied (`VAL_3002`) or no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     - `429` — too many requests for this recipient or client IP; `Retry-After` is set.
     """
 
@@ -727,6 +721,7 @@ async def forgot_password_link(
             details={"missing_fields": ["email_or_username"]},
         )
 
+    public_base_url(request)
     config = load_route_email_config()
     recipient_hash = hash_route_value(normalize_email(identifier), config)
     limited = _check_email_send_rate_limit(

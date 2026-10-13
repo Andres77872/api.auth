@@ -40,7 +40,15 @@ from src.Util.auth_flow import access_token_session_id, require_recent_reauthent
 from src.Util.auth_lifecycle import validate_access_session
 from src.Util.db import db_patreon
 from src.Util.email.config import load_email_config
-from src.Util.email.route_support import client_ip, hash_route_value, link_url, user_agent
+from src.Util.email.route_support import (
+    EMAIL_LINK_ERROR_RESPONSES,
+    PUBLIC_BASE_URL_HEADER_PARAMETER,
+    client_ip,
+    hash_route_value,
+    link_url,
+    public_base_url,
+    user_agent,
+)
 from src.Util.email.security import encrypt_render_payload
 from src.Util.error_handler import AuthenticationError, ErrorCode, rate_limit_headers
 from src.Util.patreon.client import PatreonClient
@@ -1472,6 +1480,7 @@ async def _create_link_proof(
 ) -> bool:
     """Create the proof row and queue its email; ``False`` when nothing was sent."""
 
+    public_base_url(request)
     raw_member_id = _string_field(member, "id")
     raw_user_id = _relationship_id(member, "user")
     raw_campaign_id = _relationship_id(member, "campaign") or searched_campaign_id
@@ -1557,8 +1566,9 @@ _PATREON_429_RESPONSE = {
     "/link/request",
     response_model=PatreonProofRequestResponse,
     status_code=202,
-    response_description="Neutral accepted body, identical for every outcome.",
-    responses={429: _PATREON_429_RESPONSE},
+    response_description="Neutral accepted body, identical for membership outcomes.",
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 429: _PATREON_429_RESPONSE},
+    openapi_extra={"parameters": [PUBLIC_BASE_URL_HEADER_PARAMETER]},
 )
 async def request_patreon_link(
     link_request: PatreonLinkRequest,
@@ -1584,7 +1594,8 @@ async def request_patreon_link(
     - `202` — the same neutral body for every outcome (proof emailed, no matching
       member, hidden email, feature disabled or provider error), so membership is never
       revealed.
-    - `400` — body validation failed.
+    - `400` — body validation failed or no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     - `401` — missing/invalid access token, or no recent authentication (`AUTH_1008`).
     - `429` — rate limited; `Retry-After` is set.
 
@@ -1612,6 +1623,8 @@ async def request_patreon_link(
         )
         raise
 
+    # Resolve before provider discovery and outside the neutral-outcome catch.
+    public_base_url(request)
     rate_limited = await _check_link_request_rate_limit(
         request=request,
         user_id=user_id,

@@ -45,7 +45,8 @@ def test_expiry_text(seconds, text):
         ("password_reset", "password_reset_token_ttl_seconds", 900, "15 minutes"),
     ],
 )
-def test_link_payload_uses_the_configured_ttl(purpose, ttl_field, ttl, expected):
+def test_link_payload_uses_the_configured_ttl(monkeypatch, purpose, ttl_field, ttl, expected):
+    monkeypatch.setenv("AUTH_EMAIL_PUBLIC_BASE_URL", "https://frontend.example")
     config = SimpleNamespace(
         activation_token_ttl_seconds=86_400,
         password_reset_token_ttl_seconds=3_600,

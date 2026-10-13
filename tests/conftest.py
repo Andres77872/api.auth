@@ -633,6 +633,15 @@ def _optional_patch_targets(targets: Iterable[str], value: Any):
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _trusted_email_test_origin(monkeypatch):
+    """Explicitly trust the in-process ASGI client without production defaults."""
+    if "ALLOWED_ORIGINS" not in os.environ:
+        from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
+
+        monkeypatch.setenv("ALLOWED_ORIGINS", f"{DEFAULT_ALLOWED_ORIGINS},http://test")
+
+
 @pytest.fixture
 def mock_redis():
     """Provide a fakeredis instance that replaces the global redis_client.

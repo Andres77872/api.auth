@@ -1099,9 +1099,9 @@ DEFAULT_EMAIL_RETENTION_PURGE_INTERVAL_SECONDS = int(
 
 # Browser origin defaults -----------------------------------------------------
 # Single source of truth for the fallback used when ALLOWED_ORIGINS is unset
-# (CORS middleware, early-reject headers, email link origins). It holds
+# (CORS middleware, early-reject headers, development/test email link origins). It holds
 # localhost/LAN development origins plus the hosted auth UI origin, so
-# deployments must set ALLOWED_ORIGINS explicitly.
+# production email links require an explicit allowlist or a valid public-base pin.
 DEFAULT_ALLOWED_ORIGINS = (
     "http://localhost:3000,http://192.168.1.13:5010,http://192.168.1.90:5010,"
     "http://localhost:5173,http://localhost:4173,https://auth-ui.arz.ai,"

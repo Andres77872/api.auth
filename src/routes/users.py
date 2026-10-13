@@ -67,6 +67,8 @@ from src.Util.auth_constants import EMAIL_RESEND_COOLDOWN_SECONDS
 from src.Util.auth_lifecycle import revoke_user_auth_state, revoke_user_auth_state_except_current
 from src.Util.email.rate_limit import EmailRateLimiter, RateLimitExceeded
 from src.Util.email.route_support import (
+    EMAIL_LINK_ERROR_RESPONSES,
+    PUBLIC_BASE_URL_HEADER_PARAMETER,
     EmailIdempotencyPlan,
     client_ip,
     complete_idempotency,
@@ -76,6 +78,7 @@ from src.Util.email.route_support import (
     load_route_email_config,
     make_link_token_and_payload,
     prepare_idempotency,
+    public_base_url,
     rate_limited_response,
     read_request_payload,
     user_agent,
@@ -790,9 +793,9 @@ async def list_current_user_emails(
 
 @router.post(
     "/me/emails",
-    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
     openapi_extra={
-        "parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER],
+        "parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER, PUBLIC_BASE_URL_HEADER_PARAMETER],
         "requestBody": {
             "required": True,
             "content": {
@@ -829,11 +832,13 @@ async def add_current_user_email(
       (e.g. the account already has five pending/activated addresses). The
       address stays `pending` until the emailed token is submitted to
       `POST /auth/email/verify`.
-    - `400` — missing or malformed `email`.
+    - `400` — missing/malformed `email`, or no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     - `429` — rate limited; `Retry-After` is set.
     \f
-    Link origin: the configured public base URL, else an allow-listed
-    `X-Public-Base-Url` header relayed by a BFF, else the request origin.
+    Link origin: a valid configured pin, else an exact-allowlisted
+    `X-Public-Base-Url`, else an exact-allowlisted request origin. Missing trust
+    returns `400` (`VAL_3001`); unavailable origin configuration returns `503` (`INT_7003`).
     """
 
     payload = await read_request_payload(request)
@@ -845,6 +850,7 @@ async def add_current_user_email(
             details={"field": "email"},
         )
 
+    public_base_url(request)
     config = load_route_email_config()
     normalized = normalize_email(raw_email)
     recipient_hash = hash_email(normalized, pepper=config.hash_pepper_bytes)
@@ -911,8 +917,8 @@ async def add_current_user_email(
 
 @router.post(
     "/me/emails/{email_id}/resend",
-    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
-    openapi_extra={"parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER]},
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={"parameters": [_IDEMPOTENCY_KEY_HEADER_PARAMETER, PUBLIC_BASE_URL_HEADER_PARAMETER]},
 )
 @log_and_handle_errors(
     operation_name="resend_current_user_email_activation",
@@ -937,8 +943,11 @@ async def resend_current_user_email_activation(
       or no longer pending; nothing is sent in those cases.
     - `429` — rate limited, or an activation email for this address was sent
       within the resend cooldown; `Retry-After` is set.
+    - `400` — no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     """
 
+    public_base_url(request)
     config = load_route_email_config()
     recipient_hash = hash_route_value(f"{log_context.user_id}:{email_id}", config)
     recipient_hash_hex_value = recipient_hash.hex() if recipient_hash else "unknown"
@@ -1128,7 +1137,8 @@ async def admin_list_user_emails(
 
 @router.post(
     "/{user_hash}/emails/{email_id}/resend",
-    responses={202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 202: _ACCEPTED_202_RESPONSE, 429: _EMAIL_RATE_LIMITED_429_RESPONSE},
+    openapi_extra={"parameters": [PUBLIC_BASE_URL_HEADER_PARAMETER]},
 )
 @log_and_handle_errors(
     operation_name="admin_resend_user_email_activation",
@@ -1158,9 +1168,12 @@ async def admin_resend_user_email_activation(
     - `404` — unknown or inactive `user_hash`.
     - `429` — rate limited, or an activation email for this address was sent
       within the resend cooldown; `Retry-After` is set.
+    - `400` — no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     """
     current_user = _current_user_from_context(log_context)
     scope = _require_admin_or_root(current_user)
+    public_base_url(request)
     target_user = handle_db_operation(
         lambda: get_user_by_hash(user_hash),
         error_context="target user email resend lookup",
@@ -1476,7 +1489,8 @@ async def update_user_status(
 
 @router.post(
     "/{user_hash}/reset-password",
-    responses={429: {"description": "Rate limited (`INT_7005`); see the `Retry-After` header."}},
+    responses={**EMAIL_LINK_ERROR_RESPONSES, 429: {"description": "Rate limited (`INT_7005`); see the `Retry-After` header."}},
+    openapi_extra={"parameters": [PUBLIC_BASE_URL_HEADER_PARAMETER]},
 )
 @log_and_handle_errors(
     operation_name="reset_user_password",
@@ -1506,7 +1520,8 @@ async def reset_user_password(
     - `200` — accepted. `reset_data.has_delivery_target` is `false` when the
       user has no activated address (nothing is sent). The response never
       includes the token, link, or full address.
-    - `400` — the target is a root user.
+    - `400` — the target is a root user, or no trusted email-link origin (`VAL_3001`).
+    - `503` — email-link origin configuration is unavailable (`INT_7003`).
     - `403` — not root/admin, or the user is outside the admin's projects.
     - `404` — unknown or inactive `user_hash`.
     - `429` — rate limited; `Retry-After` is set.
@@ -1525,6 +1540,8 @@ async def reset_user_password(
             message="Admin permission required to reset passwords",
             error_code=ErrorCode.ACCESS_DENIED
         )
+
+    public_base_url(request)
 
     # Get target user
     target_user = handle_db_operation(

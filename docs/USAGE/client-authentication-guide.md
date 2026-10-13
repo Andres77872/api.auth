@@ -125,6 +125,7 @@ request-validation failures and rate limits.
 | `409` | `CONF_5001`, `CONF_5002` | Ask for another username or email |
 | `413`, `422` | none: body is `{"status": "Error", "action": "..."}` | Request too large, or `User-Agent` missing; fix the client |
 | `429` | `INT_7005` | Wait for the `Retry-After` seconds before trying again |
+| `503` on an email-request route | `INT_7003` | Show an error and report the unavailable link-origin configuration; see [client migration](#email-link-origins-and-client-migration) |
 | `5xx` | `INT_*`, `DB_*` | Retry idempotent calls with backoff |
 
 Public email routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/password/reset`) answer
@@ -166,8 +167,59 @@ The BFF signs in with bearer mode, stores the pair server-side keyed by its own 
 forwards calls with `Authorization: Bearer`. It must serialize refreshes per user session. When it
 relays `POST /auth/password/forgot` or the email routes under `/users/me/emails`, it should send the
 browser origin in `X-Public-Base-Url` so emailed links point back to that frontend (the origin must
-be listed in `ALLOWED_ORIGINS`); otherwise the links use the API's own origin unless the deployment
-pins `AUTH_EMAIL_PUBLIC_BASE_URL`.
+be exactly listed in `ALLOWED_ORIGINS`). The API's own origin is a fallback only if it is also
+explicitly trusted; a configured public-base pin overrides both sources.
+
+### Email-link origins and client migration
+
+For separate frontend destinations, configure the API with every approved frontend origin:
+
+```dotenv
+APP_ENV=production
+ALLOWED_ORIGINS=https://app-one.example,https://app-two.example
+AUTH_EMAIL_PUBLIC_BASE_URL=
+```
+
+Leave the legacy pin aliases `PUBLIC_AUTH_BASE_URL` and `BASE_URL` unset too. These are email
+destinations, so each listed frontend must serve the applicable `/auth/email/verify`,
+`/auth/password/reset` and `/auth/patreon/link/confirm` pages. The pages read the token and submit
+it to the existing API endpoints. A shared deployment pin still takes precedence when configured.
+
+Send `X-Public-Base-Url: <frontend origin>` on calls that request links: password forgot,
+add/resend email activation, administrator activation resend/password reset, and Patreon link
+request. Browser apps can use `'X-Public-Base-Url': window.location.origin`. BFFs, mobile/desktop
+apps and administrator tools should use an approved web frontend from their configuration.
+The value is an origin (scheme, host, optional port), without credentials, path, query or fragment.
+
+| Current client behavior | Required change |
+| --- | --- |
+| Already sends a trusted frontend origin | No request change |
+| Sends an origin absent from the allowlist | Add that exact approved origin to API configuration |
+| Omits the header | Add it unless the request origin is explicitly trusted and serves the link pages |
+| Relies on `ALLOWED_ORIGINS=*` | List exact frontend origins; `*` never authorizes email links |
+| Uses HTTP outside explicit development/test | Use an HTTPS frontend |
+| Assumes email requests always succeed | Handle `400` and `503`; show an error instead of “email sent” |
+
+The origin resolver chooses a valid pin, an approved header, or an approved request origin. A
+rejected header can only fall back to an approved request origin. No trusted request origin returns
+`400` `VAL_3001`; missing/invalid server trust configuration returns `503` `INT_7003`. These
+failures do not depend on recipient existence and happen before issuing a token or enqueueing an
+email. Display “Unable to request this email. Please contact support.” for origin/configuration
+failures and report them through the application's normal error reporting; do not automatically
+retry a `400`.
+
+HTTPS and an explicit allowlist or valid pin are required for `production`, `staging`, and an
+unset/unknown `APP_ENV`. HTTP and the built-in development allowlist are permitted only with
+`APP_ENV=dev/development/local/test/testing/pytest`. List the exact localhost/LAN origins used by
+your development apps. CORS behavior is unchanged by the email-origin policy.
+
+Inventory each application's frontend URL, header behavior, and link pages before release. Add
+server entries and missing client headers first (both work with the older backend); then stage the
+backend fix and complete each application's email flows. Monitor `400`/`503` email-request errors
+and delivery after release. Previously generated emails keep their original URLs.
+
+No database migration or token-format change is needed. Login, refresh, logout, ordinary protected
+requests and token-redemption calls do not need this header or any other changes for this fix.
 
 ### Mobile and desktop apps
 
@@ -349,7 +401,7 @@ export async function requestPasswordReset(identifier: string, idempotencyKey = 
     },
     body: JSON.stringify({ email_or_username: identifier }),
   });
-  if (response.status !== 202) throw await toApiError(response); // 400 VAL_3002 or 429 INT_7005
+  if (response.status !== 202) throw await toApiError(response); // 400 VAL_3001/VAL_3002, 429 INT_7005, 503 INT_7003
 }
 
 /** Call once when an emailed link page loads: returns the token and strips it from the address bar. */

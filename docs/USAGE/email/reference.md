@@ -324,7 +324,7 @@ maintained template.
 | `EMAIL_SENDER_DOMAIN_VERIFIED` | `false` | Must be `true` for `resend` when `APP_ENV` is `prod` or `production` |
 | `EMAIL_ALLOW_REAL_SEND_IN_TESTS` | `false` | Allows `resend` sends in a test runtime (provider smoke tests only) |
 | `APP_ENV` | — | `test`, `testing` or `pytest` marks a test runtime; unset also counts as test under pytest |
-| `AUTH_EMAIL_PUBLIC_BASE_URL` | — | Pins the origin of emailed links; see [README.md](README.md#rules-and-caveats) |
+| `AUTH_EMAIL_PUBLIC_BASE_URL` | — | Validated pin for activation/reset/Patreon links; optional path prefix. HTTPS outside explicit dev/test. Overrides per-app selection; aliases `PUBLIC_AUTH_BASE_URL`, then `BASE_URL`. See [README.md](README.md#rules-and-caveats). |
 
 ### Resend and Mailpit
 

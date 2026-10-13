@@ -1,21 +1,23 @@
 """Shared helpers for transactional auth email routes.
 
-These helpers keep Phase 5 route code small while preserving the SDD contracts:
-generic public `202` responses, local idempotency binding, no raw email/token
-material in operational values, and durable outbox enqueue only.
+These helpers preserve generic public `202` responses for account outcomes,
+local idempotency binding, no raw email/token material in operational values,
+and durable outbox enqueue only. Untrusted email origins fail before issuance.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
@@ -38,7 +40,7 @@ from src.Util.email.security import (
     normalize_email,
     parse_link_token,
 )
-from src.Util.error_handler import ErrorCode, public_email_accepted_body
+from src.Util.error_handler import ErrorCode, ValidationError, public_email_accepted_body
 
 
 GENERIC_ACCEPTED_STATUS = 202
@@ -50,6 +52,22 @@ logger = logging.getLogger(__name__)
 # so user-facing email links are built from where the user actually is, instead of
 # this service's own bind address.
 PUBLIC_BASE_URL_HEADER = "X-Public-Base-Url"
+PUBLIC_BASE_URL_HEADER_PARAMETER = {
+    "name": PUBLIC_BASE_URL_HEADER,
+    "in": "header",
+    "required": False,
+    "schema": {"type": "string"},
+    "description": (
+        "Frontend origin for the emailed link, exactly listed in ALLOWED_ORIGINS. "
+        "HTTPS is required outside explicit development/test environments; '*' "
+        "does not authorize email-link origins. A configured public-base pin takes "
+        "precedence. Without this header, the request origin must also be trusted."
+    ),
+}
+EMAIL_LINK_ERROR_RESPONSES = {
+    400: {"description": "Invalid request or no trusted email-link origin (`VAL_3001`); missing required input may return `VAL_3002`."},
+    503: {"description": "Email-link origin configuration is unavailable (`INT_7003`)."},
+}
 
 # Hosts that are valid socket bind addresses but never reachable as a link host.
 _UNUSABLE_LINK_HOSTS = {"0.0.0.0", "::", ""}
@@ -128,49 +146,86 @@ def recipient_hash_hex(recipient_hash: bytes | str | None) -> str | None:
 
 
 def allowed_link_origins() -> set[str]:
-    """Origins this service will honor in user-facing email links.
-
-    Reuses the CORS allowlist (``ALLOWED_ORIGINS``) so there is one place to list
-    trusted frontends. A bare ``*`` entry means accept any forwarded origin.
-    """
+    """Exact trusted email origins; wildcard CORS entries confer no trust."""
     raw = os.environ.get("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
-    return {origin.strip() for origin in raw.split(",") if origin.strip()}
+    # Built-in development origins must not become a production trust policy.
+    if not _http_links_allowed() and "ALLOWED_ORIGINS" not in os.environ:
+        return set()
+    origins = {_normalize_origin(value) for value in raw.split(",") if value.strip() != "*"}
+    return {origin for origin in origins if origin and _link_scheme_allowed(origin)}
+
+
+def _http_links_allowed() -> bool:
+    return os.environ.get("APP_ENV", "").strip().lower() in {
+        "dev", "development", "local", "test", "testing", "pytest",
+    }
+
+
+def _link_scheme_allowed(url: str) -> bool:
+    return url.startswith("https://") or _http_links_allowed()
+
+
+def _normalize_link_base(url: str | None, *, allow_path: bool = False) -> str | None:
+    """Parse an unambiguous HTTP(S) origin, optionally with an operator path prefix."""
+    if not isinstance(url, str) or not url:
+        return None
+    # urlsplit removes some controls; reject them before parsing, including DEL.
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        return None
+    url = url.strip()
+    if any(char.isspace() for char in url) or any(char in url for char in "\\?#"):
+        return None
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            return None
+        if parts.username is not None or parts.password is not None:
+            return None
+        host = parts.hostname or ""
+        if not host or host in _UNUSABLE_LINK_HOSTS or parts.netloc.endswith(":"):
+            return None
+        port = parts.port  # Reject non-numeric and out-of-range ports.
+        if port == 0:
+            return None
+        if ":" in host:
+            if not re.fullmatch(r"\[[0-9a-fA-F:.]+\](?::[0-9]+)?", parts.netloc):
+                return None
+            address = ipaddress.IPv6Address(host)
+            if address.is_unspecified:
+                return None
+            authority = f"[{address.compressed}]"
+        else:
+            authority = host.encode("idna").decode("ascii").lower()
+            labels = authority.rstrip(".").split(".")
+            if len(authority) > 254 or any(
+                not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                for label in labels
+            ):
+                return None
+        if port is not None and port != {"http": 80, "https": 443}[parts.scheme]:
+            authority = f"{authority}:{port}"
+        if not allow_path and parts.path not in {"", "/"}:
+            return None
+        prefix = parts.path.rstrip("/") if allow_path else ""
+        return f"{parts.scheme}://{authority}{prefix}"
+    except (ValueError, UnicodeError):
+        return None
 
 
 def _normalize_origin(url: str | None) -> str | None:
-    """Return ``scheme://host[:port]`` for a well-formed ``http(s)`` URL whose host
-    is a real, reachable host, else ``None`` (rejects ``0.0.0.0``/``::``/empty)."""
-    if not url:
-        return None
-    try:
-        parts = urlsplit(url.strip())
-    except (ValueError, AttributeError):
-        return None
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        return None
-    host = (parts.hostname or "").strip()
-    if not host or host in _UNUSABLE_LINK_HOSTS:
-        return None
-    return f"{parts.scheme}://{parts.netloc}"
+    return _normalize_link_base(url)
 
 
 def _origin_allowed(origin: str) -> bool:
     allowed = allowed_link_origins()
-    return "*" in allowed or origin in allowed
+    return origin in allowed
 
 
 def public_base_url(request: Request | None) -> str:
-    """Resolve the public base URL for user-facing email links, agnostically.
+    """Resolve a valid operator pin or an exact-allowlisted request origin.
 
-    Priority:
-      1. Explicit operator pin (``AUTH_EMAIL_PUBLIC_BASE_URL`` / aliases). Default
-         unset, so behavior stays dynamic and no domain is hardcoded.
-      2. The browser origin relayed by the BFF via ``X-Public-Base-Url``, accepted
-         only when it is well-formed and present in the allowlist (prevents host
-         injection into emailed links). This is what makes links agnostic.
-      3. The request authority, sanitized — never emit an unusable bind host such
-         as ``0.0.0.0``.
-      4. A safe default.
+    No trusted configuration is a 503; a request with no trusted origin is a 400.
+    Neither outcome depends on the recipient or silently substitutes localhost.
     """
     configured = (
         os.environ.get("AUTH_EMAIL_PUBLIC_BASE_URL")
@@ -178,37 +233,43 @@ def public_base_url(request: Request | None) -> str:
         or os.environ.get("BASE_URL")
     )
     if configured:
-        return configured.rstrip("/")
+        normalized = _normalize_link_base(configured, allow_path=True)
+        if normalized and _link_scheme_allowed(normalized):
+            return normalized
+        logger.error("Email-link origin configuration rejected: invalid public-base pin")
+        raise HTTPException(status_code=503, detail="Email-link origin configuration is unavailable")
+
+    allowed = allowed_link_origins()
+    if not allowed:
+        logger.error("Email-link origin configuration rejected: no explicit trusted origins")
+        raise HTTPException(status_code=503, detail="Email-link origin configuration is unavailable")
 
     if request is not None:
         forwarded = request.headers.get(PUBLIC_BASE_URL_HEADER)
         if forwarded:
             normalized = _normalize_origin(forwarded)
-            if normalized and _origin_allowed(normalized):
+            if normalized in allowed:
                 return normalized
-            logger.warning(
-                "Ignoring %s=%r for email link (malformed or not in ALLOWED_ORIGINS)",
-                PUBLIC_BASE_URL_HEADER,
-                forwarded,
-            )
 
         sanitized = _normalize_origin(str(request.base_url))
-        if sanitized:
+        if sanitized in allowed:
             return sanitized
-        logger.warning(
-            "Email link falling back to default: request host %r is not a reachable "
-            "public origin. Forward %s from the caller (and list the origin in "
-            "ALLOWED_ORIGINS) or pin AUTH_EMAIL_PUBLIC_BASE_URL.",
-            str(request.base_url),
-            PUBLIC_BASE_URL_HEADER,
-        )
 
-    return "http://localhost"
+    logger.warning("Email-link request rejected: no trusted request origin")
+    raise ValidationError(
+        message="No trusted email-link origin; send an approved X-Public-Base-Url origin",
+        error_code=ErrorCode.INVALID_INPUT,
+        details={"header": PUBLIC_BASE_URL_HEADER},
+    )
 
 
 def link_url(request: Request | None, path: str, token: str) -> str:
+    return _link_url_from_base(public_base_url(request), path, token)
+
+
+def _link_url_from_base(base_url: str, path: str, token: str) -> str:
     route_path = path if path.startswith("/") else f"/{path}"
-    return f"{public_base_url(request)}{route_path}?token={token}"
+    return f"{base_url}{route_path}?token={token}"
 
 
 def token_from_request_payload(payload: Mapping[str, Any]) -> str | None:
@@ -370,6 +431,7 @@ def make_link_token_and_payload(
     recipient_email: str | None = None,
     recipient_masked: str | None = None,
 ) -> tuple[Any, bytes]:
+    base_url = public_base_url(request)
     ttl = (
         config.activation_token_ttl_seconds
         if purpose == "email_activation"
@@ -381,14 +443,14 @@ def make_link_token_and_payload(
         pepper=config.token_pepper_bytes,
     )
     if purpose == "email_activation":
-        url = link_url(request, "/auth/email/verify", generated.token)
+        url = _link_url_from_base(base_url, "/auth/email/verify", generated.token)
         payload = {
             "activation_link": url,
             "recipient_masked": recipient_masked or (mask_email(recipient_email or "") if recipient_email else "your email address"),
             "expires_in": expiry_text(ttl),
         }
     else:
-        url = link_url(request, "/auth/password/reset", generated.token)
+        url = _link_url_from_base(base_url, "/auth/password/reset", generated.token)
         payload = {
             "reset_link": url,
             "recipient_masked": recipient_masked or (mask_email(recipient_email or "") if recipient_email else "your email address"),
