@@ -26,7 +26,7 @@ from src.Util.Models import (
 from src.Util.security import HTTPBearerOrCookie
 from src.Util.activity_logger import ActivityLogger, ActivityType
 from src.Util.db import (
-    validate_session, get_user_by_hash,
+    validate_session, get_user_by_hash, get_project_by_hash,
     create_user_group, get_user_group_by_hash,
     list_all_user_groups, update_user_group,
     delete_user_group, assign_user_to_user_group,
@@ -45,7 +45,12 @@ from src.Util.error_handler import (
     AuthenticationError, AuthorizationError, ValidationError,
     NotFoundError, ConflictError, InternalError, ErrorCode
 )
-from src.Util.auth_lifecycle import revoke_project_sessions_losing_access
+from src.Util.admin_group_scope import (
+    group_authorization, current_scope, creation_scope_project_id, scoped_group_page,
+    visible_users, visible_groups, visible_project_group_links,
+    revoke_project_sessions_losing_access,
+)
+from src.Util.admin_scope import require_admin_scope, resolve_admin_scope
 from src.Util.db.db_project_groups import get_projects_in_group
 
 # Configure logging
@@ -61,15 +66,7 @@ security = HTTPBearerOrCookie()
 
 # Helper function to check admin permissions
 async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """
-    Ensure user has admin permissions.
-
-    Checks ``'admin'`` OR ``'manage_users'`` in session permissions.
-    Differs from ``global_roles.py:require_admin()`` because user group
-    management uses the ``manage_users`` delegated permission — consumers
-    with ``manage_roles`` should NOT manage user groups.  This is
-    intentional least-privilege.
-    """
+    """Require a live root/admin identity; permission names cannot grant scope."""
     session_data = validate_session(credentials.credentials)
     if not session_data:
         raise AuthenticationError(
@@ -77,13 +74,7 @@ async def require_admin(credentials: HTTPAuthorizationCredentials = Depends(secu
             error_code=ErrorCode.SESSION_INVALID
         )
 
-    user_permissions = session_data.permissions if hasattr(session_data, 'permissions') else []
-    if 'admin' not in user_permissions and 'manage_users' not in user_permissions:
-        raise AuthorizationError(
-            message="Admin or manage_users permission required",
-            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
-            details={"required_permissions": ["admin", "manage_users"]}
-        )
+    require_admin_scope(resolve_admin_scope(session_data.user_id))
 
     return session_data
 
@@ -106,6 +97,7 @@ def _require_root_for_admin_group(session_data, *group_names) -> None:
 
 
 @router.get("", response_model=ListUserGroupsResponse)
+@group_authorization("user", "list")
 async def list_user_groups(
         limit: int = Query(50, ge=1, le=1000, description="Maximum number of groups to return (1-1000)."),
         offset: int = Query(0, ge=0, description="Number of groups to skip."),
@@ -120,21 +112,25 @@ async def list_user_groups(
     List active user groups with their member counts.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users` (every root/admin session does; consumers only through a
-    global role).
+    caller must be root or an admin assigned to every administrative project in the group.
 
-    **Pagination:** `pagination.total` counts all active groups and ignores `search`; `has_more` is not
-    populated (`null`).
+    **Pagination:** filtering precedes pagination; `pagination.total` respects search and scope.
 
     **Responses:** 401 missing, invalid or expired access token; 403 missing permission.
     """
     # Get all user groups with sorting parameters
-    user_groups = list_all_user_groups(limit, offset, sort_by, sort_order, search)
+    if current_scope().is_root:
+        user_groups = list_all_user_groups(limit, offset, sort_by, sort_order, search)
+        total_count = get_total_user_groups_count(search)
+    else:
+        user_groups, total_count = scoped_group_page(
+            "user", current_scope(), limit, offset, sort_by, sort_order, search,
+        )
 
     # Add member counts
     groups_with_counts = []
     for group in user_groups:
-        members = get_users_in_group(group.id)
+        members = visible_users(get_users_in_group(group.id))
         group_info = UserGroupInfo(
             group_hash=group.group_hash,
             group_name=group.group_name,
@@ -145,12 +141,11 @@ async def list_user_groups(
         groups_with_counts.append(group_info)
 
     # Get total count for pagination
-    total_count = get_total_user_groups_count()
-    
     pagination = PaginationInfo(
         limit=limit,
         offset=offset,
-        total=total_count
+        total=total_count,
+        has_more=offset + len(user_groups) < total_count,
     )
 
     return ListUserGroupsResponse(
@@ -160,20 +155,23 @@ async def list_user_groups(
     )
 
 @router.post("", response_model=CreateUserGroupResponse)
+@group_authorization("user", "create")
 async def create_user_group_endpoint(
         group_name: str = Form(..., description="Unique group name (required, non-empty)."),
         description: Optional[str] = Form(None, description="Optional group description."),
+        project_hash: Optional[str] = Form(None, description="Administrative project hash; required for admin creation, root-only on updates. Does not grant access."),
         session_data=Depends(require_admin)
 ) -> CreateUserGroupResponse:
     """
     Create a global user group.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
-    **Request:** form fields `group_name` (required) and optional `description`. The group starts with no
+    **Request:** form fields `group_name` (required), optional `description`, and `project_hash`
+    (required for admin creation; optional for root). The administrative binding grants no access. The group starts with no
     members and no project-group grants.
 
     **Responses:** 400 missing or empty `group_name`; 401 missing, invalid or expired access token; 403 missing
@@ -194,7 +192,8 @@ async def create_user_group_endpoint(
     new_group = create_user_group(
         group_name,
         description,
-        created_by=user_data.id
+        created_by=user_data.id,
+        scope_project_id=creation_scope_project_id()
     )
 
     if not new_group:
@@ -219,6 +218,7 @@ async def create_user_group_endpoint(
 
 
 @router.get("/{group_hash}", response_model=UserGroupDetailsResponse)
+@group_authorization("user", "read")
 async def get_user_group_details(
         group_hash: str = Path(..., description="User group hash."),
         session_data=Depends(require_admin)
@@ -227,7 +227,7 @@ async def get_user_group_details(
     Get a user group with its members, granted project groups and reachable projects.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
 
     - `members`: active users in the group.
     - `accessible_project_groups`: active project groups granted to this group.
@@ -248,13 +248,13 @@ async def get_user_group_details(
         )
 
     # Get members
-    members = get_users_in_group(user_group.id)
+    members = visible_users(get_users_in_group(user_group.id))
 
     # Projects reachable through this group's project groups (active, non-archived)
     accessible_projects = get_projects_for_user_group(user_group.id)
 
     # Get project groups (groups-of-groups architecture)
-    project_groups = get_project_groups_for_user_group(user_group.id)
+    project_groups = visible_project_group_links(get_project_groups_for_user_group(user_group.id))
 
     group_info = UserGroupInfo(
         group_hash=user_group.group_hash,
@@ -299,23 +299,25 @@ async def get_user_group_details(
     )
 
 @router.put("/{group_hash}", response_model=UpdateUserGroupResponse)
+@group_authorization("user", "update")
 async def update_user_group_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         group_name: Optional[str] = Form(None, description="New unique group name. Omitted or empty keeps the current name."),
         description: Optional[str] = Form(None, description=(
             "New description. Omitted or empty keeps the current description (it cannot be cleared)."
         )),
+        project_hash: Optional[str] = Form(None, description="Administrative project hash; required for admin creation, root-only on updates. Does not grant access."),
         session_data=Depends(require_admin)
 ) -> UpdateUserGroupResponse:
     """
     Rename a user group and/or change its description.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
-    **Request:** form fields `group_name` and/or `description`; at least one must be non-empty.
+    **Request:** form fields `group_name` and/or `description`, or root-only `project_hash`; at least one must be non-empty.
 
     **Responses:** 400 nothing to update; 401 missing, invalid or expired access token; 403 missing permission;
     404 unknown or deleted group; 409 name already in use.
@@ -334,7 +336,7 @@ async def update_user_group_endpoint(
     update_description = description
 
     # Update group
-    updated_group = update_user_group(
+    updated_group = user_group if project_hash and not update_name and update_description is None else update_user_group(
         user_group.id,
         group_name=update_name,
         group_description=update_description
@@ -360,6 +362,7 @@ async def update_user_group_endpoint(
     )
 
 @router.delete("/{group_hash}", response_model=DeleteUserGroupResponse)
+@group_authorization("user", "delete")
 async def delete_user_group_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         session_data=Depends(require_admin)
@@ -368,7 +371,7 @@ async def delete_user_group_endpoint(
     Soft-delete a user group.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
@@ -415,6 +418,7 @@ async def delete_user_group_endpoint(
         )
 
 @router.post("/{group_hash}/members", response_model=AssignUserToGroupResponse)
+@group_authorization("user", "add")
 async def assign_user_to_group_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         user_hash: str = Form(..., description="Hash of the active user to add."),
@@ -426,7 +430,7 @@ async def assign_user_to_group_endpoint(
     The user gains access to every project reachable through the group's project groups.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
@@ -493,6 +497,7 @@ async def assign_user_to_group_endpoint(
     )
 
 @router.delete("/{group_hash}/members/{user_hash}", response_model=RemoveUserFromGroupResponse)
+@group_authorization("user", "remove")
 async def remove_user_from_group_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         user_hash: str = Path(..., description="Hash of the active user to remove."),
@@ -502,12 +507,12 @@ async def remove_user_from_group_endpoint(
     Remove a user from a user group.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
-    Returns 200 even if the user was not a member. Sessions are not revoked here; a consumer access token for a
-    project the user can no longer reach fails validation (401) on its next use.
+    Returns 200 even if the user was not a member. Lost project sessions are revoked after commit,
+    and affected API-key validation entries are invalidated.
 
     **Responses:** 401 missing, invalid or expired access token; 403 missing permission; 404 unknown group or
     unknown/inactive user.
@@ -536,6 +541,11 @@ async def remove_user_from_group_endpoint(
 
     # Remove user from group
     if remove_user_from_user_group(target_user.id, user_group.id, removed_by=current_user.id):
+        revoke_project_sessions_losing_access(
+            user_ids=[target_user.id],
+            project_ids=[project[0] for project in get_projects_for_user_group(user_group.id)],
+            reason="user_removed_from_group",
+        )
         return RemoveUserFromGroupResponse(
             success=True,
             message=f"User \"{target_user.username}\" removed from group \"{user_group.group_name}\""
@@ -551,6 +561,7 @@ async def remove_user_from_group_endpoint(
 # These endpoints follow the correct architecture: USER → USER_GROUP → PROJECT_GROUP → PROJECT
 
 @router.post("/{group_hash}/project-groups", response_model=GrantUserGroupProjectGroupAccessResponse)
+@group_authorization("user", "grant")
 async def grant_user_group_project_group_access_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         project_group_hash: str = Form(..., description="Hash of the project group to grant."),
@@ -563,7 +574,7 @@ async def grant_user_group_project_group_access_endpoint(
     (user → user group → project group → project). This is the only way to give a user group project access.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
@@ -625,6 +636,7 @@ async def grant_user_group_project_group_access_endpoint(
 
 
 @router.delete("/{group_hash}/project-groups/{project_group_hash}", response_model=RevokeUserGroupProjectGroupAccessResponse)
+@group_authorization("user", "revoke")
 async def revoke_user_group_project_group_access_endpoint(
         group_hash: str = Path(..., description="User group hash."),
         project_group_hash: str = Path(..., description="Hash of the project group whose grant is revoked."),
@@ -638,7 +650,7 @@ async def revoke_user_group_project_group_access_endpoint(
     longer reach are revoked.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
@@ -690,6 +702,7 @@ async def revoke_user_group_project_group_access_endpoint(
 
 
 @router.get("/{group_hash}/project-groups", response_model=ListProjectGroupsForUserGroupResponse)
+@group_authorization("user", "links")
 async def list_project_groups_for_user_group(
         group_hash: str = Path(..., description="User group hash."),
         session_data=Depends(require_admin)
@@ -698,7 +711,7 @@ async def list_project_groups_for_user_group(
     List the active project groups granted to a user group.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
 
     Entries are sorted by name and carry `group_id`, `group_hash`, `group_name`, `group_description`,
     `created_at`, `is_active`, `granted_at` and `granted_by`. No per-group project counts are returned, and
@@ -717,7 +730,7 @@ async def list_project_groups_for_user_group(
         )
 
     # Get project groups for this user group
-    project_groups = get_project_groups_for_user_group(user_group.id)
+    project_groups = visible_project_group_links(get_project_groups_for_user_group(user_group.id))
 
     user_group_info = UserGroupInfo(
         group_hash=user_group.group_hash,
@@ -735,6 +748,7 @@ async def list_project_groups_for_user_group(
 
 
 @router.get("/{group_hash}/members", response_model=GroupMembersPaginatedResponse)
+@group_authorization("user", "members")
 async def get_group_members_with_pagination(
         group_hash: str = Path(..., description="User group hash."),
         limit: int = Query(50, ge=1, le=100, description="Maximum number of members to return (1-100)."),
@@ -745,7 +759,7 @@ async def get_group_members_with_pagination(
     List a user group's active members, with pagination.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
 
     Members are sorted by username; inactive users are excluded. `joined_at` is when the membership was last
     (re)activated. `pagination.total` and `statistics.total_members` are the full member count.
@@ -763,7 +777,7 @@ async def get_group_members_with_pagination(
         )
 
     # Get all members first for total count
-    all_members = get_users_in_group(user_group.id)
+    all_members = visible_users(get_users_in_group(user_group.id))
     total_count = len(all_members)
 
     # Apply pagination
@@ -811,6 +825,7 @@ async def get_group_members_with_pagination(
     )
 
 @router.post("/{group_hash}/members/bulk", response_model=BulkAddUsersToGroupResponse)
+@group_authorization("user", "bulk")
 async def bulk_add_users_to_group(
         group_hash: str = Path(..., description="User group hash."),
         request: BulkAddUsersToGroupRequest = Body(..., description="JSON object with `user_hashes` (1-100 user hashes)."),
@@ -820,13 +835,14 @@ async def bulk_add_users_to_group(
     Add up to 100 users to a user group in one request.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
     Only root users may change groups whose name starts with `admin_` (they hold project admin
     assignments); other callers get 403.
 
     **Request:** JSON body (`application/json`, not form data): `{"user_hashes": ["<user hash>", ...]}`.
 
-    Once the group is found the response is 200 with `success: true` even if some or all users fail. Unknown or
+    Authorization is preflighted for every user; any denial returns 403 before writes.
+    After authorization the response is 200 with `success: true` even if some or all users fail. Unknown or
     inactive users are listed in `errors`; every other user gets a `results` entry (existing members are
     reactivated and count as successes); `summary` holds the requested/success/error counts. One
     `bulk_group_assignment` activity entry is logged.
@@ -926,6 +942,7 @@ async def bulk_add_users_to_group(
     )
 
 @router.get("/users/{user_hash}/groups", response_model=UserGroupsForUserResponse)
+@group_authorization("user", "user_groups")
 async def get_user_groups(
         user_hash: str = Path(..., description="Hash of the active user whose groups are listed."),
         session_data=Depends(require_admin)
@@ -934,7 +951,7 @@ async def get_user_groups(
     List the active user groups a user belongs to.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token` HttpOnly cookie); the
-    session must carry `admin` or `manage_users`.
+    caller must be root or an admin assigned to every project in the group.
 
     Groups are sorted by name; each includes `joined_at` (when the membership was last (re)activated).
 
@@ -951,7 +968,7 @@ async def get_user_groups(
         )
 
     # Get user's groups
-    user_groups = get_user_groups_for_user(target_user.id)
+    user_groups = visible_groups(get_user_groups_for_user(target_user.id))
 
     # Format group data
     groups_data = []

@@ -9,6 +9,7 @@
 .coverage.*
 .coverage-unit.json
 test-results/
+.migration-backups/
 .env.prod2
 
 # Private assistant conversations, checkpoints and encrypted profiles

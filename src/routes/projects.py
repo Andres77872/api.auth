@@ -37,6 +37,7 @@ from src.Util.db import (
     get_project_groups_for_project,
     get_admin_project_assignments_with_details
 )
+from src.Util.admin_group_scope import group_in_scope
 from src.Util.admin_scope import AdminScope, resolve_admin_scope, require_project_in_scope
 
 # Configure logging
@@ -1048,7 +1049,8 @@ async def list_project_user_groups(
     require_project_in_scope(scope, project)
 
     # Fetch groups
-    groups_all = get_user_groups_for_project(project.id)
+    groups_all = [group for group in get_user_groups_for_project(project.id)
+                  if group_in_scope(scope, "user", group.id)]
     groups_paginated = groups_all[offset:offset + limit]
 
     user_groups_info = []

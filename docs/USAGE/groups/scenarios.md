@@ -1,8 +1,8 @@
 # Groups scenarios
 
 End-to-end workflows. Each step's fields and responses are in [reference.md](reference.md); the
-individual requests are explained in [usage.md](usage.md). `$TOKEN` belongs to a root user or to a
-session that carries `admin` (both prefixes), or `manage_users` plus `manage_roles`.
+individual requests are explained in [usage.md](usage.md). `$TOKEN` belongs to a root or admin session assigned to every associated project. Non-root creation also needs
+form `project_hash` for the administrative binding; it grants no access.
 
 ## Onboard a team
 
@@ -13,13 +13,15 @@ Goal: a new team can sign in to a set of projects.
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
   --data-urlencode "group_name=qa_team" \
-  --data-urlencode "description=Quality assurance"
+  --data-urlencode "description=Quality assurance" \
+  --data-urlencode "project_hash=$TEST_PROJECT"
 # -> user_group.group_hash = $QA_TEAM
 
 # 2. Create the project container
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
-  --data-urlencode "group_name=qa_projects"
+  --data-urlencode "group_name=qa_projects" \
+  --data-urlencode "project_hash=$TEST_PROJECT"
 # -> project_group.group_hash = $QA_PROJECTS
 
 # 3. Put the projects in it (repeat per project)

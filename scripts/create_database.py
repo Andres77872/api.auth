@@ -83,6 +83,7 @@ TRIGGER_FILES = [
     'triggers/04_email_activation_triggers.sql',  # schemas/triggers/04_email_activation_triggers.sql
     'triggers/05_external_accounts_triggers.sql',  # schemas/triggers/05_external_accounts_triggers.sql
     'triggers/06_patreon_entitlements_triggers.sql',  # schemas/triggers/06_patreon_entitlements_triggers.sql
+    'triggers/09_group_scope_triggers.sql',  # graph writers serialize until commit
 ]
 
 BILLING_PROVIDER_FACT_FILES = [

@@ -6,17 +6,18 @@ the `admin_` guard, soft deletes) are in [README.md](README.md#rules-and-caveats
 ## Authorization
 
 Every route takes an access token (`Authorization: Bearer <access JWT>` or the `access_token`
-cookie). The dependency reads the permission names in the validated session.
+cookie). Authentication validates the session; authorization then reads the caller's live user
+type and assigned projects. Consumers are refused regardless of their permission names.
 
-| Prefix | Dependency | Session must carry | Extra rule |
-| --- | --- | --- | --- |
-| `/admin/user-groups` | `require_admin` in `src/routes/admin_user_groups.py` | `admin` or `manage_users` | Writes to a group named `admin_...` need a root caller |
-| `/admin/project-groups` | `require_admin` in `src/routes/admin_project_groups.py` | `admin` or `manage_roles` | None |
+| Prefix | Caller | Scope |
+| --- | --- | --- |
+| `/admin/user-groups` | Root or admin | Root: all groups. Admin: every associated/bound project must be assigned |
+| `/admin/project-groups` | Root or admin | Same scope; access changes also check affected user groups |
 
-A missing or invalid token returns `401` `AUTH_1003`. A missing permission returns `403`
-`AUTHZ_2002` ("Admin or manage_users permission required" or "Admin or manage_roles permission
-required"). A non-root write to an `admin_...` group returns `403` `AUTHZ_2002` ("Only root users
-may change project admin groups").
+Missing/invalid sessions return `401`; consumers and reserved-group writes return `403`
+`AUTHZ_2002`. Existing groups/projects outside scope return `403` `AUTHZ_2003`; out-of-scope
+users return `403` `AUTHZ_2001`. Unknown targets return `404`. Writes to `admin_...` groups, or project-group access changes affecting their assignments,
+require root. These rules also cover `/admin/user-groups/bulk-assign`.
 
 ## User group endpoints
 
@@ -26,14 +27,14 @@ name (or, for create and rename, the new name) starts with `admin_`.
 | Path | Method | Input | `admin_` guard | Purpose |
 | --- | --- | --- | --- | --- |
 | `/admin/user-groups` | GET | Query: [list parameters](#list-parameters) | No | List active user groups with member counts |
-| `/admin/user-groups` | POST | Form: `group_name`, `description` | Yes | Create a user group |
+| `/admin/user-groups` | POST | Form: `group_name`, `description`, `project_hash` | Yes | Create a user group |
 | `/admin/user-groups/{group_hash}` | GET | Path only | No | Group, members, granted project groups, reachable projects |
-| `/admin/user-groups/{group_hash}` | PUT | Form: `group_name`, `description` | Yes | Rename and/or change the description |
+| `/admin/user-groups/{group_hash}` | PUT | Form: `group_name`, `description`, `project_hash` | Yes | Rename and/or change the description |
 | `/admin/user-groups/{group_hash}` | DELETE | No body | Yes | Soft-delete the group, its memberships and its grants; revokes sessions |
 | `/admin/user-groups/{group_hash}/members` | GET | Query: `limit` (1-100, default `50`), `offset` | No | Page through active members |
 | `/admin/user-groups/{group_hash}/members` | POST | Form: `user_hash` | Yes | Add or reactivate one member |
 | `/admin/user-groups/{group_hash}/members/bulk` | POST | JSON: `{"user_hashes": [...]}` (1-100) | Yes | Add up to 100 members |
-| `/admin/user-groups/{group_hash}/members/{user_hash}` | DELETE | No body | Yes | Remove one member; no session revocation |
+| `/admin/user-groups/{group_hash}/members/{user_hash}` | DELETE | No body | Yes | Remove one member; revokes lost project sessions |
 | `/admin/user-groups/{group_hash}/project-groups` | GET | Path only | No | List active grants |
 | `/admin/user-groups/{group_hash}/project-groups` | POST | Form: `project_group_hash` | Yes | Grant (or re-grant) a project group |
 | `/admin/user-groups/{group_hash}/project-groups/{project_group_hash}` | DELETE | No body | Yes | Revoke a grant; revokes sessions |
@@ -44,9 +45,9 @@ name (or, for create and rename, the new name) starts with `admin_`.
 | Path | Method | Input | Purpose |
 | --- | --- | --- | --- |
 | `/admin/project-groups` | GET | Query: [list parameters](#list-parameters) | List active project groups with project counts |
-| `/admin/project-groups` | POST | Form: `group_name`, `description` | Create an empty project group |
+| `/admin/project-groups` | POST | Form: `group_name`, `description`, `project_hash` | Create an empty project group |
 | `/admin/project-groups/{group_hash}` | GET | Path only | Group and its assigned projects |
-| `/admin/project-groups/{group_hash}` | PUT | Form: `group_name`, `description` | Rename and/or change the description |
+| `/admin/project-groups/{group_hash}` | PUT | Form: `group_name`, `description`, `project_hash` | Rename and/or change the description |
 | `/admin/project-groups/{group_hash}` | DELETE | No body | Soft-delete the group, its project assignments and every grant to it; revokes sessions |
 | `/admin/project-groups/{group_hash}/projects` | POST | Form: `project_hash` | Add or reactivate a project in the group |
 | `/admin/project-groups/{group_hash}/projects/{project_hash}` | DELETE | No body | Remove a project from the group; revokes sessions |
@@ -55,6 +56,13 @@ There is no route that lists a project group's projects on its own. Read `assign
 `GET /admin/project-groups/{group_hash}`.
 
 ## Request fields
+
+`project_hash` is required on both POST collection endpoints for admins and optional for root.
+It records an administrative binding only: a new group still has no project assignments/grants.
+Missing admin creation scope returns `400` `VAL_3002`; foreign scope returns `403` `AUTHZ_2003`.
+On both PUT group endpoints, a nonempty `project_hash` is root-only and binds/rebinds the group;
+it can be the only update field. Omitting it keeps the binding.
+
 
 Form bodies accept `application/x-www-form-urlencoded` or `multipart/form-data`. An empty form
 value counts as omitted.
@@ -87,8 +95,8 @@ Both `PUT` routes need at least one of `group_name` and `description`. With neit
 
 Pagination differs between the two lists:
 
-- `GET /admin/user-groups`: `pagination.total` counts all active user groups and ignores `search`.
-  `has_more` is `null`.
+- `GET /admin/user-groups`: `pagination.total` respects search and administrative scope.
+  `has_more` is set after scope filtering.
 - `GET /admin/project-groups`: `pagination.total` respects `search` and `has_more` is set. The list
   includes each project's `default_<project_id>` group.
 
@@ -185,12 +193,13 @@ project through another chain are kept. How it works:
 | Route | Reason |
 | --- | --- |
 | `DELETE /admin/user-groups/{group_hash}` | `user_group_deleted` |
+| `DELETE /admin/user-groups/{group_hash}/members/{user_hash}` | `user_removed_from_group` |
 | `DELETE /admin/user-groups/{group_hash}/project-groups/{project_group_hash}` | `user_group_project_group_access_revoked` |
 | `DELETE /admin/project-groups/{group_hash}` | `project_group_deleted` |
 | `DELETE /admin/project-groups/{group_hash}/projects/{project_hash}` | `project_removed_from_group` |
 
-Adding members, granting access, renaming and
-`DELETE /admin/user-groups/{group_hash}/members/{user_hash}` revoke nothing.
+Adding members, granting access, and renaming revoke no sessions. Lost-access revocation runs
+after commit; affected API-key validation caches are invalidated after group mutations.
 
 ## Error codes
 
@@ -201,7 +210,7 @@ Envelope and catalog: [errors.md](../errors.md).
 | `400` | `VAL_3001` | Missing or empty required form field, malformed bulk body, empty or oversized `user_hashes`, query value out of range |
 | `400` | `VAL_3002` | `PUT /admin/user-groups/{group_hash}` with nothing to update |
 | `401` | `AUTH_1003` | Missing, invalid or expired access token |
-| `403` | `AUTHZ_2002` | Missing permission, or a non-root write to an `admin_...` user group |
+| `403` | `AUTHZ_2002` | Consumer caller, or a non-root change to protected administrator assignments |
 | `404` | `NF_4003` | User group unknown or deleted |
 | `404` | `NF_4004` | Project group unknown or deleted; unknown project on the `/admin/project-groups/{group_hash}/projects` routes |
 | `404` | `NF_4001` | User unknown or inactive (single add, remove, reverse lookup) |

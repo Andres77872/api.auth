@@ -22,6 +22,7 @@ from src.Util.bulk_operations import (
 )
 from src.Util.db import validate_session, get_user_by_hash, get_user_group_by_name, is_root_user
 from src.Util.db import db_global_roles
+from src.Util.admin_group_scope import group_authorization
 from src.Util.admin_scope import (
     RESERVED_PERMISSION_NAMES, require_admin_scope, resolve_admin_scope, role_grants_reserved_permission,
 )
@@ -495,6 +496,7 @@ async def bulk_assign_roles_to_project_users(
 
 
 @router.post("/user-groups/bulk-assign")
+@group_authorization("user", "bulk_assign")
 async def bulk_assign_users_to_groups(
         user_hashes: List[str] = Form(..., description="Public hashes of the users to add (1-100; repeat the field)."),
         group_names: List[str] = Form(
@@ -507,8 +509,8 @@ async def bulk_assign_users_to_groups(
     Add every listed user to every listed user group.
 
     **Auth:** access token (`Authorization: Bearer <access JWT>` or `access_token`
-    cookie) whose session permissions include `admin`; otherwise 403. Root and
-    admin sessions carry this permission by default.
+    cookie); the caller must be a live root/admin user. Every group and target user
+    must be in scope. Any authorization denial returns 403 before assignments.
 
     **Request:** form fields (`application/x-www-form-urlencoded` or `multipart/form-data`);
     list fields are sent by repeating the field, e.g. `user_hashes=a&user_hashes=b`.
@@ -536,14 +538,7 @@ async def bulk_assign_users_to_groups(
         error_context="get current user for bulk group assignment",
         not_found_message=f"User not found: {mask_uuid(session_data.user_hash)}"
     )
-    user_permissions = getattr(session_data, 'permissions', [])
-
-    if 'admin' not in user_permissions:
-        raise AuthorizationError(
-            message="Admin permission required for bulk group assignments",
-            error_code=ErrorCode.INSUFFICIENT_PERMISSIONS,
-            details={"required_permission": "admin"}
-        )
+    require_admin_scope(resolve_admin_scope(current_user.id))
 
     # Validate input
     if not user_hashes or not group_names:

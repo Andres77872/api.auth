@@ -55,7 +55,9 @@ def _seams():
         "get_projects_in_group": MagicMock(return_value=[]),
         "revoke_project_sessions_losing_access": MagicMock(return_value=0),
     }
-    return seams, [(f"{GROUPS}.{name}", mock) for name, mock in seams.items()]
+    return seams, [(f"{GROUPS}.{name}", mock) for name, mock in seams.items()] + [
+        ("src.Util.admin_group_scope.group_project_ids", MagicMock(return_value=frozenset({"prj-A"}))),
+    ]
 
 
 REQUESTS = [

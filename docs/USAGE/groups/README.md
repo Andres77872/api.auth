@@ -2,8 +2,7 @@
 
 Groups decide which projects a user can reach. A **user group** collects users, a **project group**
 collects projects, and a grant between the two gives every member of the user group access to every
-active, non-archived project in the project group. Root users, admin users and consumers whose
-global role carries the right permission manage groups through `/admin/user-groups` and
+active, non-archived project in the project group. Root users and admins assigned to the complete project scope manage groups through `/admin/user-groups` and
 `/admin/project-groups`.
 
 ## Key concepts
@@ -35,8 +34,8 @@ USER -> USER_GROUP -> PROJECT_GROUP -> PROJECT
 
 | Concern | Prefix | Session must carry | Body |
 | --- | --- | --- | --- |
-| User groups, membership, grants | `/admin/user-groups` | `admin` or `manage_users` | Form fields; bulk member add takes JSON |
-| Project groups and their projects | `/admin/project-groups` | `admin` or `manage_roles` | Form fields |
+| User groups, membership, grants | `/admin/user-groups` | Live root/admin identity and full project scope | Form fields; bulk member add takes JSON |
+| Project groups and their projects | `/admin/project-groups` | Live root/admin identity and full project scope | Form fields |
 | Permission groups on a user group | `/permissions/admin/user-groups/{group_hash}/permission-groups` | See [permissions reference](../permissions/reference.md) | Form fields |
 
 Endpoint tables, fields and response shapes are in [reference.md](reference.md).
@@ -46,26 +45,35 @@ Endpoint tables, fields and response shapes are in [reference.md](reference.md).
 Platform-wide rules (User-Agent, body size, error envelope) are in
 [Platform-wide contracts](../README.md#platform-wide-contracts).
 
-- **The two prefixes use different permissions.** `manage_users` opens user-group routes,
-  `manage_roles` opens project-group routes, and `admin` opens both. Root and admin sessions carry
-  `admin`; consumers get these names only from a global role.
-- **Group routes are not scoped to the caller's projects.** Any caller that passes the permission
-  check can manage every user group and project group, with one exception below.
+- **Root is global; admins are scoped.** Consumer permission names do not authorize these routes.
+  Admins must administer every project in the group's complete graph and administrative binding.
+  Active links to archived or inactive projects still constrain scope. Shared groups require all
+  projects to be assigned to the caller, or root.
+- **Empty groups have an administrative project.** Admin creation requires form `project_hash`.
+  `scope_project_id` records that binding without granting project access. The group remains empty
+  until the existing project assignment/grant steps. Root can create unbound groups and use
+  `project_hash` on PUT to bind/rebind them. Unbound empty groups require root.
+- **Lists and nested users are scoped.** Filtering happens before pagination and totals. Existing
+  out-of-scope groups/users return 403; unknown groups return 404.
+- **Bulk authorization is preflighted.** An out-of-scope user/group rejects the entire request
+  before any assignment. Missing users retain the existing partial-results format.
 - **Only root may change a user group whose name starts with `admin_`** (compared the way MySQL's
   `utf8mb4_unicode_ci` collation does, so case and accents are ignored). This covers create,
   rename, delete, members and grants. Membership of `admin_<project_id>` is what makes an admin
   user a project administrator.
 - **Deletes are soft.** Rows get `is_active = 0`. Deleted group names stay reserved, and names are
-  unique regardless of case.
+  unique regardless of case. Project-group access changes that affect `admin_` assignments also require root.
 - **Removing access revokes live sessions.** Deleting a user group or project group, revoking a
   grant, or removing a project from a project group revokes the affected users' project sessions
-  and refresh-token families at once. Removing a single member does not; that user's token fails
-  on its next request instead. See [architecture.md](architecture.md#session-revocation).
+  and refresh-token families at once. Removing a single member also revokes lost project sessions after commit. Affected API-key
+  validation caches are invalidated after group changes. See [architecture.md](architecture.md#session-revocation).
 - **A user-group hash works as a registration invitation.** `POST /auth/register` is public and
   places the new consumer in whichever user group hash it receives. Share hashes of the groups
   meant for self-registration only.
 - **Group hierarchy is not used for access.** `parent_group_id` exists in both group tables but no
   route sets it and the access chain never follows it.
+
+Migration and client instructions are in [the rollout runbook](../../RUNBOOKS/group-administration-scope.md).
 
 ## In this suite
 

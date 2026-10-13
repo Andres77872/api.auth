@@ -18,6 +18,7 @@ from src.Util.Models import (
     User, UserGroup, UserGroupMember, ProjectSummary
 )
 from src.Util.db_config import get_connection
+from src.Util.db_transaction import group_item
 from src.Util.uuid_generator import generate_user_group_id, generate_user_group_project_id, \
     generate_user_group_member_id
 from src.Util.db_error_wrapper import handle_db_operation
@@ -26,7 +27,8 @@ from src.Util.error_handler import ValidationError, NotFoundError, ErrorCode, ma
 
 # =================== USER GROUP MANAGEMENT ===================
 
-def create_user_group(group_name: str, group_description: str = None, created_by: str = None) -> UserGroup:
+def create_user_group(group_name: str, group_description: str = None, created_by: str = None,
+                      scope_project_id: str = None) -> UserGroup:
     """
     Create a new global user group.
     
@@ -48,6 +50,11 @@ def create_user_group(group_name: str, group_description: str = None, created_by
         with get_connection() as con:
             cur = con.cursor()
             cur.callproc('sp_create_user_group', [group_id, group_hash, group_name, group_description, None, created_by])
+            while cur.nextset():
+                pass
+            if scope_project_id is not None:
+                cur.execute("UPDATE user_groups SET scope_project_id = %s WHERE id = %s",
+                            (scope_project_id, group_id))
             con.commit()
 
             return UserGroup(
@@ -309,6 +316,7 @@ def delete_user_group(group_id: str, deleted_by: str = None) -> bool:
 
 # =================== USER GROUP MEMBERSHIP ===================
 
+@group_item
 def assign_user_to_group(user_id: str, user_group_id: str, assigned_by: str = None) -> Optional[UserGroupMember]:
     """
     Assign a user to a user group (or reactivate if already exists).
@@ -675,7 +683,7 @@ def count_user_groups() -> int:
     )
 
 
-def get_total_user_groups_count() -> int:
+def get_total_user_groups_count(search: str = None) -> int:
     """
     Get total count of active user groups.
     
@@ -688,7 +696,11 @@ def get_total_user_groups_count() -> int:
     def _count():
         with get_connection() as con:
             cur = con.cursor()
-            cur.callproc('sp_count_user_groups', [])
+            if search is None:
+                cur.callproc('sp_count_user_groups', [])
+            else:
+                cur.execute("SELECT COUNT(*) FROM user_groups WHERE is_active = 1 AND group_name LIKE %s",
+                            (f"%{search}%",))
             return cur.fetchone()[0]
     
     return handle_db_operation(

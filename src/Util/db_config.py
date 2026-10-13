@@ -70,6 +70,11 @@ def get_connection():
     Interface unchanged — all existing callers work without modification.
     Phase 0 instrumentation preserved for before/after measurement.
     """
+    from src.Util.db_transaction import current_connection
+
+    borrowed = current_connection()
+    if borrowed is not None:
+        return borrowed
     global _pool
     if _pool is None:
         _pool = PersistentDB(

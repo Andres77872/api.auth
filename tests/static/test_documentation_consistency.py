@@ -344,12 +344,12 @@ def test_schema_inventory_matches_canonical_sql():
         ),
     }
     assert expected_counts == {
-        "Tables": 82,
+        "Tables": 84,
         "Indexes": 77,
-        "Stored Procedures": 314,
+        "Stored Procedures": 322,
         "Functions": 1,
         "Views": 18,
-        "Triggers": 122,
+        "Triggers": 143,
     }
 
     for label, count in expected_counts.items():

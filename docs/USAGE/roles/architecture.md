@@ -77,9 +77,8 @@ would also deactivate group memberships), `sp_global_remove_permission_from_grou
 
 ## Reserved permission names
 
-Routers and middleware trust some names when they appear in session permissions: `admin` opens
-`verify_admin_access` and most admin guards, `manage_users` opens user-group administration, and so
-on. A consumer's session permissions come from its role, so anyone who could put such a name into a
+Some routers and middleware trust administrative names in session permissions. Group administration
+requires a live root/admin identity and complete project scope instead. A consumer's session permissions come from its role, so anyone who could put such a name into a
 role could grant it, including to themselves. The `/roles` router therefore lets only root create,
 edit, move, or hand out these names, and forbids non-root callers from changing their own role. The
 list and the exact root-only operations are in
@@ -101,8 +100,7 @@ grant of `manage_roles` opens that router.
   project groups ([groups](../groups/README.md)).
 - **Delegation through `manage_roles`.** `require_admin` lets a consumer whose role grants
   `manage_roles` manage roles. The check is live and role-only, so user-group and direct grants do not
-  count. Managing user groups needs `manage_users` instead; the route code calls this intentional
-  least privilege.
+  count. Group administration requires a live root/admin identity and complete project scope.
 - **`role_priority` is ordering metadata.** It sorts role listings and the project role catalog and
   plays no part in resolution.
 - **Catalogs are metadata.** The project role catalog drives UI suggestions; no guard or resolver reads

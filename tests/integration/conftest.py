@@ -203,6 +203,19 @@ def patched_db_connection():
             patcher.stop()
 
 
+@pytest.fixture
+def root_group_contract(patched_db_connection):
+    """Legacy response-shape contracts run as root; scope/transactions have dedicated tests."""
+    from contextlib import nullcontext
+    from src.Util.admin_scope import AdminScope
+
+    with patch("src.routes.admin_user_groups.resolve_admin_scope", side_effect=lambda id: AdminScope(str(id), "root")), \
+         patch("src.routes.admin_project_groups.resolve_admin_scope", side_effect=lambda id: AdminScope(str(id), "root")), \
+         patch("src.Util.admin_group_scope.resolve_admin_scope", side_effect=lambda id: AdminScope(str(id), "root")), \
+         patch("src.Util.admin_group_scope.group_transaction", side_effect=lambda **kwargs: nullcontext()):
+        yield
+
+
 # ─── Audit Logger — patch at middleware usage location ───────────────────────
 
 @pytest.fixture

@@ -10,6 +10,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("root_group_contract")
+
 
 def _make_session(user_type="admin", user_id="1", user_hash="usr-admin-001",
                   project_hash="prj-test-001", project_id="1", permissions=None,
@@ -348,7 +350,7 @@ async def test_non_admin_cannot_access_project_groups():
     for 403 on this module are unreliable due to how AuthContextMiddleware
     does a lazy import of validate_session from src.Util.db (patched by
     fake_redis fixture) while the route module holds its own imported reference.
-    The guard logic is: session.permissions must contain 'admin' or 'manage_roles'.
+    The guard requires a live root/admin user type, independent of permission names.
     """
     from fastapi.security import HTTPAuthorizationCredentials
     from src.Util.error_handler import AuthorizationError
@@ -370,7 +372,9 @@ async def test_non_admin_cannot_access_project_groups():
 
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-token")
 
-    with patch("src.routes.admin_project_groups.validate_session", return_value=session):
+    from src.Util.admin_scope import AdminScope
+    with patch("src.routes.admin_project_groups.validate_session", return_value=session), \
+         patch("src.routes.admin_project_groups.resolve_admin_scope", return_value=AdminScope("1", "consumer")):
         with pytest.raises(AuthorizationError) as exc_info:
             await require_admin(credentials)
 

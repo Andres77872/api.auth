@@ -2213,24 +2213,28 @@ class UserGroupCreateRequest(BaseModelConfig):
     """User group create request model"""
     group_name: str
     description: Optional[str] = None
+    project_hash: Optional[str] = None  # Administrative binding; required for non-root creation.
 
 
 class UserGroupUpdateRequest(BaseModelConfig):
     """User group update request model"""
     group_name: Optional[str] = None
     description: Optional[str] = None
+    project_hash: Optional[str] = None  # Root-only administrative rebinding.
 
 
 class ProjectGroupCreateRequest(BaseModelConfig):
     """Project group create request model"""
     group_name: str
     description: Optional[str] = None
+    project_hash: Optional[str] = None  # Administrative binding; required for non-root creation.
 
 
 class ProjectGroupUpdateRequest(BaseModelConfig):
     """Project group update request model"""
     group_name: Optional[str] = None
     description: Optional[str] = None
+    project_hash: Optional[str] = None  # Root-only administrative rebinding.
 
 
 class PermissionCreateRequest(BaseModelConfig):

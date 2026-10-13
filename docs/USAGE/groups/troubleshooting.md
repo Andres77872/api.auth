@@ -49,8 +49,7 @@ Cause: one of these:
 
 - another user group still grants the same project. Revocation keeps sessions that another
   chain still covers;
-- the request uses an API key. Validation results are cached for `60` seconds and group changes
-  do not clear them;
+- the request uses an API key whose post-commit invalidation failed; inspect cache-service errors;
 - the user is root, who reaches every active, non-archived project without groups.
 
 Fix: check the user's other groups (first step above). For immediate API-key cut-off, revoke the
@@ -60,7 +59,7 @@ key ([API keys](../api-keys/usage.md)).
 
 Cause: expected. Deleting a user group or project group, revoking a grant and removing a project
 from a project group revoke the project sessions and refresh-token families of users who lost the
-project. A removed member's token is refused on its next request.
+project. Removing a member also revokes lost project sessions after commit.
 
 Fix: the user logs in again with a project they still reach.
 
@@ -83,19 +82,22 @@ Fix: grant the permission through the user's global role. See
 
 ## Errors from group routes
 
-### 403 on every user-group route
+### 403 on group routes
 
-Cause: the session carries neither `admin` nor `manage_users`. A consumer whose role has
-`manage_roles` can use project-group routes but not user-group routes.
+Cause: the caller is a consumer, the group or target user is outside the admin's live scope,
+there is an archived/inactive foreign project behind an active link, or the requested access
+change affects a protected `admin_` assignment.
 
-Fix: use a root or admin session, or have root grant `manage_users` through the consumer's
-global role.
+Fix: use a real admin assigned to every associated project, or root for protected/global changes.
+Granting `manage_users` or `manage_roles` to a consumer does not authorize these routes. Root may
+bind a legacy empty group using `project_hash` on PUT.
 
-### 403 on project-group routes
+### 400 on group creation
 
-Cause: the session carries neither `admin` nor `manage_roles`.
+Cause: a non-root admin omitted the administrative `project_hash`.
 
-Fix: as above, with `manage_roles`.
+Fix: include an assigned project's hash on both group creation requests. The group still starts
+empty, so keep the subsequent linking steps.
 
 ### 403 changing an `admin_` group
 

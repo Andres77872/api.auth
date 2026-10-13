@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "schemas"
 
 PATCH_FILES = (
+    "tables/15_group_scope.sql",
     "tables/09_email_activation_tables.sql",
     "tables/10_external_accounts.sql",
     "tables/11_patreon_entitlements.sql",
@@ -57,10 +58,13 @@ PATCH_FILES = (
     "triggers/06_patreon_entitlements_triggers.sql",
     "triggers/07_billing_provider_facts_triggers.sql",
     "triggers/08_oauth_connections_triggers.sql",
+    "triggers/09_group_scope_triggers.sql",
 )
 
 # Additive column catch-up for existing DBs (MySQL has no ADD COLUMN IF NOT EXISTS).
 COLUMN_PATCHES = (
+    ("user_groups.scope_project_id", "ALTER TABLE user_groups ADD COLUMN scope_project_id VARCHAR(64) NULL"),
+    ("project_groups.scope_project_id", "ALTER TABLE project_groups ADD COLUMN scope_project_id VARCHAR(64) NULL"),
     (
         "billing_groups.last_catalog_synced_at",
         "ALTER TABLE billing_groups ADD COLUMN last_catalog_synced_at DATETIME NULL",

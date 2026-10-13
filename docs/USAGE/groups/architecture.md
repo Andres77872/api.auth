@@ -13,6 +13,7 @@ way.
 | Tables | `schemas/tables/02_create_tables.sql` | same |
 
 Shared pieces: `src/Util/admin_scope.py` (the `admin_` name check and admin scope),
+`src/Util/admin_group_scope.py` (full group scope), `src/Util/db_transaction.py` (transaction ownership),
 `src/Util/auth_lifecycle.py` (session validation and revocation) and the view
 `v_user_project_access` in `schemas/tables/06_create_views.sql`.
 
@@ -88,30 +89,29 @@ route has changed the database:
    reason) and delete `session:{access_jti}` and `session_full:{access_jti}`.
 
 Revocation reasons are listed in the [reference](reference.md#session-revocation). Removing a
-single member skips this step; the next validation of that user's token fails instead
+single member also runs this revocation after commit
 ([request flow](request-flow.md#access-re-check-on-every-request)).
 
 ## Caching
 
-Group routes invalidate nothing, and nothing needs invalidating for sessions:
+Group changes revoke lost sessions and invalidate affected API-key validation entries after commit:
 
 - No Redis cache holds access decisions for sessions. Every access-token validation re-reads the
   chain from MySQL.
 - `session_full:{access_jti}` caches the validated login object for `VALIDATE_CACHE_TTL` (default
   `30` seconds). It is read only after the live access check passes, so it can show stale group
   names but cannot grant access.
-- API-key validation results are cached as `apikey:{public_id}` for `60` seconds. Group changes do
-  not clear that entry, so a user-owned API key can keep validating for up to `60` seconds after
-  its owner loses the project. Revoking the key clears it at once.
+- API-key validation results are cached as `apikey:{public_id}` for `60` seconds. Group changes clear affected project entries after commit. Revoking a key also clears its entry.
 
 ## Design decisions
 
 - **Access only through groups.** Direct user-to-project assignment was removed from
   `src/routes/projects.py`. Every grant is a user group to project group link, so team access is
   added and removed in one place and audited from either side.
-- **Separate permissions for the two prefixes.** User groups sit behind `manage_users` and project
-  groups behind `manage_roles`, so a delegated consumer can manage team membership without being
-  able to change which projects a container holds, or the reverse.
+- **One live administration policy.** Both prefixes require root or a project-scoped admin.
+  Permission names cannot authorize consumer group management. Shared groups require the complete
+  project set, and empty groups use a persisted administrative binding.
+
 - **Soft deletes.** Rows are deactivated, not removed, which keeps `removed_by` / `revoked_by`
   history and keeps deleted names reserved.
 - **Permission groups are separate.** Project reach and capabilities are resolved independently.

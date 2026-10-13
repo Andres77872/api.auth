@@ -172,9 +172,9 @@ Guards elsewhere read the **auth-time set** as their first check, for example:
 
 | Guard | Needs in session permissions |
 | --- | --- |
-| `/admin/user-groups` router, `/admin/users/bulk-update`, `/admin/users/bulk-delete` | `admin` or `manage_users` |
-| `/admin/project-groups` router | `admin` or `manage_roles` |
-| `/admin/projects/{project_hash}/bulk-assign-roles`, `/admin/user-groups/bulk-assign` | `admin` |
+| `/admin/users/bulk-update`, `/admin/users/bulk-delete` | `admin` or `manage_users`, followed by live scope |
+| `/admin/user-groups`, `/admin/project-groups`, `/admin/user-groups/bulk-assign` | Live root/admin identity and complete project scope; permission names alone are insufficient |
+| `/admin/projects/{project_hash}/bulk-assign-roles` | `admin` |
 | `/admin/billing` router | `admin` or `manage_billing` |
 | `/api-keys` router (`verify_admin_access`) | user type `root`/`admin`, or `admin`/`global_admin` |
 

@@ -461,11 +461,11 @@ def create_default_groups(project_id: str):
             project_group_name = f"default_{project_id}"
             cur.execute(
                 """
-                INSERT INTO project_groups (id, group_hash, group_name, group_description, created_at, is_active)
-                VALUES (%s, %s, %s, %s, NOW(), 1)
+                INSERT INTO project_groups (id, group_hash, group_name, group_description, scope_project_id, created_at, is_active)
+                VALUES (%s, %s, %s, %s, %s, NOW(), 1)
                 ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
                 """,
-                [project_group_id, f"PG-{secrets.token_hex(16).upper()}", project_group_name, f"Default project group for {project_id}"],
+                [project_group_id, f"PG-{secrets.token_hex(16).upper()}", project_group_name, f"Default project group for {project_id}", project_id],
             )
 
             # Step 2: Add the project to the project group via project_group_members
@@ -489,11 +489,11 @@ def create_default_groups(project_id: str):
                 # Insert user group
                 cur.execute(
                     """
-                    INSERT INTO user_groups (id, group_hash, group_name, group_description, created_at, is_active)
-                    VALUES (%s, %s, %s, %s, NOW(), 1)
+                    INSERT INTO user_groups (id, group_hash, group_name, group_description, scope_project_id, created_at, is_active)
+                    VALUES (%s, %s, %s, %s, %s, NOW(), 1)
                     ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
                     """,
-                    [group_id, f"UG-{secrets.token_hex(16).upper()}", group_name, description],
+                    [group_id, f"UG-{secrets.token_hex(16).upper()}", group_name, description, project_id],
                 )
 
                 # Step 4: Link user group to project group via user_group_project_groups

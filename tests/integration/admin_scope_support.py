@@ -138,6 +138,8 @@ DIRECTORY_MODULES = (
     "src.routes.users",
     "src.routes.user_types_auth",
     "src.routes.admin_user_groups",
+    "src.routes.admin_project_groups",
+    "src.routes.bulk_operations",
 )
 
 
@@ -146,6 +148,14 @@ def directory(session: SimpleNamespace, *, extra: Iterable[tuple[str, Any]] = ()
     """Answer identity lookups from the directory and authenticate as ``session``."""
 
     with ExitStack() as stack:
+        from tests.support import make_db_connection_mock, make_db_cursor_mock
+        from src.Util.db_transaction import current_connection
+
+        connection = make_db_connection_mock(make_db_cursor_mock(fetchone=(1,)))
+        stack.enter_context(patch("src.Util.db_config.get_connection", return_value=connection))
+        stack.enter_context(patch("src.Util.admin_group_scope.get_connection",
+                                  side_effect=lambda: current_connection() or connection))
+        stack.enter_context(patch("src.Util.admin_group_scope.invalidate_project_api_keys"))
         for module_name in DIRECTORY_MODULES:
             module = importlib.import_module(module_name)
             for name, fake in DIRECTORY.items():

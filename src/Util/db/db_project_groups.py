@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # =================== PROJECT GROUP MANAGEMENT ===================
 
 def create_project_group(group_name: str, group_description: str = None,
-                         created_by: str = None) -> ProjectGroup:
+                         created_by: str = None, scope_project_id: str = None) -> ProjectGroup:
     """
     Create a project container using the canonical stored procedure.
     
@@ -60,6 +60,10 @@ def create_project_group(group_name: str, group_description: str = None,
             # Clean up result sets
             while cur.nextset():
                 pass
+
+            if scope_project_id is not None:
+                cur.execute("UPDATE project_groups SET scope_project_id = %s WHERE id = %s",
+                            (scope_project_id, group_id))
             
             con.commit()
 

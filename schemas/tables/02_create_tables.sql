@@ -10,6 +10,13 @@
 
 USE magic_auth;
 
+-- All authorization-graph writers serialize on this transaction-held row.
+CREATE TABLE IF NOT EXISTS group_graph_lock (
+    id INT NOT NULL PRIMARY KEY,
+    CONSTRAINT ck_group_graph_lock_singleton CHECK (id = 1)
+) ENGINE=InnoDB;
+INSERT IGNORE INTO group_graph_lock (id) VALUES (1);
+
 -- ===================================================================================
 -- CORE ENTITY TABLES
 -- ===================================================================================
@@ -68,6 +75,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
     group_name VARCHAR(100) NOT NULL,
     group_description TEXT,
     parent_group_id VARCHAR(64) NULL,
+    scope_project_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
     created_by VARCHAR(64),
@@ -75,6 +83,8 @@ CREATE TABLE IF NOT EXISTS user_groups (
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_hash (group_hash),
     UNIQUE KEY uk_group_name (group_name),
+    INDEX idx_user_groups_scope (scope_project_id),
+    CONSTRAINT fk_user_groups_scope FOREIGN KEY (scope_project_id) REFERENCES projects(id),
     INDEX idx_parent_group (parent_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -109,6 +119,7 @@ CREATE TABLE IF NOT EXISTS project_groups (
     group_name VARCHAR(100) NOT NULL,
     group_description TEXT,
     parent_group_id VARCHAR(64) NULL,
+    scope_project_id VARCHAR(64) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
     created_by VARCHAR(64),
@@ -116,6 +127,8 @@ CREATE TABLE IF NOT EXISTS project_groups (
     PRIMARY KEY (id),
     UNIQUE KEY uk_project_group_hash (group_hash),
     UNIQUE KEY uk_project_group_name (group_name),
+    INDEX idx_project_groups_scope (scope_project_id),
+    CONSTRAINT fk_project_groups_scope FOREIGN KEY (scope_project_id) REFERENCES projects(id),
     INDEX idx_parent_project_group (parent_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

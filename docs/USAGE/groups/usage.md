@@ -1,18 +1,20 @@
 # Groups usage
 
-One section per task. Examples use `$TOKEN` for an access token whose session carries `admin` or
-`manage_users` (user-group routes) or `admin` or `manage_roles` (project-group routes). Field
-rules and full response shapes are in [reference.md](reference.md).
+One section per task. Examples use `$TOKEN` for a root or live project-scoped admin session.
+Admins must administer every project associated with the target group. Consumer management
+permission names do not authorize these routes. See [reference.md](reference.md).
 
 ## Create a user group
 
-`POST /admin/user-groups` — form fields `group_name` (required) and `description`:
+`POST /admin/user-groups` — form fields `group_name`, `description`, and administrative `project_hash`
+(required for admins, optional for root):
 
 ```bash
 curl -X POST "http://localhost:8000/admin/user-groups" \
   -H "Authorization: Bearer $TOKEN" \
   --data-urlencode "group_name=platform_team" \
-  --data-urlencode "description=Platform engineering team"
+  --data-urlencode "description=Platform engineering team" \
+  --data-urlencode "project_hash=$PROJECT_HASH"
 ```
 
 ```json
@@ -43,7 +45,7 @@ curl "http://localhost:8000/admin/user-groups?search=platform&sort_by=created_at
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Each item has `member_count` (active users). `pagination.total` ignores `search`.
+Each item has `member_count` (active users). `pagination.total` respects search and administrative scope.
 
 ## Inspect a user group
 
@@ -98,7 +100,8 @@ curl -X POST "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members/b
   -d '{"user_hashes": ["'"$USER_A"'", "'"$USER_B"'"]}'
 ```
 
-The status is `200` whenever the group exists, even if every user failed. Check
+Authorization denial returns `403` with no assignments. After successful authorization the status
+is `200`, even if every requested user is missing. Check
 `summary.error_count` and `errors[]`.
 
 ## List members and memberships
@@ -126,18 +129,20 @@ curl -X DELETE "http://localhost:8000/admin/user-groups/$USER_GROUP_HASH/members
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Returns `200` even if the user was not a member. The user's sessions are not revoked by this call;
-an access token for a project the user no longer reaches fails with `401` on its next use.
+Returns `200` even if the user was not a member. Lost project sessions are revoked after commit,
+and affected API-key validation caches are invalidated.
 
 ## Create a project group and add projects
 
-`POST /admin/project-groups` — form fields `group_name` (required) and `description`:
+`POST /admin/project-groups` — form fields `group_name`, `description`, and administrative `project_hash`
+(required for admins, optional for root):
 
 ```bash
 curl -X POST "http://localhost:8000/admin/project-groups" \
   -H "Authorization: Bearer $TOKEN" \
   --data-urlencode "group_name=backend_services" \
-  --data-urlencode "description=Backend APIs"
+  --data-urlencode "description=Backend APIs" \
+  --data-urlencode "project_hash=$PROJECT_HASH"
 ```
 
 `POST /admin/project-groups/{group_hash}/projects` — form field `project_hash`:

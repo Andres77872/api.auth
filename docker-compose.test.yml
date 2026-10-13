@@ -61,6 +61,7 @@ services:
       - ./schemas/stored_procedures/19_oauth_connections.sql:/docker-entrypoint-initdb.d/51_sp_19_oauth_connections.sql
       - ./schemas/triggers/08_oauth_connections_triggers.sql:/docker-entrypoint-initdb.d/52_tr_08_oauth_connections.sql
       - ./schemas/tables/14_assistant.sql:/docker-entrypoint-initdb.d/53_tb_14_assistant.sql
+      - ./schemas/triggers/09_group_scope_triggers.sql:/docker-entrypoint-initdb.d/54_tr_09_group_scope.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest_root"]
       interval: 5s

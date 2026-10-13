@@ -127,6 +127,14 @@ bootstrap order from this compact tree; use `scripts/create_database.py`.
 
 ---
 
+## Group administration scope
+
+`user_groups.scope_project_id` and `project_groups.scope_project_id` are nullable indexed foreign
+keys to projects. They establish administrative ownership of empty groups without granting user
+access. `group_graph_lock` has a single row; `09_group_scope_triggers.sql` locks it for graph writes
+and user/project availability changes until their transaction commits. Existing installations
+use [the additive migration runbook](../../docs/RUNBOOKS/group-administration-scope.md).
+
 ## Tables Reference
 
 ### Assistant Persistence
@@ -726,12 +734,12 @@ as a known schema/runtime gap before enabling billing activity persistence.
 - **Database**: MySQL 8.0+
 - **Character Set**: utf8mb4
 - **Collation**: utf8mb4_unicode_ci
-- **Tables**: 82
+- **Tables**: 84 CREATE TABLE declarations (the coordination table is declared in core and catch-up setup)
 - **Indexes**: 77 explicit `CREATE INDEX` / `CREATE UNIQUE INDEX` statements
-- **Stored Procedures**: 314
+- **Stored Procedures**: 322
 - **Functions**: 1
 - **Views**: 18
-- **Triggers**: 122 total (108 activity/domain triggers plus 14 validation triggers in table setup)
+- **Triggers**: 143 total, including 19 group-scope coordination triggers
 - **Activity Types**: 100 seeded (including 21 provider-agnostic `oauth_*` rows, `act-cat-107` to `act-cat-127`); 16 billing IDs reserved in runtime but not yet seeded
 
 ---

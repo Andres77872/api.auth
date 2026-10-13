@@ -13,6 +13,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("root_group_contract")
+
 from tests.integration.conftest import make_session_payload, create_test_session
 
 

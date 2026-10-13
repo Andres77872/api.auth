@@ -479,6 +479,11 @@ python -c "from src.Util.db_config import redis_client; redis_client.ping(); pri
 
 ## 🚚 Migration and Rollback Notes
 
+Group administration now enforces live project scope. Admin group creation requires form
+`project_hash`; ordinary authentication clients keep their contract. Existing databases need the
+[additive group scope migration](docs/RUNBOOKS/group-administration-scope.md) before deployment.
+
+
 API `3.0.0` and `magic-auth-client` `1.0.0` use the current authentication and schema contracts:
 
 - Access sessions use JWTs and separate rotating refresh tokens. Store both values from the token response.

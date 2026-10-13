@@ -10,7 +10,7 @@ request
   -> platform middleware (CORS, request validation, API audit, auth context)
   -> HTTPBearerOrCookie: Authorization bearer or access_token cookie        (401 if absent)
   -> require_admin -> validate_session -> validate_access_session           (401 if invalid)
-  -> permission check: admin | manage_users  or  admin | manage_roles        (403 AUTHZ_2002)
+  -> live root/admin identity + complete administrative project scope        (403 AUTHZ_2002)
   -> handler: resolve hashes (active rows only)                              (404)
   -> admin_ guard on user-group writes                                       (403 AUTHZ_2002)
   -> DB helper -> stored procedure (MySQL)
@@ -22,14 +22,17 @@ request
 2. `require_admin` calls `validate_session()`, which for a JWT runs `validate_access_session()`:
    signature and claims, the Redis session `session:{access_jti}`, the refresh family, then a live
    rebuild of the auth context (see [access re-check](#access-re-check-on-every-request)).
-3. The dependency reads `permissions` from the validated session. User-group routes accept `admin`
-   or `manage_users`; project-group routes accept `admin` or `manage_roles`.
-4. The handler looks up the group by hash through `sp_get_user_group_by_hash` or
-   `sp_get_project_group_by_hash`, both of which return active rows only.
-5. User-group writes call `_require_root_for_admin_group()` with the current name and, on rename,
-   the new name. A name starting with `admin_` needs a root caller.
-6. The handler looks up the caller (`get_user_by_hash`) to record who made the change, then calls
-   the DB helper.
+3. The dependency resolves the live `AdminScope`. A consumer permission name grants no authority.
+4. A request-owned transaction resolves scope again. For writes it locks the singleton
+   `group_graph_lock` row before graph lookups; graph-table triggers also lock it for direct SQL,
+   registration, provisioning, and maintenance writers. This prevents a relationship changing
+   between authorization and mutation. Concurrent graph writes serialize; unrelated reads continue.
+5. Shared helpers verify the group's administrative binding, all projects referenced by active
+   edges (including archived/inactive projects), affected user groups, reserved administrator
+   assignments, and target users. All bulk authorization is checked before the first write.
+6. Helpers borrow the same connection and cannot commit independently. Creation writes its binding
+   in the same transaction. Bulk items use savepoints for ordinary item errors. Authorization
+   failures roll back without writes. Session revocation and API-key cache invalidation run after commit.
 
 ## Write operations
 
@@ -39,7 +42,7 @@ request
 | `PUT /admin/user-groups/{group_hash}` | `update_user_group` | `sp_update_user_group` | `COALESCE` keeps omitted values |
 | `DELETE /admin/user-groups/{group_hash}` | `delete_user_group` | `sp_delete_user_group` | Group, memberships and grants deactivated |
 | `POST /admin/user-groups/{group_hash}/members` and `/members/bulk` | `assign_user_to_group` | `sp_assign_user_to_group` | Upsert: reactivates an existing row |
-| `DELETE /admin/user-groups/{group_hash}/members/{user_hash}` | `remove_user_from_group` | `sp_remove_user_from_group` | No session revocation |
+| `DELETE /admin/user-groups/{group_hash}/members/{user_hash}` | `remove_user_from_group` | `sp_remove_user_from_group` | Revokes lost project sessions after commit |
 | `POST /admin/user-groups/{group_hash}/project-groups` | `grant_user_group_project_group_access` | `sp_grant_user_group_project_group_access` | Upsert |
 | `DELETE /admin/user-groups/{group_hash}/project-groups/{project_group_hash}` | `revoke_user_group_project_group_access` | `sp_revoke_user_group_project_group_access` | `false` when no row changed, which the route turns into `500` |
 | `POST /admin/project-groups` | `create_project_group` | `sp_create_project_group` | Created empty |

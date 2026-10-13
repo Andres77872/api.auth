@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 # name at import time, so patching the source alone does not reach them.  Patch at
 # each usage location as well.
 DB_CONNECTION_PATCH_LOCATIONS: Sequence[str] = (
+    "src.Util.admin_group_scope.get_connection",
     "src.Util.db.get_connection",
     "src.Util.api_audit_logger.get_connection",
     "src.Util.activity_logger.get_connection",
