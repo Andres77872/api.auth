@@ -26,6 +26,8 @@ from src.Util.auth_constants import DEFAULT_ALLOWED_ORIGINS
 from src.Util import docs_site
 from src.Util.oauth.registry import register_default_adapters
 from src.Util.openapi_metadata import OPENAPI_TAGS, SWAGGER_UI_PARAMETERS, install_openapi_metadata
+from src.Util.password_work import PasswordWorkPool, load_password_work_policy
+from src.Util.proxy_config import validate_forwarded_allow_ips
 
 # The OpenAPI description is src/README.md, resolved relative to this file so
 # the app does not depend on the working directory it is started from.
@@ -33,14 +35,19 @@ description = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    validate_forwarded_allow_ips()
+    application.state.password_work_pool = PasswordWorkPool(load_password_work_policy().concurrency)
     application.state.assistant_websocket_ready = warn_if_websocket_transport_missing()
     # Keeps `is_active` of expired API keys in step with `expires_at` (see api_key_expiry).
     api_key_expiry_sweeper = asyncio.create_task(run_api_key_expiry_sweeper())
-    yield
-    api_key_expiry_sweeper.cancel()
-    with suppress(asyncio.CancelledError):
-        await api_key_expiry_sweeper
-    await assistant.shutdown_assistant(application)
+    try:
+        yield
+    finally:
+        api_key_expiry_sweeper.cancel()
+        with suppress(asyncio.CancelledError):
+            await api_key_expiry_sweeper
+        await application.state.password_work_pool.aclose()
+        await assistant.shutdown_assistant(application)
 
 
 app = FastAPI(
@@ -110,6 +117,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 # Add Request Validation Middleware (validates requests, tracks time, logs activity)

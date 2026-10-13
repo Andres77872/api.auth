@@ -42,11 +42,17 @@ def app():
 @pytest.fixture
 async def client(app):
     """Async httpx test client against the REAL app."""
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    ) as ac:
-        yield ac
+    from src.Util.password_work import PasswordWorkPool
+
+    pool = app.state.password_work_pool = PasswordWorkPool()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            yield ac
+    finally:
+        await pool.aclose()
 
 
 # ─── Real-DB Fixtures (for tests that need real MySQL) ───────────────────────

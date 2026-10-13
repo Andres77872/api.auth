@@ -79,20 +79,34 @@ def app_with_request_validation():
 
 @pytest.fixture
 async def client_with_request_validation(app_with_request_validation):
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app_with_request_validation),
-        base_url="http://test",
-    ) as ac:
-        yield ac
+    from src.Util.password_work import PasswordWorkPool
+
+    pool = app_with_request_validation.state.password_work_pool = PasswordWorkPool()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app_with_request_validation),
+            base_url="http://test",
+        ) as ac:
+            yield ac
+    finally:
+        await pool.aclose()
 
 
 @pytest.fixture
 async def client(app):
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    ) as ac:
-        yield ac
+    # ASGITransport does not run lifespan. Own the password pool explicitly while
+    # unrelated sweepers remain isolated by the existing infrastructure fixtures.
+    from src.Util.password_work import PasswordWorkPool
+
+    pool = app.state.password_work_pool = PasswordWorkPool()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            yield ac
+    finally:
+        await pool.aclose()
 
 
 # ─── Fakeredis ───────────────────────────────────────────────────────────────

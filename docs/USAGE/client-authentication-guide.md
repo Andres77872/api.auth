@@ -131,6 +131,21 @@ Public email routes (`/auth/email/verify`, `/auth/password/forgot`, `/auth/passw
 `202` whether or not the account or link exists. Show the same neutral message for every `202`
 and never tell the user whether an address is registered.
 
+`/auth/login`, `/auth/platform/login`, `/auth/register`, and `/auth/password/reset`
+share global and client-IP attempt limits, including successful attempts. They also
+return `429 INT_7005` when password workers are busy or the admission store is
+unavailable. Defaults are 60 attempts per minute globally and 20 per client IP,
+with one password job per API process; deployments can tune these values. Existing
+account and email-link limits still apply independently.
+
+No request fields, link formats, cookies, or session-token formats change. Apps
+already handling `429` need no protocol migration. Show a temporary retry message,
+respect `Retry-After`, and do not refresh credentials or immediately retry these
+requests. Keep the recovery link credential on a `429` so the user can resubmit
+after the delay. The API exposes `Retry-After` through CORS; a BFF must relay its
+status, body, and header. Only the configured ingress supplies client-IP forwarding
+data; browser/mobile apps should not set forwarding headers themselves.
+
 ## Integration patterns
 
 ### Same-site browser app

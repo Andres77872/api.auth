@@ -92,6 +92,7 @@ from src.Util.email.route_support import (
 )
 from src.Util.email.security import hash_link_token, normalize_email
 from src.Util.password_security import assert_password_policy, hash_password
+from src.Util.password_work import PasswordWorkLimiter, PasswordWorkPool
 
 # ---------------------------------------------------------------------------
 # Session helpers (group-based, no user_projects table required)
@@ -379,6 +380,41 @@ def _record_login_identifier_failure(request: Request | None, identifier: str) -
         logger.debug("Unable to record login identifier failure", exc_info=True)
 
 
+async def _run_public_password_work(request: Request | None, operation):
+    """Admit before DB work or identifier-specific counters; fail closed."""
+    try:
+        application = request.scope.get("app") if request is not None else None
+        pool = getattr(getattr(application, "state", None), "password_work_pool", None)
+        if not isinstance(pool, PasswordWorkPool):
+            raise RateLimitExceeded(bucket="password_work_unavailable", retry_after=1, limit=0)
+
+        def admitted_operation():
+            # Redis I/O also stays off the event loop. Taking a bounded slot first
+            # cannot create an unbounded admission queue during an outage.
+            PasswordWorkLimiter().check_allowed(client_ip(request))
+            return operation()
+
+        return await pool.run(admitted_operation)
+    except RateLimitExceeded as exc:
+        return rate_limited_response(exc)
+
+
+def _login_password_job(request: Request | None, username: str, password: str, error_context: str):
+    limited = _check_login_identifier_rate_limit(request, username)
+    if limited is not None:
+        return limited
+    user_record = handle_db_operation(
+        lambda: get_user_by_credentials(username, password), error_context=error_context,
+    )
+    if not user_record:
+        _record_login_identifier_failure(request, username)
+        raise AuthenticationError(
+            message="Invalid username or password", error_code=ErrorCode.INVALID_CREDENTIALS,
+            details={"username": username},
+        )
+    return user_record
+
+
 def _change_password_rate_limited_response(exc: RateLimitExceeded) -> JSONResponse:
     retry_after = max(1, int(getattr(exc, "retry_after", 1) or 1))
     error = create_change_password_rate_limit_error(
@@ -482,6 +518,12 @@ _ACCEPTED_202_RESPONSE = {
 
 _EMAIL_RATE_LIMITED_429_RESPONSE = {
     "description": "Rate limited (`INT_7005`); see the `Retry-After` header.",
+    "headers": {
+        "Retry-After": {
+            "description": "Seconds to wait before submitting another attempt.",
+            "schema": {"type": "integer", "minimum": 1},
+        },
+    },
 }
 
 _LINK_TOKEN_PROPERTIES = {
@@ -792,7 +834,8 @@ async def reset_password_with_link(
       tokens are revoked; no new session is issued, so the user must log in again.
     - `400` — `new_password` missing (`VAL_3002`) or rejected by the password policy
       (`VAL_3007`); checked before the token.
-    - `429` — too many attempts for this token or client IP; `Retry-After` is set.
+    - `429` — shared password-work, token or client IP limits, or worker capacity;
+      `Retry-After` is set.
     """
 
     payload = await read_request_payload(request)
@@ -811,6 +854,13 @@ async def reset_password_with_link(
         return generic_accepted_response()
 
     lookup_id, secret = parsed
+    return await _run_public_password_work(
+        request, lambda: _consume_password_reset_job(request, new_password, lookup_id, secret),
+    )
+
+
+def _consume_password_reset_job(request: Request, new_password: str, lookup_id: str, secret: str):
+    """Keep token DB checks and Argon2 on the bounded worker's own connection."""
     limited = _check_email_consume_rate_limit(request=request, purpose="password_reset", lookup_id=lookup_id)
     if limited is not None:
         return limited
@@ -833,28 +883,37 @@ async def reset_password_with_link(
     if plan.replay_response is not None:
         return plan.replay_response
 
+    candidates = {
+        purpose: _token_hash_for_presented_token(purpose=purpose, lookup_id=lookup_id, secret=secret, config=config)
+        for purpose in ("password_reset", "admin_password_reset")
+    }
+    try:
+        proof = db_email.validate_password_reset_token(
+            lookup_id=lookup_id,
+            token_hash=candidates["password_reset"],
+            admin_token_hash=candidates["admin_password_reset"],
+        )
+    except Exception:
+        logger.warning("Password reset validation failed; returning generic public response", exc_info=True)
+        proof = None
+    purpose = proof.get("purpose") if proof and db_bool(proof.get("token_valid")) else None
+    if purpose not in candidates:
+        _safe_complete_email_idempotency(plan, email_message_id=None)
+        return generic_accepted_response()
+
     new_password_hash = hash_password(new_password)
     row = None
-    for purpose in ("password_reset", "admin_password_reset"):
-        try:
-            row = db_email.consume_password_reset_token(
-                lookup_id=lookup_id,
-                token_hash=_token_hash_for_presented_token(
-                    purpose=purpose,
-                    lookup_id=lookup_id,
-                    secret=secret,
-                    config=config,
-                ),
-                new_password_hash=new_password_hash,
-                consumed_ip_hash=hash_route_value(client_ip(request), config),
-                consumed_user_agent_hash=hash_route_value(user_agent(request), config),
-            )
-        except Exception:
-            logger.warning("Password reset consume failed; returning generic public response", exc_info=True)
-            row = None
-            break
-        if row and db_bool(row.get("password_changed")):
-            break
+    try:
+        # Prevalidation is only an optimization. The atomic consumer rechecks
+        # current token/user state under locks before changing the password.
+        row = db_email.consume_password_reset_token(
+            lookup_id=lookup_id, token_hash=candidates[purpose],
+            new_password_hash=new_password_hash,
+            consumed_ip_hash=hash_route_value(client_ip(request), config),
+            consumed_user_agent_hash=hash_route_value(user_agent(request), config),
+        )
+    except Exception:
+        logger.warning("Password reset consume failed; returning generic public response", exc_info=True)
 
     if row and db_bool(row.get("password_changed")) and row.get("user_id"):
         revoke_user_auth_state(str(row["user_id"]), reason="password_reset")
@@ -1004,7 +1063,7 @@ async def change_password(
 
 # ---------------------------------------------------------------------------
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse, responses={429: _EMAIL_RATE_LIMITED_429_RESPONSE})
 @log_unauthenticated_operation(
     operation_name="user_login",
     activity_type=ActivityType.USER_LOGIN,
@@ -1043,8 +1102,8 @@ async def login(
     - `401` — wrong username/email or password (`AUTH_1001`).
     - `403` — no access to the project, or the project is inactive/archived.
     - `404` — project not found (root and admin accounts).
-    - `429` — too many failed attempts for this client IP and identifier; `Retry-After`
-      is set.
+    - `429` — shared password-work, client IP or identifier limits, or worker
+      capacity; `Retry-After` is set.
 
     \f
     Billing must not be added to this identity/session response.
@@ -1056,23 +1115,11 @@ async def login(
             details={"missing_fields": ["username", "password"]}
         )
 
-    limited = _check_login_identifier_rate_limit(request, username)
-    if limited is not None:
-        return limited
-
-    # Step 1: verify credentials (username or email)
-    user_record = handle_db_operation(
-        lambda: get_user_by_credentials(username, password),
-        error_context="user authentication"
+    user_record = await _run_public_password_work(
+        request, lambda: _login_password_job(request, username, password, "user authentication"),
     )
-    
-    if not user_record:
-        _record_login_identifier_failure(request, username)
-        raise AuthenticationError(
-            message="Invalid username or password",
-            error_code=ErrorCode.INVALID_CREDENTIALS,
-            details={"username": username}
-        )
+    if isinstance(user_record, JSONResponse):
+        return user_record
 
     _record_auth_email_login_if_applicable(user_record, username, request)
 
@@ -1295,7 +1342,7 @@ async def login(
     )
 
 
-@router.post("/platform/login", response_model=LoginResponse)
+@router.post("/platform/login", response_model=LoginResponse, responses={429: _EMAIL_RATE_LIMITED_429_RESPONSE})
 @log_unauthenticated_operation(
     operation_name="platform_user_login",
     activity_type=ActivityType.USER_LOGIN,
@@ -1322,8 +1369,8 @@ async def platform_login(
     - `400` — missing `username` or `password`.
     - `401` — wrong username/email or password (`AUTH_1001`).
     - `403` — the account is a consumer (`AUTHZ_2002`).
-    - `429` — too many failed attempts for this client IP and identifier; `Retry-After`
-      is set.
+    - `429` — shared password-work, client IP or identifier limits, or worker
+      capacity; `Retry-After` is set.
     """
     if not username or not password:
         raise ValidationError(
@@ -1332,22 +1379,11 @@ async def platform_login(
             details={"missing_fields": ["username", "password"]}
         )
 
-    limited = _check_login_identifier_rate_limit(request, username)
-    if limited is not None:
-        return limited
-
-    user_record = handle_db_operation(
-        lambda: get_user_by_credentials(username, password),
-        error_context="platform user authentication"
+    user_record = await _run_public_password_work(
+        request, lambda: _login_password_job(request, username, password, "platform user authentication"),
     )
-
-    if not user_record:
-        _record_login_identifier_failure(request, username)
-        raise AuthenticationError(
-            message="Invalid username or password",
-            error_code=ErrorCode.INVALID_CREDENTIALS,
-            details={"username": username}
-        )
+    if isinstance(user_record, JSONResponse):
+        return user_record
 
     _record_auth_email_login_if_applicable(user_record, username, request)
 
@@ -1398,7 +1434,7 @@ async def platform_login(
     )
 
 
-@router.post("/register", response_model=RegisterResponse)
+@router.post("/register", response_model=RegisterResponse, responses={429: _EMAIL_RATE_LIMITED_429_RESPONSE})
 @log_unauthenticated_operation(
     operation_name="user_registration",
     activity_type=ActivityType.USER_REGISTRATION,
@@ -1428,6 +1464,8 @@ async def register(
     - `400` — missing field, or password rejected by the policy (`VAL_3007`).
     - `404` — user group not found (`NF_4003`).
     - `409` — username (`CONF_5001`) already in use.
+    - `429` — shared password-work or client IP limits, or worker capacity;
+      `Retry-After` is set.
     """
     if not username or not password or not user_group_hash:
         missing_fields = []
@@ -1450,6 +1488,48 @@ async def register(
 
     assert_password_policy(password, username=username)
 
+    register_result = await _run_public_password_work(
+        request, lambda: _register_password_job(username, password, user_group_hash),
+    )
+    if isinstance(register_result, JSONResponse):
+        return register_result
+
+    token_pair = _registration_token_pair(register_result)
+    if token_pair is not None:
+        _set_token_pair_cookies(response, token_pair)
+
+    user_info = UserInfo(
+        user_hash=register_result.user_hash,
+        username=getattr(register_result, 'username') or username,
+        email=None,
+        user_type=getattr(register_result, 'user_type', 'consumer')
+    )
+
+    project_info = None
+    if register_result.project_hash:
+        project_info = ProjectInfo(
+            project_hash=register_result.project_hash,
+            project_name=register_result.project_name
+        )
+
+    return RegisterResponse(
+        success=True,
+        message="User registered successfully",
+        access_token=token_pair.access_token if token_pair else None,
+        refresh_token=token_pair.refresh_token if token_pair else None,
+        token_type=token_pair.token_type if token_pair else "Bearer",
+        expires_in=token_pair.expires_in if token_pair else None,
+        refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
+        expires_at=token_pair.expires_at if token_pair else None,
+        refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
+        remember_me=token_pair.remember_me if token_pair else False,
+        user=user_info,
+        project=project_info,
+        user_id=getattr(register_result, 'user_id', None)
+    )
+
+
+def _register_password_job(username: str, password: str, user_group_hash: str):
     # Check if username/email is available
     username_available = handle_db_operation(
         lambda: check_username_email_available(username),
@@ -1492,40 +1572,7 @@ async def register(
             }
         )
 
-    token_pair = _registration_token_pair(register_result)
-    if token_pair is not None:
-        _set_token_pair_cookies(response, token_pair)
-
-    user_info = UserInfo(
-        user_hash=register_result.user_hash,
-        username=getattr(register_result, 'username') or username,
-        email=None,
-        user_type=getattr(register_result, 'user_type', 'consumer')
-    )
-
-    project_info = None
-    if register_result.project_hash:
-        project_info = ProjectInfo(
-            project_hash=register_result.project_hash,
-            project_name=register_result.project_name
-        )
-
-    return RegisterResponse(
-        success=True,
-        message="User registered successfully",
-        access_token=token_pair.access_token if token_pair else None,
-        refresh_token=token_pair.refresh_token if token_pair else None,
-
-        token_type=token_pair.token_type if token_pair else "Bearer",
-        expires_in=token_pair.expires_in if token_pair else None,
-        refresh_expires_in=token_pair.refresh_expires_in if token_pair else None,
-        expires_at=token_pair.expires_at if token_pair else None,
-        refresh_expires_at=token_pair.refresh_expires_at if token_pair else None,
-        remember_me=token_pair.remember_me if token_pair else False,
-        user=user_info,
-        project=project_info,
-        user_id=getattr(register_result, 'user_id', None)
-    )
+    return register_result
 
 
 @router.get("/validate", response_model=ValidateSessionResponse)

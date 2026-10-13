@@ -11,6 +11,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,9 @@ ENTRYPOINT = ROOT / "scripts" / "docker-entrypoint.sh"
 # Each stub records its argv, then lingers long enough that every sibling has started (and
 # recorded itself) before the first exit makes the entrypoint tear the others down.
 _STUB = """#!/usr/bin/env bash
+if [[ "$(basename "$0")" == "python" && "$1" == "-m" && "$2" == "src.Util.proxy_config" ]]; then
+  exec "$ENTRYPOINT_REAL_PYTHON" "$@"
+fi
 echo "$(basename "$0") $*" >> "$ENTRYPOINT_LAUNCH_LOG"
 sleep 0.5
 """
@@ -39,6 +43,7 @@ def _launched(tmp_path: Path, **env_overrides: str) -> list[str]:
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "HOSTNAME": "unit-host",
         "ENTRYPOINT_LAUNCH_LOG": str(log),
+        "ENTRYPOINT_REAL_PYTHON": sys.executable,
         **env_overrides,
     }
     subprocess.run([shutil.which("bash") or "/bin/bash", str(ENTRYPOINT)], env=env, timeout=20, check=False)
@@ -59,6 +64,8 @@ def test_entrypoint_starts_the_billing_sync_worker_by_default(tmp_path):
         "src.workers.billing_sync_worker",
     }
     assert any(line.startswith("uvicorn src.main:app") for line in lines)
+    api = next(line for line in lines if line.startswith("uvicorn src.main:app"))
+    assert "--proxy-headers --forwarded-allow-ips" in api
     billing = next(line for line in lines if "billing_sync_worker" in line)
     assert "--worker-id container-unit-host-billing" in billing
 
@@ -69,3 +76,13 @@ def test_billing_sync_worker_can_be_switched_off(tmp_path):
 
     assert "src.workers.billing_sync_worker" not in _workers(lines)
     assert {"src.workers.email_worker", "src.workers.patreon_sync_worker"} <= _workers(lines)
+
+
+def test_wildcard_proxy_trust_prevents_every_process_from_starting(tmp_path):
+    assert _launched(tmp_path, FORWARDED_ALLOW_IPS="*") == []
+
+
+def test_explicit_proxy_network_is_passed_to_uvicorn(tmp_path):
+    lines = _launched(tmp_path, FORWARDED_ALLOW_IPS="192.0.2.10,10.1.2.0/24")
+    api = next(line for line in lines if line.startswith("uvicorn src.main:app"))
+    assert "--forwarded-allow-ips 192.0.2.10,10.1.2.0/24" in api

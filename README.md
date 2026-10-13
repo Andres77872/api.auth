@@ -99,13 +99,20 @@ cp .env.example .env
 python scripts/create_database.py
 
 # 4. Start the API
-python -m uvicorn src.main:app --reload
+python -m uvicorn src.main:app --reload --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-}"
 
 # 5. Smoke test
 curl -H "User-Agent: local-smoke/1.0" http://localhost:8000/system/ping
 ```
 
 `src/__init__.py` loads the project `.env` before runtime imports; variables already exported in the environment take precedence. Use `scripts/recreate_database.py` only when you intentionally want to drop and rebuild `magic_auth`; it is destructive and asks for confirmation.
+
+Public password endpoints share Redis attempt budgets and a bounded worker pool.
+Existing deployments must install the additive procedure migration before deploying
+the API and configure explicit ingress trust; see
+[password work protection](docs/RUNBOOKS/password-work-protection.md). Client request
+formats remain compatible; apps must handle `429 INT_7005` and `Retry-After`, including
+registration.
 
 To bring an existing database up to the canonical schema, review and then apply the cleanup. It removes retired SQL session storage, the `users.email` shadow column, and OAuth redeem-bridge columns and procedures:
 

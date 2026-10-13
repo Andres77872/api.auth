@@ -95,6 +95,7 @@ async def test_change_password_chain_preserves_current_revokes_other_and_reset_f
         patch("src.routes.auth.get_user_accessible_projects", return_value=[project]),
         patch("src.routes.auth.get_project_by_hash", return_value=project),
         patch("src.routes.auth.get_user_groups_for_user", return_value=[]),
+        patch("src.routes.auth.db_email.validate_password_reset_token", return_value={"token_valid": True, "purpose": "password_reset"}),
         patch("src.routes.auth.db_email.consume_password_reset_token", return_value={"password_changed": True, "user_id": user.id}),
         patch("src.routes.auth.revoke_user_auth_state") as revoke_all,
         patch("src.Util.email.resend_provider.ResendProvider", create=True) as resend_provider,

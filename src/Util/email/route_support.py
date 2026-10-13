@@ -98,12 +98,8 @@ def rate_limited_response(exc: RateLimitExceeded) -> JSONResponse:
 def client_ip(request: Request | None) -> str:
     if request is None:
         return "unknown"
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip() or "unknown"
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip() or "unknown"
+    # Uvicorn normalizes this only for explicitly configured trusted proxies.
+    # Reading raw forwarding headers here would bypass that transport boundary.
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

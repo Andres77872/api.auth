@@ -464,6 +464,17 @@ def enqueue_admin_password_reset_link(
     )
 
 
+def validate_password_reset_token(
+    *, lookup_id: str, token_hash: bytes, admin_token_hash: bytes,
+) -> dict[str, Any] | None:
+    """Read-only proof check; the consumer must still revalidate under locks."""
+    return _callproc_one(
+        "sp_validate_password_reset_token",
+        [lookup_id, token_hash, admin_token_hash],
+        context="validate_password_reset_token(lookup_id=[REDACTED])",
+    )
+
+
 def consume_password_reset_token(
     *,
     lookup_id: str,
@@ -881,4 +892,5 @@ __all__ = [
     "resend_user_email_activation",
     "run_email_retention_purge",
     "set_primary_user_email",
+    "validate_password_reset_token",
 ]

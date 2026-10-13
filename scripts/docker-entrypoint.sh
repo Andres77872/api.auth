@@ -27,6 +27,10 @@
 # as any process exits so the orchestrator can restart it.
 set -uo pipefail
 
+# Validate before starting any sibling process; an unset value trusts no proxy.
+FORWARDED_ALLOW_IPS="$(python -m src.Util.proxy_config)" || exit $?
+export FORWARDED_ALLOW_IPS
+
 term() {
   trap - TERM INT
   kill -TERM "${WORKER_PID:-}" "${PATREON_WORKER_PID:-}" "${BILLING_WORKER_PID:-}" "${API_PID:-}" 2>/dev/null || true
@@ -54,7 +58,7 @@ if [[ "${BILLING_SYNC_WORKER_ENABLED:-1}" != "0" ]]; then
 fi
 
 # API server.
-uvicorn src.main:app --host 0.0.0.0 --port "${PORT:-8000}" &
+uvicorn src.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}" &
 API_PID=$!
 
 wait -n            # return when any child exits

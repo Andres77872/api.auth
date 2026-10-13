@@ -12,6 +12,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pymysql
@@ -94,6 +95,13 @@ class RecoveryAccount:
         assert row is not None
         return row
 
+    def proof(self, token):
+        return db_email.validate_password_reset_token(
+            lookup_id=token.lookup_id,
+            token_hash=hash_link_token(purpose="password_reset", lookup_id=token.lookup_id, secret=token.secret, pepper=self.config.token_pepper_bytes),
+            admin_token_hash=hash_link_token(purpose="admin_password_reset", lookup_id=token.lookup_id, secret=token.secret, pepper=self.config.token_pepper_bytes),
+        )
+
     def token_row(self, token):
         return self.execute("SELECT * FROM user_email_link_tokens WHERE lookup_id=%s", (token.lookup_id,))[0]
 
@@ -169,6 +177,97 @@ def test_new_link_revokes_previous_across_both_reset_purposes(account, older_pur
     assert not account.consume(older)["password_changed"]
     assert not account.consume(newer)["password_changed"]
     assert account.current_hash() == recovered_hash
+
+
+@pytest.mark.parametrize("purpose", RESET_PURPOSES)
+def test_prevalidation_is_read_only_and_accepts_existing_bound_links(account, purpose):
+    token = account.issue(purpose)
+    before = account.token_row(token)
+    assert account.proof(token) == {"token_valid": 1, "purpose": purpose}
+    assert account.token_row(token) == before
+    assert account.current_hash() == account.password_hash
+
+
+@pytest.mark.parametrize("purpose", RESET_PURPOSES)
+def test_additive_migration_preserves_existing_links_and_can_be_reapplied(account, purpose):
+    from scripts.schema_sync import _split_sql_statements
+
+    token = account.issue(purpose)
+    before = account.token_row(token)
+    migration = Path(__file__).resolve().parents[2] / "schemas/migrations/20261012_password_reset_prevalidation.sql"
+    statements = _split_sql_statements(migration.read_text())
+    # DDL is a deployment operation. MySQL requires SYSTEM_USER to replace a
+    # root-defined routine, independently of the runtime account's EXECUTE grant.
+    migration_config = dict(_REAL_DB_CONFIG)
+    if _REAL_DB_CONFIG["host"] == "mysql-test" and os.environ.get("E2E_REQUIRE_REAL_INFRA", "").lower() == "true":
+        migration_config.update(user="root", password="test_root")
+    else:
+        migration_config.update(
+            user=os.environ.get("REAL_DB_ADMIN_USER", migration_config["user"]),
+            password=os.environ.get("REAL_DB_ADMIN_PASSWORD", migration_config["password"]),
+        )
+    for _ in range(2):
+        with pymysql.connect(**migration_config, autocommit=True) as connection, connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)
+                while cursor.nextset():
+                    pass
+        assert account.proof(token) == {"token_valid": 1, "purpose": purpose}
+        assert account.token_row(token) == before
+        assert account.current_hash() == account.password_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", RESET_PURPOSES)
+@pytest.mark.parametrize("state", ["unknown", "wrong_secret", "expired", "revoked", "consumed", "password_changed", "inactive", "superseded", "legacy_binding", "activation"])
+async def test_invalid_proof_at_public_route_causes_zero_hashing(client, integration_env, account, purpose, state):
+    token = account.issue(purpose)
+    presented = token.token
+    if state == "unknown":
+        presented = generate_link_token(purpose=purpose, ttl_seconds=3600, pepper=account.config.token_pepper_bytes).token
+    elif state == "wrong_secret":
+        presented = f"{token.lookup_id}.wrong-secret"
+    elif state in {"expired", "revoked", "consumed"}:
+        assignment = {"expired": "created_at=DATE_SUB(NOW(), INTERVAL 2 HOUR),expires_at=DATE_SUB(NOW(), INTERVAL 1 HOUR)", "revoked": "revoked_at=NOW()", "consumed": "consumed_at=NOW()"}[state]
+        account.execute(f"UPDATE user_email_link_tokens SET {assignment} WHERE lookup_id=%s", (token.lookup_id,))
+    elif state == "password_changed":
+        account.execute("UPDATE users SET password_hash=%s WHERE id=%s", (hash_password(NEW_PASSWORD), account.id))
+    elif state == "inactive":
+        account.execute("UPDATE users SET is_active=FALSE WHERE id=%s", (account.id,))
+    elif state == "superseded":
+        account.issue("admin_password_reset")
+    elif state == "legacy_binding":
+        account.execute("UPDATE user_email_link_tokens SET token_hash=%s WHERE lookup_id=%s", (token.token_hash, token.lookup_id))
+    elif state == "activation":
+        account.execute("UPDATE user_email_link_tokens SET purpose='email_activation' WHERE lookup_id=%s", (token.lookup_id,))
+
+    with patch.object(db_email, "get_connection", _connect), \
+         patch("src.routes.auth.hash_password") as hashing, \
+         patch("src.routes.auth.db_email.consume_password_reset_token") as consume:
+        response = await client.post("/auth/password/reset", json={"token": presented, "new_password": NEW_PASSWORD})
+    assert response.status_code == 202
+    hashing.assert_not_called()
+    consume.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_password_change_between_prevalidation_and_consume_is_rechecked(client, integration_env, account):
+    token = account.issue()
+    changed_hash = hash_password("concurrent manual recovery test passphrase")
+
+    def hash_after_manual_change(candidate):
+        account.execute("UPDATE users SET password_hash=%s WHERE id=%s", (changed_hash, account.id))
+        return hash_password(candidate)
+
+    with patch.object(db_email, "get_connection", _connect), \
+         patch("src.routes.auth.hash_password", side_effect=hash_after_manual_change) as hashing, \
+         patch("src.routes.auth.revoke_user_auth_state") as revoke:
+        response = await client.post("/auth/password/reset", json={"token": token.token, "new_password": NEW_PASSWORD})
+    assert response.status_code == 202
+    hashing.assert_called_once()
+    revoke.assert_not_called()
+    assert account.current_hash() == changed_hash
+    assert account.token_row(token)["consumed_at"] is None
 
 
 @pytest.mark.parametrize("purpose", RESET_PURPOSES)
