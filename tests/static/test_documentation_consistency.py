@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
+import pytest
+
 from src.Util.docs_site.markdown import render_markdown, slugify
 
 
@@ -81,6 +83,52 @@ def _documentation_files() -> list[Path]:
     files.extend((ROOT / "docs").rglob("*.md"))
     files.extend((ROOT / "schemas" / "docs").rglob("*.md"))
     return sorted(set(files))
+
+
+def _missing_repository_file_references(source: Path, root: Path = ROOT) -> list[str]:
+    """Check local references without requiring other documented repositories."""
+
+    failures: list[str] = []
+    external_sections: dict[int, bool] = {}
+    heading_level = 0
+    fence: tuple[str, int] | None = None
+
+    for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            delimiter = marker.group(1)
+            if fence is None:
+                fence = (delimiter[0], len(delimiter))
+            elif (delimiter[0] == fence[0] and len(delimiter) >= fence[1]
+                  and not line[marker.end():].strip()):
+                fence = None
+        elif fence is None:
+            heading = re.match(r"^ {0,3}(#{1,6})\s+", line)
+            if heading:
+                heading_level = len(heading.group(1))
+                external_sections = {
+                    level: external for level, external in external_sections.items()
+                    if level < heading_level
+                }
+            directory = re.fullmatch(r"Working directory:\s*`([^`]+)`\.?\s*", line)
+            if directory:
+                working_directory = Path(directory.group(1))
+                if not working_directory.is_absolute():
+                    working_directory = root / working_directory
+                # Recognize this repository in paths from another checkout, too.
+                local = (working_directory.resolve().is_relative_to(root.resolve())
+                         or "api.auth" in working_directory.parts)
+                external_sections[heading_level] = not local
+
+        if external_sections and external_sections[max(external_sections)]:
+            continue
+        for reference in REPOSITORY_FILE_REFERENCE.findall(line):
+            if not (root / reference).exists():
+                failures.append(
+                    f"{source.relative_to(root)}:{line_number} -> missing {reference}"
+                )
+
+    return failures
 
 
 def _slugify(text: str) -> str:
@@ -297,14 +345,81 @@ def test_documented_repository_file_references_exist():
     failures: list[str] = []
 
     for source in _documentation_files():
-        text = source.read_text(encoding="utf-8", errors="ignore")
-        for reference in REPOSITORY_FILE_REFERENCE.findall(text):
-            if not (ROOT / reference).exists():
-                failures.append(
-                    f"{source.relative_to(ROOT)} -> missing {reference}"
-                )
+        failures.extend(_missing_repository_file_references(source))
 
     assert failures == []
+
+
+def test_external_repository_scope_ends_at_sibling_and_parent_sections(tmp_path):
+    source = tmp_path / "review.md"
+    source.write_text(
+        "`src/missing_before.py`\n"
+        "## Consumer checks\n"
+        "### Backend\n"
+        "Working directory: `/unavailable/other-backend`.\n"
+        "```bash\n"
+        "# This shell comment must not reset the Markdown section.\n"
+        "pytest tests/backend.py\n"
+        "```\n"
+        "See `tests/inline.py`.\n"
+        "#### Additional backend checks\n"
+        "See `tests/nested.py`.\n"
+        "### Provider checks\n"
+        "`src/missing_sibling.py`\n"
+        "## Release notes\n"
+        "`schemas/missing_parent.sql`\n",
+        encoding="utf-8",
+    )
+
+    assert _missing_repository_file_references(source, tmp_path) == [
+        "review.md:1 -> missing src/missing_before.py",
+        "review.md:13 -> missing src/missing_sibling.py",
+        "review.md:15 -> missing schemas/missing_parent.sql",
+    ]
+
+
+@pytest.mark.parametrize("directory", [".", "scripts", "/another/checkout/api.auth"])
+def test_local_working_directories_still_check_repository_files(tmp_path, directory):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "existing.py").touch()
+    source = tmp_path / "review.md"
+    source.write_text(
+        f"# Provider\nWorking directory: `{directory}`.\n"
+        "`src/existing.py` and `src/missing.py`\n",
+        encoding="utf-8",
+    )
+
+    assert _missing_repository_file_references(source, tmp_path) == [
+        "review.md:3 -> missing src/missing.py",
+    ]
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~~"])
+def test_working_directory_examples_inside_fences_do_not_change_scope(tmp_path, fence):
+    source = tmp_path / "review.md"
+    source.write_text(
+        f"{fence}text\nWorking directory: `/unavailable/other-backend`.\n{fence}\n"
+        "`src/missing.py`\n",
+        encoding="utf-8",
+    )
+
+    assert _missing_repository_file_references(source, tmp_path) == [
+        "review.md:4 -> missing src/missing.py",
+    ]
+
+
+def test_nested_local_scope_restores_the_external_parent(tmp_path):
+    source = tmp_path / "review.md"
+    source.write_text(
+        "## Backend\nWorking directory: `/unavailable/other-backend`.\n"
+        "### Provider\nWorking directory: `.`.\n`src/missing.py`\n"
+        "### More backend checks\n`tests/backend.py`\n",
+        encoding="utf-8",
+    )
+
+    assert _missing_repository_file_references(source, tmp_path) == [
+        "review.md:5 -> missing src/missing.py",
+    ]
 
 
 def test_schema_inventory_matches_canonical_sql():
