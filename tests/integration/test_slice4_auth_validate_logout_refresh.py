@@ -862,6 +862,7 @@ async def test_logout_succeeds_with_an_expired_access_token(
     the rest of its TTL every time a user came back to a stale tab.
     """
     from datetime import timedelta
+    from fastapi import HTTPException
 
     from src.Util.JWT_Security import JWTTokenHandler
 
@@ -869,6 +870,7 @@ async def test_logout_succeeds_with_an_expired_access_token(
     project = _make_project()
     group = _make_group()
     pair = _issue_project_access_token(user=user, project=project, permissions=["read"], groups=[group.group_name])
+    other = _issue_project_access_token(user=user, project=project)
     claims = pair.access_claims
     family_id = claims["family_id"]
 
@@ -882,12 +884,16 @@ async def test_logout_succeeds_with_an_expired_access_token(
         expires_delta=timedelta(seconds=-5),
     )
 
-    with _patch_canonical_validation(user, project=project, groups=[group], permissions=["read"]):
+    # fake_redis normally stubs this wrapper to accept every token. Override
+    # that stub so it cannot hide an expiry check ahead of the logout handler.
+    with patch("src.Util.decorators.validate_session",
+               side_effect=HTTPException(status_code=401, detail="Token expired")) as normal_validation:
         response = await client.post(
             "/auth/logout",
             headers={"Authorization": f"Bearer {expired_access_token}", "User-Agent": "test"},
         )
 
+    normal_validation.assert_not_called()
     assert response.status_code == 200
     assert response.json()["success"] is True
 
@@ -895,6 +901,12 @@ async def test_logout_succeeds_with_an_expired_access_token(
     assert family["status"] == "revoked"
     assert family["revocation_reason"] == "logout"
     assert fake_redis.get(f"session:{claims['jti']}") is None
+    assert _decode_redis_json(fake_redis, f"refresh_family:{other.access_claims['family_id']}")["status"] == "active"
+    repeated = await client.post("/auth/logout", headers={"Authorization": f"Bearer {expired_access_token}"})
+    assert repeated.status_code == 200
+    with _patch_canonical_validation(user, project=project, groups=[group], permissions=["read"]):
+        protected = await client.get("/auth/validate", headers={"Authorization": f"Bearer {expired_access_token}"})
+    assert protected.status_code == 401
 
     # The refresh token the tab was still holding must be dead too.
     reuse_after_logout = await client.post(
@@ -976,3 +988,22 @@ async def test_refresh_response_carries_real_group_hashes_and_plan(
     }]
     assert body["user"]["email"] == "test@example.com"
     assert "plan" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential_kind", ["refresh", "forged"])
+async def test_logout_invalid_credentials_cannot_revoke_another_family(
+    credential_kind, client, fake_redis, patched_cache_manager, patched_activity_logger,
+    patched_audit_logger, patched_audit_ids, patched_db_connection, patched_db_error_logger,
+):
+    import jwt
+    from src.Util.JWT_Security import JWT_ALGORITHM
+
+    pair = _issue_project_access_token()
+    token = pair.refresh_token if credential_kind == "refresh" else jwt.encode(
+        pair.access_claims, "not-the-provider-signing-key", algorithm=JWT_ALGORITHM,
+    )
+    response = await client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+    assert _decode_redis_json(fake_redis, f"refresh_family:{pair.access_claims['family_id']}")["status"] == "active"
+    assert fake_redis.get(f"session:{pair.access_claims['jti']}") is not None

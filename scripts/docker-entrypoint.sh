@@ -57,8 +57,9 @@ if [[ "${BILLING_SYNC_WORKER_ENABLED:-1}" != "0" ]]; then
   BILLING_WORKER_PID=$!
 fi
 
-# API server.
-uvicorn src.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}" &
+# API server. --timeout-keep-alive 130: the magic-worlds BFF pools its connection
+# for 120 s, so a validation after a pause reuses it instead of reconnecting.
+uvicorn src.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}" --timeout-keep-alive 130 &
 API_PID=$!
 
 wait -n            # return when any child exits

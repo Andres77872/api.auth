@@ -1772,33 +1772,20 @@ async def validate_user_api_key(
 @log_and_handle_errors(
     operation_name="user_logout",
     activity_type=ActivityType.USER_LOGOUT,
-    log_success=True
+    log_success=True,
+    require_auth=False,  # The handler verifies the signed access token, allowing expiry only for revocation.
 )
 async def logout(
         response: Response,
         credentials: HTTPAuthorizationCredentials = Depends(security),
         log_context: LogContext = None
 ) -> LogoutResponse:
-    """End the caller's session: revoke its refresh family and clear the auth cookies.
+    """Revoke the signed access token's refresh family and clear auth cookies.
 
-    **Auth:** access token (`Authorization: Bearer <access JWT>` or the `access_token`
-    cookie). The token must currently be valid; an expired access token is rejected
-    with `401`.
-
-    **Request:** no body.
-
-    **Responses:**
-    - `200` — `LogoutResponse`. The session's refresh family and access session are
-      revoked (other sessions of the user are untouched) and the `access_token` and
-      `refresh_token` cookies are cleared.
-    - `401` — missing, invalid, expired or already-revoked access token.
-
-    \f
-    The handler decodes with ``decode_access_token_allow_expired`` so an idle tab
-    could log itself out, but ``@log_and_handle_errors`` (require_auth=True) first
-    calls ``validate_session``, which enforces ``exp`` and raises 401 "Token expired"
-    before the handler runs. Integration tests mask this by patching
-    ``src.Util.decorators.validate_session``.
+    Expired access tokens are accepted exclusively for revocation. Signature,
+    access-token type and lifecycle claims remain mandatory. Repeating logout
+    for the same authentic token is idempotent; no session or role is granted.
+    Missing, forged or refresh tokens return `401`.
     """
     access_token = credentials.credentials
 

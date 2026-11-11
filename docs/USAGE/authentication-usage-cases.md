@@ -610,9 +610,9 @@ curl -s -X POST "$API/auth/logout" -H "Authorization: Bearer $ACCESS_TOKEN"
 Logout revokes the caller's refresh family and its access session and clears the `access_token`
 (`Path=/`) and `refresh_token` (`Path=/auth`) cookies. The user's other sessions are untouched.
 
-The access token must still be valid: an expired or revoked one gets `401` before the handler runs,
-and the family then stays alive until its refresh window ends. To log out an idle session, refresh
-first and log out with the new access token.
+The last signed access token can revoke its family even after its access window expires.
+Signature, access-token type and lifecycle claims are still checked. Repeated logout with the
+same authentic token is idempotent. Expired tokens remain invalid for other protected routes.
 
 ## Validate an API key
 
@@ -746,7 +746,7 @@ client must then log in again; the attacker's tokens are dead.
 | `401 AUTH_1014` from `/auth/refresh` | JSON body, or the refresh cookie was not sent (cookie path is `/auth`) | Send the `refresh_token` form field, or call the API at its root path so the cookie applies |
 | `401 AUTH_1015`, then `AUTH_1017` | Two refreshes used the same token, or a token was replayed later | Serialize refreshes per family; log in again |
 | `401 AUTH_1008` on switch-project | Sign-in older than the recent sign-in window | Log in again with the target `project_hash` |
-| `401` on logout | Access token already expired | Refresh, then log out with the new access token |
+| `401` on logout | Missing access token, invalid signature or wrong token type | Send the last access token, including an expired one. A cookie-only client whose access cookie is gone must restore a session before logout. |
 | `401` right after an admin changed groups | The user no longer reaches the session's project, which revokes the session | Log in to a project the user can still reach |
 | `429 INT_7005` on login, platform login, registration or recovery | Shared attempt budget, account/link limit, or password worker capacity | Wait for `Retry-After`; successful attempts also consume the shared budget |
 | Forgot password returns `202` but no email arrives | No activated address matches the identifier, or delivery is disabled or the email worker is not running | Confirm an activated address exists; check `EMAIL_DELIVERY_ENABLED` and the email worker ([email suite](email/README.md)) |

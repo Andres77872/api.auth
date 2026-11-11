@@ -158,8 +158,10 @@ data; browser/mobile apps should not set forwarding headers themselves.
    path starts with `/auth`), then retry once.
 4. On startup, call `GET /auth/validate` to learn whether a session exists; it refreshes through
    step 3 when the access cookie has already expired.
-5. Log out with `POST /auth/logout`. If it returns `401` because the access cookie expired, refresh
-   first and log out again so the family is revoked, then clear local state either way.
+5. Log out with `POST /auth/logout`. A signed access token is accepted for revocation even when
+   expired. If the browser has already removed its access cookie and has no access token to send,
+   refresh once to restore credentials, then log out. Clear local state after the attempt; only a
+   successful logout confirms provider revocation.
 
 ### Backend-for-frontend
 
